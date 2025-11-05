@@ -11,17 +11,9 @@ CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
 HOOK_EVENT=$(echo "$INPUT" | jq -r '.hook_event_name // empty')
 USER_PROMPT=$(echo "$INPUT" | jq -r '.prompt // empty')
 
-# Setup error logging
+# Setup transcript directory
 TRANSCRIPT_DIR="$CWD/.claude/transcripts"
 mkdir -p "$TRANSCRIPT_DIR"
-ERROR_LOG="$TRANSCRIPT_DIR/error.log"
-
-# Redirect all errors to error log
-exec 2>>"$ERROR_LOG"
-echo "=== Script run at $(date) ===" >&2
-echo "SESSION_ID: $SESSION_ID" >&2
-echo "USER_PROMPT: $USER_PROMPT" >&2
-echo "TRANSCRIPT_PATH: $TRANSCRIPT_PATH" >&2
 
 # Validate required inputs
 if [[ -z "$TRANSCRIPT_PATH" ]] || [[ -z "$SESSION_ID" ]]; then
@@ -33,9 +25,8 @@ if [[ ! -f "$TRANSCRIPT_PATH" ]]; then
     exit 0
 fi
 
-# Only process UserPromptSubmit events
-if [[ "$HOOK_EVENT" != "UserPromptSubmit" ]]; then
-    echo "Skipping: not a UserPromptSubmit event" >&2
+# Only process UserPromptSubmit and SessionEnd events
+if [[ "$HOOK_EVENT" != "UserPromptSubmit" ]] && [[ "$HOOK_EVENT" != "SessionEnd" ]]; then
     exit 0
 fi
 
@@ -56,12 +47,18 @@ if [[ ! -f "$MAIN_TRANSCRIPT" ]]; then
 EOF
 fi
 
-# Find the second-to-last user prompt from JSONL by reading backwards
+# Find the user prompt to collect responses after
+# For SessionEnd: get the last (first when reading backwards) user prompt
+# For UserPromptSubmit: get the second-to-last (skip current, get previous)
 PREVIOUS_USER_PROMPT=""
 PREVIOUS_USER_LINE=""
 
-# Read backwards, skip first user prompt (current), get second (previous)
 USER_COUNT=0
+TARGET_COUNT=1  # For SessionEnd, we want the first user prompt
+if [[ "$HOOK_EVENT" == "UserPromptSubmit" ]]; then
+    TARGET_COUNT=2  # For UserPromptSubmit, we want the second user prompt
+fi
+
 while IFS= read -r line; do
     if [[ -z "$line" ]]; then
         continue
@@ -71,32 +68,28 @@ while IFS= read -r line; do
 
     if [[ "$ENTRY_TYPE" == "user" ]]; then
         USER_COUNT=$((USER_COUNT + 1))
-        if [[ $USER_COUNT -eq 2 ]]; then
-            # Found the second-to-last user prompt
+        if [[ $USER_COUNT -eq $TARGET_COUNT ]]; then
+            # Found the target user prompt
             PREVIOUS_USER_PROMPT=$(echo "$line" | jq -r '.message.content | if type == "array" then .[0].text else . end' || echo "")
             # Skip only if null or empty (keep all valid prompts including interrupted ones)
             if [[ -n "$PREVIOUS_USER_PROMPT" ]] && [[ "$PREVIOUS_USER_PROMPT" != "null" ]]; then
                 PREVIOUS_USER_LINE="$line"
                 break
             fi
-            # Reset counter to keep looking for a valid second prompt
-            USER_COUNT=1
+            # Reset counter to keep looking for a valid prompt at target position
+            USER_COUNT=$((TARGET_COUNT - 1))
         fi
     fi
 done < <(tail -r "$TRANSCRIPT_PATH" 2>/dev/null || sed '1!G;h;$!d' "$TRANSCRIPT_PATH")
-
-# Debug logging
-DEBUG_LOG="$TRANSCRIPT_DIR/debug.log"
-echo "=== Debug $(date) ===" >> "$DEBUG_LOG"
-echo "USER_PROMPT: [$USER_PROMPT]" >> "$DEBUG_LOG"
-echo "Previous user prompt: [$PREVIOUS_USER_PROMPT]" >> "$DEBUG_LOG"
 
 # Create temp file for new content
 TEMP_OUTPUT=$(mktemp)
 
 # Add the current user prompt to temp output (this goes at the top)
-if [[ -n "$USER_PROMPT" ]]; then
-    echo "**User:** <span style=\"color: green;\">$USER_PROMPT</span><br>" >> "$TEMP_OUTPUT"
+# Skip for SessionEnd events as they don't have a new user prompt
+if [[ "$HOOK_EVENT" == "UserPromptSubmit" ]] && [[ -n "$USER_PROMPT" ]]; then
+    TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "**User ($TIMESTAMP):** <span style=\"color: green;\">$USER_PROMPT</span><br>" >> "$TEMP_OUTPUT"
     echo "" >> "$TEMP_OUTPUT"
 fi
 
@@ -104,7 +97,8 @@ fi
 ASSISTANT_RESPONSES=$(mktemp)
 WAS_INTERRUPTED=false
 
-# Now collect assistant responses after the previous user prompt
+# For SessionEnd, we need to collect responses after the last user prompt
+# For UserPromptSubmit, we collect after the previous user prompt
 SHOULD_COLLECT=false
 while IFS= read -r line; do
     if [[ -z "$line" ]]; then
@@ -124,6 +118,12 @@ while IFS= read -r line; do
     else
         # We're collecting messages now
         if [[ "$ENTRY_TYPE" == "assistant" ]]; then
+            # Check if this response was interrupted
+            STOP_REASON=$(echo "$line" | jq -r '.message.stop_reason // empty')
+            if [[ "$STOP_REASON" == "null" ]] || [[ -z "$STOP_REASON" ]]; then
+                WAS_INTERRUPTED=true
+            fi
+
             # Process assistant message content
             echo "$line" | jq -c '.message.content[]?' | while IFS= read -r block; do
                 BLOCK_TYPE=$(echo "$block" | jq -r '.type // empty')
@@ -167,15 +167,9 @@ while IFS= read -r line; do
 
 done < "$TRANSCRIPT_PATH"
 
-# Debug: Check temp output
-echo "TEMP_OUTPUT file: $TEMP_OUTPUT" >> "$DEBUG_LOG"
-echo "TEMP_OUTPUT size: $(wc -c < "$TEMP_OUTPUT" 2>/dev/null || echo "0")" >> "$DEBUG_LOG"
-echo "TEMP_OUTPUT content:" >> "$DEBUG_LOG"
-cat "$TEMP_OUTPUT" >> "$DEBUG_LOG" 2>&1
-echo "---" >> "$DEBUG_LOG"
-
 # Prepend new content to the top of the file (after header)
-if [[ -s "$TEMP_OUTPUT" ]]; then
+# For SessionEnd, we process even if TEMP_OUTPUT is empty (just adding assistant responses)
+if [[ -s "$TEMP_OUTPUT" ]] || [[ "$HOOK_EVENT" == "SessionEnd" ]]; then
     # Create temp file starting with existing header (first 8 lines)
     head -8 "$MAIN_TRANSCRIPT" > "$MAIN_TRANSCRIPT.tmp"
 
@@ -191,28 +185,82 @@ if [[ -s "$TEMP_OUTPUT" ]]; then
 
     # Add separator and old content with assistant responses inserted
     if [[ -n "$EXISTING_CONTENT" ]]; then
-        echo "---" >> "$MAIN_TRANSCRIPT.tmp"
-        echo "" >> "$MAIN_TRANSCRIPT.tmp"
-
-        # Write the previous user prompt
-        if [[ -n "$PREVIOUS_USER_PROMPT" ]]; then
-            echo "**User:** <span style=\"color: green;\">$PREVIOUS_USER_PROMPT</span><br>" >> "$MAIN_TRANSCRIPT.tmp"
+        if [[ "$HOOK_EVENT" == "UserPromptSubmit" ]]; then
+            # For UserPromptSubmit: add separator, then previous prompt + responses
+            echo "---" >> "$MAIN_TRANSCRIPT.tmp"
             echo "" >> "$MAIN_TRANSCRIPT.tmp"
-        fi
 
-        # Insert assistant responses
-        if [[ -s "$ASSISTANT_RESPONSES" ]]; then
-            cat "$ASSISTANT_RESPONSES" >> "$MAIN_TRANSCRIPT.tmp"
-
-            # Add interrupted indicator if this was an interrupted request
-            if [[ "$PREVIOUS_USER_PROMPT" == "[Request interrupted by user]"* ]]; then
-                echo "<span style=\"color: red;\">**[Interrupted]**</span>" >> "$MAIN_TRANSCRIPT.tmp"
+            # Write the previous user prompt
+            if [[ -n "$PREVIOUS_USER_PROMPT" ]]; then
+                echo "**User:** <span style=\"color: green;\">$PREVIOUS_USER_PROMPT</span><br>" >> "$MAIN_TRANSCRIPT.tmp"
                 echo "" >> "$MAIN_TRANSCRIPT.tmp"
             fi
-        fi
 
-        # Write the rest of the old content (skip first 2 lines which is the old prompt + blank)
-        echo "$EXISTING_CONTENT" | tail -n +3 >> "$MAIN_TRANSCRIPT.tmp"
+            # Insert assistant responses
+            if [[ -s "$ASSISTANT_RESPONSES" ]]; then
+                cat "$ASSISTANT_RESPONSES" >> "$MAIN_TRANSCRIPT.tmp"
+
+                # Add status indicator
+                if [[ "$HOOK_EVENT" == "SessionEnd" ]]; then
+                    TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+                    echo "<span style=\"color: blue;\">**[Session Ended: $TIMESTAMP]**</span>" >> "$MAIN_TRANSCRIPT.tmp"
+                    echo "" >> "$MAIN_TRANSCRIPT.tmp"
+                elif [[ "$WAS_INTERRUPTED" == "true" ]]; then
+                    echo "<span style=\"color: red;\">**[Interrupted]**</span>" >> "$MAIN_TRANSCRIPT.tmp"
+                    echo "" >> "$MAIN_TRANSCRIPT.tmp"
+                fi
+            fi
+
+            # Write the rest of the old content (skip first 2 lines which is the old prompt + blank)
+            echo "$EXISTING_CONTENT" | tail -n +3 >> "$MAIN_TRANSCRIPT.tmp"
+        else
+            # For SessionEnd: just append assistant responses to the existing first section
+            # Insert assistant responses right after the existing content's first user prompt
+            # We need to parse EXISTING_CONTENT and insert after the first user prompt line
+
+            # Find the first user prompt line in existing content
+            FIRST_USER_LINE=$(echo "$EXISTING_CONTENT" | grep -n "^\*\*User" | head -1 | cut -d: -f1)
+
+            if [[ -n "$FIRST_USER_LINE" ]]; then
+                # Split content: lines 1 to FIRST_USER_LINE, then assistant responses, then rest
+                echo "$EXISTING_CONTENT" | head -n $((FIRST_USER_LINE + 1)) >> "$MAIN_TRANSCRIPT.tmp"
+
+                # Insert assistant responses
+                if [[ -s "$ASSISTANT_RESPONSES" ]]; then
+                    cat "$ASSISTANT_RESPONSES" >> "$MAIN_TRANSCRIPT.tmp"
+
+                    # Add status indicator
+                    if [[ "$HOOK_EVENT" == "SessionEnd" ]]; then
+                        TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+                        echo "<span style=\"color: blue;\">**[Session Ended: $TIMESTAMP]**</span>" >> "$MAIN_TRANSCRIPT.tmp"
+                        echo "" >> "$MAIN_TRANSCRIPT.tmp"
+                    elif [[ "$WAS_INTERRUPTED" == "true" ]]; then
+                        echo "<span style=\"color: red;\">**[Interrupted]**</span>" >> "$MAIN_TRANSCRIPT.tmp"
+                        echo "" >> "$MAIN_TRANSCRIPT.tmp"
+                    fi
+                fi
+
+                # Add rest of existing content (skip first FIRST_USER_LINE+1 lines)
+                echo "$EXISTING_CONTENT" | tail -n +$((FIRST_USER_LINE + 2)) >> "$MAIN_TRANSCRIPT.tmp"
+            else
+                # No user prompt found, just append everything
+                echo "$EXISTING_CONTENT" >> "$MAIN_TRANSCRIPT.tmp"
+
+                if [[ -s "$ASSISTANT_RESPONSES" ]]; then
+                    cat "$ASSISTANT_RESPONSES" >> "$MAIN_TRANSCRIPT.tmp"
+
+                    # Add status indicator
+                    if [[ "$HOOK_EVENT" == "SessionEnd" ]]; then
+                        TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+                        echo "<span style=\"color: blue;\">**[Session Ended: $TIMESTAMP]**</span>" >> "$MAIN_TRANSCRIPT.tmp"
+                        echo "" >> "$MAIN_TRANSCRIPT.tmp"
+                    elif [[ "$WAS_INTERRUPTED" == "true" ]]; then
+                        echo "<span style=\"color: red;\">**[Interrupted]**</span>" >> "$MAIN_TRANSCRIPT.tmp"
+                        echo "" >> "$MAIN_TRANSCRIPT.tmp"
+                    fi
+                fi
+            fi
+        fi
     fi
 
     # Clean up temp file

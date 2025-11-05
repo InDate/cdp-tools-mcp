@@ -6,6 +6,9 @@ INPUT=$(cat)
 # Extract the file path parameter from tool_input
 FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // .tool_input.path // .tool_input.notebook_path // empty')
 
+# Extract command parameter for Bash tool
+COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
+
 # Extract transcript path to check for password in recent conversation
 TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // empty')
 
@@ -26,8 +29,8 @@ if [[ "$FILE_PATH" == *".claude/hooks/block-test-app.sh"* ]]; then
     exit 2
 fi
 
-# Block access to test-app directory
-if [[ "$FILE_PATH" == *"test-app"* ]]; then
+# Block access to test-app directory (check both file path and command)
+if [[ "$FILE_PATH" == *"test-app"* ]] || [[ "$COMMAND" == *"test-app"* ]]; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Access to test-app directory is restricted. Provide the password to override."}}'
     exit 2
 fi
