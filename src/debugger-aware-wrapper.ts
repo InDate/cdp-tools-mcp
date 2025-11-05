@@ -29,14 +29,14 @@ export interface ActionResult<T = any> {
  * @param cdpManager - The CDP manager instance
  * @param action - The async action to execute
  * @param actionName - Name of the action (for error messages)
- * @param timeout - Timeout in ms (default: 30000)
+ * @param timeout - Timeout in ms (default: 5000)
  * @returns ActionResult with either success/result or pause info
  */
 export async function executeWithPauseDetection<T = any>(
   cdpManager: CDPManager,
   action: () => Promise<T>,
   actionName: string,
-  timeout: number = 30000
+  timeout: number = 5000
 ): Promise<ActionResult<T>> {
   // Pre-check: If already paused, return immediately
   if (cdpManager.isPaused()) {
