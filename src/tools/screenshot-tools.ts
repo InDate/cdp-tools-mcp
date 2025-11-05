@@ -7,13 +7,13 @@ import { PuppeteerManager } from '../puppeteer-manager.js';
 export function createScreenshotTools(puppeteerManager: PuppeteerManager) {
   return {
     takeScreenshot: {
-      description: 'Take a screenshot of the full page',
+      description: 'Take a screenshot of the full page. Low quality (10) by default to save tokens. For high-quality specific regions, use clip parameter. For screenshot analysis without token cost, use Task agent to capture and describe the screenshot.',
       inputSchema: {
         type: 'object',
         properties: {
           fullPage: {
             type: 'boolean',
-            description: 'Capture full page including scrollable area (default: false for viewport only)',
+            description: 'Capture full page including scrollable area (default: true)',
           },
           type: {
             type: 'string',
@@ -22,7 +22,18 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager) {
           },
           quality: {
             type: 'number',
-            description: 'Image quality 0-100 (only for jpeg, default: 30 for smaller size)',
+            description: 'Image quality 0-100 (only for jpeg, default: 10 to save tokens, use 30+ with clip for quality)',
+          },
+          clip: {
+            type: 'object',
+            description: 'Capture specific region at higher quality (coordinates in pixels)',
+            properties: {
+              x: { type: 'number', description: 'X coordinate' },
+              y: { type: 'number', description: 'Y coordinate' },
+              width: { type: 'number', description: 'Width in pixels' },
+              height: { type: 'number', description: 'Height in pixels' },
+            },
+            required: ['x', 'y', 'width', 'height'],
           },
         },
       },
@@ -43,12 +54,13 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager) {
         const page = puppeteerManager.getPage();
         const fullPage = args.fullPage === true;
         const type = args.type || 'jpeg';
-        const quality = args.quality || 30;
+        const quality = args.quality || (args.clip ? 30 : 10);
 
         const screenshot = await page.screenshot({
           fullPage,
           type: type as 'png' | 'jpeg',
           ...(type === 'jpeg' && { quality }),
+          ...(args.clip && { clip: args.clip }),
           encoding: 'base64',
         });
 
@@ -70,7 +82,7 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager) {
     },
 
     takeViewportScreenshot: {
-      description: 'Take a screenshot of the current viewport only',
+      description: 'Take a screenshot of the current viewport. Low quality (10) by default to save tokens. For high-quality specific regions, use clip parameter. For screenshot analysis without token cost, use Task agent to capture and describe the screenshot.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -81,7 +93,18 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager) {
           },
           quality: {
             type: 'number',
-            description: 'Image quality 0-100 (only for jpeg, default: 30 for smaller size)',
+            description: 'Image quality 0-100 (only for jpeg, default: 10 to save tokens, use 30+ with clip for quality)',
+          },
+          clip: {
+            type: 'object',
+            description: 'Capture specific region at higher quality (coordinates in pixels)',
+            properties: {
+              x: { type: 'number', description: 'X coordinate' },
+              y: { type: 'number', description: 'Y coordinate' },
+              width: { type: 'number', description: 'Width in pixels' },
+              height: { type: 'number', description: 'Height in pixels' },
+            },
+            required: ['x', 'y', 'width', 'height'],
           },
         },
       },
@@ -101,12 +124,13 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager) {
 
         const page = puppeteerManager.getPage();
         const type = args.type || 'jpeg';
-        const quality = args.quality || 30;
+        const quality = args.quality || (args.clip ? 30 : 10);
 
         const screenshot = await page.screenshot({
           fullPage: false,
           type: type as 'png' | 'jpeg',
           ...(type === 'jpeg' && { quality }),
+          ...(args.clip && { clip: args.clip }),
           encoding: 'base64',
         });
 
@@ -127,7 +151,7 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager) {
     },
 
     takeElementScreenshot: {
-      description: 'Take a screenshot of a specific element',
+      description: 'Take a screenshot of a specific element. Element screenshots are usually small enough at quality 30. For screenshot analysis without token cost, use Task agent to capture and describe the screenshot.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -142,7 +166,7 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager) {
           },
           quality: {
             type: 'number',
-            description: 'Image quality 0-100 (only for jpeg, default: 30 for smaller size)',
+            description: 'Image quality 0-100 (only for jpeg, default: 30)',
           },
         },
         required: ['selector'],
