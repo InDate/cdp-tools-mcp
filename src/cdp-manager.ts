@@ -38,6 +38,13 @@ export class CDPManager {
       Debugger.paused((params: any) => {
         this.state.paused = true;
         this.state.currentCallFrames = params.callFrames;
+
+        // Inject clickable console link when paused at breakpoint
+        if (params.callFrames && params.callFrames.length > 0) {
+          const location = params.callFrames[0].location;
+          const url = this.scriptIdToUrl.get(location.scriptId) || 'unknown';
+          this.injectConsoleLink(url, location.lineNumber, '⏸️ Paused at');
+        }
       });
 
       Debugger.resumed(() => {
@@ -264,6 +271,32 @@ export class CDPManager {
       const { Runtime } = this.client;
       const result = await Runtime.evaluate({ expression });
       return this.formatValue(result.result);
+    }
+  }
+
+  /**
+   * Inject a clickable console link in the browser
+   */
+  async injectConsoleLink(url: string, lineNumber: number, message: string): Promise<void> {
+    if (!this.state.connected) {
+      return;
+    }
+
+    const { Runtime } = this.client;
+
+    const consoleExpression = `
+      console.log(
+        '${message} %c${url}:${lineNumber}%c',
+        'color: #0066cc; text-decoration: underline; cursor: pointer; font-weight: bold',
+        '',
+        '\\n📍 Click link to open in DevTools'
+      );
+    `;
+
+    try {
+      await Runtime.evaluate({ expression: consoleExpression });
+    } catch (error) {
+      // Ignore errors if console injection fails
     }
   }
 

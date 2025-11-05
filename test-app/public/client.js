@@ -28,6 +28,11 @@ function setupEventListeners() {
   if (storageButton) {
     storageButton.addEventListener('click', handleStorage);
   }
+
+  const vaultButton = document.querySelector('.vault-button');
+  if (vaultButton) {
+    vaultButton.addEventListener('click', handleVault);
+  }
 }
 
 // Challenge 1: Network Request Bug
@@ -126,6 +131,31 @@ async function triggerRaceCondition() {
 
   console.log(`Request ${id} completed with data:`, data);
   return data;
+}
+
+// Challenge 9: Secret Vault Password (Logpoints Required)
+async function handleVault() {
+  console.log('Attempting to unlock vault...');
+
+  const userId = document.querySelector('#vault-user-id').value || 1;
+  const accessLevel = parseInt(document.querySelector('#vault-access-level').value || 1);
+
+  try {
+    const response = await fetch('/api/vault', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, accessLevel })
+    });
+
+    const data = await response.json();
+    console.log('Vault response:', data);
+
+    document.querySelector('#result').textContent =
+      `${data.message}\n\n${data.hint}\n\nTry different access levels (1-10) to see how the password changes!`;
+  } catch (error) {
+    console.error('ERROR: Failed to unlock vault', error);
+    document.querySelector('#result').textContent = 'Error: ' + error.message;
+  }
 }
 
 // Initialize on page load

@@ -118,6 +118,81 @@ app.get('/api/slow', async (req, res) => {
   res.json({ message: 'This was slow!' });
 });
 
+// Challenge 9: Secret Vault Password (Logpoints Required)
+// The password is constructed dynamically and never exists as a complete string
+app.post('/api/vault', (req, res) => {
+  const { userId, accessLevel } = req.body;
+
+  if (!userId || accessLevel === undefined) {
+    return res.status(400).json({ error: 'userId and accessLevel required' });
+  }
+
+  const password = unlockVault(userId, accessLevel);
+
+  res.json({
+    success: true,
+    message: 'Vault unlocked!',
+    hint: 'The password was constructed piece by piece. Use logpoints to observe how it was built.'
+  });
+});
+
+// Constructs vault password from security tokens
+// LOGPOINT CHALLENGE: Set logpoints to observe password construction
+function constructVaultPassword(): string {
+  const securityTokens = ['Secret', 'Passphrase', 'Alpha', 'Bravo', 'Charlie', 'Delta'];
+  let password = '';
+
+  console.log('Starting password construction...');
+
+  // Password built character by character
+  for (let i = 0; i < securityTokens.length; i++) {
+    const token = securityTokens[i];
+    const char = token.charAt(0); // LOGPOINT HERE: Log 'char' or 'password' to see construction
+    password += char;
+
+    // Intentionally not logging the complete password
+    console.log(`Processing token ${i + 1}/${securityTokens.length}...`);
+  }
+
+  return password; // Returns "SPAbCD" but never logged completely
+}
+
+// Adds access level modifier to password
+function getAccessModifier(level: number): string {
+  let modifier = '';
+
+  // LOGPOINT HERE: Log 'modifier' with condition 'level > 2'
+  if (level >= 1) {
+    modifier += '_L';
+  }
+
+  if (level >= 2) {
+    modifier += String(level);
+  }
+
+  if (level >= 5) {
+    modifier += '_ADMIN';
+  }
+
+  return modifier;
+}
+
+// Main vault unlock function
+function unlockVault(userId: number, accessLevel: number): string {
+  console.log(`User ${userId} attempting to unlock vault with level ${accessLevel}`);
+
+  const basePassword = constructVaultPassword();
+  const modifier = getAccessModifier(accessLevel);
+
+  // LOGPOINT HERE: Log 'basePassword' and 'modifier' separately
+  const finalPassword = basePassword + modifier;
+
+  // Never log the final password completely
+  console.log('Vault password generated successfully');
+
+  return finalPassword;
+}
+
 // Serve the main HTML page
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, '../public/index.html'));
@@ -129,4 +204,4 @@ app.listen(PORT, () => {
   console.log('Ready for debugging challenges!');
 });
 
-export { processItems, fetchDataWithDelay };
+export { processItems, fetchDataWithDelay, unlockVault, constructVaultPassword, getAccessModifier };

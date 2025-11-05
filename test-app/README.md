@@ -146,6 +146,51 @@ The application will start on `http://localhost:3000` with debugging enabled on 
 
 ---
 
+### Challenge 9: Secret Vault Password (Logpoints Required) 🔐
+**Symptom**: Need to find the password that unlocks the vault, but it's never logged completely
+**Location**: `src/index.ts` - `constructVaultPassword()`, `getAccessModifier()`, and `unlockVault()` functions
+**Challenge Type**: Logpoint demonstration (not a bug)
+
+**The Problem**:
+The vault password is constructed dynamically across multiple functions and iterations:
+- Base password is built character-by-character from 6 security tokens
+- Access level modifier is added based on user's access level
+- The complete password is NEVER logged or stored in a single visible place
+- Password format: Base (6 chars) + Modifier (varies by level)
+
+**Why Logpoints Required**:
+- Regular breakpoints would require stopping execution 6+ times in the loop
+- Logpoints allow non-intrusive observation of password construction
+- Can observe multiple executions with different access levels efficiently
+- Demonstrates the power of logpoints for data collection
+
+**Tools to Use**:
+- `setLogpoint(url: "file:///path/to/dist/index.js", lineNumber: 150, logMessage: "Char: {char}, Password so far: {password}")`
+  - Set inside `constructVaultPassword()` loop to observe character-by-character construction
+- `setLogpoint(url: "file:///path/to/dist/index.js", lineNumber: 162, logMessage: "Modifier: {modifier}", condition: "level >= 2")`
+  - Set in `getAccessModifier()` to see conditional modifier building
+- `setLogpoint(url: "file:///path/to/dist/index.js", lineNumber: 184, logMessage: "Base: {basePassword}, Modifier: {modifier}")`
+  - Set in `unlockVault()` to see final components before combination
+- Use browser console to collect all logpoint outputs
+- Try different access levels (1, 3, 5, 10) to see password variations
+
+**Expected Passwords**:
+- Access Level 1: `SPAbCD_L1`
+- Access Level 3: `SPAbCD_L3`
+- Access Level 5: `SPAbCD_L5_ADMIN`
+- Access Level 10: `SPAbCD_L10_ADMIN`
+
+**Learning Outcomes**:
+1. When to use logpoints vs. breakpoints
+2. How to set logpoints with expression interpolation
+3. How to use conditional logpoints
+4. Non-intrusive debugging for data collection
+5. Observing iterative construction without pausing
+
+**Solution**: Use logpoints at strategic locations to observe the password being constructed piece-by-piece, then reconstruct the complete password from console output
+
+---
+
 ## Validation Checklist
 
 - [ ] Challenge 1: Found 500 status code in network requests
@@ -156,10 +201,11 @@ The application will start on `http://localhost:3000` with debugging enabled on 
 - [ ] Challenge 6: Successfully used source maps with TypeScript
 - [ ] Challenge 7: Inspected localStorage and found key mismatch
 - [ ] Challenge 8: Found slow request using network search
+- [ ] Challenge 9: Used logpoints to discover vault password construction
 
 ## Success Criteria
 
-All challenges should be solvable using only the MCP debugger tools without:
+All 9 challenges should be solvable using only the MCP debugger tools without:
 - Reading the source code directly
 - Using browser DevTools manually
 - Guessing the solutions
