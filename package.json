@@ -1,0 +1,31 @@
+{
+  "name": "llm-cdp-debugger",
+  "version": "0.1.0",
+  "description": "MCP server for Chrome DevTools Protocol debugging with LLMs",
+  "type": "module",
+  "main": "build/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node build/index.js"
+  },
+  "keywords": [
+    "mcp",
+    "chrome-devtools-protocol",
+    "debugging",
+    "llm"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "chrome-remote-interface": "^0.33.2",
+    "puppeteer-core": "^23.10.4",
+    "source-map": "^0.7.4"
+  },
+  "devDependencies": {
+    "@types/chrome-remote-interface": "^0.31.14",
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}
