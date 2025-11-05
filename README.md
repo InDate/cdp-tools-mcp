@@ -182,6 +182,33 @@ Evaluate a JavaScript expression in the current context.
 }
 ```
 
+## Debugging with Breakpoints
+
+### Important: Click Events and Breakpoints
+
+When debugging with breakpoints, **do not use `clickElement`** as it will block waiting for JavaScript execution to complete. Instead:
+
+**Option 1: Use `dispatchClick`** (Recommended for debugging)
+```json
+{"tool": "dispatchClick", "args": {"selector": ".button"}}
+```
+This dispatches the click immediately without waiting, allowing breakpoints to pause execution.
+
+**Option 2: Use `evaluateExpression`**
+```json
+{
+  "tool": "evaluateExpression",
+  "args": {"expression": "document.querySelector('.button').click()"}
+}
+```
+
+**Workflow:**
+1. Set breakpoints FIRST
+2. Use `dispatchClick` to trigger the code
+3. Execution pauses at breakpoint
+4. Inspect variables, step through code
+5. Resume when done
+
 ## Example Debugging Workflow
 
 1. Start your Node.js app with debugging:

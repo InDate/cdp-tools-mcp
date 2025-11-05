@@ -7,7 +7,7 @@ import { PuppeteerManager } from '../puppeteer-manager.js';
 export function createInputTools(puppeteerManager: PuppeteerManager) {
   return {
     clickElement: {
-      description: 'Click an element by CSS selector',
+      description: 'Click an element by CSS selector. WARNING: If breakpoints are set, use dispatchClick instead to avoid blocking.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -18,6 +18,10 @@ export function createInputTools(puppeteerManager: PuppeteerManager) {
           clickCount: {
             type: 'number',
             description: 'Number of clicks (1 for single, 2 for double, default: 1)',
+          },
+          timeout: {
+            type: 'number',
+            description: 'Max time to wait for click to complete in ms (default: 5000)',
           },
         },
         required: ['selector'],
@@ -38,9 +42,16 @@ export function createInputTools(puppeteerManager: PuppeteerManager) {
 
         const page = puppeteerManager.getPage();
         const clickCount = args.clickCount || 1;
+        const timeout = args.timeout || 5000;
 
         try {
-          await page.click(args.selector, { clickCount });
+          // Use Promise.race to add timeout protection
+          await Promise.race([
+            page.click(args.selector, { clickCount }),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error('Click timeout - execution may be paused at breakpoint')), timeout)
+            )
+          ]);
 
           return {
             content: [
@@ -54,13 +65,97 @@ export function createInputTools(puppeteerManager: PuppeteerManager) {
               },
             ],
           };
-        } catch (error) {
+        } catch (error: any) {
+          // Check if it's a timeout error (likely due to breakpoint)
+          if (error.message && error.message.includes('timeout')) {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify({
+                    success: false,
+                    warning: 'Click timed out - execution may be paused at a breakpoint',
+                    suggestion: 'Use dispatchClick instead, or use evaluateExpression to trigger the click',
+                    selector: args.selector,
+                  }, null, 2),
+                },
+              ],
+            };
+          }
+
           return {
             content: [
               {
                 type: 'text',
                 text: JSON.stringify({
                   error: `Failed to click element: ${error}`,
+                  selector: args.selector,
+                }, null, 2),
+              },
+            ],
+          };
+        }
+      },
+    },
+
+    dispatchClick: {
+      description: 'Dispatch a click event immediately without waiting (use when debugging with breakpoints)',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          selector: {
+            type: 'string',
+            description: 'CSS selector of the element to click',
+          },
+        },
+        required: ['selector'],
+      },
+      handler: async (args: any) => {
+        if (!puppeteerManager.isConnected()) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  error: 'Not connected to browser',
+                }, null, 2),
+              },
+            ],
+          };
+        }
+
+        const page = puppeteerManager.getPage();
+
+        try {
+          // Use evaluateExpression to trigger click without waiting for completion
+          await page.evaluate((sel: string) => {
+            const element = document.querySelector(sel);
+            if (element) {
+              (element as HTMLElement).click();
+              return true;
+            }
+            return false;
+          }, args.selector);
+
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  success: true,
+                  message: `Click dispatched on ${args.selector} (not waiting for completion)`,
+                  note: 'Execution may now be paused at a breakpoint',
+                }, null, 2),
+              },
+            ],
+          };
+        } catch (error) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  error: `Failed to dispatch click: ${error}`,
                   selector: args.selector,
                 }, null, 2),
               },

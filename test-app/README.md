@@ -99,7 +99,15 @@ The application will start on `http://localhost:3000` with debugging enabled on 
 - `getDOMSnapshot()` to see actual elements
 - `getElementProperties(selector: "button")`
 
+**Debugging Approach**:
+1. Set breakpoint in `handleFetchUser` function
+2. Use `dispatchClick(selector: ".fetch-button")` to trigger (NOT clickElement!)
+3. If breakpoint doesn't hit, selector is wrong
+4. Use querySelector to find the correct selector
+
 **Solution**: Fix typo in selector from `buttom` to `button`
+
+**Note**: When debugging with breakpoints, always use `dispatchClick` instead of `clickElement` to avoid blocking!
 
 ---
 
