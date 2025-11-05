@@ -133,25 +133,73 @@ async function triggerRaceCondition() {
   return data;
 }
 
-// Challenge 9: Secret Vault Password (Logpoints Required)
+// Challenge 7: Secret Vault Password (Logpoints Required)
+// LOGPOINT CHALLENGE: Set logpoints in constructVaultPassword() to observe password construction
+function constructVaultPassword() {
+  const securityTokens = ['Secret', 'Passphrase', 'Alpha', 'Bravo', 'Charlie', 'Delta'];
+  let password = '';
+
+
+  for (let i = 0; i < securityTokens.length; i++) {
+    const token = securityTokens[i];
+    const char = token.charAt(0); // Get first character of each token
+    password += char;
+  }
+
+  return password;
+}
+
+// Adds access level modifier to password
+function getAccessModifier(level) {
+  let modifier = '';
+
+  if (level >= 1) {
+    modifier += '_L';
+  }
+
+  if (level >= 2) {
+    modifier += String(level);
+  }
+
+  if (level >= 5) {
+    modifier += '_ADMIN';
+  }
+
+  return modifier;
+}
+
 async function handleVault() {
   console.log('Attempting to unlock vault...');
 
   const userId = document.querySelector('#vault-user-id').value || 1;
   const accessLevel = parseInt(document.querySelector('#vault-access-level').value || 1);
 
+  console.log(`User ${userId} attempting to unlock vault with level ${accessLevel}`);
+
+  const basePassword = constructVaultPassword();
+  const modifier = getAccessModifier(accessLevel);
+
+  const finalPassword = basePassword + modifier;
+
+  console.log('Vault password generated successfully');
+
   try {
     const response = await fetch('/api/vault', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId, accessLevel })
+      body: JSON.stringify({ userId, accessLevel, password: finalPassword })
     });
 
     const data = await response.json();
     console.log('Vault response:', data);
 
-    document.querySelector('#result').textContent =
-      `${data.message}\n\n${data.hint}\n\nTry different access levels (1-10) to see how the password changes!`;
+    if (data.success) {
+      document.querySelector('#result').textContent =
+        `✅ ${data.message}\n\nPassword: ${data.password}\n\n${data.hint}`;
+    } else {
+      document.querySelector('#result').textContent =
+        `❌ ${data.message}`;
+    }
   } catch (error) {
     console.error('ERROR: Failed to unlock vault', error);
     document.querySelector('#result').textContent = 'Error: ' + error.message;

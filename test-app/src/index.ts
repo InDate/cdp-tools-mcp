@@ -118,22 +118,34 @@ app.get('/api/slow', async (req, res) => {
   res.json({ message: 'This was slow!' });
 });
 
-// Challenge 9: Secret Vault Password (Logpoints Required)
-// The password is constructed dynamically and never exists as a complete string
+// Challenge 7: Secret Vault Password (Logpoints Required)
+// Server validates the password constructed client-side
 app.post('/api/vault', (req, res) => {
-  const { userId, accessLevel } = req.body;
+  const { userId, accessLevel, password } = req.body;
 
-  if (!userId || accessLevel === undefined) {
-    return res.status(400).json({ error: 'userId and accessLevel required' });
+  if (!userId || accessLevel === undefined || !password) {
+    return res.status(400).json({ error: 'userId, accessLevel, and password required' });
   }
 
-  const password = unlockVault(userId, accessLevel);
+  console.log(`Validating vault unlock for user ${userId} with access level ${accessLevel}`);
 
-  res.json({
-    success: true,
-    message: 'Vault unlocked!',
-    hint: 'The password was constructed piece by piece. Use logpoints to observe how it was built.'
-  });
+  // Construct the expected password server-side to validate
+  const expectedPassword = unlockVault(userId, accessLevel);
+
+  if (password === expectedPassword) {
+    res.json({
+      success: true,
+      message: 'Vault unlocked successfully!',
+      password: password,
+      hint: 'The password was constructed piece by piece on the client. Use logpoints in constructVaultPassword() to observe how it was built character by character!'
+    });
+  } else {
+    res.json({
+      success: false,
+      message: 'Incorrect password! The vault remains locked.',
+      hint: 'Use logpoints to debug the password construction in the client code.'
+    });
+  }
 });
 
 // Constructs vault password from security tokens

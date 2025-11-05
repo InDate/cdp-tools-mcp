@@ -95,20 +95,62 @@ app.get('/api/slow', async (req, res) => {
     console.log('Slow operation completed');
     res.json({ message: 'This was slow!' });
 });
-// Challenge 9: Secret Vault Password (Logpoints Required)
-// The password is constructed dynamically and never exists as a complete string
-app.post('/api/vault', (req, res) => {
+// Challenge 9: Secret Vault Password (Network Monitoring Required)
+// The password is constructed dynamically and streamed in chunks
+app.post('/api/vault', async (req, res) => {
     const { userId, accessLevel } = req.body;
     if (!userId || accessLevel === undefined) {
         return res.status(400).json({ error: 'userId and accessLevel required' });
     }
-    const password = unlockVault(userId, accessLevel);
-    res.json({
-        success: true,
-        message: 'Vault unlocked!',
-        hint: 'The password was constructed piece by piece. Use logpoints to observe how it was built.'
-    });
+    // Set headers for streaming
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    // Stream password construction
+    await streamVaultUnlock(res, userId, accessLevel);
+    res.end();
 });
+// Stream vault unlock process - password built piece by piece
+async function streamVaultUnlock(res, userId, accessLevel) {
+    const securityTokens = ['Secret', 'Passphrase', 'Alpha', 'Bravo', 'Charlie', 'Delta'];
+    let password = '';
+    // Send initial message
+    res.write(`data: ${JSON.stringify({ type: 'start', message: `User ${userId} unlocking vault with level ${accessLevel}` })}\n\n`);
+    await sleep(100);
+    // Build password character by character, streaming each step
+    for (let i = 0; i < securityTokens.length; i++) {
+        const token = securityTokens[i];
+        const char = token.charAt(0);
+        password += char;
+        // Stream the character being added
+        res.write(`data: ${JSON.stringify({
+            type: 'char',
+            index: i,
+            token: token,
+            char: char,
+            passwordSoFar: password
+        })}\n\n`);
+        await sleep(50);
+    }
+    // Add access level modifier
+    const modifier = getAccessModifier(accessLevel);
+    const finalPassword = password + modifier;
+    res.write(`data: ${JSON.stringify({
+        type: 'modifier',
+        modifier: modifier,
+        basePassword: password
+    })}\n\n`);
+    await sleep(100);
+    // Send completion (without revealing final password)
+    res.write(`data: ${JSON.stringify({
+        type: 'complete',
+        message: 'Vault unlocked!',
+        hint: 'The password was streamed piece by piece. Check network request details to see each character.'
+    })}\n\n`);
+}
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
 // Constructs vault password from security tokens
 // LOGPOINT CHALLENGE: Set logpoints to observe password construction
 function constructVaultPassword() {
