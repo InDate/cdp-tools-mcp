@@ -288,8 +288,6 @@ export class CDPManager {
       console.log(
         '${message} %c${url}:${lineNumber}%c',
         'color: #0066cc; text-decoration: underline; cursor: pointer; font-weight: bold',
-        '',
-        '\\n📍 Click link to open in DevTools'
       );
     `;
 
