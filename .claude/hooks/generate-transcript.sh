@@ -46,54 +46,66 @@ MAIN_TRANSCRIPT="$TRANSCRIPT_DIR/${SESSION_ID}.md"
 if [[ ! -f "$MAIN_TRANSCRIPT" ]]; then
     cat > "$MAIN_TRANSCRIPT" << EOF
 # Claude Code Session
-**Session ID**: \`$SESSION_ID\`
-**Started**: $(date '+%Y-%m-%d %H:%M:%S')
-**Working Directory**: \`$CWD\`
-**Search Pattern**:
+
+**Session ID**: \`$SESSION_ID\`<br>
+**Started**: $(date '+%Y-%m-%d %H:%M:%S')<br>
+**Working Directory**: \`$CWD\`<br>
 
 ---
 
 EOF
 fi
 
-# Extract the search pattern from the frontmatter
-SEARCH_PATTERN=""
-if [[ -f "$MAIN_TRANSCRIPT" ]]; then
-    SEARCH_PATTERN=$(grep -m 1 '^\*\*Search Pattern\*\*: ' "$MAIN_TRANSCRIPT" | sed 's/^\*\*Search Pattern\*\*: //' || echo "")
-fi
+# Find the second-to-last user prompt from JSONL by reading backwards
+PREVIOUS_USER_PROMPT=""
+PREVIOUS_USER_LINE=""
 
-# Debug: Log search pattern and sample JSONL
+# Read backwards, skip first user prompt (current), get second (previous)
+USER_COUNT=0
+while IFS= read -r line; do
+    if [[ -z "$line" ]]; then
+        continue
+    fi
+
+    ENTRY_TYPE=$(echo "$line" | jq -r '.type // empty')
+
+    if [[ "$ENTRY_TYPE" == "user" ]]; then
+        USER_COUNT=$((USER_COUNT + 1))
+        if [[ $USER_COUNT -eq 2 ]]; then
+            # Found the second-to-last user prompt
+            PREVIOUS_USER_PROMPT=$(echo "$line" | jq -r '.message.content | if type == "array" then .[0].text else . end' || echo "")
+            # Skip only if null or empty (keep all valid prompts including interrupted ones)
+            if [[ -n "$PREVIOUS_USER_PROMPT" ]] && [[ "$PREVIOUS_USER_PROMPT" != "null" ]]; then
+                PREVIOUS_USER_LINE="$line"
+                break
+            fi
+            # Reset counter to keep looking for a valid second prompt
+            USER_COUNT=1
+        fi
+    fi
+done < <(tail -r "$TRANSCRIPT_PATH" 2>/dev/null || sed '1!G;h;$!d' "$TRANSCRIPT_PATH")
+
+# Debug logging
 DEBUG_LOG="$TRANSCRIPT_DIR/debug.log"
 echo "=== Debug $(date) ===" >> "$DEBUG_LOG"
 echo "USER_PROMPT: [$USER_PROMPT]" >> "$DEBUG_LOG"
-echo "Search pattern: [$SEARCH_PATTERN]" >> "$DEBUG_LOG"
-echo "First user message in JSONL:" >> "$DEBUG_LOG"
-(grep -m 1 '"type":"user"' "$TRANSCRIPT_PATH" | jq -r '.message.content | if type == "array" then .[0].text else . end' >> "$DEBUG_LOG" 2>&1) || echo "(no user messages)" >> "$DEBUG_LOG"
-echo "Last user message in JSONL:" >> "$DEBUG_LOG"
-(grep '"type":"user"' "$TRANSCRIPT_PATH" | tail -1 | jq -r '.message.content | if type == "array" then .[0].text else . end' >> "$DEBUG_LOG" 2>&1) || echo "(no user messages)" >> "$DEBUG_LOG"
+echo "Previous user prompt: [$PREVIOUS_USER_PROMPT]" >> "$DEBUG_LOG"
 
 # Create temp file for new content
 TEMP_OUTPUT=$(mktemp)
 
-# Add the current user prompt FIRST (it goes at the very top)
+# Add the current user prompt to temp output (this goes at the top)
 if [[ -n "$USER_PROMPT" ]]; then
     echo "**User:** <span style=\"color: green;\">$USER_PROMPT</span><br>" >> "$TEMP_OUTPUT"
+    echo "" >> "$TEMP_OUTPUT"
 fi
 
-# Find all messages in JSONL that come after the last user prompt in transcript
-FOUND_LAST_MATCH=false
+# Collect assistant responses to insert into old content
+ASSISTANT_RESPONSES=$(mktemp)
+WAS_INTERRUPTED=false
+
+# Now collect assistant responses after the previous user prompt
 SHOULD_COLLECT=false
-
-# If transcript is empty (no search pattern), collect everything
-if [[ -z "$SEARCH_PATTERN" ]]; then
-    SHOULD_COLLECT=true
-fi
-
-echo "About to read JSONL from: $TRANSCRIPT_PATH" >> "$DEBUG_LOG"
-echo "File exists: $(test -f "$TRANSCRIPT_PATH" && echo "yes" || echo "no")" >> "$DEBUG_LOG"
-echo "File size: $(wc -c < "$TRANSCRIPT_PATH" 2>/dev/null || echo "0")" >> "$DEBUG_LOG"
-
-# Read JSONL from beginning to find where to start collecting
 while IFS= read -r line; do
     if [[ -z "$line" ]]; then
         continue
@@ -103,28 +115,9 @@ while IFS= read -r line; do
 
     # If we haven't found our starting point yet
     if [[ "$SHOULD_COLLECT" == "false" ]]; then
-        # Look for the last user prompt using the search pattern
-        if [[ "$ENTRY_TYPE" == "user" ]]; then
-            # User content can be either a string or an array of content blocks
-            USER_TEXT=$(echo "$line" | jq -r '.message.content | if type == "array" then .[0].text else . end' || echo "")
-
-            # Check if pattern contains separator (long prompt)
-            if [[ "$SEARCH_PATTERN" == *"|||"* ]]; then
-                # Split pattern into start and end
-                PATTERN_START="${SEARCH_PATTERN%|||*}"
-                PATTERN_END="${SEARCH_PATTERN#*|||}"
-                # Match if text starts with first 50 and ends with last 50
-                if [[ "$USER_TEXT" == "$PATTERN_START"* ]] && [[ "$USER_TEXT" == *"$PATTERN_END" ]]; then
-                    # Found the previous prompt, start collecting after it
-                    SHOULD_COLLECT=true
-                fi
-            else
-                # Short prompt - exact match
-                if [[ "$USER_TEXT" == "$SEARCH_PATTERN" ]]; then
-                    # Found the previous prompt, start collecting after it
-                    SHOULD_COLLECT=true
-                fi
-            fi
+        # Check if this is the previous user prompt line
+        if [[ -n "$PREVIOUS_USER_LINE" ]] && [[ "$line" == "$PREVIOUS_USER_LINE" ]]; then
+            SHOULD_COLLECT=true
         fi
         # Don't collect this line, continue to next iteration
         continue
@@ -138,32 +131,35 @@ while IFS= read -r line; do
                 if [[ "$BLOCK_TYPE" == "text" ]]; then
                     TEXT=$(echo "$block" | jq -r '.text // empty')
                     if [[ -n "$TEXT" ]]; then
-                        echo "**Assistant:** $TEXT" >> "$TEMP_OUTPUT"
+                        echo "**Assistant:** $TEXT" >> "$ASSISTANT_RESPONSES"
+                        echo "" >> "$ASSISTANT_RESPONSES"
                     fi
                 elif [[ "$BLOCK_TYPE" == "tool_use" ]]; then
                     TOOL_NAME=$(echo "$block" | jq -r '.name // empty')
                     TOOL_USE_ID=$(echo "$block" | jq -r '.id // empty')
                     TOOL_INPUT=$(echo "$block" | jq -c '.input')
 
-                    echo "<details>" >> "$TEMP_OUTPUT"
-                    echo "<summary>🔧 <strong>$TOOL_NAME</strong></summary>" >> "$TEMP_OUTPUT"
-                    echo "" >> "$TEMP_OUTPUT"
-                    echo "**Input:**" >> "$TEMP_OUTPUT"
-                    echo '```json' >> "$TEMP_OUTPUT"
-                    echo "$TOOL_INPUT" | jq '.' >> "$TEMP_OUTPUT"
-                    echo '```' >> "$TEMP_OUTPUT"
+                    echo "<details>" >> "$ASSISTANT_RESPONSES"
+                    echo "<summary>🔧 <strong>$TOOL_NAME</strong></summary>" >> "$ASSISTANT_RESPONSES"
+                    echo "" >> "$ASSISTANT_RESPONSES"
+                    echo "**Input:**" >> "$ASSISTANT_RESPONSES"
+                    echo '```json' >> "$ASSISTANT_RESPONSES"
+                    echo "$TOOL_INPUT" | jq '.' >> "$ASSISTANT_RESPONSES"
+                    echo '```' >> "$ASSISTANT_RESPONSES"
 
                     # Find the matching tool result
                     TOOL_OUTPUT=$(grep "\"tool_use_id\":\"$TOOL_USE_ID\"" "$TRANSCRIPT_PATH" | head -1 | jq -r '.message.content[0].content // empty')
                     if [[ -n "$TOOL_OUTPUT" ]]; then
-                        echo "" >> "$TEMP_OUTPUT"
-                        echo "**Output:**" >> "$TEMP_OUTPUT"
-                        echo '```' >> "$TEMP_OUTPUT"
-                        echo "$TOOL_OUTPUT" >> "$TEMP_OUTPUT"
-                        echo '```' >> "$TEMP_OUTPUT"
+                        echo "" >> "$ASSISTANT_RESPONSES"
+                        echo "**Output:**" >> "$ASSISTANT_RESPONSES"
+                        echo '```' >> "$ASSISTANT_RESPONSES"
+                        echo "$TOOL_OUTPUT" >> "$ASSISTANT_RESPONSES"
+                        echo '```' >> "$ASSISTANT_RESPONSES"
                     fi
 
-                    echo "</details>" >> "$TEMP_OUTPUT"
+                    echo "</details>" >> "$ASSISTANT_RESPONSES"
+                    echo "<br>" >> "$ASSISTANT_RESPONSES"
+                    echo "" >> "$ASSISTANT_RESPONSES"
                 fi
             done
         fi
@@ -180,41 +176,47 @@ echo "---" >> "$DEBUG_LOG"
 
 # Prepend new content to the top of the file (after header)
 if [[ -s "$TEMP_OUTPUT" ]]; then
-    # Create search pattern: first 50 chars ||| last 50 chars
-    # This uniquely identifies the prompt even if it's very long
-    PROMPT_LEN=${#USER_PROMPT}
-    if [[ $PROMPT_LEN -le 100 ]]; then
-        NEW_SEARCH_PATTERN="$USER_PROMPT"
-    else
-        FIRST_50="${USER_PROMPT:0:50}"
-        LAST_50="${USER_PROMPT: -50}"
-        NEW_SEARCH_PATTERN="${FIRST_50}|||${LAST_50}"
-    fi
-
-    cat > "$MAIN_TRANSCRIPT.tmp" << EOF
-# Claude Code Session
-**Session ID**: \`$SESSION_ID\`
-**Started**: $(grep -m 1 '^\*\*Started\*\*:' "$MAIN_TRANSCRIPT" | sed 's/^\*\*Started\*\*: //')
-**Working Directory**: \`$CWD\`
-**Search Pattern**: $NEW_SEARCH_PATTERN
-
----
-
-EOF
+    # Create temp file starting with existing header (first 8 lines)
+    head -8 "$MAIN_TRANSCRIPT" > "$MAIN_TRANSCRIPT.tmp"
 
     # Add new content
     cat "$TEMP_OUTPUT" >> "$MAIN_TRANSCRIPT.tmp"
 
     # Read existing content (everything after the old header and separator)
-    # Header is now 7 lines (title + 4 fields + blank + separator)
+    # Header is 8 lines (title + blank + 3 fields + blank + separator + blank)
     EXISTING_CONTENT=""
-    if [[ $(wc -l < "$MAIN_TRANSCRIPT") -gt 7 ]]; then
-        EXISTING_CONTENT=$(tail -n +8 "$MAIN_TRANSCRIPT")
+    if [[ $(wc -l < "$MAIN_TRANSCRIPT") -gt 8 ]]; then
+        EXISTING_CONTENT=$(tail -n +9 "$MAIN_TRANSCRIPT")
     fi
 
+    # Add separator and old content with assistant responses inserted
     if [[ -n "$EXISTING_CONTENT" ]]; then
-        echo "$EXISTING_CONTENT" >> "$MAIN_TRANSCRIPT.tmp"
+        echo "---" >> "$MAIN_TRANSCRIPT.tmp"
+        echo "" >> "$MAIN_TRANSCRIPT.tmp"
+
+        # Write the previous user prompt
+        if [[ -n "$PREVIOUS_USER_PROMPT" ]]; then
+            echo "**User:** <span style=\"color: green;\">$PREVIOUS_USER_PROMPT</span><br>" >> "$MAIN_TRANSCRIPT.tmp"
+            echo "" >> "$MAIN_TRANSCRIPT.tmp"
+        fi
+
+        # Insert assistant responses
+        if [[ -s "$ASSISTANT_RESPONSES" ]]; then
+            cat "$ASSISTANT_RESPONSES" >> "$MAIN_TRANSCRIPT.tmp"
+
+            # Add interrupted indicator if this was an interrupted request
+            if [[ "$PREVIOUS_USER_PROMPT" == "[Request interrupted by user]"* ]]; then
+                echo "<span style=\"color: red;\">**[Interrupted]**</span>" >> "$MAIN_TRANSCRIPT.tmp"
+                echo "" >> "$MAIN_TRANSCRIPT.tmp"
+            fi
+        fi
+
+        # Write the rest of the old content (skip first 2 lines which is the old prompt + blank)
+        echo "$EXISTING_CONTENT" | tail -n +3 >> "$MAIN_TRANSCRIPT.tmp"
     fi
+
+    # Clean up temp file
+    rm -f "$ASSISTANT_RESPONSES"
 
     mv "$MAIN_TRANSCRIPT.tmp" "$MAIN_TRANSCRIPT"
 fi
