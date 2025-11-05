@@ -159,6 +159,8 @@ Get all variables in scope for a specific call frame.
 
 **Parameters:**
 - `callFrameId` (string): The call frame ID from getCallStack
+- `includeGlobal` (boolean, optional): Include global scope variables (default: false)
+- `filter` (string, optional): Regex pattern to filter variable names (only applies when includeGlobal is true)
 
 **Example:**
 ```json
@@ -166,6 +168,17 @@ Get all variables in scope for a specific call frame.
   "callFrameId": "frame-id-123"
 }
 ```
+
+**Example with global scope filtering:**
+```json
+{
+  "callFrameId": "frame-id-123",
+  "includeGlobal": true,
+  "filter": "^(fetch|document|window)$"
+}
+```
+
+**Note:** By default, the global scope is excluded to prevent token overflow (50K+ properties in browser environments). Use `includeGlobal: true` with a `filter` regex to access specific global variables.
 
 #### `evaluateExpression`
 Evaluate a JavaScript expression in the current context.
@@ -184,30 +197,24 @@ Evaluate a JavaScript expression in the current context.
 
 ## Debugging with Breakpoints
 
-### Important: Click Events and Breakpoints
+### Automatic Breakpoint Handling
 
-When debugging with breakpoints, **do not use `clickElement`** as it will block waiting for JavaScript execution to complete. Instead:
+All interaction and navigation tools (clickElement, typeText, navigateTo, etc.) **automatically detect and handle breakpoints**. When a breakpoint is hit during execution:
 
-**Option 1: Use `dispatchClick`** (Recommended for debugging)
-```json
-{"tool": "dispatchClick", "args": {"selector": ".button"}}
+1. The tool returns immediately with pause information
+2. You can inspect the call stack and variables
+3. Use stepOver(), stepInto(), or resume() to continue
+
+**Example Workflow:**
 ```
-This dispatches the click immediately without waiting, allowing breakpoints to pause execution.
-
-**Option 2: Use `evaluateExpression`**
-```json
-{
-  "tool": "evaluateExpression",
-  "args": {"expression": "document.querySelector('.button').click()"}
-}
+1. Set breakpoint at a function
+2. Call clickElement() to trigger the code
+3. Tool returns: { pausedAtBreakpoint: true, location: {...}, callStackDepth: 3 }
+4. Call getCallStack() to inspect execution state
+5. Call stepOver() or resume() to continue debugging
 ```
 
-**Workflow:**
-1. Set breakpoints FIRST
-2. Use `dispatchClick` to trigger the code
-3. Execution pauses at breakpoint
-4. Inspect variables, step through code
-5. Resume when done
+No special handling or alternative tools needed - it just works!
 
 ## Example Debugging Workflow
 

@@ -2,9 +2,11 @@
  * Storage Access Tools
  */
 
+import type { CDPManager } from '../cdp-manager.js';
 import { PuppeteerManager } from '../puppeteer-manager.js';
+import { executeWithPauseDetection, formatActionResult } from '../debugger-aware-wrapper.js';
 
-export function createStorageTools(puppeteerManager: PuppeteerManager) {
+export function createStorageTools(puppeteerManager: PuppeteerManager, cdpManager: CDPManager) {
   return {
     getCookies: {
       description: 'Get browser cookies',
@@ -128,7 +130,7 @@ export function createStorageTools(puppeteerManager: PuppeteerManager) {
     },
 
     getLocalStorage: {
-      description: 'Get localStorage items',
+      description: 'Get localStorage items. Automatically handles breakpoints.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -154,28 +156,32 @@ export function createStorageTools(puppeteerManager: PuppeteerManager) {
 
         const page = puppeteerManager.getPage();
 
-        const result = await page.evaluate((key: string | undefined) => {
-          if (key) {
-            return { [key]: localStorage.getItem(key) };
-          } else {
-            const items: Record<string, string | null> = {};
-            for (let i = 0; i < localStorage.length; i++) {
-              const k = localStorage.key(i);
-              if (k) {
-                items[k] = localStorage.getItem(k);
+        const result = await executeWithPauseDetection(
+          cdpManager,
+          () => page.evaluate((key: string | undefined) => {
+            if (key) {
+              return { [key]: localStorage.getItem(key) };
+            } else {
+              const items: Record<string, string | null> = {};
+              for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                if (k) {
+                  items[k] = localStorage.getItem(k);
+                }
               }
+              return items;
             }
-            return items;
-          }
-        }, args.key);
+          }, args.key),
+          'getLocalStorage'
+        );
+
+        const response = formatActionResult(result, 'getLocalStorage', { localStorage: result.result });
 
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify({
-                localStorage: result,
-              }, null, 2),
+              text: JSON.stringify(response, null, 2),
             },
           ],
         };
@@ -183,7 +189,7 @@ export function createStorageTools(puppeteerManager: PuppeteerManager) {
     },
 
     setLocalStorage: {
-      description: 'Set a localStorage item',
+      description: 'Set a localStorage item. Automatically handles breakpoints.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -214,20 +220,24 @@ export function createStorageTools(puppeteerManager: PuppeteerManager) {
 
         const page = puppeteerManager.getPage();
 
-        await page.evaluate((key: string, value: string) => {
-          localStorage.setItem(key, value);
-        }, args.key, args.value);
+        const result = await executeWithPauseDetection(
+          cdpManager,
+          () => page.evaluate((key: string, value: string) => {
+            localStorage.setItem(key, value);
+          }, args.key, args.value),
+          'setLocalStorage'
+        );
+
+        const response = formatActionResult(result, 'setLocalStorage', {
+          key: args.key,
+          value: args.value,
+        });
 
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify({
-                success: true,
-                message: `localStorage item ${args.key} set`,
-                key: args.key,
-                value: args.value,
-              }, null, 2),
+              text: JSON.stringify(response, null, 2),
             },
           ],
         };
@@ -235,7 +245,7 @@ export function createStorageTools(puppeteerManager: PuppeteerManager) {
     },
 
     clearStorage: {
-      description: 'Clear cookies and storage',
+      description: 'Clear cookies and storage. Automatically handles breakpoints.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -265,39 +275,46 @@ export function createStorageTools(puppeteerManager: PuppeteerManager) {
 
         const page = puppeteerManager.getPage();
         const types = args.types || ['cookies', 'localStorage', 'sessionStorage'];
-        const cleared: string[] = [];
 
-        if (types.includes('cookies')) {
-          const cookies = await page.cookies();
-          if (cookies.length > 0) {
-            await page.deleteCookie(...cookies);
-          }
-          cleared.push('cookies');
-        }
+        const result = await executeWithPauseDetection(
+          cdpManager,
+          async () => {
+            const cleared: string[] = [];
 
-        if (types.includes('localStorage') || types.includes('sessionStorage')) {
-          await page.evaluate((storageTypes: string[]) => {
-            if (storageTypes.includes('localStorage')) {
-              localStorage.clear();
+            if (types.includes('cookies')) {
+              const cookies = await page.cookies();
+              if (cookies.length > 0) {
+                await page.deleteCookie(...cookies);
+              }
+              cleared.push('cookies');
             }
-            if (storageTypes.includes('sessionStorage')) {
-              sessionStorage.clear();
-            }
-          }, types);
 
-          if (types.includes('localStorage')) cleared.push('localStorage');
-          if (types.includes('sessionStorage')) cleared.push('sessionStorage');
-        }
+            if (types.includes('localStorage') || types.includes('sessionStorage')) {
+              await page.evaluate((storageTypes: string[]) => {
+                if (storageTypes.includes('localStorage')) {
+                  localStorage.clear();
+                }
+                if (storageTypes.includes('sessionStorage')) {
+                  sessionStorage.clear();
+                }
+              }, types);
+
+              if (types.includes('localStorage')) cleared.push('localStorage');
+              if (types.includes('sessionStorage')) cleared.push('sessionStorage');
+            }
+
+            return { cleared };
+          },
+          'clearStorage'
+        );
+
+        const response = formatActionResult(result, 'clearStorage', result.result);
 
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify({
-                success: true,
-                message: 'Storage cleared',
-                cleared,
-              }, null, 2),
+              text: JSON.stringify(response, null, 2),
             },
           ],
         };

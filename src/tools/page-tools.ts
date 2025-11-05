@@ -2,12 +2,14 @@
  * Page Navigation Tools
  */
 
+import type { CDPManager } from '../cdp-manager.js';
 import { PuppeteerManager } from '../puppeteer-manager.js';
+import { executeWithPauseDetection, formatActionResult } from '../debugger-aware-wrapper.js';
 
-export function createPageTools(puppeteerManager: PuppeteerManager) {
+export function createPageTools(puppeteerManager: PuppeteerManager, cdpManager: CDPManager) {
   return {
     navigateTo: {
-      description: 'Navigate to a URL',
+      description: 'Navigate to a URL. Automatically handles breakpoints.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -40,18 +42,25 @@ export function createPageTools(puppeteerManager: PuppeteerManager) {
         const page = puppeteerManager.getPage();
         const waitUntil = args.waitUntil || 'load';
 
-        await page.goto(args.url, { waitUntil });
+        const result = await executeWithPauseDetection(
+          cdpManager,
+          async () => {
+            await page.goto(args.url, { waitUntil });
+            return {
+              url: page.url(),
+              title: await page.title(),
+            };
+          },
+          'navigateTo'
+        );
+
+        const response = formatActionResult(result, 'navigateTo', result.result);
 
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify({
-                success: true,
-                message: `Navigated to ${args.url}`,
-                url: page.url(),
-                title: await page.title(),
-              }, null, 2),
+              text: JSON.stringify(response, null, 2),
             },
           ],
         };
@@ -59,7 +68,7 @@ export function createPageTools(puppeteerManager: PuppeteerManager) {
     },
 
     reloadPage: {
-      description: 'Reload the current page',
+      description: 'Reload the current page. Automatically handles breakpoints.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -86,22 +95,26 @@ export function createPageTools(puppeteerManager: PuppeteerManager) {
         const page = puppeteerManager.getPage();
         const ignoreCache = args.ignoreCache || false;
 
-        await page.reload({ waitUntil: 'load' });
-        if (ignoreCache) {
-          // Force cache clear by reloading with CDP
-          const client = await page.createCDPSession();
-          await client.send('Network.clearBrowserCache');
-        }
+        const result = await executeWithPauseDetection(
+          cdpManager,
+          async () => {
+            await page.reload({ waitUntil: 'load' });
+            if (ignoreCache) {
+              const client = await page.createCDPSession();
+              await client.send('Network.clearBrowserCache');
+            }
+            return { url: page.url() };
+          },
+          'reloadPage'
+        );
+
+        const response = formatActionResult(result, 'reloadPage', result.result);
 
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify({
-                success: true,
-                message: 'Page reloaded',
-                url: page.url(),
-              }, null, 2),
+              text: JSON.stringify(response, null, 2),
             },
           ],
         };
@@ -109,7 +122,7 @@ export function createPageTools(puppeteerManager: PuppeteerManager) {
     },
 
     goBack: {
-      description: 'Navigate backward in browser history',
+      description: 'Navigate backward in browser history. Automatically handles breakpoints.',
       inputSchema: {
         type: 'object',
         properties: {},
@@ -129,17 +142,23 @@ export function createPageTools(puppeteerManager: PuppeteerManager) {
         }
 
         const page = puppeteerManager.getPage();
-        await page.goBack({ waitUntil: 'load' });
+
+        const result = await executeWithPauseDetection(
+          cdpManager,
+          async () => {
+            await page.goBack({ waitUntil: 'load' });
+            return { url: page.url() };
+          },
+          'goBack'
+        );
+
+        const response = formatActionResult(result, 'goBack', result.result);
 
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify({
-                success: true,
-                message: 'Navigated back',
-                url: page.url(),
-              }, null, 2),
+              text: JSON.stringify(response, null, 2),
             },
           ],
         };
@@ -147,7 +166,7 @@ export function createPageTools(puppeteerManager: PuppeteerManager) {
     },
 
     goForward: {
-      description: 'Navigate forward in browser history',
+      description: 'Navigate forward in browser history. Automatically handles breakpoints.',
       inputSchema: {
         type: 'object',
         properties: {},
@@ -167,17 +186,23 @@ export function createPageTools(puppeteerManager: PuppeteerManager) {
         }
 
         const page = puppeteerManager.getPage();
-        await page.goForward({ waitUntil: 'load' });
+
+        const result = await executeWithPauseDetection(
+          cdpManager,
+          async () => {
+            await page.goForward({ waitUntil: 'load' });
+            return { url: page.url() };
+          },
+          'goForward'
+        );
+
+        const response = formatActionResult(result, 'goForward', result.result);
 
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify({
-                success: true,
-                message: 'Navigated forward',
-                url: page.url(),
-              }, null, 2),
+              text: JSON.stringify(response, null, 2),
             },
           ],
         };
@@ -185,7 +210,7 @@ export function createPageTools(puppeteerManager: PuppeteerManager) {
     },
 
     getPageInfo: {
-      description: 'Get information about the current page',
+      description: 'Get information about the current page. Automatically handles breakpoints.',
       inputSchema: {
         type: 'object',
         properties: {},
@@ -205,19 +230,25 @@ export function createPageTools(puppeteerManager: PuppeteerManager) {
         }
 
         const page = puppeteerManager.getPage();
-        const url = page.url();
-        const title = await page.title();
-        const viewport = page.viewport();
+
+        const result = await executeWithPauseDetection(
+          cdpManager,
+          async () => {
+            const url = page.url();
+            const title = await page.title();
+            const viewport = page.viewport();
+            return { url, title, viewport };
+          },
+          'getPageInfo'
+        );
+
+        const response = formatActionResult(result, 'getPageInfo', result.result);
 
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify({
-                url,
-                title,
-                viewport,
-              }, null, 2),
+              text: JSON.stringify(response, null, 2),
             },
           ],
         };

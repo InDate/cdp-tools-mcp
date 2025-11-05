@@ -360,11 +360,11 @@ const allTools = {
   // Browser Automation tools
   ...createConsoleTools(puppeteerManager, consoleMonitor),
   ...createNetworkTools(puppeteerManager, networkMonitor),
-  ...createPageTools(puppeteerManager),
-  ...createDOMTools(puppeteerManager),
-  ...createScreenshotTools(puppeteerManager),
-  ...createInputTools(puppeteerManager),
-  ...createStorageTools(puppeteerManager),
+  ...createPageTools(puppeteerManager, cdpManager),
+  ...createDOMTools(puppeteerManager, cdpManager),
+  ...createScreenshotTools(puppeteerManager, cdpManager),
+  ...createInputTools(puppeteerManager, cdpManager),
+  ...createStorageTools(puppeteerManager, cdpManager),
 };
 
 // Register tool handlers

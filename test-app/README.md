@@ -16,7 +16,7 @@ The application will start on `http://localhost:3000` with debugging enabled on 
 
 1. Launch Chrome with the MCP tool:
    ```
-   launchChrome(port: 9222, url: "http://localhost:3000")
+   Solve challenges by using the debug mcp tools launchChrome(port: 9222, url: "http://localhost:3000")
    ```
 
 2. Connect the debugger:
@@ -28,25 +28,64 @@ The application will start on `http://localhost:3000` with debugging enabled on 
 
 ## Debug Challenges
 
-### Challenge 1: Network Request Bug 🌐
+### Challenge 1: DOM Manipulation Bug 🎯
+**Symptom**: "Fetch User" button doesn't respond to clicks
+**Location**: `public/client.js` - `setupEventListeners()` (line 10)
+**Bug**: Selector has typo: `.fetch-buttom` instead of `.fetch-button`
+
+**Tools to Use**:
+- `querySelector(selector: ".fetch-button")`
+- `querySelector(selector: ".fetch-buttom")`
+- `getDOMSnapshot()` to see actual elements
+- `getElementProperties(selector: "button")`
+- `listConsoleLogs()` to see the error message
+
+**Debugging Approach**:
+1. Try clicking the "Fetch User" button - nothing happens
+2. Check console logs for errors → see "ERROR: Fetch button not found!"
+3. Use `querySelector('.fetch-button')` to verify the button exists in DOM
+4. Look at the client.js code to find the typo in the event listener setup
+5. Fix the typo by using `evaluateExpression` to manually attach the correct listener, or understand the bug
+
+**Solution**: The event listener is looking for `.fetch-buttom` instead of `.fetch-button`
+
+**Note**: Once you fix this (via console or by understanding it), the button will work and unlock Challenge 2!
+
+---
+
+### Challenge 2: Network Request Bug 🌐
 **Symptom**: API returns 500 error even for valid requests
 **Location**: `src/index.ts` - `/api/user/:id` endpoint
 **Bug**: Server returns status 500 instead of 200 for successful requests
 
-**Tools to Use**:
-- `searchNetworkRequests(pattern: "/api/user/.*")`
-- `getNetworkRequest(id: "network-X")`
-- Inspect response status and body
+**Prerequisites**: Challenge 1 must be solved first so the button works!
 
-**Solution**: Change `res.status(500)` to `res.status(200)` in line 27
+**Tools to Use**:
+- `enableNetworkMonitoring()` to capture requests
+- Click the "Fetch User" button (now working after Challenge 1!)
+- `listNetworkRequests()` or `searchNetworkRequests(pattern: "/api/user/.*")`
+- `getNetworkRequest(id: "network-X")` to inspect details
+- Set breakpoint in `handleFetchUser()` to inspect the response object
+- Check `response.status` and `response.ok` values
+
+**Debugging Approach**:
+1. Enable network monitoring
+2. Click "Fetch User" button
+3. See request to `/api/user/1` returns status 500
+4. Notice the UI still shows user data (bug!)
+5. Set breakpoint in `handleFetchUser` function
+6. Inspect `response` object → see `status: 500, ok: false`
+7. Step through code → see it doesn't check `response.ok`
+
+**Solution**: Client code doesn't check `response.ok` before processing JSON, so treats 500 errors as success
 
 ---
 
-### Challenge 2: Console Error Tracking 📋
-**Symptom**: Multiple error messages scattered in console
-**Location**: `src/index.ts` - `/api/data` endpoint
-**Bug**: Console has ERROR messages that need to be found
+### Challenge 3 & 4: Console Errors & Variable Inspection 📋🐛
+**Symptom**: Multiple error messages in console + array processing accesses undefined element
+**Location**: `src/index.ts` - `/api/data` endpoint and `processItems()` function
 
+**Challenge 3 - Console Error Tracking**:
 **Tools to Use**:
 - `searchConsoleLogs(pattern: "ERROR", flags: "i")`
 - `listConsoleLogs(type: "error")`
@@ -54,9 +93,7 @@ The application will start on `http://localhost:3000` with debugging enabled on 
 
 **Solution**: Use search to find all error messages and their locations
 
----
-
-### Challenge 3: Variable Inspection Bug (Off-by-one) 🐛
+**Challenge 4 - Variable Inspection (Off-by-one)**:
 **Symptom**: Array processing accesses undefined element
 **Location**: `src/index.ts` - `processItems()` function (line 59)
 **Bug**: Loop condition `i <= items.length` should be `i < items.length`
@@ -72,60 +109,7 @@ The application will start on `http://localhost:3000` with debugging enabled on 
 
 ---
 
-### Challenge 4: Async Race Condition ⚡
-**Symptom**: Shared counter behaves unexpectedly with concurrent requests
-**Location**: `src/index.ts` - `fetchDataWithDelay()` function
-**Bug**: `sharedCounter` modified during async operation
-
-**Tools to Use**:
-- `setBreakpoint` at line 80 (before await)
-- `setBreakpoint` at line 85 (after await)
-- `getVariables` to inspect `localCounter` vs `sharedCounter`
-- `evaluateExpression(expression: "sharedCounter")`
-- Make multiple requests and step through to see the race
-
-**Solution**: Each request should have isolated state, not shared counter
-
----
-
-### Challenge 5: DOM Manipulation Bug 🎯
-**Symptom**: "Fetch User" button doesn't respond to clicks
-**Location**: `public/client.js` - `setupEventListeners()` (line 10)
-**Bug**: Selector has typo: `.fetch-buttom` instead of `.fetch-button`
-
-**Tools to Use**:
-- `querySelector(selector: ".fetch-button")`
-- `querySelector(selector: ".fetch-buttom")`
-- `getDOMSnapshot()` to see actual elements
-- `getElementProperties(selector: "button")`
-
-**Debugging Approach**:
-1. Set breakpoint in `handleFetchUser` function
-2. Use `dispatchClick(selector: ".fetch-button")` to trigger (NOT clickElement!)
-3. If breakpoint doesn't hit, selector is wrong
-4. Use querySelector to find the correct selector
-
-**Solution**: Fix typo in selector from `buttom` to `button`
-
-**Note**: When debugging with breakpoints, always use `dispatchClick` instead of `clickElement` to avoid blocking!
-
----
-
-### Challenge 6: TypeScript Source Map Test 🗺️
-**Symptom**: Need to debug TypeScript source, not compiled JavaScript
-**Location**: Any function in `src/index.ts`
-**Bug**: N/A - this tests source map functionality
-
-**Tools to Use**:
-- `loadSourceMaps(directory: "./dist")`
-- `setBreakpoint(url: "file:///path/to/src/index.ts", lineNumber: X)`
-- Verify breakpoint maps correctly to JavaScript
-
-**Solution**: Confirm source maps work and breakpoints can be set in `.ts` files
-
----
-
-### Challenge 7: localStorage Bug 💾
+### Challenge 5: localStorage Bug 💾
 **Symptom**: Data stored but can't be retrieved
 **Location**: `public/client.js` - `handleStorage()` (line 90)
 **Bug**: Storing with key `usr_data` but retrieving with key `user_data`
@@ -140,7 +124,7 @@ The application will start on `http://localhost:3000` with debugging enabled on 
 
 ---
 
-### Challenge 8: Performance Issue 🐌
+### Challenge 6: Performance Issue 🐌
 **Symptom**: Slow network request taking over 3 seconds
 **Location**: `src/index.ts` - `/api/slow` endpoint
 **Bug**: Artificial delay of 3000ms
@@ -154,7 +138,7 @@ The application will start on `http://localhost:3000` with debugging enabled on 
 
 ---
 
-### Challenge 9: Secret Vault Password (Logpoints Required) 🔐
+### Challenge 7: Secret Vault Password (Logpoints Required) 🔐
 **Symptom**: Need to find the password that unlocks the vault, but it's never logged completely
 **Location**: `src/index.ts` - `constructVaultPassword()`, `getAccessModifier()`, and `unlockVault()` functions
 **Challenge Type**: Logpoint demonstration (not a bug)
@@ -201,21 +185,21 @@ The vault password is constructed dynamically across multiple functions and iter
 
 ## Validation Checklist
 
-- [ ] Challenge 1: Found 500 status code in network requests
-- [ ] Challenge 2: Searched and found all ERROR messages
-- [ ] Challenge 3: Set breakpoint, inspected variables, found off-by-one
-- [ ] Challenge 4: Observed race condition with multiple requests
-- [ ] Challenge 5: Found DOM selector typo using querySelector
-- [ ] Challenge 6: Successfully used source maps with TypeScript
-- [ ] Challenge 7: Inspected localStorage and found key mismatch
-- [ ] Challenge 8: Found slow request using network search
-- [ ] Challenge 9: Used logpoints to discover vault password construction
+- [ ] Challenge 1: Found DOM selector typo using querySelector and console logs
+- [ ] Challenge 2: Found 500 status code in network requests using runtime debugging
+- [ ] Challenge 3: Searched and found all ERROR messages in console
+- [ ] Challenge 4: Set breakpoint, inspected variables, found off-by-one bug
+- [ ] Challenge 5: Inspected localStorage and found key mismatch
+- [ ] Challenge 6: Found slow request using network search
+- [ ] Challenge 7: Used logpoints to discover vault password construction
 
 ## Success Criteria
 
-All 9 challenges should be solvable using only the MCP debugger tools without:
+All 7 challenges should be solvable using only the MCP debugger tools without:
 - Reading the source code directly
 - Using browser DevTools manually
 - Guessing the solutions
 
 The debugger should provide all necessary information to identify and understand each bug.
+
+**Challenge Flow**: Challenges 1 and 2 are sequential - Challenge 1 (DOM bug) must be solved before Challenge 2 (network bug) can be properly tested, as they share the same button.

@@ -15,6 +15,7 @@ export class CDPManager {
   };
   private scriptIdToUrl: Map<string, string> = new Map();
   private urlToScriptId: Map<string, string> = new Map();
+  private pauseResolvers: Array<() => void> = [];
 
   /**
    * Connect to a Chrome or Node.js debugger instance
@@ -38,6 +39,10 @@ export class CDPManager {
       Debugger.paused((params: any) => {
         this.state.paused = true;
         this.state.currentCallFrames = params.callFrames;
+
+        // Resolve all pending pause promises
+        const resolvers = this.pauseResolvers.splice(0);
+        resolvers.forEach(resolve => resolve());
 
         // Inject clickable console link when paused at breakpoint
         if (params.callFrames && params.callFrames.length > 0) {
@@ -215,7 +220,7 @@ export class CDPManager {
   /**
    * Get variables for a specific call frame
    */
-  async getVariables(callFrameId: string): Promise<any[]> {
+  async getVariables(callFrameId: string, includeGlobal: boolean = false, filter?: string): Promise<any[]> {
     if (!this.state.connected) {
       throw new Error('Not connected to debugger');
     }
@@ -230,15 +235,31 @@ export class CDPManager {
     }
 
     const variables: any[] = [];
+    const filterRegex = filter ? new RegExp(filter, 'i') : null;
 
     // Get variables from each scope
     for (const scope of callFrame.scopeChain) {
+      // Skip global scope unless explicitly requested
+      if (scope.type === 'global' && !includeGlobal) {
+        continue;
+      }
+
       const properties = await Runtime.getProperties({
         objectId: scope.object.objectId,
         ownProperties: true,
       });
 
       for (const prop of properties.result) {
+        // Skip properties without values
+        if (!prop.value) {
+          continue;
+        }
+
+        // Apply filter if provided (only for global scope)
+        if (scope.type === 'global' && filterRegex && !filterRegex.test(prop.name)) {
+          continue;
+        }
+
         variables.push({
           name: prop.name,
           value: this.formatValue(prop.value),
@@ -296,6 +317,57 @@ export class CDPManager {
     } catch (error) {
       // Ignore errors if console injection fails
     }
+  }
+
+  /**
+   * Get detailed information about current pause state
+   */
+  getPausedInfo(): { paused: boolean; location?: any; callStack?: CallFrame[] } {
+    if (!this.state.paused) {
+      return { paused: false };
+    }
+
+    const callStack = this.getCallStack();
+    const location = callStack && callStack.length > 0 ? {
+      url: callStack[0].url,
+      lineNumber: callStack[0].location.lineNumber,
+      columnNumber: callStack[0].location.columnNumber,
+      functionName: callStack[0].functionName,
+    } : undefined;
+
+    return {
+      paused: true,
+      location,
+      callStack,
+    };
+  }
+
+  /**
+   * Wait for debugger to pause (for race detection)
+   * Returns a promise that resolves when debugger pauses, or rejects on timeout
+   */
+  waitForPause(timeoutMs: number = 30000): Promise<void> {
+    if (this.state.paused) {
+      return Promise.resolve();
+    }
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        // Remove resolver from list
+        const index = this.pauseResolvers.indexOf(resolve);
+        if (index > -1) {
+          this.pauseResolvers.splice(index, 1);
+        }
+        reject(new Error('Timeout waiting for pause'));
+      }, timeoutMs);
+
+      const wrappedResolve = () => {
+        clearTimeout(timeout);
+        resolve();
+      };
+
+      this.pauseResolvers.push(wrappedResolve);
+    });
   }
 
   /**

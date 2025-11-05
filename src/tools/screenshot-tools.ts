@@ -2,9 +2,11 @@
  * Screenshot Tools
  */
 
+import type { CDPManager } from '../cdp-manager.js';
 import { PuppeteerManager } from '../puppeteer-manager.js';
+import { executeWithPauseDetection, formatActionResult } from '../debugger-aware-wrapper.js';
 
-export function createScreenshotTools(puppeteerManager: PuppeteerManager) {
+export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpManager: CDPManager) {
   return {
     takeScreenshot: {
       description: 'Take a screenshot of the full page. Low quality (10) by default to save tokens. For high-quality specific regions, use clip parameter. For screenshot analysis without token cost, use Task agent to capture and describe the screenshot.',
@@ -151,7 +153,7 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager) {
     },
 
     takeElementScreenshot: {
-      description: 'Take a screenshot of a specific element. Element screenshots are usually small enough at quality 30. For screenshot analysis without token cost, use Task agent to capture and describe the screenshot.',
+      description: 'Take a screenshot of a specific element. Automatically handles breakpoints.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -186,41 +188,40 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager) {
         }
 
         const page = puppeteerManager.getPage();
-        const element = await page.$(args.selector);
-
-        if (!element) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  error: `Element not found: ${args.selector}`,
-                }, null, 2),
-              },
-            ],
-          };
-        }
-
         const type = args.type || 'jpeg';
         const quality = args.quality || 30;
 
-        const screenshot = await element.screenshot({
-          type: type as 'png' | 'jpeg',
-          ...(type === 'jpeg' && { quality }),
-          encoding: 'base64',
-        });
+        const result = await executeWithPauseDetection(
+          cdpManager,
+          async () => {
+            const element = await page.$(args.selector);
+
+            if (!element) {
+              return { error: `Element not found: ${args.selector}` };
+            }
+
+            const screenshot = await element.screenshot({
+              type: type as 'png' | 'jpeg',
+              ...(type === 'jpeg' && { quality }),
+              encoding: 'base64',
+            });
+
+            return {
+              type,
+              selector: args.selector,
+              data: `data:image/${type};base64,${screenshot}`,
+            };
+          },
+          'takeElementScreenshot'
+        );
+
+        const response = formatActionResult(result, 'takeElementScreenshot', result.result);
 
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify({
-                success: true,
-                message: `Screenshot of element ${args.selector} captured`,
-                type,
-                selector: args.selector,
-                data: `data:image/${type};base64,${screenshot}`,
-              }, null, 2),
+              text: JSON.stringify(response, null, 2),
             },
           ],
         };

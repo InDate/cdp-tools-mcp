@@ -72,14 +72,22 @@ export function createInspectionTools(cdpManager: CDPManager, sourceMapHandler: 
             type: 'string',
             description: 'The call frame ID (get this from getCallStack)',
           },
+          includeGlobal: {
+            type: 'boolean',
+            description: 'Include global scope variables (default: false, set true to enable filtering global)',
+          },
+          filter: {
+            type: 'string',
+            description: 'Regex pattern to filter variable names (only applies when includeGlobal is true)',
+          },
         },
         required: ['callFrameId'],
       },
       handler: async (args: any) => {
-        const { callFrameId } = args;
+        const { callFrameId, includeGlobal = false, filter } = args;
 
         try {
-          const variables = await cdpManager.getVariables(callFrameId);
+          const variables = await cdpManager.getVariables(callFrameId, includeGlobal, filter);
 
           // Group variables by scope type
           const groupedVariables: Record<string, any[]> = {};
@@ -102,6 +110,8 @@ export function createInspectionTools(cdpManager: CDPManager, sourceMapHandler: 
                 text: JSON.stringify({
                   variables: groupedVariables,
                   totalCount: variables.length,
+                  includeGlobal,
+                  filter: filter || 'none',
                 }, null, 2),
               },
             ],
