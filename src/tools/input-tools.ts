@@ -129,9 +129,10 @@ export function createInputTools(puppeteerManager: PuppeteerManager) {
         try {
           // Use evaluateExpression to trigger click without waiting for completion
           await page.evaluate((sel: string) => {
-            const element = document.querySelector(sel);
+            const doc: any = (typeof (globalThis as any).document !== 'undefined') ? (globalThis as any).document : undefined;
+            const element = doc?.querySelector(sel);
             if (element) {
-              (element as HTMLElement).click();
+              element.click();
               return true;
             }
             return false;
