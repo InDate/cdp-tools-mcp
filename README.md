@@ -4,11 +4,21 @@ An MCP (Model Context Protocol) server that enables LLMs to debug applications u
 
 ## Features
 
-- **Breakpoint Management**: Set, remove, and list breakpoints
+### Core Debugging
+- **Breakpoint Management**: Set, remove, and list breakpoints (including logpoints)
 - **Execution Control**: Pause, resume, step over/into/out
 - **Variable Inspection**: Examine call stacks, variables, and scopes
-- **Source Map Support**: Debug TypeScript code with automatic mapping
+- **Source Map Support**: Debug TypeScript code with automatic source map detection
 - **Universal**: Works with both Chrome browsers and Node.js applications
+- **Multi-Connection Support**: Debug Chrome and Node.js simultaneously with connection management
+
+### Browser Automation (Chrome only)
+- **Page Navigation**: Navigate, reload, go back/forward
+- **DOM Inspection**: Query elements, get properties, take screenshots
+- **User Interaction**: Click, type, hover, press keys
+- **Console Monitoring**: Track console messages with deep object serialization
+- **Network Monitoring**: Capture and inspect HTTP requests/responses
+- **Storage Access**: Inspect and modify localStorage, sessionStorage, cookies
 
 ## Installation
 
@@ -70,7 +80,7 @@ Launch Chrome with debugging enabled automatically.
 - `pid`: Process ID of the Chrome instance
 
 #### `connectDebugger`
-Connect to a Chrome or Node.js debugger instance.
+Connect to a Chrome or Node.js debugger instance. Automatically detects runtime type and enables appropriate features.
 
 **Parameters:**
 - `host` (string, optional): Debugger host (default: "localhost")
@@ -84,8 +94,27 @@ Connect to a Chrome or Node.js debugger instance.
 }
 ```
 
+**Returns:**
+- `connectionId`: Unique identifier for this connection
+- `runtimeType`: `"chrome"`, `"node"`, or `"unknown"`
+- `features`: Array of available features for this runtime
+  - Chrome: `["debugging", "browser-automation", "console-monitoring", "network-monitoring"]`
+  - Node.js: `["debugging"]`
+
+**Chrome-Specific Behavior:**
+When connecting to Chrome (port 9222):
+- Console monitoring is automatically enabled
+- The current page is automatically reloaded (unless it's a blank page)
+- This ensures all page load console logs are captured immediately
+- You can start using `listConsoleLogs()` right away without any additional setup
+
+**Note:** You can connect to multiple debuggers simultaneously. The first connection becomes the active connection. Use `listConnections()` and `switchConnection()` to manage multiple connections.
+
 #### `disconnectDebugger`
-Disconnect from the debugger.
+Disconnect from a debugger connection.
+
+**Parameters:**
+- `connectionId` (string, optional): Specific connection to disconnect (defaults to active connection)
 
 #### `loadSourceMaps`
 Load source maps from a directory (for TypeScript debugging).
@@ -102,6 +131,82 @@ Load source maps from a directory (for TypeScript debugging).
 
 #### `getDebuggerStatus`
 Get current debugger connection status, including breakpoint count and loaded source maps.
+
+**Parameters:**
+- `connectionId` (string, optional): Specific connection to check (defaults to active connection)
+
+**Returns:**
+- `connectionId`: The connection identifier
+- `connected`: Whether the connection is active
+- `runtimeType`: `"chrome"`, `"node"`, or `"unknown"`
+- `paused`: Whether execution is currently paused
+- `breakpoints`: Number of active regular breakpoints
+- `logpoints`: Number of active logpoints
+- `totalBreakpoints`: Total number of breakpoints (including logpoints)
+- `sourceMapCount`: Number of loaded source maps
+- `consoleMonitoring`: `"active"` or `"inactive"`
+- `networkMonitoring`: `"active"` or `"inactive"`
+- `totalConnections`: Total number of active connections
+
+#### `listConnections`
+List all active debugger connections.
+
+**Returns:**
+Array of connections, each containing:
+- `id`: Connection identifier
+- `type`: Runtime type (`"chrome"`, `"node"`, or `"unknown"`)
+- `host`: Connection host
+- `port`: Connection port
+- `active`: Whether this is the active connection
+- `connected`: Connection status
+- `paused`: Whether execution is paused
+- `createdAt`: ISO timestamp of connection creation
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "totalConnections": 2,
+  "activeConnectionId": "conn-1",
+  "connections": [
+    {
+      "id": "conn-1",
+      "type": "chrome",
+      "host": "localhost",
+      "port": 9222,
+      "active": true,
+      "connected": true,
+      "paused": false,
+      "createdAt": "2025-01-05T12:00:00.000Z"
+    },
+    {
+      "id": "conn-2",
+      "type": "node",
+      "host": "localhost",
+      "port": 9229,
+      "active": false,
+      "connected": true,
+      "paused": true,
+      "createdAt": "2025-01-05T12:01:00.000Z"
+    }
+  ]
+}
+```
+
+#### `switchConnection`
+Switch the active debugger connection.
+
+**Parameters:**
+- `connectionId` (string, required): Connection ID to switch to
+
+**Example:**
+```json
+{
+  "connectionId": "conn-2"
+}
+```
+
+**Note:** All debugging tools operate on the active connection by default. However, you can target a specific connection by passing an optional `connectionId` parameter to any tool.
 
 ### Breakpoint Management
 
@@ -161,6 +266,8 @@ Get all variables in scope for a specific call frame.
 - `callFrameId` (string): The call frame ID from getCallStack
 - `includeGlobal` (boolean, optional): Include global scope variables (default: false)
 - `filter` (string, optional): Regex pattern to filter variable names (only applies when includeGlobal is true)
+- `expandObjects` (boolean, optional): **NEW!** Expand object/array contents to show actual values instead of just type descriptions (default: true)
+- `maxDepth` (number, optional): **NEW!** Maximum depth for object/array expansion (default: 2, prevents infinite recursion)
 
 **Example:**
 ```json
@@ -178,7 +285,18 @@ Get all variables in scope for a specific call frame.
 }
 ```
 
+**Example with object expansion:**
+```json
+{
+  "callFrameId": "frame-id-123",
+  "expandObjects": true,
+  "maxDepth": 3
+}
+```
+
 **Note:** By default, the global scope is excluded to prevent token overflow (50K+ properties in browser environments). Use `includeGlobal: true` with a `filter` regex to access specific global variables.
+
+**What's New:** Variables are now expanded by default! Instead of seeing `Array(3)` or `Object`, you'll see the actual contents: `["apple", "banana", "orange"]` or `{ name: "John", age: 30 }`. Use `expandObjects: false` to revert to type descriptions only.
 
 #### `evaluateExpression`
 Evaluate a JavaScript expression in the current context.
@@ -186,6 +304,8 @@ Evaluate a JavaScript expression in the current context.
 **Parameters:**
 - `expression` (string): JavaScript expression to evaluate
 - `callFrameId` (string, optional): Specific frame context
+- `expandObjects` (boolean, optional): **NEW!** Expand object/array contents in the result (default: true)
+- `maxDepth` (number, optional): **NEW!** Maximum depth for object/array expansion (default: 2)
 
 **Example:**
 ```json
@@ -194,6 +314,52 @@ Evaluate a JavaScript expression in the current context.
   "callFrameId": "frame-id-123"
 }
 ```
+
+**Example with object expansion:**
+```json
+{
+  "expression": "userData",
+  "callFrameId": "frame-id-123",
+  "expandObjects": true,
+  "maxDepth": 3
+}
+```
+
+#### `getSourceCode` **NEW!**
+Get source code from a file at a specific line range. Useful for viewing code at breakpoint locations without reading files separately.
+
+**Parameters:**
+- `url` (string): The file URL or path (e.g., `file:///path/to/file.js` or `http://localhost:3000/app.js`)
+- `startLine` (number, optional): Starting line number (1-based). If not provided, returns entire file.
+- `endLine` (number, optional): Ending line number (1-based). If not provided with startLine, returns 10 lines.
+
+**Example - Get specific line range:**
+```json
+{
+  "url": "http://localhost:3000/app.js",
+  "startLine": 100,
+  "endLine": 120
+}
+```
+
+**Example - Get 10 lines from line 50:**
+```json
+{
+  "url": "http://localhost:3000/app.js",
+  "startLine": 50
+}
+```
+
+**Response includes:**
+- Formatted code with line numbers
+- Total lines in file
+- Whether source map is available
+
+**Benefits:**
+- No need to read files separately from the debugger
+- Shows actual source at breakpoint locations
+- Automatically detects source maps
+- Perfect for understanding context around paused execution
 
 ## Debugging with Breakpoints
 
@@ -215,6 +381,421 @@ All interaction and navigation tools (clickElement, typeText, navigateTo, etc.) 
 ```
 
 No special handling or alternative tools needed - it just works!
+
+### Conditional Breakpoints
+
+Set breakpoints that only pause when a specific condition is true, reducing interruptions during debugging.
+
+**How to Use:**
+```json
+{
+  "tool": "setBreakpoint",
+  "args": {
+    "url": "file:///path/to/app.js",
+    "lineNumber": 42,
+    "condition": "userId === 123"
+  }
+}
+```
+
+**Examples:**
+- `"count > 10"` - Only pause when count exceeds 10
+- `"user.role === 'admin'"` - Only pause for admin users
+- `"items.length === 0"` - Only pause when array is empty
+- `"error !== null"` - Only pause when error exists
+
+**Important Notes:**
+- Conditions are JavaScript expressions evaluated in the execution context
+- If the condition throws an error, the breakpoint will pause execution
+- Use the same expressions you'd use in Chrome DevTools conditional breakpoints
+- Logpoints are implemented as conditional breakpoints that log and return false
+
+**Common Patterns:**
+```javascript
+// Only pause on specific iteration
+"i === 5"
+
+// Only pause for specific object properties
+"user.id === 'abc123'"
+
+// Only pause when combination of conditions met
+"status === 'error' && retryCount > 3"
+
+// Only pause for debugging specific edge case
+"data === null || data === undefined"
+```
+
+### Logpoints
+
+Logpoints are special breakpoints that log messages to the console without pausing execution - perfect for adding runtime logging without modifying source code.
+
+**Basic Usage:**
+```json
+{
+  "tool": "setLogpoint",
+  "args": {
+    "url": "http://localhost:3000/app.js",
+    "lineNumber": 25,
+    "logMessage": "Processing user: {user.name} with ID: {user.id}"
+  }
+}
+```
+
+**Variable Interpolation:**
+Use `{expression}` syntax to include variable values in the log message:
+```json
+{
+  "logMessage": "Count: {count}, Total: {items.length}, Valid: {items.filter(i => i.valid).length}"
+}
+```
+
+**Conditional Logging:**
+Only log when a condition is met:
+```json
+{
+  "logMessage": "Error occurred: {error.message}",
+  "condition": "error !== null"
+}
+```
+
+**Include Call Stack:**
+```json
+{
+  "logMessage": "Function called",
+  "includeCallStack": true
+}
+```
+
+**Include Variables:**
+```json
+{
+  "logMessage": "Checkpoint",
+  "includeVariables": true
+}
+```
+
+#### `validateLogpoint` **NEW!**
+Validate a logpoint expression before setting it. Tests if the expressions in the log message can be evaluated and provides helpful feedback.
+
+**Parameters:**
+- `url` (string): The file URL or path
+- `lineNumber` (number): The line number (1-based)
+- `logMessage` (string): Message to log with `{expression}` interpolation
+
+**Example:**
+```json
+{
+  "url": "http://localhost:3000/app.js",
+  "lineNumber": 42,
+  "logMessage": "User: {user.name} with ID: {user.id}"
+}
+```
+
+**How it works:**
+1. Sets a temporary breakpoint at the specified location
+2. Waits briefly for code execution to hit that line
+3. Tests each `{expression}` in the log message
+4. Reports which expressions are valid and which failed
+5. Cleans up the temporary breakpoint
+
+**Responses:**
+- `valid: true` - All expressions evaluated successfully
+- `valid: false` - One or more expressions failed (details included)
+- `valid: 'unknown'` - Code hasn't executed yet (can't test without execution)
+
+**Best practices:**
+- Trigger the code path containing the logpoint line before validating
+- Use validateLogpoint before setLogpoint to catch scope errors early
+- Check the results to fix variable names or scope issues
+
+**Troubleshooting Logpoints:**
+- **Scope errors**: If a variable isn't in scope at the breakpoint location, the logpoint will log an error. **Use `validateLogpoint` to check expressions first!**
+- **Expression errors**: The logpoint error messages now provide helpful tips and suggest using `validateLogpoint`
+- **Timing**: Logpoints log to the **browser console**, not the terminal. Check the browser's console tab.
+- **Performance**: Logpoints that run on every iteration of a loop can impact performance.
+
+### Console & Network Monitoring
+
+Console monitoring is **automatically enabled** when connecting to Chrome and the page is **automatically reloaded** to capture initial logs. Network monitoring is opt-in.
+
+**Console Monitoring (Auto-Enabled for Chrome):**
+
+When you connect to Chrome via `connectDebugger`:
+1. Console monitoring starts automatically
+2. The page reloads to capture all initial console logs
+3. You can immediately use `listConsoleLogs()` to see captured messages
+
+No manual setup needed! Just connect and start debugging.
+
+View captured messages:
+```json
+{
+  "tool": "listConsoleLogs",
+  "args": {
+    "type": "error",  // Optional: filter by log, info, warn, error
+    "limit": 50
+  }
+}
+```
+
+Search for specific messages:
+```json
+{
+  "tool": "searchConsoleLogs",
+  "args": {
+    "pattern": "API.*failed",
+    "flags": "i"  // Case-insensitive
+  }
+}
+```
+
+**Disable console monitoring** (if needed):
+```json
+{"tool": "disableConsoleMonitoring"}
+```
+
+**Re-enable** (if disabled):
+```json
+{"tool": "enableConsoleMonitoring"}
+// Note: You may want to reload the page to capture logs after re-enabling
+```
+
+**Network Monitoring (Opt-In):**
+
+Start monitoring to capture HTTP requests:
+```json
+{"tool": "enableNetworkMonitoring"}
+```
+
+List captured requests:
+```json
+{
+  "tool": "listNetworkRequests",
+  "args": {
+    "resourceType": "xhr",  // Optional: document, stylesheet, script, xhr, fetch, etc.
+    "limit": 50
+  }
+}
+```
+
+Search for specific requests:
+```json
+{
+  "tool": "searchNetworkRequests",
+  "args": {
+    "pattern": "/api/users",
+    "method": "POST",
+    "statusCode": "200"
+  }
+}
+```
+
+**Auto-Restart on Navigation:**
+Console and network monitoring automatically restart after page navigation (reload, navigateTo, goBack, goForward). You don't need to manually re-enable monitoring after navigating.
+
+### Page Reload Timing **IMPROVED!**
+
+The `reloadPage` tool now has better control over when navigation is considered complete, preventing timing issues with sequential operations.
+
+**New Parameters:**
+- `waitUntil`: When to consider navigation complete (default: `'load'`)
+  - `'load'` - Wait for the `load` event (default, recommended)
+  - `'domcontentloaded'` - Wait for DOM to be ready
+  - `'networkidle0'` - Wait until no network connections for 500ms
+  - `'networkidle2'` - Wait until ≤2 network connections for 500ms
+- `timeout`: Maximum wait time in milliseconds (default: 30000ms / 30s)
+
+**Example - Ensure page fully loads before clicking:**
+```json
+{
+  "tool": "reloadPage",
+  "args": {
+    "waitUntil": "networkidle0"
+  }
+}
+// Then immediately:
+{
+  "tool": "clickElement",
+  "args": {
+    "selector": "#my-button"
+  }
+}
+```
+
+**Benefits:**
+- Sequential operations (reload → click) now work reliably
+- No more "element not found" errors due to timing
+- Customize wait behavior based on your needs
+- Built-in timeout protection with clear error messages
+
+**Monitoring Status:**
+Check if monitoring is active:
+```json
+{"tool": "getDebuggerStatus"}
+// Returns: { consoleMonitoring: "active", networkMonitoring: "active", ... }
+```
+
+**Best Practices:**
+- Console monitoring is auto-enabled for Chrome - no setup needed
+- Network monitoring should only be enabled when needed to minimize performance impact
+- Use search tools instead of listing all messages/requests
+- Clear console history periodically: `{"tool": "clearConsole"}`
+- Network monitoring captures all requests - filter by resourceType to reduce noise
+
+### Source Maps
+
+Debug TypeScript code using source maps with automatic detection and mapping.
+
+**Automatic Loading:**
+Source maps are automatically detected and loaded when scripts are parsed. No manual configuration needed for most projects.
+
+```json
+// Connect to Node.js/Chrome
+{"tool": "connectDebugger", "args": {"port": 9229}}
+
+// Source maps are auto-loaded from scriptParsed events
+// Set breakpoints using TypeScript file paths
+{
+  "tool": "setBreakpoint",
+  "args": {
+    "url": "file:///path/to/src/app.ts",
+    "lineNumber": 42
+  }
+}
+```
+
+**Manual Loading:**
+For projects with complex build setups, load source maps from a directory:
+```json
+{
+  "tool": "loadSourceMaps",
+  "args": {"directory": "./dist"}
+}
+```
+
+**How It Works:**
+1. When you set a breakpoint on a `.ts` file, the tool automatically maps it to the corresponding `.js` file location
+2. When execution pauses, the tool maps the `.js` location back to the `.ts` file for display
+3. Source maps are loaded from `.js.map` files adjacent to the compiled JavaScript
+
+**Check Loaded Maps:**
+```json
+{"tool": "getDebuggerStatus"}
+// Returns: { sourceMapCount: 5, ... }
+```
+
+**Troubleshooting:**
+- Ensure `.js.map` files are generated (`"sourceMap": true` in tsconfig.json)
+- Ensure source maps are in the same directory as compiled `.js` files
+- For embedded source maps, no additional configuration needed
+- Use `loadSourceMaps()` to manually load from build output directory
+
+### Call Stack Navigation
+
+When paused at a breakpoint, navigate through the call stack to understand execution flow and inspect variables at different levels.
+
+**Basic Workflow:**
+
+1. **Get the call stack:**
+```json
+{"tool": "getCallStack"}
+// Returns array of frames with callFrameId, functionName, location
+```
+
+2. **Inspect variables in a specific frame:**
+```json
+{
+  "tool": "getVariables",
+  "args": {"callFrameId": "frame-id-from-call-stack"}
+}
+```
+
+3. **Evaluate expressions in a frame context:**
+```json
+{
+  "tool": "evaluateExpression",
+  "args": {
+    "expression": "localVariable + 1",
+    "callFrameId": "frame-id-from-call-stack"
+  }
+}
+```
+
+**Example:**
+```
+Call Stack:
+  0. processPayment() - app.ts:45
+  1. handleCheckout() - app.ts:120
+  2. onClick() - app.ts:200
+
+// Inspect variables in frame 1 (handleCheckout)
+getVariables(callFrameId: "1")
+// Returns: { cart, user, total, ... }
+
+// Evaluate expression in that context
+evaluateExpression("total > 100", callFrameId: "1")
+```
+
+**Tips:**
+- Frame 0 is always the current execution point
+- Higher frame numbers are further up the call stack
+- Each frame has its own scope - variables are frame-specific
+- Use `includeGlobal: false` in getVariables() to focus on local variables
+
+### Screenshot Best Practices
+
+Screenshots are powerful for debugging UI issues, but they consume tokens. Follow these best practices to minimize token usage:
+
+**Token-Saving Strategies:**
+
+1. **Use low quality for full-page screenshots (default: 10):**
+```json
+{"tool": "takeScreenshot"}  // Uses quality 10 automatically
+```
+
+2. **Use clip parameter for high-quality specific regions:**
+```json
+{
+  "tool": "takeScreenshot",
+  "args": {
+    "clip": {"x": 100, "y": 100, "width": 400, "height": 300},
+    "quality": 30  // Higher quality for small region
+  }
+}
+```
+
+3. **Save to disk instead of returning base64:**
+```json
+{
+  "tool": "takeScreenshot",
+  "args": {
+    "saveToDisk": "/path/to/screenshot.jpg",
+    "quality": 80  // High quality since not returning via MCP
+  }
+}
+```
+
+4. **Use DOM inspection instead of screenshots when possible:**
+```json
+// Instead of screenshot, query the DOM
+{"tool": "querySelector", "args": {"selector": "#error-message"}}
+{"tool": "getDOMSnapshot", "args": {"maxDepth": 3}}
+```
+
+**When to Use Each Approach:**
+- **Quality 10 (default)**: Quick overview of full page layout
+- **Clip + Quality 30**: Debugging specific UI component
+- **saveToDisk**: Need high-quality screenshot without token cost
+- **DOM tools**: Debugging logic, visibility, content (no visual needed)
+
+**Token Estimates:**
+- Full page @ quality 10: ~1000-3000 tokens
+- Viewport @ quality 10: ~500-1500 tokens
+- Small clip @ quality 30: ~200-800 tokens
+- Large clip @ quality 80: ~2000-8000 tokens
+
+**MCP Limit:**
+The tool automatically reduces quality if a screenshot exceeds 25,000 tokens (MCP response limit). If you see quality reduction warnings, consider using `clip` or `saveToDisk`.
 
 ## Example Debugging Workflow
 
@@ -270,25 +851,110 @@ No special handling or alternative tools needed - it just works!
    {"tool": "resume"}
    ```
 
+## Multi-Connection Debugging
+
+Debug multiple applications simultaneously - perfect for full-stack development where you need to debug both frontend (Chrome) and backend (Node.js) at the same time.
+
+### How It Works
+
+1. **Connect to Multiple Debuggers:**
+   ```json
+   // Connect to Chrome browser
+   {"tool": "connectDebugger", "args": {"port": 9222}}
+   // Returns: {"connectionId": "conn-1", "runtimeType": "chrome"}
+
+   // Connect to Node.js backend
+   {"tool": "connectDebugger", "args": {"port": 9229}}
+   // Returns: {"connectionId": "conn-2", "runtimeType": "node"}
+   ```
+
+2. **View All Connections:**
+   ```json
+   {"tool": "listConnections"}
+   // Shows all active connections with their status
+   ```
+
+3. **Switch Between Connections:**
+   ```json
+   {"tool": "switchConnection", "args": {"connectionId": "conn-1"}}
+   // All subsequent tools operate on conn-1
+   ```
+
+4. **Independent Debugging State:**
+   - Each connection maintains its own breakpoints
+   - Pause/resume state is per-connection
+   - Variables and call stacks are connection-specific
+
+5. **Target Specific Connection (Advanced):**
+   ```json
+   // Most tools accept optional connectionId parameter
+   {"tool": "getDebuggerStatus", "args": {"connectionId": "conn-2"}}
+   ```
+
+### Runtime Type Detection
+
+The debugger automatically detects whether you're connected to Chrome or Node.js and enables appropriate features:
+
+**Chrome Connection (`runtimeType: "chrome"`):**
+- ✅ Debugging (breakpoints, stepping, inspection)
+- ✅ Browser automation (DOM, navigation, clicks)
+- ✅ Console monitoring (with deep object serialization)
+- ✅ Network monitoring (requests, responses)
+- ✅ Storage access (localStorage, cookies)
+- ✅ Screenshots
+
+**Node.js Connection (`runtimeType: "node"`):**
+- ✅ Debugging (breakpoints, stepping, inspection)
+- ❌ Browser automation (graceful error messages)
+
+### Best Practices
+
+- First connection automatically becomes active
+- Use `listConnections()` regularly to track active connections
+- Close unused connections to free resources: `disconnectDebugger({"connectionId": "conn-X"})`
+- Browser-only tools will return helpful errors when used on Node.js connections
+
 ## TypeScript Support
 
 The server automatically handles source maps for TypeScript debugging:
 
-1. Build your TypeScript project with source maps enabled (already configured in tsconfig.json)
-2. Load the source maps:
+1. **Automatic Source Map Detection**: When you connect to a debugger, source maps are automatically detected and loaded via the `scriptParsed` event. No manual loading required!
+
+2. **Manual Loading (Optional)**: For additional source maps or if auto-detection doesn't work:
    ```json
    {"tool": "loadSourceMaps", "args": {"directory": "./build"}}
    ```
-3. Set breakpoints using TypeScript file paths - they'll be automatically mapped to JavaScript
+
+3. **Check Loaded Maps**: Use `getDebuggerStatus()` to see `sourceMapCount`
+
+4. **Set Breakpoints**: Use TypeScript file paths - they'll be automatically mapped to JavaScript
+
+**Supported Source Map Formats:**
+- Inline data URLs (embedded in JavaScript files)
+- External .js.map files (relative or absolute paths)
+- Both browser and Node.js environments
 
 ## Architecture
 
-- **CDPManager** (`src/cdp-manager.ts`): Manages CDP connections and operations
-- **SourceMapHandler** (`src/sourcemap-handler.ts`): Handles TypeScript-to-JavaScript mapping
+- **ConnectionManager** (`src/connection-manager.ts`): Manages multiple debugger connections
+- **CDPManager** (`src/cdp-manager.ts`): Manages CDP connections and low-level operations with runtime type detection
+- **PuppeteerManager** (`src/puppeteer-manager.ts`): Handles browser automation (Chrome only)
+- **SourceMapHandler** (`src/sourcemap-handler.ts`): Handles TypeScript-to-JavaScript mapping with auto-detection
+- **ConsoleMonitor** (`src/console-monitor.ts`): Captures console messages with deep object serialization
+- **NetworkMonitor** (`src/network-monitor.ts`): Captures network requests and responses
 - **Tools** (`src/tools/`): MCP tool implementations
-  - `breakpoint-tools.ts`: Breakpoint management
-  - `execution-tools.ts`: Execution control
+  - `breakpoint-tools.ts`: Breakpoint and logpoint management
+  - `execution-tools.ts`: Execution control (pause, resume, step)
   - `inspection-tools.ts`: Variable and expression inspection
+  - `page-tools.ts`: Page navigation (Chrome only)
+  - `dom-tools.ts`: DOM inspection (Chrome only)
+  - `input-tools.ts`: User interaction simulation (Chrome only)
+  - `screenshot-tools.ts`: Screenshot capture with token optimization (Chrome only)
+  - `console-tools.ts`: Console log inspection (Chrome only)
+  - `network-tools.ts`: Network request inspection (Chrome only)
+  - `storage-tools.ts`: localStorage/cookie access (Chrome only)
+- **Error Helpers** (`src/error-helpers.ts`): Structured error responses with suggestions
+- **Debugger-Aware Wrapper** (`src/debugger-aware-wrapper.ts`): Automatic breakpoint detection for browser automation
 - **Main Server** (`src/index.ts`): MCP server initialization and coordination
 
 ## Troubleshooting
@@ -301,7 +967,8 @@ The server automatically handles source maps for TypeScript debugging:
 
 ### Breakpoints Not Working
 
-- For TypeScript, make sure source maps are loaded with `loadSourceMaps`
+- For TypeScript, source maps are auto-loaded, but verify with `getDebuggerStatus()` that `sourceMapCount > 0`
+- If auto-detection fails, manually load with `loadSourceMaps({"directory": "./dist"})`
 - Verify the file path is correct (use `file://` URLs for local files)
 - Check that the code has been loaded by the runtime before setting breakpoints
 
@@ -309,7 +976,55 @@ The server automatically handles source maps for TypeScript debugging:
 
 - Ensure your tsconfig.json has `"sourceMap": true`
 - Verify .js.map files exist alongside your .js files
-- Load source maps before setting breakpoints in TypeScript files
+- Source maps are auto-detected via `scriptParsed` events - no manual loading needed in most cases
+- Check `getDebuggerStatus()` to see if source maps were loaded
+
+### Runtime Type / Feature Availability
+
+- Check `connectDebugger` response to see `runtimeType` and available `features`
+- Browser automation tools (DOM, screenshots, etc.) only work with Chrome connections
+- Node.js connections support debugging only (breakpoints, stepping, inspection)
+- Use `listConnections()` to see all connections and their types
+
+## Limitations and Known Issues
+
+### **Runtime Separation**
+- **Chrome and Node.js run in separate processes** - You must connect to each separately
+- Setting a breakpoint on server code while connected to Chrome will fail (and vice versa)
+- For full-stack debugging, use multi-connection support:
+  ```json
+  {"tool": "connectDebugger", "args": {"port": 9222}}  // Chrome
+  {"tool": "connectDebugger", "args": {"port": 9229}}  // Node.js
+  {"tool": "listConnections"}  // See both connections
+  {"tool": "switchConnection", "args": {"connectionId": "conn-2"}}  // Switch between them
+  ```
+
+### **Variable Inspection Workflow**
+- Variables can only be inspected when **execution is paused** at a breakpoint
+- Workflow: `setBreakpoint()` → trigger code → wait for pause → `getCallStack()` → `getVariables()`
+- Logpoints (`setLogpoint`) are better for observing values without pausing
+
+### **Tool Call Efficiency**
+- Debugging workflows can require multiple sequential tool calls
+- Each challenge may need 5-10 calls: set breakpoint, trigger code, check logs, inspect network, etc.
+- Consider using logpoints for passive observation vs. breakpoints for detailed inspection
+
+### **Server-Side Observability**
+- No direct access to Node.js process stdout/stderr
+- Server logs only visible if logged to browser console via API responses
+- Use `console.log()` in Node.js code and check `listConsoleLogs()` after API calls
+
+### **Screenshot Token Costs**
+- Full-page screenshots can exceed token limits
+- Use `saveToDisk` parameter to save to file instead: `{"saveToDisk": "/path/to/screenshot.jpg"}`
+- Or use `clip` parameter to capture specific regions at higher quality
+
+### **Source Map Edge Cases**
+- Auto-detection works for most cases but may fail for:
+  - Complex build tools with unusual paths
+  - Inline source maps in minified code
+  - Source maps in non-standard locations
+- Fallback: Use `loadSourceMaps({"directory": "./dist"})` for manual loading
 
 ## Contributing
 
