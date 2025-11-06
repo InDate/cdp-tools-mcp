@@ -107,6 +107,53 @@ export class SourceMapHandler {
   }
 
   /**
+   * Load source map from URL or data URI (for auto-detection)
+   */
+  async loadSourceMapFromURL(scriptUrl: string, sourceMapURL: string): Promise<void> {
+    try {
+      // Handle inline data URLs (data:application/json;base64,...)
+      if (sourceMapURL.startsWith('data:')) {
+        const match = sourceMapURL.match(/^data:application\/json;base64,(.+)$/);
+        if (match) {
+          const base64Data = match[1];
+          const jsonData = Buffer.from(base64Data, 'base64').toString('utf-8');
+          const rawSourceMap = JSON.parse(jsonData);
+          const consumer = await new SourceMapConsumer(rawSourceMap);
+          this.sourceMaps.set(scriptUrl, consumer);
+          console.log(`Loaded inline source map for ${scriptUrl}`);
+          return;
+        }
+      }
+
+      // Handle relative URLs - convert to absolute file path
+      let mapPath: string;
+      if (sourceMapURL.startsWith('http://') || sourceMapURL.startsWith('https://')) {
+        // For HTTP URLs, extract the path component and treat as local file
+        const url = new URL(sourceMapURL);
+        mapPath = url.pathname;
+        // Try to make it relative to current working directory
+        if (mapPath.startsWith('/')) {
+          mapPath = path.join(process.cwd(), mapPath.slice(1));
+        }
+      } else {
+        // Relative path - resolve relative to the script
+        const scriptPath = scriptUrl.replace(/^https?:\/\/[^\/]+/, '');
+        const scriptDir = path.dirname(scriptPath);
+        mapPath = path.join(process.cwd(), scriptDir, sourceMapURL);
+      }
+
+      // Load the source map file
+      const mapContent = await fs.readFile(mapPath, 'utf-8');
+      const rawSourceMap = JSON.parse(mapContent);
+      const consumer = await new SourceMapConsumer(rawSourceMap);
+      this.sourceMaps.set(scriptUrl, consumer);
+      console.log(`Loaded source map for ${scriptUrl} from ${mapPath}`);
+    } catch (error) {
+      console.warn(`Could not load source map from ${sourceMapURL} for ${scriptUrl}: ${error}`);
+    }
+  }
+
+  /**
    * Preload source maps from a directory
    */
   async loadSourceMapsFromDirectory(directory: string): Promise<void> {
@@ -139,5 +186,12 @@ export class SourceMapHandler {
    */
   getLoadedSourceMaps(): string[] {
     return Array.from(this.sourceMaps.keys());
+  }
+
+  /**
+   * Check if a source map is loaded for a given file
+   */
+  hasSourceMap(file: string): boolean {
+    return this.sourceMaps.has(file);
   }
 }
