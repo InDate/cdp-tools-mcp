@@ -2,31 +2,37 @@
  * Console Monitoring Tools
  */
 
+import { z } from 'zod';
 import { PuppeteerManager } from '../puppeteer-manager.js';
 import { ConsoleMonitor } from '../console-monitor.js';
+import { createTool } from '../validation-helpers.js';
+
+// Zod schemas for console tools
+const listConsoleLogsSchema = z.object({
+  type: z.string().optional(),
+  limit: z.number().default(100),
+  offset: z.number().default(0),
+}).strict();
+
+const getConsoleLogSchema = z.object({
+  id: z.string(),
+}).strict();
+
+const searchConsoleLogsSchema = z.object({
+  pattern: z.string(),
+  type: z.string().optional(),
+  flags: z.string().default(''),
+  limit: z.number().default(50),
+}).strict();
+
+const emptySchema = z.object({}).strict();
 
 export function createConsoleTools(puppeteerManager: PuppeteerManager, consoleMonitor: ConsoleMonitor) {
   return {
-    listConsoleLogs: {
-      description: 'List console messages with optional type filtering. For searching specific text, use searchConsoleLogs instead.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          type: {
-            type: 'string',
-            description: 'Filter by message type (log, info, warn, error, debug, etc.)',
-          },
-          limit: {
-            type: 'number',
-            description: 'Maximum number of messages to return (default: 100)',
-          },
-          offset: {
-            type: 'number',
-            description: 'Offset for pagination (default: 0)',
-          },
-        },
-      },
-      handler: async (args: any) => {
+    listConsoleLogs: createTool(
+      'List console messages with optional type filtering. For searching specific text, use searchConsoleLogs instead.',
+      listConsoleLogsSchema,
+      async (args) => {
         // Start monitoring if not already active
         if (!consoleMonitor.isActive() && puppeteerManager.isConnected()) {
           const page = puppeteerManager.getPage();
@@ -35,8 +41,8 @@ export function createConsoleTools(puppeteerManager: PuppeteerManager, consoleMo
 
         const messages = consoleMonitor.getMessages({
           type: args.type,
-          limit: args.limit || 100,
-          offset: args.offset || 0,
+          limit: args.limit,
+          offset: args.offset,
         });
 
         return {
@@ -57,22 +63,13 @@ export function createConsoleTools(puppeteerManager: PuppeteerManager, consoleMo
             },
           ],
         };
-      },
-    },
+      }
+    ),
 
-    getConsoleLog: {
-      description: 'Get a specific console message by ID',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          id: {
-            type: 'string',
-            description: 'The console message ID',
-          },
-        },
-        required: ['id'],
-      },
-      handler: async (args: any) => {
+    getConsoleLog: createTool(
+      'Get a specific console message by ID',
+      getConsoleLogSchema,
+      async (args) => {
         const message = consoleMonitor.getMessage(args.id);
 
         if (!message) {
@@ -106,46 +103,22 @@ export function createConsoleTools(puppeteerManager: PuppeteerManager, consoleMo
             },
           ],
         };
-      },
-    },
+      }
+    ),
 
-    searchConsoleLogs: {
-      description: 'Search console messages using regex pattern (more efficient than listConsoleLogs for finding specific messages)',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          pattern: {
-            type: 'string',
-            description: 'Regex pattern to search in log text',
-          },
-          type: {
-            type: 'string',
-            description: 'Filter by message type (log, info, warn, error, debug, etc.)',
-          },
-          limit: {
-            type: 'number',
-            description: 'Maximum number of matching messages to return (default: 50)',
-          },
-          flags: {
-            type: 'string',
-            description: 'Regex flags (e.g., "i" for case-insensitive, default: "")',
-          },
-        },
-        required: ['pattern'],
-      },
-      handler: async (args: any) => {
+    searchConsoleLogs: createTool(
+      'Search console messages using regex pattern (more efficient than listConsoleLogs for finding specific messages)',
+      searchConsoleLogsSchema,
+      async (args) => {
         // Start monitoring if not already active
         if (!consoleMonitor.isActive() && puppeteerManager.isConnected()) {
           const page = puppeteerManager.getPage();
           consoleMonitor.startMonitoring(page);
         }
 
-        const limit = args.limit || 50;
-        const flags = args.flags || '';
-
         let regex: RegExp;
         try {
-          regex = new RegExp(args.pattern, flags);
+          regex = new RegExp(args.pattern, args.flags);
         } catch (error) {
           return {
             content: [
@@ -163,7 +136,7 @@ export function createConsoleTools(puppeteerManager: PuppeteerManager, consoleMo
         const allMessages = consoleMonitor.getMessages({ type: args.type });
         const matchingMessages = allMessages
           .filter(msg => regex.test(msg.text))
-          .slice(0, limit);
+          .slice(0, args.limit);
 
         return {
           content: [
@@ -171,7 +144,7 @@ export function createConsoleTools(puppeteerManager: PuppeteerManager, consoleMo
               type: 'text',
               text: JSON.stringify({
                 pattern: args.pattern,
-                flags,
+                flags: args.flags,
                 matches: matchingMessages.map(msg => ({
                   id: msg.id,
                   type: msg.type,
@@ -185,16 +158,13 @@ export function createConsoleTools(puppeteerManager: PuppeteerManager, consoleMo
             },
           ],
         };
-      },
-    },
+      }
+    ),
 
-    clearConsole: {
-      description: 'Clear console message history',
-      inputSchema: {
-        type: 'object',
-        properties: {},
-      },
-      handler: async () => {
+    clearConsole: createTool(
+      'Clear console message history',
+      emptySchema,
+      async () => {
         consoleMonitor.clear();
 
         return {
@@ -208,7 +178,7 @@ export function createConsoleTools(puppeteerManager: PuppeteerManager, consoleMo
             },
           ],
         };
-      },
-    },
+      }
+    ),
   };
 }

@@ -37,10 +37,12 @@ export class NetworkMonitor {
    * Start monitoring network requests on a page
    */
   startMonitoring(page: Page): void {
-    if (this.isMonitoring) {
-      return;
-    }
+    // Remove any existing listeners first to avoid duplicates
+    page.removeAllListeners('request');
+    page.removeAllListeners('response');
+    page.removeAllListeners('requestfailed');
 
+    // Attach network listeners
     page.on('request', (request: HTTPRequest) => {
       this.onRequest(request);
     });

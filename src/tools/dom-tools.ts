@@ -2,36 +2,35 @@
  * DOM Inspection Tools
  */
 
+import { z } from 'zod';
 import type { CDPManager } from '../cdp-manager.js';
 import { PuppeteerManager } from '../puppeteer-manager.js';
 import { executeWithPauseDetection, formatActionResult } from '../debugger-aware-wrapper.js';
+import { checkBrowserAutomation, formatErrorResponse } from '../error-helpers.js';
+import { createTool } from '../validation-helpers.js';
+
+// Zod schemas for DOM tools
+const querySelectorSchema = z.object({
+  selector: z.string(),
+}).strict();
+
+const getElementPropertiesSchema = z.object({
+  selector: z.string(),
+}).strict();
+
+const getDOMSnapshotSchema = z.object({
+  maxDepth: z.number().optional().default(5),
+}).strict();
 
 export function createDOMTools(puppeteerManager: PuppeteerManager, cdpManager: CDPManager) {
   return {
-    querySelector: {
-      description: 'Find an element by CSS selector. Automatically handles breakpoints.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          selector: {
-            type: 'string',
-            description: 'CSS selector to query',
-          },
-        },
-        required: ['selector'],
-      },
-      handler: async (args: any) => {
-        if (!puppeteerManager.isConnected()) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  error: 'Not connected to browser',
-                }, null, 2),
-              },
-            ],
-          };
+    querySelector: createTool(
+      'Find an element by CSS selector. Automatically handles breakpoints.',
+      querySelectorSchema,
+      async (args) => {
+        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'querySelector');
+        if (error) {
+          return formatErrorResponse(error);
         }
 
         const page = puppeteerManager.getPage();
@@ -69,33 +68,16 @@ export function createDOMTools(puppeteerManager: PuppeteerManager, cdpManager: C
             },
           ],
         };
-      },
-    },
+      }
+    ),
 
-    getElementProperties: {
-      description: 'Get detailed properties of an element. Automatically handles breakpoints.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          selector: {
-            type: 'string',
-            description: 'CSS selector to query',
-          },
-        },
-        required: ['selector'],
-      },
-      handler: async (args: any) => {
-        if (!puppeteerManager.isConnected()) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  error: 'Not connected to browser',
-                }, null, 2),
-              },
-            ],
-          };
+    getElementProperties: createTool(
+      'Get detailed properties of an element. Automatically handles breakpoints.',
+      getElementPropertiesSchema,
+      async (args) => {
+        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'getElementProperties');
+        if (error) {
+          return formatErrorResponse(error);
         }
 
         const page = puppeteerManager.getPage();
@@ -159,36 +141,19 @@ export function createDOMTools(puppeteerManager: PuppeteerManager, cdpManager: C
             },
           ],
         };
-      },
-    },
+      }
+    ),
 
-    getDOMSnapshot: {
-      description: 'Get a text-based snapshot of the DOM structure. Automatically handles breakpoints.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          maxDepth: {
-            type: 'number',
-            description: 'Maximum depth to traverse (default: 5)',
-          },
-        },
-      },
-      handler: async (args: any) => {
-        if (!puppeteerManager.isConnected()) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  error: 'Not connected to browser',
-                }, null, 2),
-              },
-            ],
-          };
+    getDOMSnapshot: createTool(
+      'Get a text-based snapshot of the DOM structure. Automatically handles breakpoints.',
+      getDOMSnapshotSchema,
+      async (args) => {
+        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'getDOMSnapshot');
+        if (error) {
+          return formatErrorResponse(error);
         }
 
         const page = puppeteerManager.getPage();
-        const maxDepth = args.maxDepth || 5;
 
         const result = await executeWithPauseDetection(
           cdpManager,
@@ -217,7 +182,7 @@ export function createDOMTools(puppeteerManager: PuppeteerManager, cdpManager: C
 
               const doc: any = (typeof (globalThis as any).document !== 'undefined') ? (globalThis as any).document : undefined;
               return getNodeInfo(doc?.body, 0);
-            }, maxDepth);
+            }, args.maxDepth);
 
             return {
               accessibilityTree: snapshot,
@@ -237,7 +202,7 @@ export function createDOMTools(puppeteerManager: PuppeteerManager, cdpManager: C
             },
           ],
         };
-      },
-    },
+      }
+    ),
   };
 }

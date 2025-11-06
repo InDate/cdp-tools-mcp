@@ -2,17 +2,19 @@
  * Execution Control Tools
  */
 
+import { z } from 'zod';
 import { CDPManager } from '../cdp-manager.js';
+import { createTool } from '../validation-helpers.js';
+
+// Empty schema for tools with no parameters
+const emptySchema = z.object({}).strict();
 
 export function createExecutionTools(cdpManager: CDPManager) {
   return {
-    pause: {
-      description: 'Pause execution of the debugged program',
-      inputSchema: {
-        type: 'object',
-        properties: {},
-      },
-      handler: async () => {
+    pause: createTool(
+      'Pause execution of the debugged program',
+      emptySchema,
+      async () => {
         await cdpManager.pause();
 
         return {
@@ -26,16 +28,13 @@ export function createExecutionTools(cdpManager: CDPManager) {
             },
           ],
         };
-      },
-    },
+      }
+    ),
 
-    resume: {
-      description: 'Resume execution of the debugged program',
-      inputSchema: {
-        type: 'object',
-        properties: {},
-      },
-      handler: async () => {
+    resume: createTool(
+      'Resume execution of the debugged program',
+      emptySchema,
+      async () => {
         await cdpManager.resume();
 
         return {
@@ -49,16 +48,13 @@ export function createExecutionTools(cdpManager: CDPManager) {
             },
           ],
         };
-      },
-    },
+      }
+    ),
 
-    stepOver: {
-      description: 'Step over to the next line (does not enter function calls)',
-      inputSchema: {
-        type: 'object',
-        properties: {},
-      },
-      handler: async () => {
+    stepOver: createTool(
+      'Step over to the next line (does not enter function calls)',
+      emptySchema,
+      async () => {
         await cdpManager.stepOver();
 
         return {
@@ -72,16 +68,13 @@ export function createExecutionTools(cdpManager: CDPManager) {
             },
           ],
         };
-      },
-    },
+      }
+    ),
 
-    stepInto: {
-      description: 'Step into the next function call',
-      inputSchema: {
-        type: 'object',
-        properties: {},
-      },
-      handler: async () => {
+    stepInto: createTool(
+      'Step into the next function call',
+      emptySchema,
+      async () => {
         await cdpManager.stepInto();
 
         return {
@@ -95,16 +88,13 @@ export function createExecutionTools(cdpManager: CDPManager) {
             },
           ],
         };
-      },
-    },
+      }
+    ),
 
-    stepOut: {
-      description: 'Step out of the current function',
-      inputSchema: {
-        type: 'object',
-        properties: {},
-      },
-      handler: async () => {
+    stepOut: createTool(
+      'Step out of the current function',
+      emptySchema,
+      async () => {
         await cdpManager.stepOut();
 
         return {
@@ -118,7 +108,7 @@ export function createExecutionTools(cdpManager: CDPManager) {
             },
           ],
         };
-      },
-    },
+      }
+    ),
   };
 }

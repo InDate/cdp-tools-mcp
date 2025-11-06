@@ -2,24 +2,47 @@
  * Storage Access Tools
  */
 
+import { z } from 'zod';
 import type { CDPManager } from '../cdp-manager.js';
 import { PuppeteerManager } from '../puppeteer-manager.js';
 import { executeWithPauseDetection, formatActionResult } from '../debugger-aware-wrapper.js';
+import { checkBrowserAutomation, formatErrorResponse } from '../error-helpers.js';
+import { createTool } from '../validation-helpers.js';
+
+// Zod schemas for storage tools
+const getCookiesSchema = z.object({
+  url: z.string().optional(),
+}).strict();
+
+const setCookieSchema = z.object({
+  name: z.string(),
+  value: z.string(),
+  domain: z.string().optional(),
+  path: z.string().optional(),
+  expires: z.number().optional(),
+  httpOnly: z.boolean().default(false),
+  secure: z.boolean().default(false),
+}).strict();
+
+const getLocalStorageSchema = z.object({
+  key: z.string().optional(),
+}).strict();
+
+const setLocalStorageSchema = z.object({
+  key: z.string(),
+  value: z.string(),
+}).strict();
+
+const clearStorageSchema = z.object({
+  types: z.array(z.enum(['cookies', 'localStorage', 'sessionStorage'])).optional(),
+}).strict();
 
 export function createStorageTools(puppeteerManager: PuppeteerManager, cdpManager: CDPManager) {
   return {
-    getCookies: {
-      description: 'Get browser cookies',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          url: {
-            type: 'string',
-            description: 'Filter cookies by URL (optional)',
-          },
-        },
-      },
-      handler: async (args: any) => {
+    getCookies: createTool(
+      'Get browser cookies',
+      getCookiesSchema,
+      async (args) => {
         if (!puppeteerManager.isConnected()) {
           return {
             content: [
@@ -34,7 +57,7 @@ export function createStorageTools(puppeteerManager: PuppeteerManager, cdpManage
         }
 
         const page = puppeteerManager.getPage();
-        const cookies = await page.cookies(args.url);
+        const cookies = args.url ? await page.cookies(args.url) : await page.cookies();
 
         return {
           content: [
@@ -47,46 +70,13 @@ export function createStorageTools(puppeteerManager: PuppeteerManager, cdpManage
             },
           ],
         };
-      },
-    },
+      }
+    ),
 
-    setCookie: {
-      description: 'Set a browser cookie',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          name: {
-            type: 'string',
-            description: 'Cookie name',
-          },
-          value: {
-            type: 'string',
-            description: 'Cookie value',
-          },
-          domain: {
-            type: 'string',
-            description: 'Cookie domain (optional)',
-          },
-          path: {
-            type: 'string',
-            description: 'Cookie path (default: /)',
-          },
-          expires: {
-            type: 'number',
-            description: 'Expiration timestamp in seconds (optional)',
-          },
-          httpOnly: {
-            type: 'boolean',
-            description: 'HTTP only flag (default: false)',
-          },
-          secure: {
-            type: 'boolean',
-            description: 'Secure flag (default: false)',
-          },
-        },
-        required: ['name', 'value'],
-      },
-      handler: async (args: any) => {
+    setCookie: createTool(
+      'Set a browser cookie',
+      setCookieSchema,
+      async (args) => {
         if (!puppeteerManager.isConnected()) {
           return {
             content: [
@@ -108,8 +98,8 @@ export function createStorageTools(puppeteerManager: PuppeteerManager, cdpManage
           domain: args.domain,
           path: args.path || '/',
           expires: args.expires,
-          httpOnly: args.httpOnly || false,
-          secure: args.secure || false,
+          httpOnly: args.httpOnly,
+          secure: args.secure,
         };
 
         await page.setCookie(cookie);
@@ -126,21 +116,13 @@ export function createStorageTools(puppeteerManager: PuppeteerManager, cdpManage
             },
           ],
         };
-      },
-    },
+      }
+    ),
 
-    getLocalStorage: {
-      description: 'Get localStorage items. Automatically handles breakpoints.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          key: {
-            type: 'string',
-            description: 'Specific key to retrieve (optional, returns all if not specified)',
-          },
-        },
-      },
-      handler: async (args: any) => {
+    getLocalStorage: createTool(
+      'Get localStorage items. Automatically handles breakpoints.',
+      getLocalStorageSchema,
+      async (args) => {
         if (!puppeteerManager.isConnected()) {
           return {
             content: [
@@ -185,26 +167,13 @@ export function createStorageTools(puppeteerManager: PuppeteerManager, cdpManage
             },
           ],
         };
-      },
-    },
+      }
+    ),
 
-    setLocalStorage: {
-      description: 'Set a localStorage item. Automatically handles breakpoints.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          key: {
-            type: 'string',
-            description: 'The key to set',
-          },
-          value: {
-            type: 'string',
-            description: 'The value to set',
-          },
-        },
-        required: ['key', 'value'],
-      },
-      handler: async (args: any) => {
+    setLocalStorage: createTool(
+      'Set a localStorage item. Automatically handles breakpoints.',
+      setLocalStorageSchema,
+      async (args) => {
         if (!puppeteerManager.isConnected()) {
           return {
             content: [
@@ -241,25 +210,13 @@ export function createStorageTools(puppeteerManager: PuppeteerManager, cdpManage
             },
           ],
         };
-      },
-    },
+      }
+    ),
 
-    clearStorage: {
-      description: 'Clear cookies and storage. Automatically handles breakpoints.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          types: {
-            type: 'array',
-            description: 'Types of storage to clear (cookies, localStorage, sessionStorage)',
-            items: {
-              type: 'string',
-              enum: ['cookies', 'localStorage', 'sessionStorage'],
-            },
-          },
-        },
-      },
-      handler: async (args: any) => {
+    clearStorage: createTool(
+      'Clear cookies and storage. Automatically handles breakpoints.',
+      clearStorageSchema,
+      async (args) => {
         if (!puppeteerManager.isConnected()) {
           return {
             content: [
@@ -318,7 +275,7 @@ export function createStorageTools(puppeteerManager: PuppeteerManager, cdpManage
             },
           ],
         };
-      },
-    },
+      }
+    ),
   };
 }

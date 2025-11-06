@@ -2,32 +2,44 @@
  * Network Analysis Tools
  */
 
+import { z } from 'zod';
 import { PuppeteerManager } from '../puppeteer-manager.js';
 import { NetworkMonitor } from '../network-monitor.js';
+import { createTool } from '../validation-helpers.js';
 import type { Page } from 'puppeteer-core';
+
+// Zod schemas for network tools
+const listNetworkRequestsSchema = z.object({
+  resourceType: z.string().optional(),
+  limit: z.number().default(100),
+  offset: z.number().default(0),
+}).strict();
+
+const getNetworkRequestSchema = z.object({
+  id: z.string(),
+}).strict();
+
+const searchNetworkRequestsSchema = z.object({
+  pattern: z.string(),
+  resourceType: z.string().optional(),
+  method: z.string().optional(),
+  statusCode: z.string().optional(),
+  flags: z.string().default(''),
+  limit: z.number().default(50),
+}).strict();
+
+const setNetworkConditionsSchema = z.object({
+  preset: z.enum(['offline', 'slow-3g', 'fast-3g', 'fast-4g', 'online']),
+}).strict();
+
+const emptySchema = z.object({}).strict();
 
 export function createNetworkTools(puppeteerManager: PuppeteerManager, networkMonitor: NetworkMonitor) {
   return {
-    listNetworkRequests: {
-      description: 'List network requests with optional resource type filtering. For searching specific URLs, use searchNetworkRequests instead.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          resourceType: {
-            type: 'string',
-            description: 'Filter by resource type (document, stylesheet, image, media, font, script, xhr, fetch, etc.)',
-          },
-          limit: {
-            type: 'number',
-            description: 'Maximum number of requests to return (default: 100)',
-          },
-          offset: {
-            type: 'number',
-            description: 'Offset for pagination (default: 0)',
-          },
-        },
-      },
-      handler: async (args: any) => {
+    listNetworkRequests: createTool(
+      'List network requests with optional resource type filtering. For searching specific URLs, use searchNetworkRequests instead.',
+      listNetworkRequestsSchema,
+      async (args) => {
         // Start monitoring if not already active
         if (!networkMonitor.isActive() && puppeteerManager.isConnected()) {
           const page = puppeteerManager.getPage();
@@ -36,8 +48,8 @@ export function createNetworkTools(puppeteerManager: PuppeteerManager, networkMo
 
         const requests = networkMonitor.getRequests({
           resourceType: args.resourceType,
-          limit: args.limit || 100,
-          offset: args.offset || 0,
+          limit: args.limit,
+          offset: args.offset,
         });
 
         return {
@@ -62,22 +74,13 @@ export function createNetworkTools(puppeteerManager: PuppeteerManager, networkMo
             },
           ],
         };
-      },
-    },
+      }
+    ),
 
-    getNetworkRequest: {
-      description: 'Get detailed information about a specific network request',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          id: {
-            type: 'string',
-            description: 'The network request ID',
-          },
-        },
-        required: ['id'],
-      },
-      handler: async (args: any) => {
+    getNetworkRequest: createTool(
+      'Get detailed information about a specific network request',
+      getNetworkRequestSchema,
+      async (args) => {
         const request = networkMonitor.getRequest(args.id);
 
         if (!request) {
@@ -114,16 +117,13 @@ export function createNetworkTools(puppeteerManager: PuppeteerManager, networkMo
             },
           ],
         };
-      },
-    },
+      }
+    ),
 
-    enableNetworkMonitoring: {
-      description: 'Start capturing network traffic',
-      inputSchema: {
-        type: 'object',
-        properties: {},
-      },
-      handler: async () => {
+    enableNetworkMonitoring: createTool(
+      'Start capturing network traffic',
+      emptySchema,
+      async () => {
         if (!puppeteerManager.isConnected()) {
           return {
             content: [
@@ -151,16 +151,13 @@ export function createNetworkTools(puppeteerManager: PuppeteerManager, networkMo
             },
           ],
         };
-      },
-    },
+      }
+    ),
 
-    disableNetworkMonitoring: {
-      description: 'Stop capturing network traffic',
-      inputSchema: {
-        type: 'object',
-        properties: {},
-      },
-      handler: async () => {
+    disableNetworkMonitoring: createTool(
+      'Stop capturing network traffic',
+      emptySchema,
+      async () => {
         if (!puppeteerManager.isConnected()) {
           return {
             content: [
@@ -188,54 +185,22 @@ export function createNetworkTools(puppeteerManager: PuppeteerManager, networkMo
             },
           ],
         };
-      },
-    },
+      }
+    ),
 
-    searchNetworkRequests: {
-      description: 'Search network requests using regex pattern (more efficient than listNetworkRequests for finding specific requests)',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          pattern: {
-            type: 'string',
-            description: 'Regex pattern to search in URL',
-          },
-          resourceType: {
-            type: 'string',
-            description: 'Filter by resource type (document, stylesheet, image, media, font, script, xhr, fetch, etc.)',
-          },
-          method: {
-            type: 'string',
-            description: 'Filter by HTTP method (GET, POST, PUT, DELETE, etc.)',
-          },
-          statusCode: {
-            type: 'string',
-            description: 'Filter by status code (e.g., "200", "4xx", "5xx")',
-          },
-          limit: {
-            type: 'number',
-            description: 'Maximum number of matching requests to return (default: 50)',
-          },
-          flags: {
-            type: 'string',
-            description: 'Regex flags (e.g., "i" for case-insensitive, default: "")',
-          },
-        },
-        required: ['pattern'],
-      },
-      handler: async (args: any) => {
+    searchNetworkRequests: createTool(
+      'Search network requests using regex pattern (more efficient than listNetworkRequests for finding specific requests)',
+      searchNetworkRequestsSchema,
+      async (args) => {
         // Start monitoring if not already active
         if (!networkMonitor.isActive() && puppeteerManager.isConnected()) {
           const page = puppeteerManager.getPage();
           networkMonitor.startMonitoring(page);
         }
 
-        const limit = args.limit || 50;
-        const flags = args.flags || '';
-
         let regex: RegExp;
         try {
-          regex = new RegExp(args.pattern, flags);
+          regex = new RegExp(args.pattern, args.flags);
         } catch (error) {
           return {
             content: [
@@ -273,7 +238,7 @@ export function createNetworkTools(puppeteerManager: PuppeteerManager, networkMo
 
             return true;
           })
-          .slice(0, limit);
+          .slice(0, args.limit);
 
         return {
           content: [
@@ -281,7 +246,7 @@ export function createNetworkTools(puppeteerManager: PuppeteerManager, networkMo
               type: 'text',
               text: JSON.stringify({
                 pattern: args.pattern,
-                flags,
+                flags: args.flags,
                 filters: {
                   resourceType: args.resourceType,
                   method: args.method,
@@ -304,23 +269,13 @@ export function createNetworkTools(puppeteerManager: PuppeteerManager, networkMo
             },
           ],
         };
-      },
-    },
+      }
+    ),
 
-    setNetworkConditions: {
-      description: 'Emulate network conditions (throttling)',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          preset: {
-            type: 'string',
-            description: 'Network preset: offline, slow-3g, fast-3g, fast-4g, online (default)',
-            enum: ['offline', 'slow-3g', 'fast-3g', 'fast-4g', 'online'],
-          },
-        },
-        required: ['preset'],
-      },
-      handler: async (args: any) => {
+    setNetworkConditions: createTool(
+      'Emulate network conditions (throttling)',
+      setNetworkConditionsSchema,
+      async (args) => {
         if (!puppeteerManager.isConnected()) {
           return {
             content: [
@@ -360,7 +315,7 @@ export function createNetworkTools(puppeteerManager: PuppeteerManager, networkMo
             },
           ],
         };
-      },
-    },
+      }
+    ),
   };
 }
