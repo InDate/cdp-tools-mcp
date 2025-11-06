@@ -2,194 +2,187 @@
  * Screenshot Tools
  */
 
+import { z } from 'zod';
 import type { CDPManager } from '../cdp-manager.js';
 import { PuppeteerManager } from '../puppeteer-manager.js';
 import { executeWithPauseDetection, formatActionResult } from '../debugger-aware-wrapper.js';
+import { checkBrowserAutomation, formatErrorResponse } from '../error-helpers.js';
+import { createTool } from '../validation-helpers.js';
+import { promises as fs } from 'fs';
+import path from 'path';
 
 export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpManager: CDPManager) {
+  /**
+   * Save screenshot buffer to disk
+   */
+  const saveScreenshotToDisk = async (buffer: Buffer, type: string, suggestedPath?: string): Promise<string> => {
+    const timestamp = Date.now();
+    const ext = type === 'png' ? 'png' : 'jpg';
+    const filename = suggestedPath || `screenshot-${timestamp}.${ext}`;
+    const filepath = path.isAbsolute(filename) ? filename : path.join(process.cwd(), filename);
+
+    await fs.writeFile(filepath, buffer);
+
+    return filepath;
+  };
+
+  // Zod schemas for screenshot tools
+  const clipSchema = z.object({
+    x: z.number(),
+    y: z.number(),
+    width: z.number(),
+    height: z.number(),
+  }).strict();
+
+  const takeScreenshotSchema = z.object({
+    fullPage: z.boolean().default(true),
+    type: z.enum(['png', 'jpeg']).default('jpeg'),
+    quality: z.number().min(0).max(100).optional(),
+    clip: clipSchema.optional(),
+    saveToDisk: z.string().optional(),
+    autoSaveThreshold: z.number().default(1).describe('Auto-save to disk if size >= this (bytes). Default: 1 byte (always saves)'),
+  }).strict();
+
+  const takeViewportScreenshotSchema = z.object({
+    type: z.enum(['png', 'jpeg']).default('jpeg'),
+    quality: z.number().min(0).max(100).optional(),
+    clip: clipSchema.optional(),
+    saveToDisk: z.string().optional(),
+    autoSaveThreshold: z.number().default(1).describe('Auto-save to disk if size >= this (bytes). Default: 1 byte (always saves)'),
+  }).strict();
+
+  const takeElementScreenshotSchema = z.object({
+    selector: z.string(),
+    type: z.enum(['png', 'jpeg']).default('jpeg'),
+    quality: z.number().min(0).max(100).optional(),
+    saveToDisk: z.string().optional(),
+    autoSaveThreshold: z.number().default(1).describe('Auto-save to disk if size >= this (bytes). Default: 1 byte (always saves)'),
+  }).strict();
+
   return {
-    takeScreenshot: {
-      description: 'Take a screenshot of the full page. Low quality (10) by default to save tokens. For high-quality specific regions, use clip parameter. For screenshot analysis without token cost, use Task agent to capture and describe the screenshot.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          fullPage: {
-            type: 'boolean',
-            description: 'Capture full page including scrollable area (default: true)',
-          },
-          type: {
-            type: 'string',
-            description: 'Image format: png or jpeg (default: jpeg)',
-            enum: ['png', 'jpeg'],
-          },
-          quality: {
-            type: 'number',
-            description: 'Image quality 0-100 (only for jpeg, default: 10 to save tokens, use 30+ with clip for quality)',
-          },
-          clip: {
-            type: 'object',
-            description: 'Capture specific region at higher quality (coordinates in pixels)',
-            properties: {
-              x: { type: 'number', description: 'X coordinate' },
-              y: { type: 'number', description: 'Y coordinate' },
-              width: { type: 'number', description: 'Width in pixels' },
-              height: { type: 'number', description: 'Height in pixels' },
-            },
-            required: ['x', 'y', 'width', 'height'],
-          },
-        },
-      },
-      handler: async (args: any) => {
-        if (!puppeteerManager.isConnected()) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  error: 'Not connected to browser',
-                }, null, 2),
-              },
-            ],
-          };
+    takeScreenshot: createTool(
+      'Take a screenshot of the full page. Automatically saves to disk (default behavior) to avoid token limits. Returns file path. Default quality is 30 for JPEG.',
+      takeScreenshotSchema,
+      async (args) => {
+        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'takeScreenshot');
+        if (error) {
+          return formatErrorResponse(error);
         }
 
         const page = puppeteerManager.getPage();
-        const fullPage = args.fullPage === true;
-        const type = args.type || 'jpeg';
-        const quality = args.quality || (args.clip ? 30 : 10);
+        const fullPage = args.fullPage;
+        const type = args.type;
+        const quality = args.quality ?? (args.clip ? 50 : 30);
 
+        // Get screenshot as Buffer (not base64 yet)
         const screenshot = await page.screenshot({
           fullPage,
           type: type as 'png' | 'jpeg',
           ...(type === 'jpeg' && { quality }),
           ...(args.clip && { clip: args.clip }),
-          encoding: 'base64',
-        });
+          optimizeForSpeed: true,
+        }) as Buffer;
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                success: true,
-                message: 'Screenshot captured',
-                type,
-                fullPage,
-                data: `data:image/${type};base64,${screenshot}`,
-              }, null, 2),
-            },
-          ],
-        };
-      },
-    },
+        // Check if we should save to disk
+        const shouldSaveToDisk = screenshot.length >= args.autoSaveThreshold || args.saveToDisk;
 
-    takeViewportScreenshot: {
-      description: 'Take a screenshot of the current viewport. Low quality (10) by default to save tokens. For high-quality specific regions, use clip parameter. For screenshot analysis without token cost, use Task agent to capture and describe the screenshot.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          type: {
-            type: 'string',
-            description: 'Image format: png or jpeg (default: jpeg)',
-            enum: ['png', 'jpeg'],
-          },
-          quality: {
-            type: 'number',
-            description: 'Image quality 0-100 (only for jpeg, default: 10 to save tokens, use 30+ with clip for quality)',
-          },
-          clip: {
-            type: 'object',
-            description: 'Capture specific region at higher quality (coordinates in pixels)',
-            properties: {
-              x: { type: 'number', description: 'X coordinate' },
-              y: { type: 'number', description: 'Y coordinate' },
-              width: { type: 'number', description: 'Width in pixels' },
-              height: { type: 'number', description: 'Height in pixels' },
-            },
-            required: ['x', 'y', 'width', 'height'],
-          },
-        },
-      },
-      handler: async (args: any) => {
-        if (!puppeteerManager.isConnected()) {
+        if (shouldSaveToDisk) {
+          const filepath = await saveScreenshotToDisk(screenshot, type, args.saveToDisk);
+          const sizeMB = (screenshot.length / 1_000_000).toFixed(2);
           return {
             content: [
               {
                 type: 'text',
-                text: JSON.stringify({
-                  error: 'Not connected to browser',
-                }, null, 2),
+                text: `Screenshot saved to ${filepath} (${sizeMB}MB, ${screenshot.length.toLocaleString()} bytes)`,
               },
             ],
           };
         }
 
-        const page = puppeteerManager.getPage();
-        const type = args.type || 'jpeg';
-        const quality = args.quality || (args.clip ? 30 : 10);
+        // Small screenshot: return as native image content
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Screenshot captured (${(screenshot.length / 1000).toFixed(1)}KB)`,
+            },
+            {
+              type: 'image',
+              data: screenshot.toString('base64'),
+              mimeType: `image/${type}`,
+            },
+          ],
+        };
+      }
+    ),
 
+    takeViewportScreenshot: createTool(
+      'Take a screenshot of the current viewport. Automatically saves to disk (default behavior) to avoid token limits. Returns file path. Default quality is 30 for JPEG.',
+      takeViewportScreenshotSchema,
+      async (args) => {
+        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'takeViewportScreenshot');
+        if (error) {
+          return formatErrorResponse(error);
+        }
+
+        const page = puppeteerManager.getPage();
+        const type = args.type;
+        const quality = args.quality ?? (args.clip ? 50 : 30);
+
+        // Get screenshot as Buffer (not base64 yet)
         const screenshot = await page.screenshot({
           fullPage: false,
           type: type as 'png' | 'jpeg',
           ...(type === 'jpeg' && { quality }),
           ...(args.clip && { clip: args.clip }),
-          encoding: 'base64',
-        });
+          optimizeForSpeed: true,
+        }) as Buffer;
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                success: true,
-                message: 'Viewport screenshot captured',
-                type,
-                data: `data:image/${type};base64,${screenshot}`,
-              }, null, 2),
-            },
-          ],
-        };
-      },
-    },
+        // Check if we should save to disk
+        const shouldSaveToDisk = screenshot.length >= args.autoSaveThreshold || args.saveToDisk;
 
-    takeElementScreenshot: {
-      description: 'Take a screenshot of a specific element. Automatically handles breakpoints.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          selector: {
-            type: 'string',
-            description: 'CSS selector of the element to screenshot',
-          },
-          type: {
-            type: 'string',
-            description: 'Image format: png or jpeg (default: jpeg)',
-            enum: ['png', 'jpeg'],
-          },
-          quality: {
-            type: 'number',
-            description: 'Image quality 0-100 (only for jpeg, default: 30)',
-          },
-        },
-        required: ['selector'],
-      },
-      handler: async (args: any) => {
-        if (!puppeteerManager.isConnected()) {
+        if (shouldSaveToDisk) {
+          const filepath = await saveScreenshotToDisk(screenshot, type, args.saveToDisk);
+          const sizeMB = (screenshot.length / 1_000_000).toFixed(2);
           return {
             content: [
               {
                 type: 'text',
-                text: JSON.stringify({
-                  error: 'Not connected to browser',
-                }, null, 2),
+                text: `Viewport screenshot saved to ${filepath} (${sizeMB}MB, ${screenshot.length.toLocaleString()} bytes)`,
               },
             ],
           };
         }
 
+        // Small screenshot: return as native image content
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Viewport screenshot captured (${(screenshot.length / 1000).toFixed(1)}KB)`,
+            },
+            {
+              type: 'image',
+              data: screenshot.toString('base64'),
+              mimeType: `image/${type}`,
+            },
+          ],
+        };
+      }
+    ),
+
+    takeElementScreenshot: createTool(
+      'Take a screenshot of a specific element. Automatically saves to disk (default behavior) to avoid token limits. Returns file path. Default quality is 50 for JPEG. Automatically handles breakpoints.',
+      takeElementScreenshotSchema,
+      async (args) => {
+        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'takeElementScreenshot');
+        if (error) {
+          return formatErrorResponse(error);
+        }
+
         const page = puppeteerManager.getPage();
-        const type = args.type || 'jpeg';
-        const quality = args.quality || 30;
+        const type = args.type;
+        const quality = args.quality ?? 50;
 
         const result = await executeWithPauseDetection(
           cdpManager,
@@ -200,22 +193,71 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
               return { error: `Element not found: ${args.selector}` };
             }
 
+            // Get screenshot as Buffer
             const screenshot = await element.screenshot({
               type: type as 'png' | 'jpeg',
               ...(type === 'jpeg' && { quality }),
-              encoding: 'base64',
-            });
+              optimizeForSpeed: true,
+            }) as Buffer;
+
+            // Check if we should save to disk
+            const shouldSaveToDisk = screenshot.length >= args.autoSaveThreshold || args.saveToDisk;
+
+            if (shouldSaveToDisk) {
+              const filepath = await saveScreenshotToDisk(screenshot, type, args.saveToDisk);
+              const sizeMB = (screenshot.length / 1_000_000).toFixed(2);
+              return {
+                selector: args.selector,
+                filepath,
+                size: `${sizeMB}MB`,
+              };
+            }
 
             return {
-              type,
               selector: args.selector,
-              data: `data:image/${type};base64,${screenshot}`,
+              type,
+              buffer: screenshot,
+              size: `${(screenshot.length / 1000).toFixed(1)}KB`,
             };
           },
           'takeElementScreenshot'
         );
 
-        const response = formatActionResult(result, 'takeElementScreenshot', result.result);
+        // Handle errors
+        if (result.result?.error) {
+          const response = formatActionResult(result, 'takeElementScreenshot', result.result);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(response, null, 2),
+              },
+            ],
+          };
+        }
+
+        // Handle disk save
+        if (result.result?.filepath) {
+          const response = formatActionResult(result, 'takeElementScreenshot', {
+            selector: result.result.selector,
+            filepath: result.result.filepath,
+            size: result.result.size,
+          });
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(response, null, 2),
+              },
+            ],
+          };
+        }
+
+        // Handle image return
+        const response = formatActionResult(result, 'takeElementScreenshot', {
+          selector: result.result?.selector,
+          size: result.result?.size,
+        });
 
         return {
           content: [
@@ -223,9 +265,14 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
               type: 'text',
               text: JSON.stringify(response, null, 2),
             },
+            {
+              type: 'image',
+              data: result.result?.buffer?.toString('base64') || '',
+              mimeType: `image/${type}`,
+            },
           ],
         };
-      },
-    },
+      }
+    ),
   };
 }
