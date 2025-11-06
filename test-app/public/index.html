@@ -70,8 +70,8 @@
   <h1>🐛 LLM-CDP Debugger Test Application</h1>
 
   <div class="challenge">
-    <strong>Welcome!</strong> This application contains 8 intentional bugs for debugging challenges.
-    Use the LLM-CDP debugger to find and fix them!
+    <strong>Welcome!</strong> This application contains 8 debugging challenges (7 bugs + 1 feature demo).
+    Use the LLM-CDP debugger to solve them all!
   </div>
 
   <div class="section">
@@ -116,6 +116,21 @@
     <label>Access Level: <input type="number" id="vault-access-level" value="3" min="1" max="10"></label>
     <button class="vault-button">Unlock Vault</button>
     <div class="hint">Hint: The password is built piece by piece. Use setLogpoint (not setBreakpoint!) to observe construction without pausing execution. Try logging 'password' or 'char' in constructVaultPassword()</div>
+  </div>
+
+  <div class="section">
+    <h2>Challenge 8: Multi-Connection Debugging 🔌</h2>
+    <p>Learn to manage multiple debugger connections simultaneously!</p>
+    <div class="hint">
+      <strong>Steps:</strong><br>
+      1. connectDebugger({ port: 9222 }) - Connect to this Chrome browser<br>
+      2. (Optional) connectDebugger({ port: 9229 }) - Connect to a Node.js app if available<br>
+      3. listConnections() - See all active connections<br>
+      4. switchConnection({ connectionId: "conn-1" }) - Switch between connections<br>
+      5. getDebuggerStatus() - Check which connection is active<br>
+      <br>
+      <strong>Note:</strong> This demonstrates runtime type detection (Chrome vs Node.js) and connection management.
+    </div>
   </div>
 
   <div class="section">

@@ -5,8 +5,8 @@
 
 // Challenge 1: DOM Manipulation Bug
 function setupEventListeners() {
-  // BUG: Typo in selector - "buttom" instead of "button"
-  const fetchButton = document.querySelector('.fetch-buttom');
+  // FIXED: Corrected typo from "buttom" to "button"
+  const fetchButton = document.querySelector('.fetch-button');
 
   if (fetchButton) {
     fetchButton.addEventListener('click', handleFetchUser);
