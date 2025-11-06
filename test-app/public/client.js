@@ -3,7 +3,7 @@
  * These bugs will be debugged using Chrome DevTools Protocol
  */
 
-// Challenge 5: DOM Manipulation Bug
+// Challenge 1: DOM Manipulation Bug
 function setupEventListeners() {
   // BUG: Typo in selector - "buttom" instead of "button"
   const fetchButton = document.querySelector('.fetch-buttom');
@@ -35,7 +35,7 @@ function setupEventListeners() {
   }
 }
 
-// Challenge 1: Network Request Bug
+// Challenge 2: Network Request Bug
 async function handleFetchUser() {
   console.log('Fetching user data...');
   const userId = document.querySelector('#user-id').value;
@@ -53,7 +53,7 @@ async function handleFetchUser() {
   }
 }
 
-// Challenge 2 & 3: Console Error + Variable Inspection
+// Challenge 3 & 4: Console Error + Variable Inspection
 async function handleProcessData() {
   console.log('Processing data...');
 
@@ -74,7 +74,7 @@ async function handleProcessData() {
   }
 }
 
-// Challenge 8: Performance Issue
+// Challenge 6: Performance Issue
 async function handleSlowRequest() {
   console.log('Starting slow request...');
   const startTime = Date.now();
@@ -93,7 +93,7 @@ async function handleSlowRequest() {
   }
 }
 
-// Challenge 7: localStorage Bug
+// Challenge 5: localStorage Bug
 function handleStorage() {
   console.log('Testing localStorage...');
 

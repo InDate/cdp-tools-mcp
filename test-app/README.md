@@ -10,21 +10,54 @@ npm run build
 npm run dev
 ```
 
-The application will start on `http://localhost:3000` with debugging enabled on port `9229`.
+The application will start on `http://localhost:3000` with **Node.js debugging enabled on port 9229**.
 
 ## Using the Debugger
 
+### For Browser Debugging (Challenges 1-7)
+
 1. Launch Chrome with the MCP tool:
    ```
-   Solve challenges by using the debug mcp tools launchChrome(port: 9222, url: "http://localhost:3000")
+   launchChrome({ port: 9222, url: "http://localhost:3000" })
    ```
 
-2. Connect the debugger:
+2. Connect to Chrome debugger:
    ```
-   connectDebugger(port: 9222)
+   connectDebugger({ port: 9222 })
    ```
 
 3. Start solving the challenges!
+
+### For Full-Stack Debugging (Challenge 8)
+
+Challenge 8 requires **both** Chrome AND Node.js connections:
+
+1. **Chrome connection** (browser/client-side):
+   ```
+   launchChrome({ port: 9222, url: "http://localhost:3000" })
+   connectDebugger({ port: 9222 })
+   // Returns: connectionId: "conn-1", runtimeType: "chrome"
+   ```
+
+2. **Node.js connection** (server-side):
+   ```
+   connectDebugger({ port: 9229 })
+   // Returns: connectionId: "conn-2", runtimeType: "node"
+   ```
+
+   Note: `npm run dev` automatically starts Node.js with `--inspect=9229` flag
+
+3. **Manage connections**:
+   ```
+   listConnections()           // See both connections
+   switchConnection({ connectionId: "conn-1" })  // Switch to Chrome
+   switchConnection({ connectionId: "conn-2" })  // Switch to Node.js
+   ```
+
+4. **Important**: Breakpoints only work on the matching runtime:
+   - Chrome connection → browser code (`public/client.js`)
+   - Node.js connection → server code (`dist/index.js`)
+   - Setting a breakpoint on server code while connected to Chrome will give a helpful error
 
 ## Debug Challenges
 
@@ -34,10 +67,10 @@ The application will start on `http://localhost:3000` with debugging enabled on 
 **Bug**: Selector has typo: `.fetch-buttom` instead of `.fetch-button`
 
 **Tools to Use**:
-- `querySelector(selector: ".fetch-button")`
-- `querySelector(selector: ".fetch-buttom")`
+- `querySelector` with selector `".fetch-button"`
+- `querySelector` with selector `".fetch-buttom"`
 - `getDOMSnapshot()` to see actual elements
-- `getElementProperties(selector: "button")`
+- `getElementProperties` with selector `"button"`
 - `listConsoleLogs()` to see the error message
 
 **Debugging Approach**:
@@ -99,11 +132,13 @@ The application will start on `http://localhost:3000` with debugging enabled on 
 **Bug**: Loop condition `i <= items.length` should be `i < items.length`
 
 **Tools to Use**:
-- `setBreakpoint(url: "file:///path/to/dist/index.js", lineNumber: 59)`
+- `setBreakpoint` with URL `"file:///path/to/dist/index.js"` and lineNumber `59`
 - `getCallStack()` when paused
-- `getVariables(callFrameId: "frame-X")`
-- `evaluateExpression(expression: "items.length")`
+- `getVariables` with callFrameId from call stack
+- `evaluateExpression` with expression `"items.length"`
 - `stepOver()` to see the bug happen
+
+**Note on Source Maps**: Source maps are now auto-detected! When you connect to the debugger, the `scriptParsed` event automatically loads source maps if available. Check `getDebuggerStatus()` to see `sourceMapCount`.
 
 **Solution**: Change loop condition from `<=` to `<`
 
@@ -116,8 +151,8 @@ The application will start on `http://localhost:3000` with debugging enabled on 
 
 **Tools to Use**:
 - `getLocalStorage()` to see all keys
-- `getLocalStorage(key: "usr_data")`
-- `getLocalStorage(key: "user_data")`
+- `getLocalStorage` with key `"usr_data"`
+- `getLocalStorage` with key `"user_data"`
 - `setLocalStorage` to fix it
 
 **Solution**: Use consistent key name for both storing and retrieving
@@ -157,13 +192,23 @@ The vault password is constructed dynamically across multiple functions and iter
 - Demonstrates the power of logpoints for data collection
 
 **Tools to Use**:
-- `setLogpoint(url: "file:///path/to/dist/index.js", lineNumber: 150, logMessage: "Char: {char}, Password so far: {password}")`
+- `setLogpoint` with:
+  - url: `"file:///path/to/dist/index.js"`
+  - lineNumber: `150`
+  - logMessage: `"Char: {char}, Password so far: {password}"`
   - Set inside `constructVaultPassword()` loop to observe character-by-character construction
-- `setLogpoint(url: "file:///path/to/dist/index.js", lineNumber: 162, logMessage: "Modifier: {modifier}", condition: "level >= 2")`
+- `setLogpoint` with:
+  - url: `"file:///path/to/dist/index.js"`
+  - lineNumber: `162`
+  - logMessage: `"Modifier: {modifier}"`
+  - condition: `"level >= 2"`
   - Set in `getAccessModifier()` to see conditional modifier building
-- `setLogpoint(url: "file:///path/to/dist/index.js", lineNumber: 184, logMessage: "Base: {basePassword}, Modifier: {modifier}")`
+- `setLogpoint` with:
+  - url: `"file:///path/to/dist/index.js"`
+  - lineNumber: `184`
+  - logMessage: `"Base: {basePassword}, Modifier: {modifier}"`
   - Set in `unlockVault()` to see final components before combination
-- Use browser console to collect all logpoint outputs
+- Use `listConsoleLogs()` to collect all logpoint outputs
 - Try different access levels (1, 3, 5, 10) to see password variations
 
 **Expected Passwords**:
@@ -183,6 +228,99 @@ The vault password is constructed dynamically across multiple functions and iter
 
 ---
 
+### Challenge 8: Multi-Connection Debugging 🔌
+
+**Scenario**: Debug multiple applications simultaneously (Chrome browser + Node.js backend)
+**Challenge Type**: Feature demonstration (not a bug)
+
+**The Learning Goal**:
+Learn how to manage multiple debugger connections at once - essential for full-stack debugging where you need to debug both frontend (browser) and backend (Node.js) simultaneously.
+
+**Prerequisites**:
+- Test app running with: `npm run dev` (server on port 3000, Node.js debugging on port 9229)
+- Chrome launched with debugging: `launchChrome({ port: 9222, url: "http://localhost:3000" })`
+
+**REQUIRED for completion**: You MUST connect to BOTH Chrome AND Node.js to complete this challenge!
+
+**Tools to Use**:
+- `connectDebugger` with port `9222` (Chrome) - REQUIRED
+- `connectDebugger` with port `9229` (Node.js) - REQUIRED
+- `listConnections()` to verify both connections - REQUIRED
+- `getDebuggerStatus()` to check current connection (includes `connectionId`)
+- `switchConnection` with connectionId to change active connection - REQUIRED
+- Try setting a breakpoint on each runtime to see the difference
+
+**Step-by-Step Approach** (ALL STEPS REQUIRED):
+1. **Connect to Chrome** first:
+   ```
+   connectDebugger({ port: 9222 })
+   ```
+   - Verify response: `connectionId: "conn-1"`, `runtimeType: "chrome"`
+   - Check features includes: `["debugging", "browser-automation", "console-monitoring", "network-monitoring"]`
+
+2. **Connect to Node.js** server:
+   ```
+   connectDebugger({ port: 9229 })
+   ```
+   - Verify response: `connectionId: "conn-2"`, `runtimeType: "node"`
+   - Check features: `["debugging"]` only (no browser automation)
+   - Note: This becomes the active connection automatically
+
+3. **List all connections**:
+   ```
+   listConnections()
+   ```
+   - MUST show 2 connections
+   - Verify one has `"type": "chrome"`, other has `"type": "node"`
+   - Check which is `"active": true`
+
+4. **Switch back to Chrome**:
+   ```
+   switchConnection({ connectionId: "conn-1" })
+   ```
+   - Verify active connection changed
+
+5. **Test runtime separation** (try setting breakpoint on server code):
+   ```
+   setBreakpoint({ url: "http://localhost:3000/dist/index.js", lineNumber: 50 })
+   ```
+   - Should get helpful error: "You are connected to Chrome but trying to set breakpoint on server code"
+   - This demonstrates you MUST switch to the Node.js connection for server breakpoints
+
+6. **Switch to Node.js and try again**:
+   ```
+   switchConnection({ connectionId: "conn-2" })
+   setBreakpoint({ url: "file:///path/to/test-app/dist/index.js", lineNumber: 50 })
+   ```
+   - Now it should work (or fail with different error if path is wrong)
+
+7. **Verify understanding** by answering:
+   - Why do I need 2 separate connections?
+   - What happens if I try to use `takeScreenshot()` while connected to Node.js?
+   - How do I check which connection is currently active?
+
+**Key Concepts**:
+- **Runtime Type Detection**: Chrome vs Node.js detected automatically
+  - Chrome connections get: debugging + browser automation + console/network monitoring
+  - Node.js connections get: debugging only (no DOM, screenshots, etc.)
+- **Active Connection**: Tools operate on active connection unless `connectionId` specified
+- **Connection Lifecycle**: Each connection has independent state (breakpoints, paused status, etc.)
+- **Graceful Degradation**: Browser-only tools return helpful errors for Node.js connections
+
+**Expected Behavior**:
+- First connection automatically becomes active
+- Switching changes which connection receives commands
+- Each connection maintains independent debugging state
+- Can set breakpoints in both environments, switch between them during execution
+
+**Learning Outcomes**:
+1. How to debug frontend and backend simultaneously
+2. Understanding runtime type detection and feature availability
+3. Managing multiple debugger connections efficiently
+4. When to use `connectionId` parameter vs active connection
+
+---
+
 ## Validation Checklist
 
 - [ ] Challenge 1: Found DOM selector typo using querySelector and console logs
@@ -192,10 +330,11 @@ The vault password is constructed dynamically across multiple functions and iter
 - [ ] Challenge 5: Inspected localStorage and found key mismatch
 - [ ] Challenge 6: Found slow request using network search
 - [ ] Challenge 7: Used logpoints to discover vault password construction
+- [ ] Challenge 8: Connected to BOTH Chrome AND Node.js, used listConnections(), switched between connections, and tested runtime separation
 
 ## Success Criteria
 
-All 7 challenges should be solvable using only the MCP debugger tools without:
+All 8 challenges should be solvable using only the MCP debugger tools without:
 - Reading the source code directly
 - Using browser DevTools manually
 - Guessing the solutions
