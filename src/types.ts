@@ -14,6 +14,7 @@ export interface BreakpointInfo {
     lineNumber: number;
     columnNumber?: number;
   };
+  isLogpoint?: boolean;
 }
 
 export interface CallFrame {
@@ -44,9 +45,12 @@ export interface Variable {
   type: string;
 }
 
+export type RuntimeType = 'chrome' | 'node' | 'unknown';
+
 export interface DebuggerState {
   connected: boolean;
   paused: boolean;
   currentCallFrames?: CallFrame[];
   breakpoints: Map<string, BreakpointInfo>;
+  runtimeType?: RuntimeType;
 }

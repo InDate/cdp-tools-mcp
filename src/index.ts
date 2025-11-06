@@ -12,15 +12,19 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 
+import { z } from 'zod';
 import { CDPManager } from './cdp-manager.js';
 import { SourceMapHandler } from './sourcemap-handler.js';
 import { ChromeLauncher } from './chrome-launcher.js';
 import { PuppeteerManager } from './puppeteer-manager.js';
 import { ConsoleMonitor } from './console-monitor.js';
 import { NetworkMonitor } from './network-monitor.js';
+import { ConnectionManager } from './connection-manager.js';
+import { validateParams, createTool } from './validation-helpers.js';
 import { createBreakpointTools } from './tools/breakpoint-tools.js';
 import { createExecutionTools } from './tools/execution-tools.js';
 import { createInspectionTools } from './tools/inspection-tools.js';
+import { createSourceTools } from './tools/source-tools.js';
 import { createConsoleTools } from './tools/console-tools.js';
 import { createNetworkTools } from './tools/network-tools.js';
 import { createPageTools } from './tools/page-tools.js';
@@ -29,13 +33,10 @@ import { createScreenshotTools } from './tools/screenshot-tools.js';
 import { createInputTools } from './tools/input-tools.js';
 import { createStorageTools } from './tools/storage-tools.js';
 
-// Initialize managers
-const cdpManager = new CDPManager();
+// Initialize global managers
 const sourceMapHandler = new SourceMapHandler();
 const chromeLauncher = new ChromeLauncher();
-const puppeteerManager = new PuppeteerManager();
-const consoleMonitor = new ConsoleMonitor();
-const networkMonitor = new NetworkMonitor();
+const connectionManager = new ConnectionManager();
 
 // Create MCP server
 const server = new Server(
@@ -52,27 +53,102 @@ const server = new Server(
 
 // Connection management tools
 const connectionTools = {
-  launchChrome: {
-    description: 'Launch Chrome with debugging enabled',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        port: {
-          type: 'number',
-          description: 'The debugging port (default: 9222)',
-        },
-        url: {
-          type: 'string',
-          description: 'Optional URL to open (default: blank page)',
-        },
-      },
-    },
-    handler: async (args: any) => {
+  launchChrome: createTool(
+    'Launch Chrome with debugging enabled and optionally auto-connect',
+    z.object({
+      port: z.number().optional().describe('The debugging port (default: 9222)'),
+      url: z.string().optional().describe('Optional URL to open (default: blank page)'),
+      autoConnect: z.boolean().optional().default(true).describe('Automatically connect debugger after launch (default: true)'),
+    }).strict(),
+    async (args) => {
       const port = args.port || 9222;
       const url = args.url;
+      const autoConnect = args.autoConnect ?? true;
 
       try {
         const result = await chromeLauncher.launch(port, url);
+
+        // Auto-connect if requested
+        let connectionId: string | undefined;
+        let runtimeType: string | undefined;
+        let features: string[] = [];
+
+        if (autoConnect) {
+          try {
+            // Wait a moment for Chrome to fully start
+            await new Promise(resolve => setTimeout(resolve, 1000));
+
+            // Create connection managers for this connection
+            const cdpManager = new CDPManager(sourceMapHandler);
+            const puppeteerManager = new PuppeteerManager();
+            const consoleMonitor = new ConsoleMonitor();
+            const networkMonitor = new NetworkMonitor();
+
+            // Connect to CDP
+            await cdpManager.connect('localhost', port);
+            runtimeType = cdpManager.getRuntimeType();
+            features = ['debugging'];
+
+            // Connect Puppeteer for Chrome
+            if (runtimeType === 'chrome') {
+              await puppeteerManager.connect('localhost', port);
+
+              // Start monitoring console and network
+              const page = puppeteerManager.getPage();
+              consoleMonitor.startMonitoring(page);
+              networkMonitor.startMonitoring(page);
+
+              // Auto-reload page to capture initial console logs
+              const currentUrl = page.url();
+              if (currentUrl && currentUrl !== 'about:blank') {
+                await page.reload({ waitUntil: 'networkidle0' });
+                await new Promise(resolve => setTimeout(resolve, 500));
+              }
+
+              features.push('browser-automation', 'console-monitoring', 'network-monitoring');
+            }
+
+            // Register connection
+            connectionId = connectionManager.createConnection(
+              cdpManager,
+              puppeteerManager,
+              consoleMonitor,
+              networkMonitor,
+              'localhost',
+              port
+            );
+
+            // Update active manager references
+            updateActiveManagers(connectionId);
+
+            // Get console log summary for Chrome connections
+            if (runtimeType === 'chrome') {
+              const allMessages = consoleMonitor.getMessages({});
+              const errorCount = allMessages.filter(m => m.type === 'error').length;
+              const warnCount = allMessages.filter(m => m.type === 'warn').length;
+              const logCount = allMessages.filter(m => m.type === 'log').length;
+              features.push(`consoleLogs: ${allMessages.length} (${errorCount} errors, ${warnCount} warnings)`);
+            }
+          } catch (connectError) {
+            // If auto-connect fails, still return success for launch
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify({
+                    success: true,
+                    message: `Chrome launched with debugging on port ${result.port}`,
+                    port: result.port,
+                    pid: result.pid,
+                    autoConnectFailed: true,
+                    autoConnectError: `${connectError}`,
+                    note: 'Chrome launched successfully but auto-connect failed. Use connectDebugger() to connect manually.',
+                  }, null, 2),
+                },
+              ],
+            };
+          }
+        }
 
         return {
           content: [
@@ -80,9 +156,17 @@ const connectionTools = {
               type: 'text',
               text: JSON.stringify({
                 success: true,
-                message: `Chrome launched with debugging on port ${result.port}`,
+                message: autoConnect
+                  ? `Chrome launched and debugger connected on port ${result.port}`
+                  : `Chrome launched with debugging on port ${result.port}`,
                 port: result.port,
                 pid: result.pid,
+                ...(autoConnect && {
+                  connectionId,
+                  runtimeType,
+                  features,
+                  note: 'Console monitoring auto-enabled. Page auto-reloaded to capture initial logs.',
+                }),
               }, null, 2),
             },
           ],
@@ -100,16 +184,13 @@ const connectionTools = {
           ],
         };
       }
-    },
-  },
+    }
+  ),
 
-  killChrome: {
-    description: 'Kill the Chrome process launched by this server',
-    inputSchema: {
-      type: 'object',
-      properties: {},
-    },
-    handler: async () => {
+  killChrome: createTool(
+    'Kill the Chrome process launched by this server',
+    z.object({}).strict(),
+    async () => {
       try {
         chromeLauncher.kill();
 
@@ -137,16 +218,13 @@ const connectionTools = {
           ],
         };
       }
-    },
-  },
+    }
+  ),
 
-  resetChromeLauncher: {
-    description: 'Reset Chrome launcher state (use if Chrome was closed externally)',
-    inputSchema: {
-      type: 'object',
-      properties: {},
-    },
-    handler: async () => {
+  resetChromeLauncher: createTool(
+    'Reset Chrome launcher state (use if Chrome was closed externally)',
+    z.object({}).strict(),
+    async () => {
       chromeLauncher.reset();
 
       return {
@@ -160,16 +238,13 @@ const connectionTools = {
           },
         ],
       };
-    },
-  },
+    }
+  ),
 
-  getChromeStatus: {
-    description: 'Get Chrome launcher status',
-    inputSchema: {
-      type: 'object',
-      properties: {},
-    },
-    handler: async () => {
+  getChromeStatus: createTool(
+    'Get Chrome launcher status',
+    z.object({}).strict(),
+    async () => {
       const status = chromeLauncher.getStatus();
 
       return {
@@ -182,37 +257,83 @@ const connectionTools = {
           },
         ],
       };
-    },
-  },
+    }
+  ),
 
-  connectDebugger: {
-    description: 'Connect to a Chrome or Node.js debugger instance',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        host: {
-          type: 'string',
-          description: 'The debugger host (default: localhost)',
-        },
-        port: {
-          type: 'number',
-          description: 'The debugger port (default: 9222 for Chrome, 9229 for Node.js)',
-        },
-      },
-    },
-    handler: async (args: any) => {
+  connectDebugger: createTool(
+    'Connect to a Chrome or Node.js debugger instance',
+    z.object({
+      host: z.string().optional().default('localhost').describe('The debugger host (default: localhost)'),
+      port: z.number().optional().describe('The debugger port (default: 9222 for Chrome, 9229 for Node.js)'),
+    }).strict(),
+    async (args) => {
       const host = args.host || 'localhost';
       const port = args.port || 9222;
 
       try {
-        // Connect both CDP and Puppeteer
-        await cdpManager.connect(host, port);
-        await puppeteerManager.connect(host, port);
+        // Create new managers for this connection
+        const cdpManager = new CDPManager(sourceMapHandler);
+        const puppeteerManager = new PuppeteerManager();
+        const consoleMonitor = new ConsoleMonitor();
+        const networkMonitor = new NetworkMonitor();
 
-        // Start monitoring console and network
-        const page = puppeteerManager.getPage();
-        consoleMonitor.startMonitoring(page);
-        networkMonitor.startMonitoring(page);
+        // Connect CDP first to detect runtime type
+        await cdpManager.connect(host, port);
+        const runtimeType = cdpManager.getRuntimeType();
+
+        const features = ['debugging'];
+
+        // Only connect Puppeteer for Chrome (browser automation)
+        if (runtimeType === 'chrome') {
+          await puppeteerManager.connect(host, port);
+
+          // Start monitoring console and network
+          const page = puppeteerManager.getPage();
+          consoleMonitor.startMonitoring(page);
+          networkMonitor.startMonitoring(page);
+
+          // Auto-reload page to capture initial console logs
+          // Skip reload for blank pages (nothing to reload)
+          const currentUrl = page.url();
+          if (currentUrl && currentUrl !== 'about:blank') {
+            await page.reload({ waitUntil: 'networkidle0' });
+            // Wait a bit more for all scripts to execute and errors to fire
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+
+          features.push('browser-automation', 'console-monitoring', 'network-monitoring');
+        }
+
+        // Register connection with ConnectionManager
+        const connectionId = connectionManager.createConnection(
+          cdpManager,
+          runtimeType === 'chrome' ? puppeteerManager : undefined,
+          runtimeType === 'chrome' ? consoleMonitor : undefined,
+          runtimeType === 'chrome' ? networkMonitor : undefined,
+          host,
+          port
+        );
+
+        // Update active manager references
+        updateActiveManagers(connectionId);
+
+        // Get console log summary for Chrome connections
+        let consoleLogSummary;
+        if (runtimeType === 'chrome') {
+          const connection = connectionManager.getConnection(connectionId);
+          if (connection?.consoleMonitor) {
+            const allMessages = connection.consoleMonitor.getMessages({});
+            const errorCount = allMessages.filter(m => m.type === 'error').length;
+            const warnCount = allMessages.filter(m => m.type === 'warn').length;
+            const logCount = allMessages.filter(m => m.type === 'log').length;
+            consoleLogSummary = {
+              total: allMessages.length,
+              errors: errorCount,
+              warnings: warnCount,
+              logs: logCount,
+            };
+          }
+        }
 
         return {
           content: [
@@ -220,8 +341,16 @@ const connectionTools = {
               type: 'text',
               text: JSON.stringify({
                 success: true,
-                message: `Connected to debugger at ${host}:${port}`,
-                features: ['debugging', 'browser-automation', 'console-monitoring', 'network-monitoring'],
+                connectionId,
+                message: `Connected to ${runtimeType} debugger at ${host}:${port}`,
+                runtimeType,
+                features,
+                ...(consoleLogSummary && { consoleLogs: consoleLogSummary }),
+                note: runtimeType === 'chrome'
+                  ? 'Console monitoring auto-enabled. Page auto-reloaded to capture initial logs.'
+                  : runtimeType === 'node'
+                  ? 'Browser automation features are not available for Node.js debugging'
+                  : undefined,
               }, null, 2),
             },
           ],
@@ -239,54 +368,53 @@ const connectionTools = {
           ],
         };
       }
-    },
-  },
+    }
+  ),
 
-  disconnectDebugger: {
-    description: 'Disconnect from the debugger',
-    inputSchema: {
-      type: 'object',
-      properties: {},
-    },
-    handler: async () => {
-      // Stop monitoring
-      if (puppeteerManager.isConnected()) {
-        const page = puppeteerManager.getPage();
-        consoleMonitor.stopMonitoring(page);
-        networkMonitor.stopMonitoring(page);
+  disconnectDebugger: createTool(
+    'Disconnect from the debugger',
+    z.object({
+      connectionId: z.string().optional().describe('Connection ID to disconnect (optional, defaults to active connection)'),
+    }).strict(),
+    async (args) => {
+      const connectionId = args.connectionId || connectionManager.getActiveConnectionId();
+
+      if (!connectionId) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: false,
+                error: 'No active connection',
+              }, null, 2),
+            },
+          ],
+        };
       }
 
-      // Disconnect both managers
-      await cdpManager.disconnect();
-      await puppeteerManager.disconnect();
+      const success = await connectionManager.closeConnection(connectionId);
 
       return {
         content: [
           {
             type: 'text',
             text: JSON.stringify({
-              success: true,
-              message: 'Disconnected from debugger',
+              success,
+              message: success ? `Disconnected from connection ${connectionId}` : 'Connection not found',
             }, null, 2),
           },
         ],
       };
-    },
-  },
+    }
+  ),
 
-  loadSourceMaps: {
-    description: 'Load source maps from a directory (for TypeScript debugging)',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        directory: {
-          type: 'string',
-          description: 'The directory containing .js.map files',
-        },
-      },
-      required: ['directory'],
-    },
-    handler: async (args: any) => {
+  loadSourceMaps: createTool(
+    'Load source maps from a directory (for TypeScript debugging)',
+    z.object({
+      directory: z.string().describe('The directory containing .js.map files'),
+    }).strict(),
+    async (args) => {
       const { directory } = args;
 
       try {
@@ -318,53 +446,195 @@ const connectionTools = {
           ],
         };
       }
-    },
-  },
+    }
+  ),
 
-  getDebuggerStatus: {
-    description: 'Get the current status of the debugger connection',
-    inputSchema: {
-      type: 'object',
-      properties: {},
-    },
-    handler: async () => {
+  getDebuggerStatus: createTool(
+    'Get the current status of the debugger connection',
+    z.object({
+      connectionId: z.string().optional().describe('Connection ID to check (optional, defaults to active connection)'),
+    }).strict(),
+    async (args) => {
+      const connectionId = args.connectionId;
+      const connection = connectionManager.getConnection(connectionId);
+
+      if (!connection) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                connected: false,
+                message: 'No active connection',
+                totalConnections: connectionManager.getConnectionCount(),
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      const cdpManager = connection.cdpManager;
+      const puppeteerManager = connection.puppeteerManager;
+      const consoleMonitor = connection.consoleMonitor;
+      const networkMonitor = connection.networkMonitor;
       const connected = cdpManager.isConnected();
+      const runtimeType = cdpManager.getRuntimeType();
       const paused = cdpManager.isPaused();
-      const breakpoints = cdpManager.getBreakpoints();
+      const breakpointCounts = cdpManager.getBreakpointCounts();
       const sourceMaps = sourceMapHandler.getLoadedSourceMaps();
+      const puppeteerConnected = puppeteerManager?.isConnected() || false;
 
       return {
         content: [
           {
             type: 'text',
             text: JSON.stringify({
+              connectionId: connection.id,
               connected,
+              runtimeType,
+              puppeteerConnected,
               paused,
-              breakpointCount: breakpoints.length,
+              breakpoints: breakpointCounts.breakpoints,
+              logpoints: breakpointCounts.logpoints,
+              totalBreakpoints: breakpointCounts.total,
               sourceMapCount: sourceMaps.length,
+              consoleMonitoring: consoleMonitor?.isActive() ? 'active' : 'inactive',
+              networkMonitoring: networkMonitor?.isActive() ? 'active' : 'inactive',
+              totalConnections: connectionManager.getConnectionCount(),
             }, null, 2),
           },
         ],
       };
-    },
+    }
+  ),
+
+  listConnections: createTool(
+    'List all active debugger connections',
+    z.object({}).strict(),
+    async () => {
+      const connections = connectionManager.listConnections();
+      const activeId = connectionManager.getActiveConnectionId();
+
+      const connectionList = connections.map(conn => ({
+        id: conn.id,
+        type: conn.type,
+        host: conn.host,
+        port: conn.port,
+        active: conn.id === activeId,
+        connected: conn.cdpManager.isConnected(),
+        paused: conn.cdpManager.isPaused(),
+        createdAt: new Date(conn.createdAt).toISOString(),
+      }));
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              success: true,
+              totalConnections: connections.length,
+              activeConnectionId: activeId,
+              connections: connectionList,
+            }, null, 2),
+          },
+        ],
+      };
+    }
+  ),
+
+  switchConnection: createTool(
+    'Switch the active debugger connection',
+    z.object({
+      connectionId: z.string().describe('Connection ID to switch to'),
+    }).strict(),
+    async (args) => {
+      const success = connectionManager.setActiveConnection(args.connectionId);
+
+      if (success) {
+        // Update active manager references
+        updateActiveManagers(args.connectionId);
+      }
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              success,
+              message: success
+                ? `Switched to connection ${args.connectionId}`
+                : `Connection ${args.connectionId} not found`,
+              activeConnectionId: connectionManager.getActiveConnectionId(),
+            }, null, 2),
+          },
+        ],
+      };
+    }
+  ),
+};
+
+// Active connection manager references (updated when connection is made/switched)
+let activeCdpManager: CDPManager | null = null;
+let activePuppeteerManager: PuppeteerManager | null = null;
+let activeConsoleMonitor: ConsoleMonitor | null = null;
+let activeNetworkMonitor: NetworkMonitor | null = null;
+
+// Helper to update active manager references
+const updateActiveManagers = (connectionId?: string) => {
+  const connection = connectionManager.getConnection(connectionId);
+  if (connection) {
+    activeCdpManager = connection.cdpManager;
+    activePuppeteerManager = connection.puppeteerManager || null;
+    activeConsoleMonitor = connection.consoleMonitor || null;
+    activeNetworkMonitor = connection.networkMonitor || null;
+  }
+};
+
+// Create proxy managers that delegate to active connection
+const proxyHandlerForManager = {
+  get(target: any, prop: string) {
+    // For CDPManager
+    if (target.constructor.name === 'CDPManager' && activeCdpManager) {
+      return (activeCdpManager as any)[prop];
+    }
+    // For PuppeteerManager
+    if (target.constructor.name === 'PuppeteerManager' && activePuppeteerManager) {
+      return (activePuppeteerManager as any)[prop];
+    }
+    // For ConsoleMonitor
+    if (target.constructor.name === 'ConsoleMonitor' && activeConsoleMonitor) {
+      return (activeConsoleMonitor as any)[prop];
+    }
+    // For NetworkMonitor
+    if (target.constructor.name === 'NetworkMonitor' && activeNetworkMonitor) {
+      return (activeNetworkMonitor as any)[prop];
+    }
+    return target[prop];
   },
 };
+
+// Create proxy managers
+const proxyCdpManager = new Proxy(new CDPManager(sourceMapHandler), proxyHandlerForManager);
+const proxyPuppeteerManager = new Proxy(new PuppeteerManager(), proxyHandlerForManager);
+const proxyConsoleMonitor = new Proxy(new ConsoleMonitor(), proxyHandlerForManager);
+const proxyNetworkMonitor = new Proxy(new NetworkMonitor(), proxyHandlerForManager);
 
 // Combine all tools
 const allTools = {
   ...connectionTools,
   // CDP Debugging tools
-  ...createBreakpointTools(cdpManager, sourceMapHandler),
-  ...createExecutionTools(cdpManager),
-  ...createInspectionTools(cdpManager, sourceMapHandler),
+  ...createBreakpointTools(proxyCdpManager, sourceMapHandler),
+  ...createExecutionTools(proxyCdpManager),
+  ...createInspectionTools(proxyCdpManager, sourceMapHandler),
+  ...createSourceTools(proxyCdpManager, sourceMapHandler),
   // Browser Automation tools
-  ...createConsoleTools(puppeteerManager, consoleMonitor),
-  ...createNetworkTools(puppeteerManager, networkMonitor),
-  ...createPageTools(puppeteerManager, cdpManager),
-  ...createDOMTools(puppeteerManager, cdpManager),
-  ...createScreenshotTools(puppeteerManager, cdpManager),
-  ...createInputTools(puppeteerManager, cdpManager),
-  ...createStorageTools(puppeteerManager, cdpManager),
+  ...createConsoleTools(proxyPuppeteerManager, proxyConsoleMonitor),
+  ...createNetworkTools(proxyPuppeteerManager, proxyNetworkMonitor),
+  ...createPageTools(proxyPuppeteerManager, proxyCdpManager, proxyConsoleMonitor, proxyNetworkMonitor),
+  ...createDOMTools(proxyPuppeteerManager, proxyCdpManager),
+  ...createScreenshotTools(proxyPuppeteerManager, proxyCdpManager),
+  ...createInputTools(proxyPuppeteerManager, proxyCdpManager),
+  ...createStorageTools(proxyPuppeteerManager, proxyCdpManager),
 };
 
 // Register tool handlers
@@ -387,25 +657,53 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       content: [
         {
           type: 'text',
-          text: JSON.stringify({ error: `Unknown tool: ${toolName}` }),
+          text: JSON.stringify({
+            success: false,
+            error: `Unknown tool: ${toolName}`,
+            code: 'UNKNOWN_TOOL',
+            availableTools: Object.keys(allTools).sort()
+          }, null, 2),
         },
       ],
+      isError: true
     };
   }
 
+  // All tools now use Zod validation
+  const validation = validateParams(
+    request.params.arguments || {},
+    (tool as any).zodSchema,
+    toolName
+  );
+
+  if (!validation.success) {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(validation.error, null, 2),
+        },
+      ],
+      isError: true
+    };
+  }
+
+  // Pass validated data to handler
   try {
-    return await tool.handler(request.params.arguments || {});
+    return await tool.handler(validation.data);
   } catch (error) {
     return {
       content: [
         {
           type: 'text',
           text: JSON.stringify({
+            success: false,
             error: `Tool execution failed: ${error}`,
-          }),
+            code: 'EXECUTION_ERROR'
+          }, null, 2),
         },
       ],
-      isError: true,
+      isError: true
     };
   }
 });
@@ -417,11 +715,8 @@ async function main() {
 
   // Cleanup on exit
   process.on('SIGINT', async () => {
-    await cdpManager.disconnect();
-    await puppeteerManager.disconnect();
+    await connectionManager.closeAll();
     sourceMapHandler.clear();
-    consoleMonitor.clear();
-    networkMonitor.clear();
     chromeLauncher.kill();
     process.exit(0);
   });
