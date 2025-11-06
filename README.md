@@ -215,8 +215,8 @@ Set a breakpoint at a specific file and line.
 
 **Parameters:**
 - `url` (string): File URL or path (e.g., "file:///path/to/file.js")
-- `lineNumber` (number): Line number (1-based)
-- `columnNumber` (number, optional): Column number (0-based)
+- `lineNumber` (number): Line number (1-based, line 1 = first line)
+- `columnNumber` (number, optional): Column number (1-based, column 1 = first column). If not provided, CDP will choose the best execution point on the line.
 
 **Example:**
 ```json
@@ -225,6 +225,17 @@ Set a breakpoint at a specific file and line.
   "lineNumber": 42
 }
 ```
+
+**Example with column:**
+```json
+{
+  "url": "file:///Users/dev/project/app.js",
+  "lineNumber": 42,
+  "columnNumber": 15
+}
+```
+
+**Note:** CDP (Chrome DevTools Protocol) may map your requested line:column to the nearest valid breakpoint location. The response will show both the requested and actual locations.
 
 #### `removeBreakpoint`
 Remove a specific breakpoint.
@@ -429,6 +440,15 @@ Set breakpoints that only pause when a specific condition is true, reducing inte
 
 Logpoints are special breakpoints that log messages to the console without pausing execution - perfect for adding runtime logging without modifying source code.
 
+**Parameters:**
+- `url` (string): The file URL or path
+- `lineNumber` (number): Line number (1-based, line 1 = first line)
+- `columnNumber` (number, optional): Column number (1-based, column 1 = first column). If not provided, CDP will choose the best execution point on the line.
+- `logMessage` (string): Message to log with `{expression}` interpolation
+- `condition` (string, optional): Only log when this condition is true
+- `includeCallStack` (boolean, optional): Include call stack in logs (default: false)
+- `includeVariables` (boolean, optional): Include local variables in logs (default: false)
+
 **Basic Usage:**
 ```json
 {
@@ -440,6 +460,8 @@ Logpoints are special breakpoints that log messages to the console without pausi
   }
 }
 ```
+
+**Automatic Validation:** When CDP maps your requested location to a different line:column (which commonly happens with block-scoped variables like `const` and `let`), the tool automatically validates that all expressions in your logMessage are accessible at the actual location. If validation fails, the logpoint is rejected with helpful suggestions for better locations.
 
 **Variable Interpolation:**
 Use `{expression}` syntax to include variable values in the log message:
@@ -475,44 +497,173 @@ Only log when a condition is met:
 ```
 
 #### `validateLogpoint` **NEW!**
-Validate a logpoint expression before setting it. Tests if the expressions in the log message can be evaluated and provides helpful feedback.
+Validate a logpoint expression before setting it. Tests if the expressions in the log message can be evaluated and provides comprehensive feedback including actual location, code context, and alternative suggestions.
 
 **Parameters:**
 - `url` (string): The file URL or path
 - `lineNumber` (number): The line number (1-based)
+- `columnNumber` (number, optional): Column number (1-based). If not provided, CDP will choose the best execution point on the line.
 - `logMessage` (string): Message to log with `{expression}` interpolation
+- `timeout` (number, optional): Maximum time to wait for code execution in milliseconds (default: 2000ms)
 
 **Example:**
 ```json
 {
   "url": "http://localhost:3000/app.js",
   "lineNumber": 42,
-  "logMessage": "User: {user.name} with ID: {user.id}"
+  "logMessage": "User: {user.name} with ID: {user.id}",
+  "timeout": 2000
 }
 ```
 
 **How it works:**
 1. Sets a temporary breakpoint at the specified location
-2. Waits briefly for code execution to hit that line
-3. Tests each `{expression}` in the log message
-4. Reports which expressions are valid and which failed
-5. Cleans up the temporary breakpoint
+2. CDP may map this to a different line:column (the actual location)
+3. Waits for code execution to hit that location (configurable timeout)
+4. Tests each `{expression}` in the log message
+5. Collects available variables, code context, and suggestions
+6. Cleans up the temporary breakpoint
+
+**Response includes:**
+- `valid`: true/false/'unknown' - Overall validation status
+- `location.requested`: Your requested line:column
+- `location.actual`: Where CDP actually set the breakpoint
+- `location.matched`: Whether requested and actual locations match
+- `results`: Detailed results for each expression (valid/invalid with values/errors)
+- `availableVariables`: List of variables in scope at the actual location
+- `codeContext`: 3 lines of code around the actual location
+- `suggestions`: (If validation fails) Top 3 alternative locations within ±2 lines where expressions would be valid, scored by percentage of valid expressions
+- `warning`: (If locations differ) Explanation of the mapping
 
 **Responses:**
-- `valid: true` - All expressions evaluated successfully
-- `valid: false` - One or more expressions failed (details included)
+- `valid: true` - All expressions evaluated successfully at the actual location
+- `valid: false` - One or more expressions failed (see `suggestions` for better locations)
 - `valid: 'unknown'` - Code hasn't executed yet (can't test without execution)
 
 **Best practices:**
 - Trigger the code path containing the logpoint line before validating
 - Use validateLogpoint before setLogpoint to catch scope errors early
-- Check the results to fix variable names or scope issues
+- Pay attention to location mapping - if CDP moves your breakpoint, check why
+- Review suggestions when validation fails - they show where expressions would work
+- Use the codeContext to understand what's happening at the actual location
 
 **Troubleshooting Logpoints:**
 - **Scope errors**: If a variable isn't in scope at the breakpoint location, the logpoint will log an error. **Use `validateLogpoint` to check expressions first!**
 - **Expression errors**: The logpoint error messages now provide helpful tips and suggest using `validateLogpoint`
 - **Timing**: Logpoints log to the **browser console**, not the terminal. Check the browser's console tab.
 - **Performance**: Logpoints that run on every iteration of a loop can impact performance.
+- **Line mapping**: See the section below for details on how CDP maps breakpoint locations
+
+### Understanding Line:Column Mapping
+
+When you set a breakpoint or logpoint, Chrome DevTools Protocol (CDP) doesn't always place it exactly where you requested. Instead, V8 (the JavaScript engine) maps your requested location to the **nearest valid breakpoint location** - a place where code actually executes.
+
+#### Why Does This Happen?
+
+**Block-Scoped Variables (const/let):**
+The most common cause. Variables declared with `const` or `let` only exist within their block scope, and that scope starts at a very specific line:column position.
+
+Example:
+```javascript
+42: function processUser(userData) {
+43:   const user = userData.user;  // const exists starting at column X
+44:   const password = buildPassword();  // You want to log {user} here
+45:   return user;
+46: }
+```
+
+If you request line 44 without a column, CDP might map to the beginning of the line (before `const` is declared), where `user` doesn't exist yet! This causes "variable not defined" errors.
+
+**Other Causes:**
+- Comments and blank lines (no code to execute)
+- Function declarations (scope boundaries)
+- Closing braces (end of scope)
+- Optimized code (V8 may reorder operations)
+
+#### Line and Column Numbering
+
+**User Input:** 1-based (line 1 = first line, column 1 = first character)
+**CDP Internal:** 0-based (line 0 = first line, column 0 = first character)
+
+This tool handles the conversion automatically - you always provide 1-based numbers.
+
+#### How This Tool Helps
+
+**1. Automatic Validation (setLogpoint):**
+When you call `setLogpoint` and CDP maps to a different location, the tool automatically:
+- Validates that all `{expressions}` in your logMessage work at the actual location
+- If validation fails, removes the logpoint and returns suggestions
+- If validation passes but location differs, sets the logpoint with a warning
+
+**2. Location Transparency:**
+All responses show both requested and actual locations:
+```json
+{
+  "location": {
+    "requested": { "line": 44, "column": null },
+    "actual": { "line": 44, "column": 15 },
+    "matched": false
+  }
+}
+```
+
+**3. Smart Suggestions:**
+When validation fails, the tool searches ±2 lines and suggests better locations:
+```json
+{
+  "suggestions": [
+    {
+      "line": 45,
+      "column": 3,
+      "score": 100,
+      "validExpressions": ["user", "password"],
+      "reason": "100% of expressions are valid here"
+    }
+  ]
+}
+```
+
+**4. Code Context:**
+See what's actually happening at the location:
+```
+42:   function processUser(userData) {
+43:     const user = userData.user;
+44:     const password = buildPassword();  // ← Actual location
+```
+
+#### Best Practices
+
+1. **Use validateLogpoint first** - Test expressions before setting logpoints
+2. **Specify columnNumber when possible** - More precise than letting CDP choose
+3. **Review location mapping** - If requested ≠ actual, understand why
+4. **Follow suggestions** - When validation fails, try the suggested locations
+5. **Check available variables** - The response shows what's in scope at the actual location
+6. **Understand block scope** - `const`/`let` variables have precise scope boundaries
+
+#### Common Scenarios
+
+**Scenario 1: Variable not yet declared**
+```javascript
+Request: line 44, no column
+Actual:  line 44, column 0 (start of line, before const)
+Result:  {user} undefined - fails validation
+Solution: Use column 15 (after const declaration) or line 45
+```
+
+**Scenario 2: End of scope**
+```javascript
+Request: line 46, column 1 (closing brace)
+Actual:  line 46, column 1
+Result:  {user} out of scope - fails validation
+Solution: Use line 45 (before scope ends)
+```
+
+**Scenario 3: Successful mapping**
+```javascript
+Request: line 45
+Actual:  line 45, column 3
+Result:  {user} and {password} both valid - success with warning
+```
 
 ### Console & Network Monitoring
 

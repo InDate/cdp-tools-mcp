@@ -24,6 +24,7 @@ const listBreakpointsSchema = z.object({}).strict();
 const setLogpointSchema = z.object({
   url: z.string().describe('The file URL or path'),
   lineNumber: z.number().describe('The line number (1-based)'),
+  columnNumber: z.number().optional().describe('Optional column number (1-based). If not provided, CDP will choose the best execution point on the line.'),
   logMessage: z.string().describe('Message to log. Use {expression} for variable interpolation, e.g., "User: {user.name} ID: {user.id}"'),
   condition: z.string().optional().describe('Optional condition - only log when this evaluates to true'),
   includeCallStack: z.boolean().default(false).describe('Include call stack in log output (default: false)'),
@@ -33,7 +34,9 @@ const setLogpointSchema = z.object({
 const validateLogpointSchema = z.object({
   url: z.string().describe('The file URL or path'),
   lineNumber: z.number().describe('The line number (1-based)'),
+  columnNumber: z.number().optional().describe('Optional column number (1-based). If not provided, CDP will choose the execution point.'),
   logMessage: z.string().describe('Message to log with {expression} interpolation'),
+  timeout: z.number().default(2000).describe('Maximum time to wait for code execution in milliseconds (default: 2000ms)'),
 }).strict();
 
 export function createBreakpointTools(cdpManager: CDPManager, sourceMapHandler: SourceMapHandler) {
@@ -194,7 +197,7 @@ export function createBreakpointTools(cdpManager: CDPManager, sourceMapHandler: 
       'Validate a logpoint expression before setting it. Tests if the expressions in the log message can be evaluated and provides helpful feedback.',
       validateLogpointSchema,
       async (args) => {
-        const { url, lineNumber, logMessage } = args;
+        const { url, lineNumber, columnNumber, logMessage, timeout } = args;
 
         // Parse logMessage to extract expressions
         const expressionMatches = logMessage.matchAll(/\{([^}]+)\}/g);
@@ -220,58 +223,94 @@ export function createBreakpointTools(cdpManager: CDPManager, sourceMapHandler: 
 
         // Set a temporary breakpoint to test the expressions
         try {
-          const tempBreakpoint = await cdpManager.setBreakpoint(url, lineNumber);
+          const tempBreakpoint = await cdpManager.setBreakpoint(url, lineNumber, columnNumber);
 
-          // Wait briefly for the breakpoint to potentially be hit
-          await new Promise(resolve => setTimeout(resolve, 1000));
+          // Get actual location from CDP (0-based)
+          const actualCdpLine = tempBreakpoint.location.lineNumber;
+          const actualCdpColumn = tempBreakpoint.location.columnNumber;
+
+          // Convert to 1-based for user display
+          const actualLineUser = actualCdpLine + 1;
+          const actualColumnUser = actualCdpColumn !== undefined ? actualCdpColumn + 1 : undefined;
+
+          // Check if location differs
+          const lineDiffers = actualLineUser !== lineNumber;
+          const columnDiffers = columnNumber !== undefined && actualColumnUser !== columnNumber;
+          const locationDiffers = lineDiffers || columnDiffers;
+
+          // Wait for the breakpoint to potentially be hit (configurable timeout)
+          await new Promise(resolve => setTimeout(resolve, timeout));
 
           // Check if we're paused at the breakpoint
           if (!cdpManager.isPaused()) {
             // Remove temp breakpoint
             await cdpManager.removeBreakpoint(tempBreakpoint.breakpointId);
 
+            const response: any = {
+              valid: 'unknown',
+              message: 'Unable to validate - code at this location has not been executed yet',
+              suggestion: 'Trigger the code path that contains this line, or set the logpoint and check console for errors',
+              expressions,
+              logMessage,
+              location: {
+                requested: { line: lineNumber, column: columnNumber },
+                actual: { line: actualLineUser, column: actualColumnUser },
+                matched: !locationDiffers
+              }
+            };
+
+            if (locationDiffers) {
+              response.warning = `CDP mapped your requested location ${lineNumber}:${columnNumber || 'auto'} to ${actualLineUser}:${actualColumnUser || 'auto'}`;
+            }
+
             return {
               content: [
                 {
                   type: 'text',
-                  text: JSON.stringify({
-                    valid: 'unknown',
-                    message: 'Unable to validate - code at this location has not been executed yet',
-                    suggestion: 'Trigger the code path that contains this line, or set the logpoint and check console for errors',
-                    expressions,
-                    logMessage,
-                  }, null, 2),
+                  text: JSON.stringify(response, null, 2),
                 },
               ],
             };
           }
 
-          // Try to evaluate each expression
+          // Try to evaluate each expression and collect available variables
           const results: Array<{ expression: string; valid: boolean; value?: any; error?: string }> = [];
+          let availableVariables: string[] = [];
 
-          for (const expr of expressions) {
+          const callFrame = cdpManager.getCallStack()?.[0];
+          if (callFrame) {
+            // Get available variables at this location
             try {
-              const callFrame = cdpManager.getCallStack()?.[0];
-              if (!callFrame) {
+              const vars = await cdpManager.getVariables(callFrame.callFrameId, false);
+              availableVariables = vars.map((v: any) => v.name);
+            } catch (err) {
+              // Ignore errors getting variables
+            }
+
+            // Evaluate each expression
+            for (const expr of expressions) {
+              try {
+                const value = await cdpManager.evaluateExpression(expr, callFrame.callFrameId);
+                results.push({
+                  expression: expr,
+                  valid: true,
+                  value,
+                });
+              } catch (error) {
                 results.push({
                   expression: expr,
                   valid: false,
-                  error: 'No call frame available',
+                  error: String(error),
                 });
-                continue;
               }
-
-              const value = await cdpManager.evaluateExpression(expr, callFrame.callFrameId);
-              results.push({
-                expression: expr,
-                valid: true,
-                value,
-              });
-            } catch (error) {
+            }
+          } else {
+            // No call frame available
+            for (const expr of expressions) {
               results.push({
                 expression: expr,
                 valid: false,
-                error: String(error),
+                error: 'No call frame available',
               });
             }
           }
@@ -285,18 +324,65 @@ export function createBreakpointTools(cdpManager: CDPManager, sourceMapHandler: 
           const allValid = results.every(r => r.valid);
           const invalidExpressions = results.filter(r => !r.valid);
 
+          // Get code snippet (3 lines context around actual location)
+          let codeContext: string | undefined;
+          try {
+            const startLine = Math.max(1, actualLineUser - 1);
+            const endLine = actualLineUser + 1;
+            const sourceResult = await cdpManager.getSourceCode(url, startLine, endLine);
+            codeContext = sourceResult.code;
+          } catch (err) {
+            // Ignore errors getting code snippet
+          }
+
+          // Build response
+          const response: any = {
+            valid: allValid,
+            message: allValid
+              ? 'All expressions are valid at this location'
+              : `${invalidExpressions.length} expression(s) failed to evaluate`,
+            location: {
+              requested: { line: lineNumber, column: columnNumber },
+              actual: { line: actualLineUser, column: actualColumnUser },
+              matched: !locationDiffers
+            },
+            results,
+            availableVariables: availableVariables.length > 0 ? availableVariables : undefined,
+            codeContext,
+          };
+
+          if (locationDiffers) {
+            response.warning = `CDP mapped your requested location ${lineNumber}:${columnNumber || 'auto'} to ${actualLineUser}:${actualColumnUser || 'auto'}`;
+          }
+
+          // If validation failed, search for better locations
+          if (!allValid) {
+            try {
+              const suggestions = await cdpManager.findBestLogpointLocation(
+                url,
+                lineNumber,
+                columnNumber,
+                expressions,
+                2,  // searchRadius ±2 lines
+                1000  // 1 second timeout per candidate
+              );
+
+              if (suggestions.length > 0) {
+                response.suggestions = suggestions.slice(0, 3);  // Top 3 suggestions
+                response.suggestion = `Consider using one of the suggested locations where ${suggestions[0].score}% of expressions are valid`;
+              } else {
+                response.suggestion = 'Check variable names and scopes. Variables must be in scope at the logpoint location.';
+              }
+            } catch (err) {
+              response.suggestion = 'Check variable names and scopes. Variables must be in scope at the logpoint location.';
+            }
+          }
+
           return {
             content: [
               {
                 type: 'text',
-                text: JSON.stringify({
-                  valid: allValid,
-                  message: allValid
-                    ? 'All expressions are valid at this location'
-                    : `${invalidExpressions.length} expression(s) failed to evaluate`,
-                  results,
-                  suggestion: allValid ? undefined : 'Check variable names and scopes. Variables must be in scope at the logpoint location.',
-                }, null, 2),
+                text: JSON.stringify(response, null, 2),
               },
             ],
           };
@@ -321,17 +407,19 @@ export function createBreakpointTools(cdpManager: CDPManager, sourceMapHandler: 
       'Set a logpoint that logs without pausing execution (like Chrome DevTools Logpoints)',
       setLogpointSchema,
       async (args) => {
-        const { url, lineNumber, logMessage, condition, includeCallStack, includeVariables } = args;
+        const { url, lineNumber, columnNumber, logMessage, condition, includeCallStack, includeVariables } = args;
 
         // Try to map through source maps if this is a TypeScript file
         let targetUrl = url;
         let targetLine = lineNumber;
+        let targetColumn = columnNumber;
 
         if (url.endsWith('.ts')) {
-          const mapped = await sourceMapHandler.mapToGenerated(url, lineNumber, 0);
+          const mapped = await sourceMapHandler.mapToGenerated(url, lineNumber, columnNumber || 0);
           if (mapped) {
             targetUrl = mapped.generatedFile;
             targetLine = mapped.line;
+            targetColumn = mapped.column;
           }
         }
 
@@ -351,12 +439,28 @@ export function createBreakpointTools(cdpManager: CDPManager, sourceMapHandler: 
                 ${expressions.map(expr => `'${expr}': ${expr}`).join(',\n                ')}
               };
 
+              // Helper to safely stringify values (handles objects, arrays, circular refs)
+              const safeStringify = (value) => {
+                if (value === null) return 'null';
+                if (value === undefined) return 'undefined';
+                if (typeof value === 'string') return value;
+                if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+
+                // Try JSON.stringify for objects/arrays
+                try {
+                  return JSON.stringify(value, null, 2);
+                } catch (e) {
+                  // Fall back to String() for circular refs or other errors
+                  return String(value);
+                }
+              };
+
               // Build log message
               let message = '${logMessage}';
-              ${expressions.map(expr => `message = message.replace('{${expr}}', String(values['${expr}']));`).join('\n              ')}
+              ${expressions.map(expr => `message = message.replace('{${expr}}', safeStringify(values['${expr}']));`).join('\n              ')}
 
               // Log to console
-              console.log('[Logpoint] ${targetUrl}:${targetLine}:', message);
+              console.log('[Logpoint] ${targetUrl}:${targetLine}:${targetColumn || 'auto'}:', message);
 
               ${includeCallStack ? `
               // Add call stack
@@ -370,9 +474,10 @@ export function createBreakpointTools(cdpManager: CDPManager, sourceMapHandler: 
               ` : ''}
 
             } catch(e) {
-              console.error('[Logpoint] Error at ${targetUrl}:${targetLine}:', e.message);
-              console.error('[Logpoint] Tip: Check that all variables in the logpoint are in scope at this location.');
-              console.error('[Logpoint] Use validateLogpoint tool to test expressions before setting logpoints.');
+              console.error('[Logpoint] Error at ${targetUrl}:${targetLine}:${targetColumn || 'auto'}:', e.message);
+              console.error('[Logpoint] Note: CDP may have mapped your requested location to a different line:column');
+              console.error('[Logpoint] Actual location may differ from requested. Variables scope depends on actual location.');
+              console.error('[Logpoint] Use validateLogpoint to check expressions before setting logpoints.');
             }
             return false; // Never pause
           })()
@@ -383,20 +488,128 @@ export function createBreakpointTools(cdpManager: CDPManager, sourceMapHandler: 
           logExpression = `(${condition}) && ${logExpression}`;
         }
 
+        // IMPORTANT: CDP expects 0-based line and column numbers, but we have 1-based numbers
+        // Convert before calling CDP API
+        const cdpLineNumber = targetLine - 1;  // Convert 1-based → 0-based
+        const cdpColumnNumber = targetColumn !== undefined ? targetColumn - 1 : undefined;  // Convert 1-based → 0-based
+
         // Set breakpoint with condition that logs and returns false
-        const { Debugger } = (cdpManager as any).client;
+        const { Debugger} = (cdpManager as any).client;
         const result = await Debugger.setBreakpointByUrl({
           url: targetUrl,
-          lineNumber: targetLine,
+          lineNumber: cdpLineNumber,  // Use 0-based CDP line number
+          columnNumber: cdpColumnNumber,  // Use 0-based CDP column number (if provided)
           condition: logExpression,
         });
+
+        // AUTOMATIC LINE/COLUMN MAPPING VALIDATION
+        // Get actual location from CDP (0-based)
+        const actualCdpLine = result.locations[0].lineNumber;
+        const actualCdpColumn = result.locations[0].columnNumber;
+
+        // Convert to 1-based for comparison with user input
+        const actualLineUser = actualCdpLine + 1;
+        const actualColumnUser = actualCdpColumn !== undefined ? actualCdpColumn + 1 : undefined;
+
+        // Check if location differs from what user requested
+        const lineDiffers = actualLineUser !== targetLine;
+        const columnDiffers = targetColumn !== undefined && actualColumnUser !== targetColumn;
+        const locationDiffers = lineDiffers || columnDiffers;
+
+        // If location differs AND we have expressions to validate
+        if (locationDiffers && expressions.length > 0) {
+          // Validate expressions at actual location
+          const validation = await cdpManager.validateLogpointAtActualLocation(
+            targetUrl,
+            actualLineUser,  // 1-based
+            actualColumnUser, // 1-based
+            expressions,
+            2000  // 2 second timeout
+          );
+
+          // If validation failed (expressions not valid at actual location)
+          if (!validation.allValid) {
+            // Remove the breakpoint - don't keep a broken logpoint
+            await cdpManager.removeBreakpoint(result.breakpointId);
+
+            // Get code snippet at actual location (3 lines context)
+            let codeContext = '';
+            try {
+              const sourceCode = await cdpManager.getSourceCode(
+                targetUrl,
+                Math.max(1, actualLineUser - 1),  // 1 line before
+                actualLineUser + 1  // 1 line after
+              );
+              codeContext = sourceCode.code;
+            } catch (e) {
+              codeContext = '(Could not fetch source code)';
+            }
+
+            // Search for better locations
+            let suggestions: any[] = [];
+            try {
+              suggestions = await cdpManager.findBestLogpointLocation(
+                targetUrl,
+                lineNumber,
+                columnNumber,
+                expressions,
+                2,  // Search ±2 lines
+                1000  // 1 second timeout per candidate
+              );
+            } catch (e) {
+              // If search fails, provide a simple suggestion
+              suggestions = [{
+                line: actualLineUser - 1,
+                reason: 'Try the line before where variables might be in scope',
+                note: 'Use validateLogpoint first to test expressions'
+              }];
+            }
+
+            // Return detailed error response
+            return {
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  success: false,
+                  error: 'Logpoint expressions failed validation at actual CDP location',
+                  requested: {
+                    line: lineNumber,  // Original user request (1-based)
+                    column: columnNumber,
+                    url
+                  },
+                  actual: {
+                    line: actualLineUser,  // Where CDP actually set it (1-based)
+                    column: actualColumnUser,
+                    lineOffset: actualLineUser - lineNumber,
+                    columnOffset: actualColumnUser && columnNumber ? actualColumnUser - columnNumber : null,
+                    reason: 'V8 mapped to nearest valid breakpoint location'
+                  },
+                  validation: {
+                    failedExpressions: validation.results.filter(r => !r.valid).map(r => r.expression),
+                    results: validation.results,
+                  },
+                  codeContext: {
+                    actualLocation: codeContext,
+                    availableVariables: validation.availableVariables || []
+                  },
+                  suggestions: suggestions.length > 0 ? suggestions : undefined,
+                  helpMessage: suggestions.length > 0 && suggestions[0].score === 100
+                    ? `Set logpoint at line ${suggestions[0].line}:${suggestions[0].column || 'auto'} instead where all expressions are in scope.`
+                    : `Variables not in scope at actual location ${actualLineUser}:${actualColumnUser || 'auto'}. Try using validateLogpoint to find a better location.`
+                }, null, 2)
+              }]
+            };
+          }
+
+          // Validation passed but location differs - will show warning in success response below
+        }
 
         // Store as logpoint in breakpoint map
         const breakpointInfo: any = {
           breakpointId: result.breakpointId,
           location: result.locations[0],
           isLogpoint: true,
-          originalLocation: url !== targetUrl ? { url, lineNumber, columnNumber: 0 } : undefined,
+          originalLocation: url !== targetUrl ? { url, lineNumber, columnNumber } : undefined,
         };
         (cdpManager as any).state.breakpoints.set(result.breakpointId, breakpointInfo);
 
@@ -410,21 +623,37 @@ export function createBreakpointTools(cdpManager: CDPManager, sourceMapHandler: 
           expressionsForResponse.push(match[1]);
         }
 
+        // Build response based on whether location differs
+        const responseData: any = {
+          success: true,
+          breakpointId: result.breakpointId,
+          location: {
+            requested: { line: lineNumber, column: columnNumber },
+            actual: { line: actualLineUser, column: actualColumnUser },
+            matched: !locationDiffers
+          },
+          logMessage,
+          expressions: expressionsForResponse,
+          condition: condition || 'none',
+          note: 'This logpoint will log to the browser console without pausing execution',
+        };
+
+        // If location differs, add warning and validation info
+        if (locationDiffers && expressions.length > 0) {
+          responseData.warning = `Logpoint was set at line ${actualLineUser}:${actualColumnUser || 'auto'} (not ${lineNumber}:${columnNumber || 'auto'}) due to V8 line mapping. All expressions validated successfully at this location.`;
+          responseData.message = `Logpoint set at ${targetUrl}:${actualLineUser}:${actualColumnUser || 'auto'} (requested ${lineNumber}:${columnNumber || 'auto'})`;
+        } else {
+          responseData.message = `Logpoint set at ${targetUrl}:${targetLine}:${targetColumn || 'auto'}`;
+          if (expressionsForResponse.length > 0) {
+            responseData.tip = 'If you see console errors about undefined variables, use validateLogpoint to check expression validity';
+          }
+        }
+
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify({
-                success: true,
-                breakpointId: result.breakpointId,
-                location: result.locations[0],
-                logMessage,
-                expressions: expressionsForResponse,
-                condition: condition || 'none',
-                message: `Logpoint set at ${targetUrl}:${targetLine}`,
-                note: 'This logpoint will log to the browser console without pausing execution',
-                tip: expressionsForResponse.length > 0 ? 'If you see console errors about undefined variables, use validateLogpoint to check expression validity' : undefined,
-              }, null, 2),
+              text: JSON.stringify(responseData, null, 2),
             },
           ],
         };

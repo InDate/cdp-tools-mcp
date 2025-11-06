@@ -5,7 +5,6 @@
 
 // Challenge 1: DOM Manipulation Bug
 function setupEventListeners() {
-  // FIXED: Corrected typo from "buttom" to "button"
   const fetchButton = document.querySelector('.fetch-button');
 
   if (fetchButton) {
@@ -42,9 +41,12 @@ async function handleFetchUser() {
 
   try {
     const response = await fetch(`/api/user/${userId}`);
-    const data = await response.json();
 
-    // BUG: Not checking response.ok, so treats error as success
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
     console.log('User data received:', data);
     document.querySelector('#result').textContent = JSON.stringify(data, null, 2);
   } catch (error) {
@@ -103,8 +105,8 @@ function handleStorage() {
     timestamp: Date.now()
   };
 
-  // BUG: Storing as "usr_data" instead of "user_data"
-  localStorage.setItem('usr_data', JSON.stringify(userData));
+  // Fixed: Storing with correct key name
+  localStorage.setItem('user_data', JSON.stringify(userData));
   console.log('Data stored in localStorage');
 
   // Trying to retrieve with correct key (will fail)

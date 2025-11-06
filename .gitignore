@@ -6,3 +6,4 @@ build/
 *.tsbuildinfo
 .claude/transcripts/*
 .claude/screenshots/*
+*/__pycache__/*

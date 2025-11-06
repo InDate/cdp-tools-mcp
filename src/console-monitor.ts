@@ -262,7 +262,7 @@ export class ConsoleMonitor {
    */
   clear(): void {
     this.messages = [];
-    this.messageIdCounter = 0;
+    // Don't reset counter - prevents ID collisions after clear
   }
 
   /**
@@ -273,6 +273,29 @@ export class ConsoleMonitor {
       return this.messages.filter(msg => msg.type === type).length;
     }
     return this.messages.length;
+  }
+
+  /**
+   * Get the most recent N messages
+   */
+  getRecentMessages(count: number = 50, type?: string): StoredConsoleMessage[] {
+    let filtered = this.messages;
+
+    if (type) {
+      filtered = filtered.filter(msg => msg.type === type);
+    }
+
+    return filtered.slice(-count); // Last N messages
+  }
+
+  /**
+   * Get all messages without pagination
+   */
+  getAllMessages(type?: string): StoredConsoleMessage[] {
+    if (type) {
+      return this.messages.filter(msg => msg.type === type);
+    }
+    return [...this.messages];
   }
 
   /**

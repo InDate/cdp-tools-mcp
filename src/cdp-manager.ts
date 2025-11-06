@@ -170,18 +170,27 @@ export class CDPManager {
 
     const { Debugger } = this.client;
 
-    // Try to set breakpoint by URL first
+    // IMPORTANT: CDP uses 0-based line and column numbers internally
+    // User provides 1-based numbers (line 1 = first line, column 1 = first column)
+    // We must convert before calling CDP API
+    const cdpLineNumber = lineNumber - 1;  // Convert 1-based → 0-based
+    const cdpColumnNumber = columnNumber !== undefined ? columnNumber - 1 : undefined;  // Convert 1-based → 0-based
+
+    // Set breakpoint using 0-based CDP numbers
     const result = await Debugger.setBreakpointByUrl({
       url,
-      lineNumber,
-      columnNumber,
+      lineNumber: cdpLineNumber,
+      columnNumber: cdpColumnNumber,
       condition,
     });
 
+    // Store breakpoint info
+    // - location: Actual location from CDP (0-based)
+    // - originalLocation: User-requested location (1-based, what user asked for)
     const breakpointInfo: BreakpointInfo = {
       breakpointId: result.breakpointId,
-      location: result.locations[0] || { scriptId: '', lineNumber, columnNumber },
-      originalLocation: { url, lineNumber, columnNumber },
+      location: result.locations[0] || { scriptId: '', lineNumber: cdpLineNumber, columnNumber: cdpColumnNumber },
+      originalLocation: { url, lineNumber, columnNumber },  // Keep user's 1-based request
     };
 
     this.state.breakpoints.set(result.breakpointId, breakpointInfo);
@@ -464,6 +473,226 @@ export class CDPManager {
   }
 
   /**
+   * Validate logpoint expressions at a specific location
+   * Sets temp breakpoint, waits for execution, tests expressions
+   *
+   * @param url File URL (e.g., http://localhost:3000/app.js)
+   * @param lineNumber Line number (1-based, will be converted to 0-based for CDP)
+   * @param columnNumber Optional column number (1-based, will be converted to 0-based for CDP)
+   * @param expressions Array of expressions to validate (e.g., ["user.name", "user.id"])
+   * @param timeout Max wait time for execution in milliseconds
+   * @returns Validation results with pass/fail for each expression, plus available variables
+   */
+  async validateLogpointAtActualLocation(
+    url: string,
+    lineNumber: number,
+    columnNumber: number | undefined,
+    expressions: string[],
+    timeout: number = 2000
+  ): Promise<{
+    executed: boolean;
+    allValid: boolean;
+    results: Array<{ expression: string; valid: boolean; value?: any; error?: string }>;
+    availableVariables?: string[];
+    actualLocation?: { line: number; column: number };  // 1-based for user display
+  }> {
+    if (!this.state.connected) {
+      throw new Error('Not connected to debugger');
+    }
+
+    // Note: lineNumber and columnNumber are 1-based (user input)
+    // setBreakpoint will convert them to 0-based for CDP
+    const tempBreakpoint = await this.setBreakpoint(url, lineNumber, columnNumber);
+
+    try {
+      // Wait for execution with timeout
+      await new Promise(resolve => setTimeout(resolve, timeout));
+
+      // Check if we paused at the breakpoint
+      if (!this.state.paused || !this.state.currentCallFrames) {
+        // Code didn't execute - remove breakpoint and return
+        await this.removeBreakpoint(tempBreakpoint.breakpointId);
+        return {
+          executed: false,
+          allValid: false,
+          results: expressions.map(expr => ({
+            expression: expr,
+            valid: false,
+            error: 'Code has not executed yet - cannot validate without execution'
+          })),
+        };
+      }
+
+      // Get actual location from CDP (0-based)
+      const actualLocation = tempBreakpoint.location;
+      const actualLineUser = actualLocation.lineNumber + 1;  // Convert 0-based → 1-based
+      const actualColumnUser = actualLocation.columnNumber !== undefined
+        ? actualLocation.columnNumber + 1  // Convert 0-based → 1-based
+        : undefined;
+
+      // Get call frame for evaluation
+      const callFrame = this.state.currentCallFrames[0];
+
+      // Collect all available variables
+      const { Runtime } = this.client;
+      const availableVariables: string[] = [];
+
+      for (const scope of callFrame.scopeChain) {
+        if (scope.type === 'global') continue;  // Skip global
+
+        const properties = await Runtime.getProperties({
+          objectId: scope.object.objectId,
+          ownProperties: true,
+        });
+
+        properties.result
+          .filter((prop: any) => prop.value && !prop.name.startsWith('[['))
+          .forEach((prop: any) => availableVariables.push(prop.name));
+      }
+
+      // Evaluate each expression
+      const results: Array<{ expression: string; valid: boolean; value?: any; error?: string }> = [];
+
+      for (const expr of expressions) {
+        try {
+          const value = await this.evaluateExpression(expr, callFrame.callFrameId);
+          results.push({
+            expression: expr,
+            valid: true,
+            value,
+          });
+        } catch (error) {
+          results.push({
+            expression: expr,
+            valid: false,
+            error: String(error),
+          });
+        }
+      }
+
+      // Resume execution
+      await this.resume();
+
+      // Remove temp breakpoint
+      await this.removeBreakpoint(tempBreakpoint.breakpointId);
+
+      const allValid = results.every(r => r.valid);
+
+      return {
+        executed: true,
+        allValid,
+        results,
+        availableVariables: [...new Set(availableVariables)],  // Deduplicate
+        actualLocation: {
+          line: actualLineUser,
+          column: actualColumnUser!,
+        },
+      };
+    } catch (error) {
+      // Clean up on error
+      try {
+        if (this.state.paused) {
+          await this.resume();
+        }
+        await this.removeBreakpoint(tempBreakpoint.breakpointId);
+      } catch (e) {
+        // Ignore cleanup errors
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Search for the best location to set a logpoint by trying nearby lines/columns
+   * Returns suggestions ranked by how many expressions are valid
+   *
+   * @param url File URL
+   * @param lineNumber Desired line number (1-based)
+   * @param columnNumber Desired column number (1-based, optional)
+   * @param expressions Array of expressions to validate
+   * @param searchRadius Number of lines to search in each direction (default: 2)
+   * @param timeout Timeout per location test in milliseconds (default: 1000ms)
+   * @returns Array of suggestions sorted by score (best first), max 3 results
+   */
+  async findBestLogpointLocation(
+    url: string,
+    lineNumber: number,
+    columnNumber: number | undefined,
+    expressions: string[],
+    searchRadius: number = 2,
+    timeout: number = 1000
+  ): Promise<Array<{
+    line: number;
+    column: number | undefined;
+    score: number;
+    validExpressions: string[];
+    invalidExpressions: string[];
+    availableVariables: string[];
+    reason: string;
+  }>> {
+    const candidates: Array<{
+      line: number;
+      column: number | undefined;
+      score: number;
+      validExpressions: string[];
+      invalidExpressions: string[];
+      availableVariables: string[];
+      reason: string;
+    }> = [];
+
+    // Try requested line first, then ±1, ±2, etc.
+    for (let offset = 0; offset <= searchRadius; offset++) {
+      const lines = offset === 0 ? [lineNumber] : [lineNumber - offset, lineNumber + offset];
+
+      for (const line of lines) {
+        if (line < 1) continue;  // Skip negative lines
+
+        try {
+          const validation = await this.validateLogpointAtActualLocation(
+            url,
+            line,
+            columnNumber,
+            expressions,
+            timeout
+          );
+
+          if (validation.executed) {
+            const validCount = validation.results.filter(r => r.valid).length;
+            const score = Math.round((validCount / expressions.length) * 100);
+
+            candidates.push({
+              line: validation.actualLocation?.line || line,
+              column: validation.actualLocation?.column,
+              score,
+              validExpressions: validation.results.filter(r => r.valid).map(r => r.expression),
+              invalidExpressions: validation.results.filter(r => !r.valid).map(r => r.expression),
+              availableVariables: validation.availableVariables || [],
+              reason: score === 100 ? 'All expressions available in scope' :
+                      score > 0 ? `${validCount}/${expressions.length} expressions available` :
+                      'No expressions available'
+            });
+          }
+        } catch (e) {
+          // Skip locations that error
+          continue;
+        }
+      }
+    }
+
+    // Sort by score (highest first), then by proximity to original line
+    candidates.sort((a, b) => {
+      if (b.score !== a.score) {
+        return b.score - a.score;  // Higher score first
+      }
+      // If scores equal, prefer closer to original line
+      return Math.abs(a.line - lineNumber) - Math.abs(b.line - lineNumber);
+    });
+
+    // Return top 3
+    return candidates.slice(0, 3);
+  }
+
+  /**
    * Get source code from a file at a specific line range
    */
   async getSourceCode(
@@ -668,5 +897,48 @@ export class CDPManager {
     }
     if (value.type === 'function') return `[Function: ${value.description}]`;
     return String(value.value);
+  }
+
+  /**
+   * Get all loaded scripts
+   */
+  getAllScripts(): Array<{ scriptId: string; url: string }> {
+    return Array.from(this.scriptIdToUrl.entries()).map(([scriptId, url]) => ({
+      scriptId,
+      url,
+    }));
+  }
+
+  /**
+   * Search within a specific script using regex
+   */
+  async searchInScript(
+    scriptId: string,
+    pattern: string,
+    caseSensitive: boolean = false,
+    isRegex: boolean = true
+  ): Promise<Array<{ lineNumber: number; lineContent: string }>> {
+    if (!this.state.connected) {
+      throw new Error('Not connected to debugger');
+    }
+
+    const { Debugger } = this.client;
+
+    try {
+      const result = await Debugger.searchInContent({
+        scriptId,
+        query: pattern,
+        caseSensitive,
+        isRegex,
+      });
+
+      return (result.result || []).map((match: any) => ({
+        lineNumber: match.lineNumber,
+        lineContent: match.lineContent,
+      }));
+    } catch (error) {
+      // Script might not support search or other error
+      return [];
+    }
   }
 }

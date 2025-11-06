@@ -51,6 +51,37 @@ const server = new Server(
   }
 );
 
+/**
+ * Wait for Chrome debugging port to become ready
+ * Polls the /json/version endpoint until Chrome is inspectable
+ */
+async function waitForChromeReady(port: number, maxAttempts: number = 10): Promise<void> {
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 1000);
+
+      const response = await fetch(`http://localhost:${port}/json/version`, {
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        // Chrome is ready and inspectable
+        return;
+      }
+    } catch (error) {
+      // Chrome not ready yet, continue polling
+    }
+
+    // Exponential backoff: 500ms + (attempt * 200ms)
+    await new Promise(resolve => setTimeout(resolve, 500 + i * 200));
+  }
+
+  throw new Error(`Chrome debugging port ${port} failed to become inspectable within timeout. Try increasing the wait time or check if Chrome started correctly.`);
+}
+
 // Connection management tools
 const connectionTools = {
   launchChrome: createTool(
@@ -75,8 +106,8 @@ const connectionTools = {
 
         if (autoConnect) {
           try {
-            // Wait a moment for Chrome to fully start
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            // Wait for Chrome to become ready and inspectable
+            await waitForChromeReady(port);
 
             // Create connection managers for this connection
             const cdpManager = new CDPManager(sourceMapHandler);

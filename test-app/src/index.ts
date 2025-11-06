@@ -17,8 +17,6 @@ const PORT = 3000;
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../public')));
 
-// Challenge 1: Network Request Bug
-// This endpoint has a bug - it returns 500 even for valid requests
 app.get('/api/user/:id', (req, res) => {
   const userId = parseInt(req.params.id);
 

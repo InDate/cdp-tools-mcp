@@ -25,6 +25,11 @@ const searchConsoleLogsSchema = z.object({
   limit: z.number().default(50),
 }).strict();
 
+const getRecentConsoleLogsSchema = z.object({
+  count: z.number().default(50).describe('Number of recent messages to retrieve'),
+  type: z.string().optional().describe('Optional message type filter (log, error, warn, etc.)'),
+}).strict();
+
 const emptySchema = z.object({}).strict();
 
 export function createConsoleTools(puppeteerManager: PuppeteerManager, consoleMonitor: ConsoleMonitor) {
@@ -54,6 +59,7 @@ export function createConsoleTools(puppeteerManager: PuppeteerManager, consoleMo
                   id: msg.id,
                   type: msg.type,
                   text: msg.text,
+                  args: msg.args,
                   location: msg.location,
                   timestamp: msg.timestamp,
                 })),
@@ -106,6 +112,41 @@ export function createConsoleTools(puppeteerManager: PuppeteerManager, consoleMo
       }
     ),
 
+    getRecentConsoleLogs: createTool(
+      'Get the most recent N console messages (default: 50). More convenient than listConsoleLogs for viewing recent activity.',
+      getRecentConsoleLogsSchema,
+      async (args) => {
+        // Start monitoring if not already active
+        if (!consoleMonitor.isActive() && puppeteerManager.isConnected()) {
+          const page = puppeteerManager.getPage();
+          consoleMonitor.startMonitoring(page);
+        }
+
+        const messages = consoleMonitor.getRecentMessages(args.count, args.type);
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                messages: messages.map(msg => ({
+                  id: msg.id,
+                  type: msg.type,
+                  text: msg.text,
+                  args: msg.args,
+                  location: msg.location,
+                  timestamp: msg.timestamp,
+                })),
+                count: messages.length,
+                requestedCount: args.count,
+                totalCount: consoleMonitor.getCount(args.type),
+              }, null, 2),
+            },
+          ],
+        };
+      }
+    ),
+
     searchConsoleLogs: createTool(
       'Search console messages using regex pattern (more efficient than listConsoleLogs for finding specific messages)',
       searchConsoleLogsSchema,
@@ -149,6 +190,7 @@ export function createConsoleTools(puppeteerManager: PuppeteerManager, consoleMo
                   id: msg.id,
                   type: msg.type,
                   text: msg.text,
+                  args: msg.args,
                   location: msg.location,
                   timestamp: msg.timestamp,
                 })),
