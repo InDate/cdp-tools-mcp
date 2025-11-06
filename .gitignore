@@ -5,3 +5,4 @@ build/
 .env
 *.tsbuildinfo
 .claude/transcripts/*
+.claude/screenshots/*

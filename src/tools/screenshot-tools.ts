@@ -18,8 +18,23 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
   const saveScreenshotToDisk = async (buffer: Buffer, type: string, suggestedPath?: string): Promise<string> => {
     const timestamp = Date.now();
     const ext = type === 'png' ? 'png' : 'jpg';
-    const filename = suggestedPath || `screenshot-${timestamp}.${ext}`;
-    const filepath = path.isAbsolute(filename) ? filename : path.join(process.cwd(), filename);
+
+    // If user provided a path, use it
+    if (suggestedPath) {
+      const filepath = path.isAbsolute(suggestedPath) ? suggestedPath : path.join(process.cwd(), suggestedPath);
+      await fs.writeFile(filepath, buffer);
+      return filepath;
+    }
+
+    // Default: save to .claude/screenshots/YYYY-MM-DD/
+    const date = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    const screenshotDir = path.join(process.cwd(), '.claude', 'screenshots', date);
+
+    // Ensure directory exists
+    await fs.mkdir(screenshotDir, { recursive: true });
+
+    const filename = `screenshot-${timestamp}.${ext}`;
+    const filepath = path.join(screenshotDir, filename);
 
     await fs.writeFile(filepath, buffer);
 
