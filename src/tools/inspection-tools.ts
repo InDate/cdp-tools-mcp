@@ -2,18 +2,37 @@
  * Inspection Tools
  */
 
+import { z } from 'zod';
 import { CDPManager } from '../cdp-manager.js';
 import { SourceMapHandler } from '../sourcemap-handler.js';
+import { createTool } from '../validation-helpers.js';
+
+// Empty schema for tools with no parameters
+const emptySchema = z.object({}).strict();
+
+// Schema for getVariables
+const getVariablesSchema = z.object({
+  callFrameId: z.string().describe('The call frame ID (get this from getCallStack)'),
+  includeGlobal: z.boolean().default(false).describe('Include global scope variables (default: false, set true to enable filtering global)'),
+  filter: z.string().optional().describe('Regex pattern to filter variable names (only applies when includeGlobal is true)'),
+  expandObjects: z.boolean().default(true).describe('Expand object/array contents to show actual values instead of just type descriptions (default: true)'),
+  maxDepth: z.number().default(2).describe('Maximum depth for object/array expansion (default: 2, prevents infinite recursion)'),
+}).strict();
+
+// Schema for evaluateExpression
+const evaluateExpressionSchema = z.object({
+  expression: z.string().describe('The JavaScript expression to evaluate'),
+  callFrameId: z.string().optional().describe('Optional call frame ID to evaluate in a specific frame context'),
+  expandObjects: z.boolean().default(true).describe('Expand object/array contents in the result (default: true)'),
+  maxDepth: z.number().default(2).describe('Maximum depth for object/array expansion (default: 2)'),
+}).strict();
 
 export function createInspectionTools(cdpManager: CDPManager, sourceMapHandler: SourceMapHandler) {
   return {
-    getCallStack: {
-      description: 'Get the current call stack when paused at a breakpoint',
-      inputSchema: {
-        type: 'object',
-        properties: {},
-      },
-      handler: async () => {
+    getCallStack: createTool(
+      'Get the current call stack when paused at a breakpoint',
+      emptySchema,
+      async () => {
         const callStack = cdpManager.getCallStack();
 
         if (!callStack) {
@@ -60,34 +79,17 @@ export function createInspectionTools(cdpManager: CDPManager, sourceMapHandler: 
             },
           ],
         };
-      },
-    },
+      }
+    ),
 
-    getVariables: {
-      description: 'Get all variables in scope for a specific call frame',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          callFrameId: {
-            type: 'string',
-            description: 'The call frame ID (get this from getCallStack)',
-          },
-          includeGlobal: {
-            type: 'boolean',
-            description: 'Include global scope variables (default: false, set true to enable filtering global)',
-          },
-          filter: {
-            type: 'string',
-            description: 'Regex pattern to filter variable names (only applies when includeGlobal is true)',
-          },
-        },
-        required: ['callFrameId'],
-      },
-      handler: async (args: any) => {
-        const { callFrameId, includeGlobal = false, filter } = args;
+    getVariables: createTool(
+      'Get all variables in scope for a specific call frame',
+      getVariablesSchema,
+      async (args) => {
+        const { callFrameId, includeGlobal, filter, expandObjects, maxDepth } = args;
 
         try {
-          const variables = await cdpManager.getVariables(callFrameId, includeGlobal, filter);
+          const variables = await cdpManager.getVariables(callFrameId, includeGlobal, filter, expandObjects, maxDepth);
 
           // Group variables by scope type
           const groupedVariables: Record<string, any[]> = {};
@@ -128,30 +130,17 @@ export function createInspectionTools(cdpManager: CDPManager, sourceMapHandler: 
             ],
           };
         }
-      },
-    },
+      }
+    ),
 
-    evaluateExpression: {
-      description: 'Evaluate a JavaScript expression in the current context',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          expression: {
-            type: 'string',
-            description: 'The JavaScript expression to evaluate',
-          },
-          callFrameId: {
-            type: 'string',
-            description: 'Optional call frame ID to evaluate in a specific frame context',
-          },
-        },
-        required: ['expression'],
-      },
-      handler: async (args: any) => {
-        const { expression, callFrameId } = args;
+    evaluateExpression: createTool(
+      'Evaluate a JavaScript expression in the current context',
+      evaluateExpressionSchema,
+      async (args) => {
+        const { expression, callFrameId, expandObjects, maxDepth } = args;
 
         try {
-          const result = await cdpManager.evaluateExpression(expression, callFrameId);
+          const result = await cdpManager.evaluateExpression(expression, callFrameId, expandObjects, maxDepth);
 
           return {
             content: [
@@ -177,7 +166,7 @@ export function createInspectionTools(cdpManager: CDPManager, sourceMapHandler: 
             ],
           };
         }
-      },
-    },
+      }
+    ),
   };
 }
