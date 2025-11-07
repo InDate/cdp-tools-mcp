@@ -8,6 +8,7 @@ import { PuppeteerManager } from '../puppeteer-manager.js';
 import { executeWithPauseDetection, formatActionResult } from '../debugger-aware-wrapper.js';
 import { checkBrowserAutomation, formatErrorResponse } from '../error-helpers.js';
 import { createTool } from '../validation-helpers.js';
+import { getConfiguredDebugPort } from '../index.js';
 
 // Zod schemas for input validation
 const clickElementSchema = z.object({
@@ -35,7 +36,7 @@ export function createInputTools(puppeteerManager: PuppeteerManager, cdpManager:
       'Click an element by CSS selector. Automatically handles breakpoints.',
       clickElementSchema,
       async (args) => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'clickElement');
+        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'clickElement', getConfiguredDebugPort());
         if (error) {
           return formatErrorResponse(error);
         }
@@ -113,7 +114,7 @@ export function createInputTools(puppeteerManager: PuppeteerManager, cdpManager:
       'Type text into an element. Automatically handles breakpoints.',
       typeTextSchema,
       async (args) => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'typeText');
+        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'typeText', getConfiguredDebugPort());
         if (error) {
           return formatErrorResponse(error);
         }
@@ -152,7 +153,7 @@ export function createInputTools(puppeteerManager: PuppeteerManager, cdpManager:
       'Press a keyboard key or key combination. Automatically handles breakpoints.',
       pressKeySchema,
       async (args) => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'pressKey');
+        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'pressKey', getConfiguredDebugPort());
         if (error) {
           return formatErrorResponse(error);
         }
@@ -184,7 +185,7 @@ export function createInputTools(puppeteerManager: PuppeteerManager, cdpManager:
       'Hover over an element. Automatically handles breakpoints.',
       hoverElementSchema,
       async (args) => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'hoverElement');
+        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'hoverElement', getConfiguredDebugPort());
         if (error) {
           return formatErrorResponse(error);
         }

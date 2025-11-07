@@ -8,6 +8,7 @@ import { PuppeteerManager } from '../puppeteer-manager.js';
 import { executeWithPauseDetection, formatActionResult } from '../debugger-aware-wrapper.js';
 import { checkBrowserAutomation, formatErrorResponse } from '../error-helpers.js';
 import { createTool } from '../validation-helpers.js';
+import { getConfiguredDebugPort } from '../index.js';
 
 // Zod schemas for DOM tools
 const querySelectorSchema = z.object({
@@ -28,7 +29,7 @@ export function createDOMTools(puppeteerManager: PuppeteerManager, cdpManager: C
       'Find an element by CSS selector. Automatically handles breakpoints.',
       querySelectorSchema,
       async (args) => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'querySelector');
+        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'querySelector', getConfiguredDebugPort());
         if (error) {
           return formatErrorResponse(error);
         }
@@ -75,7 +76,7 @@ export function createDOMTools(puppeteerManager: PuppeteerManager, cdpManager: C
       'Get detailed properties of an element. Automatically handles breakpoints.',
       getElementPropertiesSchema,
       async (args) => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'getElementProperties');
+        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'getElementProperties', getConfiguredDebugPort());
         if (error) {
           return formatErrorResponse(error);
         }
@@ -148,7 +149,7 @@ export function createDOMTools(puppeteerManager: PuppeteerManager, cdpManager: C
       'Get a text-based snapshot of the DOM structure. Automatically handles breakpoints.',
       getDOMSnapshotSchema,
       async (args) => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'getDOMSnapshot');
+        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'getDOMSnapshot', getConfiguredDebugPort());
         if (error) {
           return formatErrorResponse(error);
         }

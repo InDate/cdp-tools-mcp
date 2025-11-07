@@ -8,6 +8,7 @@ import { PuppeteerManager } from '../puppeteer-manager.js';
 import { executeWithPauseDetection, formatActionResult } from '../debugger-aware-wrapper.js';
 import { checkBrowserAutomation, formatErrorResponse } from '../error-helpers.js';
 import { createTool } from '../validation-helpers.js';
+import { getConfiguredDebugPort } from '../index.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 
@@ -79,7 +80,7 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
       'Take a screenshot of the full page. Automatically saves to disk (default behavior) to avoid token limits. Returns file path. Default quality is 30 for JPEG.',
       takeScreenshotSchema,
       async (args) => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'takeScreenshot');
+        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'takeScreenshot', getConfiguredDebugPort());
         if (error) {
           return formatErrorResponse(error);
         }
@@ -135,7 +136,7 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
       'Take a screenshot of the current viewport. Automatically saves to disk (default behavior) to avoid token limits. Returns file path. Default quality is 30 for JPEG.',
       takeViewportScreenshotSchema,
       async (args) => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'takeViewportScreenshot');
+        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'takeViewportScreenshot', getConfiguredDebugPort());
         if (error) {
           return formatErrorResponse(error);
         }
@@ -190,7 +191,7 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
       'Take a screenshot of a specific element. Automatically saves to disk (default behavior) to avoid token limits. Returns file path. Default quality is 50 for JPEG. Automatically handles breakpoints.',
       takeElementScreenshotSchema,
       async (args) => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'takeElementScreenshot');
+        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'takeElementScreenshot', getConfiguredDebugPort());
         if (error) {
           return formatErrorResponse(error);
         }

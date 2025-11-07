@@ -8,6 +8,7 @@ import { PuppeteerManager } from '../puppeteer-manager.js';
 import { executeWithPauseDetection, formatActionResult } from '../debugger-aware-wrapper.js';
 import { checkBrowserAutomation, formatErrorResponse } from '../error-helpers.js';
 import { createTool } from '../validation-helpers.js';
+import { getConfiguredDebugPort } from '../index.js';
 
 // Zod schemas for storage tools
 const getCookiesSchema = z.object({
