@@ -23,6 +23,10 @@ An MCP (Model Context Protocol) server that enables LLMs to debug applications u
 ## Installation
 
 ```bash
+claude mcp add --transport stdio node /Volumes/Application Data/Code/llm-cdp/build/index.js
+```
+
+```bash
 npm install
 npm run build
 ```
@@ -36,6 +40,47 @@ npm start
 ```
 
 The server uses stdio transport and can be connected to by any MCP-compatible client.
+
+### Multi-Session Support
+
+Each MCP server instance automatically uses a unique debugging port to prevent conflicts when running multiple LLM sessions simultaneously.
+
+**Port Configuration:**
+
+- **Auto-Assignment (Default)**: The server automatically finds an available port starting from 9222
+- **Manual Configuration**: Set the `MCP_DEBUG_PORT` environment variable to specify a port
+
+**Example with Claude Code MCP configuration:**
+
+```json
+{
+  "mcpServers": {
+    "llm-cdp-session-1": {
+      "command": "node",
+      "args": ["/path/to/llm-cdp/build/index.js"],
+      "env": {
+        "MCP_DEBUG_PORT": "9222"
+      }
+    },
+    "llm-cdp-session-2": {
+      "command": "node",
+      "args": ["/path/to/llm-cdp/build/index.js"],
+      "env": {
+        "MCP_DEBUG_PORT": "9223"
+      }
+    }
+  }
+}
+```
+
+**How it works:**
+
+1. Each LLM session spawns its own MCP server process
+2. Each server instance gets a unique debugging port (via `MCP_DEBUG_PORT` or auto-assignment)
+3. Chrome instances launched via `launchChrome()` use the session's assigned port
+4. Sessions remain isolated - no shared console logs, network requests, or breakpoints
+
+**Note:** The server logs its assigned port to stderr on startup: `[llm-cdp] Using debug port: 9222`
 
 ### Launching a Debuggable Target
 
@@ -64,8 +109,9 @@ google-chrome --remote-debugging-port=9222
 Launch Chrome with debugging enabled automatically.
 
 **Parameters:**
-- `port` (number, optional): Debugging port (default: 9222)
+- `port` (number, optional): Debugging port (default: auto-assigned port for this session)
 - `url` (string, optional): URL to open (default: blank page)
+- `autoConnect` (boolean, optional): Automatically connect debugger after launch (default: true)
 
 **Example:**
 ```json
@@ -78,13 +124,14 @@ Launch Chrome with debugging enabled automatically.
 **Returns:**
 - `port`: The debugging port
 - `pid`: Process ID of the Chrome instance
+- `connectionId`: ID of the debugger connection (if autoConnect is true)
 
 #### `connectDebugger`
 Connect to a Chrome or Node.js debugger instance. Automatically detects runtime type and enables appropriate features.
 
 **Parameters:**
 - `host` (string, optional): Debugger host (default: "localhost")
-- `port` (number, optional): Debugger port (default: 9222)
+- `port` (number, optional): Debugger port (default: auto-assigned port for this session)
 
 **Example:**
 ```json

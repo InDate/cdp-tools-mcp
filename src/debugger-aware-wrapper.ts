@@ -88,27 +88,22 @@ export async function executeWithPauseDetection<T = any>(
       };
     }
   } catch (error: any) {
-    // Check if we're now paused (action might have failed due to pause)
-    if (cdpManager.isPaused()) {
-      const pauseInfo = cdpManager.getPausedInfo();
-      return {
-        success: true,
-        pausedAtBreakpoint: true,
-        pauseInfo: pauseInfo.location ? {
-          url: pauseInfo.location.url,
-          lineNumber: pauseInfo.location.lineNumber,
-          columnNumber: pauseInfo.location.columnNumber,
-          functionName: pauseInfo.location.functionName,
-          callStackDepth: pauseInfo.callStack?.length || 0,
-        } : undefined,
-      };
-    }
+    // Action failed - report the actual error
+    // Note: Even if we're paused, the action still failed with an error
+    const isPaused = cdpManager.isPaused();
+    const pauseInfo = isPaused ? cdpManager.getPausedInfo() : null;
 
-    // Real error (not pause-related)
     return {
       success: false,
-      pausedAtBreakpoint: false,
+      pausedAtBreakpoint: isPaused,
       error: `${actionName} failed: ${error.message || error}`,
+      pauseInfo: pauseInfo?.location ? {
+        url: pauseInfo.location.url,
+        lineNumber: pauseInfo.location.lineNumber,
+        columnNumber: pauseInfo.location.columnNumber,
+        functionName: pauseInfo.location.functionName,
+        callStackDepth: pauseInfo.callStack?.length || 0,
+      } : undefined,
     };
   }
 }

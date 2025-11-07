@@ -32,6 +32,59 @@ import { createDOMTools } from './tools/dom-tools.js';
 import { createScreenshotTools } from './tools/screenshot-tools.js';
 import { createInputTools } from './tools/input-tools.js';
 import { createStorageTools } from './tools/storage-tools.js';
+import { createServer } from 'net';
+
+/**
+ * Find an available port starting from the given port
+ */
+async function findAvailablePort(startPort: number): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+
+    server.listen(startPort, () => {
+      const port = (server.address() as any).port;
+      server.close(() => resolve(port));
+    });
+
+    server.on('error', (err: any) => {
+      if (err.code === 'EADDRINUSE') {
+        // Port in use, try next one
+        resolve(findAvailablePort(startPort + 1));
+      } else {
+        reject(err);
+      }
+    });
+  });
+}
+
+/**
+ * Get the debug port from environment variable or auto-assign
+ */
+async function getDebugPort(): Promise<number> {
+  const envPort = process.env.MCP_DEBUG_PORT;
+
+  if (envPort) {
+    const port = parseInt(envPort, 10);
+    if (isNaN(port) || port < 1024 || port > 65535) {
+      console.error(`Invalid MCP_DEBUG_PORT: ${envPort}. Using auto-assigned port.`);
+      return findAvailablePort(9222);
+    }
+    return port;
+  }
+
+  // Auto-assign starting from 9222
+  return findAvailablePort(9222);
+}
+
+// Get the debug port (will be initialized in main())
+let DEBUG_PORT = 9222;
+
+/**
+ * Get the current debug port (exported for use in error messages)
+ */
+export function getConfiguredDebugPort(): number {
+  return DEBUG_PORT;
+}
 
 // Initialize global managers
 const sourceMapHandler = new SourceMapHandler();
@@ -87,12 +140,12 @@ const connectionTools = {
   launchChrome: createTool(
     'Launch Chrome with debugging enabled and optionally auto-connect',
     z.object({
-      port: z.number().optional().describe('The debugging port (default: 9222)'),
+      port: z.number().optional().describe('The debugging port (default: auto-assigned port for this session)'),
       url: z.string().optional().describe('Optional URL to open (default: blank page)'),
       autoConnect: z.boolean().optional().default(true).describe('Automatically connect debugger after launch (default: true)'),
     }).strict(),
     async (args) => {
-      const port = args.port || 9222;
+      const port = args.port || DEBUG_PORT;
       const url = args.url;
       const autoConnect = args.autoConnect ?? true;
 
@@ -295,11 +348,11 @@ const connectionTools = {
     'Connect to a Chrome or Node.js debugger instance',
     z.object({
       host: z.string().optional().default('localhost').describe('The debugger host (default: localhost)'),
-      port: z.number().optional().describe('The debugger port (default: 9222 for Chrome, 9229 for Node.js)'),
+      port: z.number().optional().describe('The debugger port (default: auto-assigned port for this session)'),
     }).strict(),
     async (args) => {
       const host = args.host || 'localhost';
-      const port = args.port || 9222;
+      const port = args.port || DEBUG_PORT;
 
       try {
         // Create new managers for this connection
@@ -741,6 +794,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 // Start the server
 async function main() {
+  // Initialize debug port
+  DEBUG_PORT = await getDebugPort();
+  console.error(`[llm-cdp] Using debug port: ${DEBUG_PORT}`);
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
 

@@ -10,6 +10,7 @@ import { NetworkMonitor } from '../network-monitor.js';
 import { executeWithPauseDetection, formatActionResult } from '../debugger-aware-wrapper.js';
 import { checkBrowserAutomation, formatErrorResponse } from '../error-helpers.js';
 import { createTool } from '../validation-helpers.js';
+import { getConfiguredDebugPort } from '../index.js';
 
 // Schemas
 const navigateToSchema = z.object({
@@ -48,7 +49,7 @@ export function createPageTools(
       'Navigate to a URL. Automatically handles breakpoints.',
       navigateToSchema,
       async (args) => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'navigateTo');
+        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'navigateTo', getConfiguredDebugPort());
         if (error) {
           return formatErrorResponse(error);
         }
@@ -88,7 +89,7 @@ export function createPageTools(
       'Reload the current page. Automatically handles breakpoints.',
       reloadPageSchema,
       async (args) => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'reloadPage');
+        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'reloadPage', getConfiguredDebugPort());
         if (error) {
           return formatErrorResponse(error);
         }
@@ -132,7 +133,7 @@ export function createPageTools(
       'Navigate backward in browser history. Automatically handles breakpoints.',
       emptySchema,
       async () => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'goBack');
+        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'goBack', getConfiguredDebugPort());
         if (error) {
           return formatErrorResponse(error);
         }
@@ -169,7 +170,7 @@ export function createPageTools(
       'Navigate forward in browser history. Automatically handles breakpoints.',
       emptySchema,
       async () => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'goForward');
+        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'goForward', getConfiguredDebugPort());
         if (error) {
           return formatErrorResponse(error);
         }
@@ -206,7 +207,7 @@ export function createPageTools(
       'Get information about the current page. Automatically handles breakpoints.',
       emptySchema,
       async () => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'getPageInfo');
+        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'getPageInfo', getConfiguredDebugPort());
         if (error) {
           return formatErrorResponse(error);
         }

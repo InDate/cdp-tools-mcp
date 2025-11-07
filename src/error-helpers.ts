@@ -20,8 +20,11 @@ export interface StructuredError {
 export function checkBrowserAutomation(
   cdpManager: CDPManager,
   puppeteerManager: PuppeteerManager,
-  toolName: string
+  toolName: string,
+  debugPort?: number
 ): StructuredError | null {
+  const defaultPort = debugPort || 9222;
+
   if (!cdpManager.isConnected()) {
     return {
       success: false,
@@ -29,10 +32,10 @@ export function checkBrowserAutomation(
       code: 'NOT_CONNECTED',
       suggestions: [
         'Connect to a debugger first using connectDebugger()',
-        'For Chrome: connectDebugger({ port: 9222 })',
+        `For Chrome: connectDebugger({ port: ${defaultPort} })`,
         'For Node.js: connectDebugger({ port: 9229 })',
       ],
-      example: `connectDebugger({ port: 9222 })`,
+      example: `connectDebugger({ port: ${defaultPort} })`,
     };
   }
 
@@ -46,9 +49,9 @@ export function checkBrowserAutomation(
       suggestions: [
         'This tool only works with Chrome/browser debugging',
         'For server-side debugging, use: setBreakpoint, getVariables, evaluateExpression',
-        'To debug browser code, connect to Chrome on port 9222',
+        `To debug browser code, connect to Chrome on port ${defaultPort}`,
       ],
-      example: 'connectDebugger({ port: 9222 })  // Connect to Chrome instead',
+      example: `connectDebugger({ port: ${defaultPort} })  // Connect to Chrome instead`,
     };
   }
 
