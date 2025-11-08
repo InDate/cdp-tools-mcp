@@ -491,7 +491,7 @@ export function createBreakpointTools(cdpManager: CDPManager, sourceMapHandler: 
         // IMPORTANT: CDP expects 0-based line and column numbers, but we have 1-based numbers
         // Convert before calling CDP API
         const cdpLineNumber = targetLine - 1;  // Convert 1-based → 0-based
-        const cdpColumnNumber = targetColumn !== undefined ? targetColumn - 1 : undefined;  // Convert 1-based → 0-based
+        const cdpColumnNumber = targetColumn && targetColumn > 0 ? targetColumn - 1 : undefined;  // Convert 1-based → 0-based
 
         // Set breakpoint with condition that logs and returns false
         const { Debugger} = (cdpManager as any).client;
@@ -501,6 +501,37 @@ export function createBreakpointTools(cdpManager: CDPManager, sourceMapHandler: 
           columnNumber: cdpColumnNumber,  // Use 0-based CDP column number (if provided)
           condition: logExpression,
         });
+
+        // Check if breakpoint was resolved to any location
+        if (!result.locations || result.locations.length === 0) {
+          // Diagnose exact cause
+          const diagnosis = await cdpManager.diagnoseBreakpointFailure(targetUrl, targetLine);
+
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                success: false,
+                error: diagnosis.message,
+                cause: diagnosis.cause,
+                details: {
+                  requestedFile: url,
+                  requestedLine: lineNumber,
+                  targetFile: targetUrl,
+                  targetLine: targetLine,
+                  totalLines: diagnosis.totalLines
+                },
+                suggestion: diagnosis.suggestion
+              }, null, 2)
+            }],
+            isError: true
+          };
+        }
+
+        // Warn if multiple locations (rare but possible)
+        if (result.locations.length > 1) {
+          console.error(`[llm-cdp] Warning: Logpoint matched ${result.locations.length} locations. Using first match.`);
+        }
 
         // AUTOMATIC LINE/COLUMN MAPPING VALIDATION
         // Get actual location from CDP (0-based)

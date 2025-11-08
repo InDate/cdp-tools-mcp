@@ -184,12 +184,29 @@ export class CDPManager {
       condition,
     });
 
+    // Check if breakpoint was resolved to any location
+    if (!result.locations || result.locations.length === 0) {
+      // Diagnose exact cause
+      const diagnosis = await this.diagnoseBreakpointFailure(url, lineNumber);
+
+      const errorMsg = diagnosis.totalLines
+        ? `${diagnosis.message} (Script has ${diagnosis.totalLines} lines, you requested line ${diagnosis.requestedLine}). ${diagnosis.suggestion}`
+        : `${diagnosis.message}. ${diagnosis.suggestion}`;
+
+      throw new Error(errorMsg);
+    }
+
+    // Warn if multiple locations (rare but possible)
+    if (result.locations.length > 1) {
+      console.error(`[llm-cdp] Warning: Breakpoint matched ${result.locations.length} locations. Using first match.`);
+    }
+
     // Store breakpoint info
     // - location: Actual location from CDP (0-based)
     // - originalLocation: User-requested location (1-based, what user asked for)
     const breakpointInfo: BreakpointInfo = {
       breakpointId: result.breakpointId,
-      location: result.locations[0] || { scriptId: '', lineNumber: cdpLineNumber, columnNumber: cdpColumnNumber },
+      location: result.locations[0],  // Now safe to access since we checked above
       originalLocation: { url, lineNumber, columnNumber },  // Keep user's 1-based request
     };
 
@@ -230,6 +247,69 @@ export class CDPManager {
       breakpoints: regularBreakpoints,
       logpoints,
     };
+  }
+
+  /**
+   * Diagnose why a breakpoint failed to set (empty locations array)
+   * Performs lazy validation to determine exact cause
+   */
+  async diagnoseBreakpointFailure(url: string, lineNumber: number): Promise<{
+    cause: 'script_not_found' | 'line_out_of_bounds' | 'line_not_executable';
+    message: string;
+    scriptUrl: string;
+    requestedLine: number;
+    totalLines?: number;
+    suggestion: string;
+  }> {
+    // Check if we have this script loaded
+    const scriptId = this.urlToScriptId.get(url);
+
+    if (!scriptId) {
+      return {
+        cause: 'script_not_found',
+        message: `Script not loaded: ${url}`,
+        scriptUrl: url,
+        requestedLine: lineNumber,
+        suggestion: 'The script has not been loaded by Chrome yet. Use reloadPage() or navigateTo() to ensure the script loads.'
+      };
+    }
+
+    // Script exists - get its source to count lines
+    try {
+      const { Debugger } = this.client;
+      const source = await Debugger.getScriptSource({ scriptId });
+      const totalLines = source.scriptSource.split('\n').length;
+
+      if (lineNumber > totalLines) {
+        return {
+          cause: 'line_out_of_bounds',
+          message: `Line ${lineNumber} is out of bounds`,
+          scriptUrl: url,
+          requestedLine: lineNumber,
+          totalLines: totalLines,
+          suggestion: `The script only has ${totalLines} lines. Use getSourceCode() to view the file and find valid line numbers.`
+        };
+      }
+
+      // Script exists, line is in bounds, but still not executable
+      return {
+        cause: 'line_not_executable',
+        message: `Line ${lineNumber} is not executable code`,
+        scriptUrl: url,
+        requestedLine: lineNumber,
+        totalLines: totalLines,
+        suggestion: 'This line may be a comment, blank line, or non-executable declaration. Try setting the breakpoint on a nearby line with executable code (function call, assignment, etc.).'
+      };
+    } catch (error) {
+      // Fallback if we can't get script source
+      return {
+        cause: 'script_not_found',
+        message: `Unable to access script: ${url}`,
+        scriptUrl: url,
+        requestedLine: lineNumber,
+        suggestion: 'The script may have been unloaded. Try reloadPage().'
+      };
+    }
   }
 
   /**
