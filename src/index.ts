@@ -145,7 +145,7 @@ const connectionTools = {
       autoConnect: z.boolean().optional().default(true).describe('Automatically connect debugger after launch (default: true)'),
     }).strict(),
     async (args) => {
-      const port = args.port || DEBUG_PORT;
+      const port = args.port || getConfiguredDebugPort();
       const url = args.url;
       const autoConnect = args.autoConnect ?? true;
 
@@ -352,7 +352,7 @@ const connectionTools = {
     }).strict(),
     async (args) => {
       const host = args.host || 'localhost';
-      const port = args.port || DEBUG_PORT;
+      const port = args.port || getConfiguredDebugPort();
 
       try {
         // Create new managers for this connection
