@@ -7,6 +7,7 @@ import { CDPManager } from '../cdp-manager.js';
 import { SourceMapHandler } from '../sourcemap-handler.js';
 import { createTool } from '../validation-helpers.js';
 import type { LogpointExecutionTracker } from '../logpoint-execution-tracker.js';
+import { createSuccessResponse, createErrorResponse, getErrorMessage } from '../messages.js';
 
 // Schema definitions
 const setBreakpointSchema = z.object({
@@ -62,18 +63,7 @@ export function createBreakpointTools(
         const isConnected = cdpManager.isConnected();
 
         if (!isConnected) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  success: false,
-                  error: 'Not connected to debugger',
-                  suggestion: 'Use connectDebugger() first to connect to a Chrome or Node.js debugger',
-                }, null, 2),
-              },
-            ],
-          };
+          return createErrorResponse('DEBUGGER_NOT_CONNECTED');
         }
 
         // Try to map through source maps if this is a TypeScript file
@@ -98,57 +88,38 @@ export function createBreakpointTools(
           const label = args.condition ? 'Conditional breakpoint set at' : 'Breakpoint set at';
           await cdpManager.injectConsoleLink(targetUrl, targetLine, `${icon} ${label}`);
 
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  success: true,
-                  breakpointId: breakpoint.breakpointId,
-                  location: breakpoint.location,
-                  originalLocation: breakpoint.originalLocation,
-                  condition: args.condition || 'none',
-                  message: `${args.condition ? 'Conditional breakpoint' : 'Breakpoint'} set at ${targetUrl}:${targetLine}`,
-                  consoleLink: `Console link injected - click in browser to open source`,
-                  runtimeType,
-                  note: runtimeType === 'chrome'
-                    ? `${args.condition ? 'Conditional breakpoint' : 'Breakpoint'} set in Chrome browser runtime`
-                    : `${args.condition ? 'Conditional breakpoint' : 'Breakpoint'} set in Node.js runtime`,
-                }, null, 2),
-              },
-            ],
-          };
+          // Return markdown-only success response
+          return createSuccessResponse('BREAKPOINT_SET_SUCCESS', {
+            url: targetUrl,
+            lineNumber: targetLine,
+            breakpointId: breakpoint.breakpointId,
+            condition: args.condition,
+          });
         } catch (error: any) {
-          // Provide helpful error message with context
-          let helpMessage = '';
+          // Build context-aware error message
+          let markdown = getErrorMessage('BREAKPOINT_SET_FAILED', {
+            url: targetUrl,
+            lineNumber: targetLine,
+            error: error.message,
+          });
 
+          // Add runtime-specific TIP if applicable
           if (runtimeType === 'chrome' && (url.includes('/dist/') || url.includes('index.js'))) {
-            helpMessage = 'TIP: You are connected to Chrome (browser) but trying to set a breakpoint on what looks like server code. ' +
-                          'If this is Node.js server code, you need to connect to the Node.js debugger separately using connectDebugger({port: 9229}).';
+            markdown += '\n\n**TIP:** You are connected to Chrome (browser) but trying to set a breakpoint on what looks like server code. ' +
+                        'If this is Node.js server code, you need to connect to the Node.js debugger separately using `connectDebugger({port: 9229})`.';
           } else if (runtimeType === 'node' && url.includes('/public/')) {
-            helpMessage = 'TIP: You are connected to Node.js but trying to set a breakpoint on what looks like browser code. ' +
-                          'You may need to connect to Chrome using connectDebugger({port: 9222}) for client-side debugging.';
+            markdown += '\n\n**TIP:** You are connected to Node.js but trying to set a breakpoint on what looks like browser code. ' +
+                        'You may need to connect to Chrome using `connectDebugger({port: 9222})` for client-side debugging.';
           }
 
           return {
             content: [
               {
                 type: 'text',
-                text: JSON.stringify({
-                  success: false,
-                  error: `Failed to set breakpoint: ${error.message}`,
-                  runtimeType,
-                  url: targetUrl,
-                  lineNumber: targetLine,
-                  ...(helpMessage && { help: helpMessage }),
-                  suggestion: 'Verify that:\n' +
-                             '1. The file has been loaded by the runtime\n' +
-                             '2. The URL matches the runtime type (Chrome vs Node.js)\n' +
-                             '3. Line number is valid\n' +
-                             '4. You are connected to the correct debugger',
-                }, null, 2),
+                text: markdown,
               },
             ],
+            isError: true,
           };
         }
       }
@@ -234,7 +205,21 @@ export function createBreakpointTools(
             };
           }
 
+          // Reset the counter in the tracker
+          const previousCount = metadata.executionCount;
           logpointTracker.resetCounter(breakpointId);
+
+          // Reset the global counter in the page context
+          const logpointKey = `${metadata.url}:${metadata.lineNumber}`;
+          try {
+            await cdpManager.evaluateExpression(`
+              if (typeof globalThis.__llmCdpLogpointCounters !== 'undefined') {
+                globalThis.__llmCdpLogpointCounters['${logpointKey.replace(/'/g, "\\'")}'] = 0;
+              }
+            `);
+          } catch (error) {
+            // Ignore errors - counter may not exist yet
+          }
 
           // Clear the logpoint limit exceeded state in CDPManager
           cdpManager.clearLogpointLimitExceeded();
@@ -251,7 +236,7 @@ export function createBreakpointTools(
                     location: `${metadata.url}:${metadata.lineNumber}`,
                     logMessage: metadata.logMessage,
                     maxExecutions: metadata.maxExecutions,
-                    previousExecutionCount: metadata.executionCount,
+                    previousExecutionCount: previousCount,
                     newExecutionCount: 0,
                   },
                   note: `The logpoint can now execute ${metadata.maxExecutions} more times before pausing again. Use 'resume' to continue execution.`,
@@ -512,10 +497,28 @@ export function createBreakpointTools(
           expressions.push(match[1]);
         }
 
-        // Build the log expression
+        // Build the log expression with execution limiting
+        // Use a unique key for this logpoint based on location
+        const logpointKey = `${targetUrl}:${targetLine}`;
+
         let logExpression = `
           (function() {
             try {
+              // Initialize global counter storage if needed
+              if (typeof globalThis.__llmCdpLogpointCounters === 'undefined') {
+                globalThis.__llmCdpLogpointCounters = {};
+              }
+
+              // Get/increment counter for this logpoint
+              const key = '${logpointKey.replace(/'/g, "\\'")}';
+              globalThis.__llmCdpLogpointCounters[key] = (globalThis.__llmCdpLogpointCounters[key] || 0) + 1;
+              const executionCount = globalThis.__llmCdpLogpointCounters[key];
+
+              // Check if limit exceeded
+              if (executionCount > ${maxExecutions}) {
+                return true; // PAUSE - limit exceeded
+              }
+
               // Evaluate expressions
               const values = {
                 ${expressions.map(expr => `'${expr}': ${expr}`).join(',\n                ')}
@@ -555,13 +558,18 @@ export function createBreakpointTools(
               console.log('  Variables:', values);
               ` : ''}
 
+              // Check if this is the last allowed execution
+              if (executionCount === ${maxExecutions}) {
+                console.warn('[Logpoint] Execution limit reached (${maxExecutions}/${maxExecutions}). Will pause on next execution.');
+              }
+
             } catch(e) {
               console.error('[Logpoint] Error at ${targetUrl}:${targetLine}:${targetColumn || 'auto'}:', e.message);
               console.error('[Logpoint] Note: CDP may have mapped your requested location to a different line:column');
               console.error('[Logpoint] Actual location may differ from requested. Variables scope depends on actual location.');
               console.error('[Logpoint] Use validateLogpoint to check expressions before setting logpoints.');
             }
-            return false; // Never pause
+            return false; // Don't pause (unless limit exceeded above)
           })()
         `;
 

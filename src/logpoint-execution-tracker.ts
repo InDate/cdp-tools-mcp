@@ -91,19 +91,23 @@ export class LogpointExecutionTracker {
       return;
     }
 
-    // Try to match the message to a registered logpoint
-    // We'll match by the location (url and line number)
-    if (!message.location) {
+    // Parse location from message text since console messages from breakpoint conditions
+    // don't preserve the original source location
+    // Format: "[Logpoint] file:///path/to/file.js:12:auto: message..."
+    const locationMatch = message.text.match(/\[Logpoint\]\s+(.+?):(\d+)(?::(?:auto|\d+))?:/);
+    if (!locationMatch) {
       return;
     }
+
+    const messageUrl = locationMatch[1];
+    const messageLine = parseInt(locationMatch[2], 10);
 
     // Find the logpoint that matches this location
     for (const metadata of this.logpoints.values()) {
       // Compare URL and line number
-      // Note: location.lineNumber is 0-based in CDP, but we store 1-based
       if (
-        this.urlsMatch(message.location.url, metadata.url) &&
-        message.location.lineNumber === metadata.lineNumber - 1
+        this.urlsMatch(messageUrl, metadata.url) &&
+        messageLine === metadata.lineNumber
       ) {
         // Increment execution count
         metadata.executionCount++;
