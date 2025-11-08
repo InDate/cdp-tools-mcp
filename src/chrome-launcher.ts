@@ -36,7 +36,7 @@ export class ChromeLauncher {
   launch(port: number = 9222, url?: string): Promise<{ port: number; pid: number }> {
     return new Promise((resolve, reject) => {
       if (this.chromeProcess) {
-        reject(new Error('Chrome is already running'));
+        reject(new Error('Chrome is already running. Use killChrome() to close the existing instance, or use connectDebugger() to connect to it instead.'));
         return;
       }
 

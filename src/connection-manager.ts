@@ -37,6 +37,26 @@ export class ConnectionManager {
     host: string = 'localhost',
     port: number = 9222
   ): string {
+    // Check if a connection to this host:port already exists
+    const existingConnection = this.findConnectionByHostPort(host, port);
+    if (existingConnection) {
+      console.warn(`[ConnectionManager] Connection to ${host}:${port} already exists (${existingConnection.id}). Reusing existing connection.`);
+
+      // Clean up the new managers that won't be used (they may already be connected)
+      cdpManager.disconnect().catch((err) => {
+        console.error('[ConnectionManager] Error disconnecting orphaned cdpManager:', err);
+      });
+      if (puppeteerManager) {
+        puppeteerManager.disconnect().catch((err) => {
+          console.error('[ConnectionManager] Error disconnecting orphaned puppeteerManager:', err);
+        });
+      }
+
+      // Set it as active and return existing ID
+      this.activeConnectionId = existingConnection.id;
+      return existingConnection.id;
+    }
+
     const id = `conn-${++this.connectionCounter}`;
     const type = cdpManager.getRuntimeType();
 
@@ -60,6 +80,18 @@ export class ConnectionManager {
     }
 
     return id;
+  }
+
+  /**
+   * Find a connection by host and port
+   */
+  private findConnectionByHostPort(host: string, port: number): Connection | null {
+    for (const connection of this.connections.values()) {
+      if (connection.host === host && connection.port === port) {
+        return connection;
+      }
+    }
+    return null;
   }
 
   /**

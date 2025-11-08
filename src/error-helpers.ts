@@ -32,10 +32,10 @@ export function checkBrowserAutomation(
       code: 'NOT_CONNECTED',
       suggestions: [
         'Connect to a debugger first using connectDebugger()',
-        `For Chrome: connectDebugger({ port: ${defaultPort} })`,
-        'For Node.js: connectDebugger({ port: 9229 })',
+        'For Chrome: connectDebugger() - uses auto-assigned port',
+        'For Node.js: Set MCP_DEBUG_PORT=9229 environment variable before starting',
       ],
-      example: `connectDebugger({ port: ${defaultPort} })`,
+      example: `connectDebugger()`,
     };
   }
 
@@ -49,9 +49,9 @@ export function checkBrowserAutomation(
       suggestions: [
         'This tool only works with Chrome/browser debugging',
         'For server-side debugging, use: setBreakpoint, getVariables, evaluateExpression',
-        `To debug browser code, connect to Chrome on port ${defaultPort}`,
+        'To debug browser code, use launchChrome() to start Chrome with debugging enabled',
       ],
-      example: `connectDebugger({ port: ${defaultPort} })  // Connect to Chrome instead`,
+      example: `launchChrome()  // Connect to Chrome instead`,
     };
   }
 
@@ -64,7 +64,7 @@ export function checkBrowserAutomation(
         'Reconnect to the debugger',
         'This may happen if connection was partially established',
       ],
-      example: 'disconnectDebugger() then connectDebugger({ port: 9222 })',
+      example: 'disconnectDebugger() then connectDebugger()',
     };
   }
 

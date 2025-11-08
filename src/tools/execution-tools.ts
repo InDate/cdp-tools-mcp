@@ -35,6 +35,48 @@ export function createExecutionTools(cdpManager: CDPManager) {
       'Resume execution of the debugged program',
       emptySchema,
       async () => {
+        // Check if execution was paused due to logpoint limit exceeded
+        const logpointLimit = cdpManager.getLogpointLimitExceeded();
+
+        if (logpointLimit) {
+          // Return information about the logpoint and options
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  success: false,
+                  paused: true,
+                  reason: 'logpoint_limit_exceeded',
+                  logpoint: {
+                    breakpointId: logpointLimit.breakpointId,
+                    location: `${logpointLimit.url}:${logpointLimit.lineNumber}`,
+                    logMessage: logpointLimit.logMessage,
+                    executionCount: logpointLimit.executionCount,
+                    maxExecutions: logpointLimit.maxExecutions,
+                  },
+                  capturedLogs: logpointLimit.logs,
+                  message: `Logpoint at ${logpointLimit.url}:${logpointLimit.lineNumber} has reached its execution limit (${logpointLimit.maxExecutions}).`,
+                  options: [
+                    {
+                      action: 'reset_and_resume',
+                      description: 'Reset the logpoint counter and resume execution (allows another ' + logpointLimit.maxExecutions + ' executions)',
+                      tool: 'Use resetLogpointCounter with breakpointId: ' + logpointLimit.breakpointId,
+                    },
+                    {
+                      action: 'remove_and_resume',
+                      description: 'Remove the logpoint and resume execution',
+                      tool: 'Use removeBreakpoint with breakpointId: ' + logpointLimit.breakpointId + ', then call resume',
+                    },
+                  ],
+                  note: 'You must either reset the counter or remove the logpoint before you can resume execution.',
+                }, null, 2),
+              },
+            ],
+          };
+        }
+
+        // Normal resume
         await cdpManager.resume();
 
         return {

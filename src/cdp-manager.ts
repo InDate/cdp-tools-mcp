@@ -15,9 +15,18 @@ export class CDPManager {
     breakpoints: new Map(),
   };
   private scriptIdToUrl: Map<string, string> = new Map();
-  private urlToScriptId: Map<string, string> = new Map();
+  private urlToScriptId: Map<string, string[]> = new Map(); // Support multiple scripts per URL (inline HTML scripts)
   private pauseResolvers: Array<() => void> = [];
   private sourceMapHandler: SourceMapHandler | null = null;
+  private logpointLimitExceeded: {
+    breakpointId: string;
+    url: string;
+    lineNumber: number;
+    logMessage: string;
+    executionCount: number;
+    maxExecutions: number;
+    logs: any[];
+  } | null = null;
 
   constructor(sourceMapHandler?: SourceMapHandler) {
     this.sourceMapHandler = sourceMapHandler || null;
@@ -42,7 +51,10 @@ export class CDPManager {
       // Set up event listeners
       Debugger.scriptParsed((params: any) => {
         this.scriptIdToUrl.set(params.scriptId, params.url);
-        this.urlToScriptId.set(params.url, params.scriptId);
+
+        // Support multiple scripts per URL (inline HTML script blocks)
+        const existingScripts = this.urlToScriptId.get(params.url) || [];
+        this.urlToScriptId.set(params.url, [...existingScripts, params.scriptId]);
 
         // Auto-load source map if available
         if (params.sourceMapURL && this.sourceMapHandler) {
@@ -250,6 +262,24 @@ export class CDPManager {
   }
 
   /**
+   * Synchronize breakpoint state with CDP's actual breakpoints
+   * Use this to recover from state desynchronization
+   */
+  async syncBreakpoints(): Promise<{ synced: number; removed: number }> {
+    if (!this.state.connected) {
+      throw new Error('Not connected to debugger');
+    }
+
+    // This is a future enhancement - for now, just return current counts
+    // Full implementation would query CDP for all active breakpoints
+    // and reconcile with state.breakpoints Map
+    return {
+      synced: this.state.breakpoints.size,
+      removed: 0,
+    };
+  }
+
+  /**
    * Diagnose why a breakpoint failed to set (empty locations array)
    * Performs lazy validation to determine exact cause
    */
@@ -261,10 +291,10 @@ export class CDPManager {
     totalLines?: number;
     suggestion: string;
   }> {
-    // Check if we have this script loaded
-    const scriptId = this.urlToScriptId.get(url);
+    // Check if we have this script loaded (may be multiple scripts for inline HTML)
+    const scriptIds = this.urlToScriptId.get(url);
 
-    if (!scriptId) {
+    if (!scriptIds || scriptIds.length === 0) {
       return {
         cause: 'script_not_found',
         message: `Script not loaded: ${url}`,
@@ -274,31 +304,46 @@ export class CDPManager {
       };
     }
 
-    // Script exists - get its source to count lines
+    // Script exists - check each scriptId to find which contains the requested line
     try {
       const { Debugger } = this.client;
-      const source = await Debugger.getScriptSource({ scriptId });
-      const totalLines = source.scriptSource.split('\n').length;
 
-      if (lineNumber > totalLines) {
-        return {
-          cause: 'line_out_of_bounds',
-          message: `Line ${lineNumber} is out of bounds`,
-          scriptUrl: url,
-          requestedLine: lineNumber,
-          totalLines: totalLines,
-          suggestion: `The script only has ${totalLines} lines. Use getSourceCode() to view the file and find valid line numbers.`
-        };
+      // Try each script to find one that contains the requested line
+      for (const scriptId of scriptIds) {
+        const source = await Debugger.getScriptSource({ scriptId });
+        const totalLines = source.scriptSource.split('\n').length;
+
+        // Check if this script contains the requested line
+        if (lineNumber <= totalLines) {
+          // This script contains the line - check if it's executable
+          return {
+            cause: 'line_not_executable',
+            message: `Line ${lineNumber} is not executable code`,
+            scriptUrl: url,
+            requestedLine: lineNumber,
+            totalLines: totalLines,
+            suggestion: 'This line may be a comment, blank line, or non-executable declaration. Try setting the breakpoint on a nearby line with executable code (function call, assignment, etc.).'
+          };
+        }
       }
 
-      // Script exists, line is in bounds, but still not executable
+      // Line number exceeds all scripts - get the maximum lines from all scripts
+      let maxLines = 0;
+      for (const scriptId of scriptIds) {
+        const source = await Debugger.getScriptSource({ scriptId });
+        const lineCount = source.scriptSource.split('\n').length;
+        maxLines = Math.max(maxLines, lineCount);
+      }
+
       return {
-        cause: 'line_not_executable',
-        message: `Line ${lineNumber} is not executable code`,
+        cause: 'line_out_of_bounds',
+        message: `Line ${lineNumber} is out of bounds`,
         scriptUrl: url,
         requestedLine: lineNumber,
-        totalLines: totalLines,
-        suggestion: 'This line may be a comment, blank line, or non-executable declaration. Try setting the breakpoint on a nearby line with executable code (function call, assignment, etc.).'
+        totalLines: maxLines,
+        suggestion: scriptIds.length > 1
+          ? `This URL has ${scriptIds.length} inline scripts. The largest has ${maxLines} lines. Use searchCode() to find the correct script and line.`
+          : `The script only has ${maxLines} lines. Use getSourceCode() to view the file and find valid line numbers.`
       };
     } catch (error) {
       // Fallback if we can't get script source
@@ -334,6 +379,40 @@ export class CDPManager {
 
     const { Debugger } = this.client;
     await Debugger.pause();
+  }
+
+  /**
+   * Handle logpoint execution limit exceeded
+   * This should be called by the LogpointExecutionTracker when a logpoint hits its limit
+   */
+  async handleLogpointLimitExceeded(metadata: {
+    breakpointId: string;
+    url: string;
+    lineNumber: number;
+    logMessage: string;
+    executionCount: number;
+    maxExecutions: number;
+    logs: any[];
+  }): Promise<void> {
+    // Store the metadata
+    this.logpointLimitExceeded = metadata;
+
+    // Pause execution
+    await this.pause();
+  }
+
+  /**
+   * Get information about the logpoint that exceeded its limit (if any)
+   */
+  getLogpointLimitExceeded(): typeof this.logpointLimitExceeded {
+    return this.logpointLimitExceeded;
+  }
+
+  /**
+   * Clear the logpoint limit exceeded state
+   */
+  clearLogpointLimitExceeded(): void {
+    this.logpointLimitExceeded = null;
   }
 
   /**
@@ -786,23 +865,54 @@ export class CDPManager {
 
     const { Debugger } = this.client;
 
-    // Find the script ID for this URL
-    const scriptId = this.urlToScriptId.get(url);
-    if (!scriptId) {
+    // Find the script IDs for this URL (may be multiple for inline HTML)
+    const scriptIds = this.urlToScriptId.get(url);
+    if (!scriptIds || scriptIds.length === 0) {
       throw new Error(`Script not found for URL: ${url}. Make sure the script has been loaded/parsed.`);
     }
 
-    // Get the full source code from CDP
-    const result = await Debugger.getScriptSource({ scriptId });
-    const fullSource = result.scriptSource;
+    // If multiple scripts, find the one containing the requested line range
+    let scriptId: string;
+    let fullSource: string;
+    let totalLines: number;
+
+    if (scriptIds.length === 1) {
+      // Only one script - use it
+      scriptId = scriptIds[0];
+      const result = await Debugger.getScriptSource({ scriptId });
+      fullSource = result.scriptSource;
+      totalLines = fullSource.split('\n').length;
+    } else {
+      // Multiple scripts - find the one containing the requested line
+      const targetLine = startLine || 1;
+      let found = false;
+
+      for (const sid of scriptIds) {
+        const result = await Debugger.getScriptSource({ scriptId: sid });
+        const source = result.scriptSource;
+        const lineCount = source.split('\n').length;
+
+        // Check if this script contains the requested line
+        if (targetLine <= lineCount) {
+          scriptId = sid;
+          fullSource = source;
+          totalLines = lineCount;
+          found = true;
+          break;
+        }
+      }
+
+      if (!found) {
+        throw new Error(`Line ${targetLine} not found in any script for URL: ${url}. This URL has ${scriptIds.length} inline scripts.`);
+      }
+    }
 
     // Split into lines
-    const lines = fullSource.split('\n');
-    const totalLines = lines.length;
+    const lines = fullSource!.split('\n');
 
     // Determine the range
     const start = startLine ? Math.max(1, startLine) : 1;
-    const end = endLine ? Math.min(totalLines, endLine) : (startLine ? Math.min(totalLines, startLine + 9) : totalLines);
+    const end = endLine ? Math.min(totalLines!, endLine) : (startLine ? Math.min(totalLines!, startLine + 9) : totalLines!);
 
     // Extract the requested lines (convert to 0-indexed)
     const extractedLines = lines.slice(start - 1, end);
@@ -820,7 +930,7 @@ export class CDPManager {
 
     return {
       code: formattedCode,
-      totalLines,
+      totalLines: totalLines!,
       hasSourceMap,
     };
   }

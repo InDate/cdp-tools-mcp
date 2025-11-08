@@ -24,6 +24,7 @@ export class ConsoleMonitor {
   private messageIdCounter = 0;
   private maxMessages = 1000; // Keep last 1000 messages
   private isMonitoring = false;
+  private messageCallbacks: Array<(message: StoredConsoleMessage) => void> = [];
 
   /**
    * Start monitoring console messages on a page
@@ -75,6 +76,16 @@ export class ConsoleMonitor {
     // Keep only last N messages
     if (this.messages.length > this.maxMessages) {
       this.messages.shift();
+    }
+
+    // Notify callbacks
+    for (const callback of this.messageCallbacks) {
+      try {
+        callback(storedMessage);
+      } catch (error) {
+        // Silently ignore callback errors to prevent disruption
+        console.error('[ConsoleMonitor] Error in message callback:', error);
+      }
     }
   }
 
@@ -230,6 +241,16 @@ export class ConsoleMonitor {
     if (this.messages.length > this.maxMessages) {
       this.messages.shift();
     }
+
+    // Notify callbacks
+    for (const callback of this.messageCallbacks) {
+      try {
+        callback(storedMessage);
+      } catch (error) {
+        // Silently ignore callback errors to prevent disruption
+        console.error('[ConsoleMonitor] Error in message callback:', error);
+      }
+    }
   }
 
   /**
@@ -303,5 +324,22 @@ export class ConsoleMonitor {
    */
   isActive(): boolean {
     return this.isMonitoring;
+  }
+
+  /**
+   * Register a callback to be invoked when a console message is added
+   */
+  onMessage(callback: (message: StoredConsoleMessage) => void): void {
+    this.messageCallbacks.push(callback);
+  }
+
+  /**
+   * Remove a callback
+   */
+  removeMessageCallback(callback: (message: StoredConsoleMessage) => void): void {
+    const index = this.messageCallbacks.indexOf(callback);
+    if (index !== -1) {
+      this.messageCallbacks.splice(index, 1);
+    }
   }
 }

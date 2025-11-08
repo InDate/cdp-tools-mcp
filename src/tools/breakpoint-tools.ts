@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { CDPManager } from '../cdp-manager.js';
 import { SourceMapHandler } from '../sourcemap-handler.js';
 import { createTool } from '../validation-helpers.js';
+import type { LogpointExecutionTracker } from '../logpoint-execution-tracker.js';
 
 // Schema definitions
 const setBreakpointSchema = z.object({
@@ -21,6 +22,10 @@ const removeBreakpointSchema = z.object({
 
 const listBreakpointsSchema = z.object({}).strict();
 
+const resetLogpointCounterSchema = z.object({
+  breakpointId: z.string().describe('The logpoint breakpoint ID to reset'),
+}).strict();
+
 const setLogpointSchema = z.object({
   url: z.string().describe('The file URL or path'),
   lineNumber: z.number().describe('The line number (1-based)'),
@@ -29,6 +34,7 @@ const setLogpointSchema = z.object({
   condition: z.string().optional().describe('Optional condition - only log when this evaluates to true'),
   includeCallStack: z.boolean().default(false).describe('Include call stack in log output (default: false)'),
   includeVariables: z.boolean().default(false).describe('Include local variables in log output (default: false)'),
+  maxExecutions: z.number().int().min(1).default(20).describe('Maximum number of times this logpoint can execute before pausing (default: 20, minimum: 1). When the limit is reached, execution will pause and show captured logs with options to reset or remove the logpoint. Unlimited execution is not allowed.'),
 }).strict();
 
 const validateLogpointSchema = z.object({
@@ -39,7 +45,11 @@ const validateLogpointSchema = z.object({
   timeout: z.number().default(2000).describe('Maximum time to wait for code execution in milliseconds (default: 2000ms)'),
 }).strict();
 
-export function createBreakpointTools(cdpManager: CDPManager, sourceMapHandler: SourceMapHandler) {
+export function createBreakpointTools(
+  cdpManager: CDPManager,
+  sourceMapHandler: SourceMapHandler,
+  logpointTracker?: LogpointExecutionTracker
+) {
   return {
     setBreakpoint: createTool(
       'Set a breakpoint at a specific file and line number. Supports conditional breakpoints that only pause when a condition is true.',
@@ -149,6 +159,12 @@ export function createBreakpointTools(cdpManager: CDPManager, sourceMapHandler: 
       removeBreakpointSchema,
       async (args) => {
         const { breakpointId } = args;
+
+        // Unregister from logpoint tracker if it's a logpoint
+        if (logpointTracker) {
+          logpointTracker.unregisterLogpoint(breakpointId);
+        }
+
         await cdpManager.removeBreakpoint(breakpointId);
 
         return {
@@ -190,6 +206,72 @@ export function createBreakpointTools(cdpManager: CDPManager, sourceMapHandler: 
             },
           ],
         };
+      }
+    ),
+
+    resetLogpointCounter: createTool(
+      'Reset the execution counter for a logpoint, allowing it to execute another maxExecutions times. Use this after a logpoint has reached its limit and you want to continue collecting more logs.',
+      resetLogpointCounterSchema,
+      async (args) => {
+        const { breakpointId } = args;
+
+        // Reset the counter in the tracker
+        if (logpointTracker) {
+          const metadata = logpointTracker.getLogpoint(breakpointId);
+
+          if (!metadata) {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify({
+                    success: false,
+                    error: `Logpoint ${breakpointId} not found in tracker`,
+                    suggestion: 'Verify the breakpoint ID is correct and refers to a logpoint (not a regular breakpoint)',
+                  }, null, 2),
+                },
+              ],
+            };
+          }
+
+          logpointTracker.resetCounter(breakpointId);
+
+          // Clear the logpoint limit exceeded state in CDPManager
+          cdpManager.clearLogpointLimitExceeded();
+
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  success: true,
+                  message: `Logpoint counter reset for ${breakpointId}`,
+                  logpoint: {
+                    breakpointId: metadata.breakpointId,
+                    location: `${metadata.url}:${metadata.lineNumber}`,
+                    logMessage: metadata.logMessage,
+                    maxExecutions: metadata.maxExecutions,
+                    previousExecutionCount: metadata.executionCount,
+                    newExecutionCount: 0,
+                  },
+                  note: `The logpoint can now execute ${metadata.maxExecutions} more times before pausing again. Use 'resume' to continue execution.`,
+                }, null, 2),
+              },
+            ],
+          };
+        } else {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  success: false,
+                  error: 'Logpoint tracker not initialized',
+                }, null, 2),
+              },
+            ],
+          };
+        }
       }
     ),
 
@@ -404,10 +486,10 @@ export function createBreakpointTools(cdpManager: CDPManager, sourceMapHandler: 
     ),
 
     setLogpoint: createTool(
-      'Set a logpoint that logs without pausing execution (like Chrome DevTools Logpoints)',
+      'Set a logpoint that logs without pausing execution (like Chrome DevTools Logpoints). By default, logpoints are limited to 20 executions to prevent flooding logs. When a logpoint reaches its limit, execution pauses and you must either reset the counter or remove the logpoint. Use maxExecutions parameter to adjust the limit (minimum 1, no unlimited option).',
       setLogpointSchema,
       async (args) => {
-        const { url, lineNumber, columnNumber, logMessage, condition, includeCallStack, includeVariables } = args;
+        const { url, lineNumber, columnNumber, logMessage, condition, includeCallStack, includeVariables, maxExecutions } = args;
 
         // Try to map through source maps if this is a TypeScript file
         let targetUrl = url;
@@ -488,55 +570,46 @@ export function createBreakpointTools(cdpManager: CDPManager, sourceMapHandler: 
           logExpression = `(${condition}) && ${logExpression}`;
         }
 
-        // IMPORTANT: CDP expects 0-based line and column numbers, but we have 1-based numbers
-        // Convert before calling CDP API
-        const cdpLineNumber = targetLine - 1;  // Convert 1-based → 0-based
-        const cdpColumnNumber = targetColumn && targetColumn > 0 ? targetColumn - 1 : undefined;  // Convert 1-based → 0-based
-
-        // Set breakpoint with condition that logs and returns false
-        const { Debugger} = (cdpManager as any).client;
-        const result = await Debugger.setBreakpointByUrl({
-          url: targetUrl,
-          lineNumber: cdpLineNumber,  // Use 0-based CDP line number
-          columnNumber: cdpColumnNumber,  // Use 0-based CDP column number (if provided)
-          condition: logExpression,
-        });
-
-        // Check if breakpoint was resolved to any location
-        if (!result.locations || result.locations.length === 0) {
-          // Diagnose exact cause
-          const diagnosis = await cdpManager.diagnoseBreakpointFailure(targetUrl, targetLine);
-
+        // Use cdpManager.setBreakpoint to ensure proper state management
+        // This ensures state.breakpoints Map is updated immediately
+        let breakpoint: any;
+        try {
+          breakpoint = await cdpManager.setBreakpoint(
+            targetUrl,
+            targetLine,  // cdpManager.setBreakpoint expects 1-based numbers
+            targetColumn,
+            logExpression
+          );
+        } catch (error: any) {
           return {
             content: [{
               type: 'text',
               text: JSON.stringify({
                 success: false,
-                error: diagnosis.message,
-                cause: diagnosis.cause,
+                error: `Failed to set logpoint: ${error.message}`,
                 details: {
                   requestedFile: url,
                   requestedLine: lineNumber,
                   targetFile: targetUrl,
                   targetLine: targetLine,
-                  totalLines: diagnosis.totalLines
                 },
-                suggestion: diagnosis.suggestion
+                suggestion: error.message.includes('not loaded')
+                  ? 'The script has not been loaded by the runtime yet. Try navigating to the page or reloading.'
+                  : 'Verify the file has been loaded and the line number is valid.'
               }, null, 2)
             }],
             isError: true
           };
         }
 
-        // Warn if multiple locations (rare but possible)
-        if (result.locations.length > 1) {
-          console.error(`[llm-cdp] Warning: Logpoint matched ${result.locations.length} locations. Using first match.`);
-        }
+        // Mark as logpoint in the breakpoint info (state is already updated by setBreakpoint)
+        breakpoint.isLogpoint = true;
+        (cdpManager as any).state.breakpoints.set(breakpoint.breakpointId, breakpoint);
 
         // AUTOMATIC LINE/COLUMN MAPPING VALIDATION
         // Get actual location from CDP (0-based)
-        const actualCdpLine = result.locations[0].lineNumber;
-        const actualCdpColumn = result.locations[0].columnNumber;
+        const actualCdpLine = breakpoint.location.lineNumber;
+        const actualCdpColumn = breakpoint.location.columnNumber;
 
         // Convert to 1-based for comparison with user input
         const actualLineUser = actualCdpLine + 1;
@@ -561,7 +634,17 @@ export function createBreakpointTools(cdpManager: CDPManager, sourceMapHandler: 
           // If validation failed (expressions not valid at actual location)
           if (!validation.allValid) {
             // Remove the breakpoint - don't keep a broken logpoint
-            await cdpManager.removeBreakpoint(result.breakpointId);
+            // Unregister from tracker first
+            if (logpointTracker) {
+              logpointTracker.unregisterLogpoint(breakpoint.breakpointId);
+            }
+
+            try {
+              await cdpManager.removeBreakpoint(breakpoint.breakpointId);
+            } catch (removeError: any) {
+              // Log but continue - state might already be cleaned up
+              console.error(`[llm-cdp] Warning: Failed to remove invalid logpoint: ${removeError.message}`);
+            }
 
             // Get code snippet at actual location (3 lines context)
             let codeContext = '';
@@ -635,14 +718,16 @@ export function createBreakpointTools(cdpManager: CDPManager, sourceMapHandler: 
           // Validation passed but location differs - will show warning in success response below
         }
 
-        // Store as logpoint in breakpoint map
-        const breakpointInfo: any = {
-          breakpointId: result.breakpointId,
-          location: result.locations[0],
-          isLogpoint: true,
-          originalLocation: url !== targetUrl ? { url, lineNumber, columnNumber } : undefined,
-        };
-        (cdpManager as any).state.breakpoints.set(result.breakpointId, breakpointInfo);
+        // Register with logpoint execution tracker
+        if (logpointTracker) {
+          logpointTracker.registerLogpoint(
+            breakpoint.breakpointId,
+            targetUrl,
+            actualLineUser,  // Use the actual line where it was set (1-based)
+            logMessage,
+            maxExecutions
+          );
+        }
 
         // Inject console notification
         await cdpManager.injectConsoleLink(targetUrl, targetLine, '📝 Logpoint set at');
@@ -657,7 +742,7 @@ export function createBreakpointTools(cdpManager: CDPManager, sourceMapHandler: 
         // Build response based on whether location differs
         const responseData: any = {
           success: true,
-          breakpointId: result.breakpointId,
+          breakpointId: breakpoint.breakpointId,
           location: {
             requested: { line: lineNumber, column: columnNumber },
             actual: { line: actualLineUser, column: actualColumnUser },

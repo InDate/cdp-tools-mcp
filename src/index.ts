@@ -20,6 +20,7 @@ import { PuppeteerManager } from './puppeteer-manager.js';
 import { ConsoleMonitor } from './console-monitor.js';
 import { NetworkMonitor } from './network-monitor.js';
 import { ConnectionManager } from './connection-manager.js';
+import { LogpointExecutionTracker } from './logpoint-execution-tracker.js';
 import { validateParams, createTool } from './validation-helpers.js';
 import { createBreakpointTools } from './tools/breakpoint-tools.js';
 import { createExecutionTools } from './tools/execution-tools.js';
@@ -33,6 +34,12 @@ import { createScreenshotTools } from './tools/screenshot-tools.js';
 import { createInputTools } from './tools/input-tools.js';
 import { createStorageTools } from './tools/storage-tools.js';
 import { createServer } from 'net';
+import { readFile } from 'fs/promises';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 /**
  * Find an available port starting from the given port
@@ -41,14 +48,17 @@ async function findAvailablePort(startPort: number): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = createServer();
 
-    server.listen(startPort, () => {
+    // Explicitly bind to IPv4 localhost to match Chrome's behavior
+    server.listen(startPort, '127.0.0.1', () => {
       const port = (server.address() as any).port;
+      console.error(`[llm-cdp] findAvailablePort: Port ${port} is available`);
       server.close(() => resolve(port));
     });
 
     server.on('error', (err: any) => {
       if (err.code === 'EADDRINUSE') {
         // Port in use, try next one
+        console.error(`[llm-cdp] findAvailablePort: Port ${startPort} is in use, trying ${startPort + 1}`);
         resolve(findAvailablePort(startPort + 1));
       } else {
         reject(err);
@@ -86,23 +96,44 @@ export function getConfiguredDebugPort(): number {
   return DEBUG_PORT;
 }
 
+/**
+ * Load instructions from docs/instructions.md
+ */
+async function loadInstructions(): Promise<string | undefined> {
+  try {
+    const instructionsPath = join(__dirname, '..', 'docs', 'instructions.md');
+    return await readFile(instructionsPath, 'utf-8');
+  } catch (error) {
+    console.error('[llm-cdp] Failed to load instructions file:', error instanceof Error ? error.message : error);
+    return undefined;
+  }
+}
+
 // Initialize global managers
 const sourceMapHandler = new SourceMapHandler();
 const chromeLauncher = new ChromeLauncher();
 const connectionManager = new ConnectionManager();
+const logpointTracker = new LogpointExecutionTracker();
 
-// Create MCP server
-const server = new Server(
-  {
-    name: 'llm-cdp-debugger',
-    version: '0.1.0',
-  },
-  {
-    capabilities: {
-      tools: {},
+/**
+ * Create and configure the MCP server with instructions
+ */
+async function createMCPServer(): Promise<Server> {
+  const instructions = await loadInstructions();
+
+  return new Server(
+    {
+      name: 'llm-cdp-debugger',
+      version: '0.1.0',
     },
-  }
-);
+    {
+      capabilities: {
+        tools: {},
+      },
+      instructions,
+    }
+  );
+}
 
 /**
  * Wait for Chrome debugging port to become ready
@@ -140,12 +171,13 @@ const connectionTools = {
   launchChrome: createTool(
     'Launch Chrome with debugging enabled and optionally auto-connect',
     z.object({
-      port: z.number().optional().describe('The debugging port (default: auto-assigned port for this session)'),
       url: z.string().optional().describe('Optional URL to open (default: blank page)'),
       autoConnect: z.boolean().optional().default(true).describe('Automatically connect debugger after launch (default: true)'),
+      port: z.number().optional().describe('The debugging port (optional, defaults to this session\'s auto-assigned port). Use this to launch multiple Chrome instances on different ports.'),
     }).strict(),
     async (args) => {
-      const port = args.port || getConfiguredDebugPort();
+      const port = args.port || await findAvailablePort(getConfiguredDebugPort());
+      console.error(`[llm-cdp] launchChrome: Using port ${port} (requested: ${args.port}, configured: ${getConfiguredDebugPort()})`);
       const url = args.url;
       const autoConnect = args.autoConnect ?? true;
 
@@ -185,8 +217,14 @@ const connectionTools = {
               // Auto-reload page to capture initial console logs
               const currentUrl = page.url();
               if (currentUrl && currentUrl !== 'about:blank') {
-                await page.reload({ waitUntil: 'networkidle0' });
-                await new Promise(resolve => setTimeout(resolve, 500));
+                try {
+                  // Use 'load' instead of 'networkidle0' for compatibility with file:// URLs
+                  await page.reload({ waitUntil: 'load', timeout: 5000 });
+                  await new Promise(resolve => setTimeout(resolve, 500));
+                } catch (reloadError: any) {
+                  // Log warning but don't fail - page might already be loaded
+                  console.error(`[llm-cdp] Warning: Page reload failed: ${reloadError.message}`);
+                }
               }
 
               features.push('browser-automation', 'console-monitoring', 'network-monitoring');
@@ -348,7 +386,7 @@ const connectionTools = {
     'Connect to a Chrome or Node.js debugger instance',
     z.object({
       host: z.string().optional().default('localhost').describe('The debugger host (default: localhost)'),
-      port: z.number().optional().describe('The debugger port (default: auto-assigned port for this session)'),
+      port: z.number().optional().describe('The debugger port (optional, defaults to this session\'s auto-assigned port). Use this to connect to debuggers on different ports (e.g., Node.js on 9229, Chrome on 9222).'),
     }).strict(),
     async (args) => {
       const host = args.host || 'localhost';
@@ -380,9 +418,15 @@ const connectionTools = {
           // Skip reload for blank pages (nothing to reload)
           const currentUrl = page.url();
           if (currentUrl && currentUrl !== 'about:blank') {
-            await page.reload({ waitUntil: 'networkidle0' });
-            // Wait a bit more for all scripts to execute and errors to fire
-            await new Promise(resolve => setTimeout(resolve, 500));
+            try {
+              // Use 'load' instead of 'networkidle0' for compatibility with file:// URLs
+              await page.reload({ waitUntil: 'load', timeout: 5000 });
+              // Wait a bit more for all scripts to execute and errors to fire
+              await new Promise(resolve => setTimeout(resolve, 500));
+            } catch (reloadError: any) {
+              // Log warning but don't fail - page might already be loaded
+              console.error(`[llm-cdp] Warning: Page reload failed: ${reloadError.message}`);
+            }
           }
 
           features.push('browser-automation', 'console-monitoring', 'network-monitoring');
@@ -703,11 +747,28 @@ const proxyPuppeteerManager = new Proxy(new PuppeteerManager(), proxyHandlerForM
 const proxyConsoleMonitor = new Proxy(new ConsoleMonitor(), proxyHandlerForManager);
 const proxyNetworkMonitor = new Proxy(new NetworkMonitor(), proxyHandlerForManager);
 
+// Register logpoint tracker callbacks
+proxyConsoleMonitor.onMessage((message: any) => {
+  logpointTracker.handleConsoleMessage(message);
+});
+
+logpointTracker.setLimitExceededCallback((metadata) => {
+  proxyCdpManager.handleLogpointLimitExceeded({
+    breakpointId: metadata.breakpointId,
+    url: metadata.url,
+    lineNumber: metadata.lineNumber,
+    logMessage: metadata.logMessage,
+    executionCount: metadata.executionCount,
+    maxExecutions: metadata.maxExecutions,
+    logs: metadata.logs,
+  });
+});
+
 // Combine all tools
 const allTools = {
   ...connectionTools,
   // CDP Debugging tools
-  ...createBreakpointTools(proxyCdpManager, sourceMapHandler),
+  ...createBreakpointTools(proxyCdpManager, sourceMapHandler, logpointTracker),
   ...createExecutionTools(proxyCdpManager),
   ...createInspectionTools(proxyCdpManager, sourceMapHandler),
   ...createSourceTools(proxyCdpManager, sourceMapHandler),
@@ -721,76 +782,80 @@ const allTools = {
   ...createStorageTools(proxyPuppeteerManager, proxyCdpManager),
 };
 
-// Register tool handlers
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: Object.entries(allTools).map(([name, tool]) => ({
-      name,
-      description: tool.description,
-      inputSchema: tool.inputSchema,
-    })),
-  };
-});
-
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const toolName = request.params.name;
-  const tool = allTools[toolName as keyof typeof allTools];
-
-  if (!tool) {
+/**
+ * Register tool handlers on the server
+ */
+function registerToolHandlers(server: Server) {
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
     return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({
-            success: false,
-            error: `Unknown tool: ${toolName}`,
-            code: 'UNKNOWN_TOOL',
-            availableTools: Object.keys(allTools).sort()
-          }, null, 2),
-        },
-      ],
-      isError: true
+      tools: Object.entries(allTools).map(([name, tool]) => ({
+        name,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+      })),
     };
-  }
+  });
 
-  // All tools now use Zod validation
-  const validation = validateParams(
-    request.params.arguments || {},
-    (tool as any).zodSchema,
-    toolName
-  );
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const toolName = request.params.name;
+    const tool = allTools[toolName as keyof typeof allTools];
 
-  if (!validation.success) {
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(validation.error, null, 2),
-        },
-      ],
-      isError: true
-    };
-  }
+    if (!tool) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              success: false,
+              error: `Unknown tool: ${toolName}`,
+              code: 'UNKNOWN_TOOL',
+              availableTools: Object.keys(allTools).sort()
+            }, null, 2),
+          },
+        ],
+        isError: true
+      };
+    }
 
-  // Pass validated data to handler
-  try {
-    return await tool.handler(validation.data);
-  } catch (error) {
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({
-            success: false,
-            error: `Tool execution failed: ${error}`,
-            code: 'EXECUTION_ERROR'
-          }, null, 2),
-        },
-      ],
-      isError: true
-    };
-  }
-});
+    // All tools now use Zod validation
+    const validation = validateParams(
+      request.params.arguments || {},
+      (tool as any).zodSchema,
+      toolName
+    );
+
+    if (!validation.success) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(validation.error, null, 2),
+          },
+        ],
+        isError: true
+      };
+    }
+
+    // Pass validated data to handler
+    try {
+      return await tool.handler(validation.data);
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              success: false,
+              error: `Tool execution failed: ${error}`,
+              code: 'EXECUTION_ERROR'
+            }, null, 2),
+          },
+        ],
+        isError: true
+      };
+    }
+  });
+}
 
 // Start the server
 async function main() {
@@ -798,6 +863,13 @@ async function main() {
   DEBUG_PORT = await getDebugPort();
   console.error(`[llm-cdp] Using debug port: ${DEBUG_PORT}`);
 
+  // Create server with instructions
+  const server = await createMCPServer();
+
+  // Register tool handlers
+  registerToolHandlers(server);
+
+  // Connect to transport
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
