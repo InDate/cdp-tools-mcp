@@ -1130,7 +1130,15 @@ export class CDPManager {
       if (value.subtype === 'array') return `Array(${value.description})`;
       return value.description || value.className || 'Object';
     }
-    if (value.type === 'function') return `[Function: ${value.description}]`;
+    if (value.type === 'function') {
+      // Extract just the function name/signature, not the full source
+      const desc = value.description || '';
+      const match = desc.match(/^(function\s+\w+|async\s+function\s+\w+|\w+)\s*\(/);
+      if (match) {
+        return `[Function: ${match[1]}]`;
+      }
+      return '[Function]';
+    }
     return String(value.value);
   }
 
