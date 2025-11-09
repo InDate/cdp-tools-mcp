@@ -2,7 +2,8 @@
 
 This MCP server provides Chrome DevTools Protocol (CDP) debugging capabilities for JavaScript/TypeScript applications running in Chrome, Node.js, or other CDP-compatible environments.
 
-**IMPORTANT**: These tools are under active development. When something doesn't work as expected, provide feedback immediately about:
+IMPORTANT: These tools can all be used in Plan Mode. 
+IMPORTANT: These tools are under active development. When something doesn't work as expected, provide feedback immediately about:
 - What you tried
 - Your expected results
 - What actually happened
@@ -123,6 +124,12 @@ connectDebugger (to existing Node.js process with --inspect flag)
 ## Important Notes
 
 - **Logpoint execution limits**: By default, logpoints execute 20 times before pausing to prevent log flooding. Use `resetLogpointCounter` to continue or adjust `maxExecutions` when setting logpoints.
+
+- **Logpoint expression failures**: Each expression in a logpoint is wrapped in try-catch. If an expression fails (e.g., variable not in scope), it will show `[Error: message]` in the log instead of breaking the entire logpoint. To see all logpoint errors, use: `searchConsoleLogs({pattern: "Logpoint Error"})`
+
+- **CDP line mapping**: CDP/V8 may map your requested breakpoint/logpoint line to a different line (the nearest valid execution point). This can cause scope issues - a variable defined on line 74 won't be accessible if CDP sets the breakpoint before line 74. Use `validateLogpoint()` to test expressions before setting logpoints.
+
+- **evaluateExpression during pause**: When paused at a breakpoint, `evaluateExpression` always returns the result directly in the tool response. Using `console.log()` within an evaluated expression may not appear in console logs.
 
 - **Source maps**: The debugger automatically handles TypeScript and bundled code. Use `loadSourceMaps` if you need to manually specify a directory.
 

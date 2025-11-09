@@ -6,11 +6,12 @@ import { z } from 'zod';
 import type { CDPManager } from '../cdp-manager.js';
 import { PuppeteerManager } from '../puppeteer-manager.js';
 import { executeWithPauseDetection, formatActionResult } from '../debugger-aware-wrapper.js';
-import { checkBrowserAutomation, formatErrorResponse } from '../error-helpers.js';
+import { checkBrowserAutomation } from '../error-helpers.js';
 import { createTool } from '../validation-helpers.js';
 import { getConfiguredDebugPort } from '../index.js';
 import { promises as fs } from 'fs';
 import path from 'path';
+import { createSuccessResponse, createErrorResponse } from '../messages.js';
 
 export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpManager: CDPManager) {
   /**
@@ -82,7 +83,7 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
       async (args) => {
         const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'takeScreenshot', getConfiguredDebugPort());
         if (error) {
-          return formatErrorResponse(error);
+          return error;
         }
 
         const page = puppeteerManager.getPage();
@@ -105,14 +106,8 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
         if (shouldSaveToDisk) {
           const filepath = await saveScreenshotToDisk(screenshot, type, args.saveToDisk);
           const sizeMB = (screenshot.length / 1_000_000).toFixed(2);
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `Screenshot saved to ${filepath} (${sizeMB}MB, ${screenshot.length.toLocaleString()} bytes)`,
-              },
-            ],
-          };
+          const fileSize = `${sizeMB}MB`;
+          return createSuccessResponse('SCREENSHOT_SAVED', { filepath, fileSize });
         }
 
         // Small screenshot: return as native image content
@@ -138,7 +133,7 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
       async (args) => {
         const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'takeViewportScreenshot', getConfiguredDebugPort());
         if (error) {
-          return formatErrorResponse(error);
+          return error;
         }
 
         const page = puppeteerManager.getPage();
@@ -160,14 +155,8 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
         if (shouldSaveToDisk) {
           const filepath = await saveScreenshotToDisk(screenshot, type, args.saveToDisk);
           const sizeMB = (screenshot.length / 1_000_000).toFixed(2);
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `Viewport screenshot saved to ${filepath} (${sizeMB}MB, ${screenshot.length.toLocaleString()} bytes)`,
-              },
-            ],
-          };
+          const fileSize = `${sizeMB}MB`;
+          return createSuccessResponse('SCREENSHOT_SAVED', { filepath, fileSize });
         }
 
         // Small screenshot: return as native image content
@@ -193,7 +182,7 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
       async (args) => {
         const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'takeElementScreenshot', getConfiguredDebugPort());
         if (error) {
-          return formatErrorResponse(error);
+          return error;
         }
 
         const page = puppeteerManager.getPage();
@@ -241,45 +230,23 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
 
         // Handle errors
         if (result.result?.error) {
-          const response = formatActionResult(result, 'takeElementScreenshot', result.result);
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify(response, null, 2),
-              },
-            ],
-          };
+          return createErrorResponse('ELEMENT_NOT_FOUND', { selector: args.selector });
         }
 
         // Handle disk save
         if (result.result?.filepath) {
-          const response = formatActionResult(result, 'takeElementScreenshot', {
-            selector: result.result.selector,
+          return createSuccessResponse('SCREENSHOT_SAVED', {
             filepath: result.result.filepath,
-            size: result.result.size,
+            fileSize: result.result.size,
           });
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify(response, null, 2),
-              },
-            ],
-          };
         }
 
-        // Handle image return
-        const response = formatActionResult(result, 'takeElementScreenshot', {
-          selector: result.result?.selector,
-          size: result.result?.size,
-        });
-
+        // Handle image return - small screenshots
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify(response, null, 2),
+              text: `Element screenshot captured for \`${args.selector}\` (${result.result?.size})`,
             },
             {
               type: 'image',

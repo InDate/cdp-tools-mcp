@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { PuppeteerManager } from '../puppeteer-manager.js';
 import { ConsoleMonitor } from '../console-monitor.js';
 import { createTool } from '../validation-helpers.js';
+import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
 
 // Zod schemas for console tools
 const listConsoleLogsSchema = z.object({
@@ -50,25 +51,20 @@ export function createConsoleTools(puppeteerManager: PuppeteerManager, consoleMo
           offset: args.offset,
         });
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                messages: messages.map(msg => ({
-                  id: msg.id,
-                  type: msg.type,
-                  text: msg.text,
-                  args: msg.args,
-                  location: msg.location,
-                  timestamp: msg.timestamp,
-                })),
-                count: messages.length,
-                totalCount: consoleMonitor.getCount(args.type),
-              }, null, 2),
-            },
-          ],
-        };
+        const messageList = messages.map(msg => ({
+          id: msg.id,
+          type: msg.type,
+          text: msg.text,
+          args: msg.args,
+          location: msg.location,
+          timestamp: msg.timestamp,
+        }));
+
+        return createSuccessResponse('CONSOLE_MESSAGES_LIST', {
+          count: messages.length,
+          totalCount: consoleMonitor.getCount(args.type),
+          type: args.type
+        }, messageList);
       }
     ),
 
@@ -83,32 +79,29 @@ export function createConsoleTools(puppeteerManager: PuppeteerManager, consoleMo
             content: [
               {
                 type: 'text',
-                text: JSON.stringify({
-                  error: `Console message ${args.id} not found`,
-                }, null, 2),
+                text: `## Error\n\nConsole message ${args.id} not found\n\n**Suggestion:** Use \`listConsoleLogs()\` to see all available console messages.`,
               },
             ],
+            isError: true,
           };
         }
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                message: {
-                  id: message.id,
-                  type: message.type,
-                  text: message.text,
-                  args: message.args,
-                  location: message.location,
-                  stackTrace: message.stackTrace,
-                  timestamp: message.timestamp,
-                },
-              }, null, 2),
-            },
-          ],
+        const data = {
+          id: message.id,
+          type: message.type,
+          text: message.text,
+          args: message.args,
+          location: message.location,
+          stackTrace: message.stackTrace,
+          timestamp: message.timestamp,
         };
+
+        return createSuccessResponse('CONSOLE_MESSAGE_DETAIL', {
+          id: message.id,
+          type: message.type,
+          text: message.text,
+          timestamp: message.timestamp
+        }, data);
       }
     ),
 
@@ -124,26 +117,21 @@ export function createConsoleTools(puppeteerManager: PuppeteerManager, consoleMo
 
         const messages = consoleMonitor.getRecentMessages(args.count, args.type);
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                messages: messages.map(msg => ({
-                  id: msg.id,
-                  type: msg.type,
-                  text: msg.text,
-                  args: msg.args,
-                  location: msg.location,
-                  timestamp: msg.timestamp,
-                })),
-                count: messages.length,
-                requestedCount: args.count,
-                totalCount: consoleMonitor.getCount(args.type),
-              }, null, 2),
-            },
-          ],
-        };
+        const messageList = messages.map(msg => ({
+          id: msg.id,
+          type: msg.type,
+          text: msg.text,
+          args: msg.args,
+          location: msg.location,
+          timestamp: msg.timestamp,
+        }));
+
+        return createSuccessResponse('CONSOLE_MESSAGES_RECENT', {
+          count: messages.length,
+          requestedCount: args.count,
+          totalCount: consoleMonitor.getCount(args.type),
+          type: args.type
+        }, messageList);
       }
     ),
 
@@ -165,11 +153,10 @@ export function createConsoleTools(puppeteerManager: PuppeteerManager, consoleMo
             content: [
               {
                 type: 'text',
-                text: JSON.stringify({
-                  error: `Invalid regex pattern: ${error}`,
-                }, null, 2),
+                text: `## Error\n\nInvalid regex pattern: ${error}\n\n**Suggestion:** Check your regex syntax and try again.`,
               },
             ],
+            isError: true,
           };
         }
 
@@ -179,27 +166,22 @@ export function createConsoleTools(puppeteerManager: PuppeteerManager, consoleMo
           .filter(msg => regex.test(msg.text))
           .slice(0, args.limit);
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                pattern: args.pattern,
-                flags: args.flags,
-                matches: matchingMessages.map(msg => ({
-                  id: msg.id,
-                  type: msg.type,
-                  text: msg.text,
-                  args: msg.args,
-                  location: msg.location,
-                  timestamp: msg.timestamp,
-                })),
-                matchCount: matchingMessages.length,
-                totalSearched: allMessages.length,
-              }, null, 2),
-            },
-          ],
-        };
+        const matches = matchingMessages.map(msg => ({
+          id: msg.id,
+          type: msg.type,
+          text: msg.text,
+          args: msg.args,
+          location: msg.location,
+          timestamp: msg.timestamp,
+        }));
+
+        return createSuccessResponse('CONSOLE_SEARCH_RESULTS', {
+          pattern: args.pattern,
+          flags: args.flags,
+          type: args.type,
+          matchCount: matchingMessages.length,
+          totalSearched: allMessages.length
+        }, matches);
       }
     ),
 
@@ -207,19 +189,10 @@ export function createConsoleTools(puppeteerManager: PuppeteerManager, consoleMo
       'Clear console message history',
       emptySchema,
       async () => {
+        const count = consoleMonitor.getCount();
         consoleMonitor.clear();
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                success: true,
-                message: 'Console history cleared',
-              }, null, 2),
-            },
-          ],
-        };
+        return createSuccessResponse('CONSOLE_CLEARED', { count });
       }
     ),
   };

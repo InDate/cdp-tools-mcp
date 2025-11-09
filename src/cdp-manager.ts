@@ -1029,13 +1029,19 @@ export class CDPManager {
     if (value.type === 'object') {
       if (value.subtype === 'null') return 'null';
 
+      // Detect and handle DOM nodes specially (never expand)
+      const className = value.className || '';
+      if (className.startsWith('HTML') || className.includes('Element') || value.subtype === 'node') {
+        return `[${className || 'DOMNode'}]`;
+      }
+
       // If expansion is disabled or we've hit max depth, return description
       if (!expandObjects || currentDepth >= maxDepth) {
         if (value.subtype === 'array') return `Array(${value.description})`;
         return value.description || value.className || 'Object';
       }
 
-      // Expand object/array contents
+      // Expand object/array contents with smart size limits
       if (value.objectId) {
         try {
           const { Runtime } = this.client;
@@ -1045,7 +1051,32 @@ export class CDPManager {
           });
 
           if (value.subtype === 'array') {
-            // For arrays, extract numeric indices and sort them
+            // Smart array handling based on size
+            const numericProps = properties.result.filter((p: any) => !isNaN(parseInt(p.name, 10)));
+            const arrayLength = numericProps.length;
+
+            // For large arrays, truncate to first 10 elements
+            if (arrayLength > 20) {
+              const arrayElements: any[] = [];
+              let itemsShown = 0;
+              for (const prop of numericProps.slice(0, 10)) {
+                const index = parseInt(prop.name, 10);
+                if (prop.value) {
+                  arrayElements[index] = await this.formatValue(
+                    prop.value,
+                    expandObjects,
+                    maxDepth,
+                    currentDepth + 1
+                  );
+                  itemsShown++;
+                }
+              }
+              // Add truncation indicator
+              arrayElements.push(`... ${arrayLength - itemsShown} more items (use evaluateExpression to inspect)`);
+              return arrayElements;
+            }
+
+            // Small arrays - show all elements
             const arrayElements: any[] = [];
             for (const prop of properties.result) {
               const index = parseInt(prop.name, 10);
@@ -1060,17 +1091,31 @@ export class CDPManager {
             }
             return arrayElements;
           } else {
-            // For objects, create a key-value map
+            // Smart object handling based on property count
+            const validProps = properties.result.filter((p: any) => p.value && !p.name.startsWith('[['));
+            const propCount = validProps.length;
+
+            // For very large objects, show summary with first few keys
+            if (propCount > 50) {
+              const firstKeys = validProps.slice(0, 5).map((p: any) => p.name);
+              return `[Object with ${propCount} properties] {${firstKeys.join(', ')}, ...} - use evaluateExpression to inspect`;
+            }
+
+            // For moderately large objects (10-50 props), limit depth
+            if (propCount > 10 && currentDepth > 0) {
+              const firstKeys = validProps.slice(0, 10).map((p: any) => p.name);
+              return `[Object with ${propCount} properties] {${firstKeys.join(', ')}${propCount > 10 ? ', ...' : ''}}`;
+            }
+
+            // Small objects - expand normally
             const objectProps: Record<string, any> = {};
-            for (const prop of properties.result) {
-              if (prop.value && !prop.name.startsWith('[[')) { // Skip internal properties
-                objectProps[prop.name] = await this.formatValue(
-                  prop.value,
-                  expandObjects,
-                  maxDepth,
-                  currentDepth + 1
-                );
-              }
+            for (const prop of validProps) {
+              objectProps[prop.name] = await this.formatValue(
+                prop.value,
+                expandObjects,
+                maxDepth,
+                currentDepth + 1
+              );
             }
             return objectProps;
           }

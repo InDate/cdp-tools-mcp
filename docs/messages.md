@@ -2,6 +2,31 @@
 
 This file contains all user-facing messages for the llm-cdp debugger. Messages use markdown formatting and support variable interpolation using `{{variable}}` syntax.
 
+## Template Usage Status
+
+Some templates are currently unused but kept for:
+- Future error paths and edge cases
+- Potential error conditions not yet encountered
+- Consistency across similar tools
+- Forward compatibility
+
+**Currently unused templates (kept for future use):**
+- BREAKPOINT_ALREADY_EXISTS - For duplicate breakpoint detection
+- CHROME_LAUNCH_SUCCESS - For enhanced launch messages
+- CONSOLE_MONITORING_ENABLED - For explicit monitoring activation
+- DEBUGGER_CONNECT_SUCCESS - Reserved for verbose connection mode
+- EXECUTION_CONTEXT_DESTROYED - For context destruction errors
+- LINE_NOT_FOUND - For invalid line number errors
+- LOGPOINT_SET_SUCCESS - For logpoint creation confirmation
+- LOGPOINT_VALIDATE_SUCCESS - For logpoint validation feedback
+- PLATFORM_UNSUPPORTED - For unsupported platform errors
+- PORT_NOT_INSPECTABLE - For port availability errors
+- SCRIPT_NOT_FOUND - For missing script errors
+- SESSION_CLOSED - For session termination errors
+- TIMEOUT_WAITING_FOR_PAUSE - For pause timeout errors
+
+These templates should not be removed - they represent potential error conditions or future enhancements.
+
 ---
 
 ## Connection Messages
@@ -24,6 +49,8 @@ Chrome is already running. You can either:
 **Type:** success
 
 Chrome launched and debugger connected on port {{port}}
+Connection ID: {{connectionId}}, Runtime: {{runtimeType}}, PID: {{pid}}
+Features: {{features}}
 
 ---
 
@@ -50,6 +77,8 @@ Chrome launched successfully but auto-connect failed: {{error}}
 **Type:** success
 
 Connected to {{runtimeType}} debugger on {{host}}:{{port}}
+Connection ID: {{connectionId}}
+Features: {{features}}
 
 ---
 
@@ -119,17 +148,133 @@ Chrome process killed successfully
 
 ---
 
+## CHROME_STATUS
+
+**Type:** info
+
+Chrome launcher status
+
+---
+
+## CHROME_LAUNCHER_RESET
+
+**Type:** success
+
+Chrome launcher state reset successfully
+
+---
+
+## CONNECTION_STATUS
+
+**Type:** info
+
+Connection status retrieved
+
+---
+
+## CONNECTIONS_LIST
+
+**Type:** info
+
+Active debugger connections ({{totalConnections}} total)
+
+---
+
+## CONNECTION_SWITCH_SUCCESS
+
+**Type:** success
+
+Switched to connection {{connectionId}}
+
+---
+
+## CONNECTION_SWITCH_FAILED
+
+**Type:** error
+**Code:** CONNECTION_NOT_FOUND
+
+Connection {{connectionId}} not found
+
+**Suggestion:** Use `listConnections()` to see all available connections.
+
+---
+
+## CONNECTION_NOT_FOUND
+
+**Type:** error
+**Code:** NO_CONNECTION
+
+No active connection found
+
+**Suggestions:**
+- Use `launchChrome()` to launch Chrome with debugging enabled
+- Use `connectDebugger()` to connect to an existing debugger instance
+
+---
+
+## SOURCE_MAPS_LOADED
+
+**Type:** success
+
+Loaded {{count}} source maps from {{directory}}
+
+---
+
+## SOURCE_MAPS_FAILED
+
+**Type:** error
+**Code:** SOURCE_MAP_ERROR
+
+Failed to load source maps: {{error}}
+
+**Suggestions:**
+- Verify the directory path is correct
+- Ensure .js.map files exist in the directory
+- Check file permissions
+
+---
+
+## SOURCE_CODE_SUCCESS
+
+**Type:** success
+
+Source code retrieved from {{url}} (lines {{startLine}}-{{endLine}})
+
+---
+
+## SOURCE_CODE_FAILED
+
+**Type:** error
+**Code:** SOURCE_CODE_ERROR
+
+Failed to retrieve source code: {{error}}
+
+---
+
+## CODE_SEARCH_RESULTS
+
+**Type:** info
+
+Code search completed - found {{count}} matches
+
+---
+
+## FUNCTION_SEARCH_RESULTS
+
+**Type:** info
+
+Function search completed - found {{count}} matches for '{{functionName}}'
+
+---
+
 ## Breakpoint Messages
 
 ## BREAKPOINT_SET_SUCCESS
 
 **Type:** success
 
-## ✓ Breakpoint Set Successfully
-
-**Location:** `{{url}}:{{lineNumber}}`
-**Breakpoint ID:** `{{breakpointId}}`{{#condition}}
-**Condition:** `{{condition}}`{{/condition}}
+Breakpoint set at {{url}}:{{lineNumber}} (ID: {{breakpointId}}){{#condition}}
+Condition: {{condition}}{{/condition}}
 
 ---
 
@@ -221,14 +366,14 @@ Logpoint validation failed: {{error}}
 **Type:** warning
 **Code:** LOGPOINT_LIMIT
 
-Logpoint at {{url}}:{{lineNumber}} has reached its execution limit ({{executionCount}}/{{maxExecutions}})
+Logpoint at {{url}}:{{lineNumber}} has reached execution limit ({{executionCount}}/{{maxExecutions}})
 
-**Captured logs:**
+Captured logs:
 {{logs}}
 
-**Options:**
-- Use `resetLogpointCounter('{{breakpointId}}')` to continue logging
-- Use `removeBreakpoint('{{breakpointId}}')` to remove the logpoint
+Options:
+- Use resetLogpointCounter('{{breakpointId}}') to continue logging
+- Use removeBreakpoint('{{breakpointId}}') to remove the logpoint
 - Review the captured logs above
 
 ---
@@ -286,17 +431,40 @@ Stepped out of function
 ## CALL_STACK_SUCCESS
 
 **Type:** success
-**Format:** with-code-block
 
-## Call Stack
+Call Stack ({{frameCount}} frames){{#pausedLocation}} - Paused at: {{pausedLocation}}{{/pausedLocation}}
 
-{{#pausedLocation}}**Paused at:** `{{pausedLocation}}`
+---
 
-{{/pausedLocation}}**Frames:** {{frameCount}}
+## VARIABLES_SUCCESS
 
-```json
-{{callStackData}}
-```
+**Type:** success
+
+Variables for call frame {{callFrameId}}: {{totalCount}} total{{#filter}} (filtered by: {{filter}}){{/filter}}{{#includeGlobal}} (includes global scope){{/includeGlobal}}
+
+---
+
+## EVALUATE_EXPRESSION_SUCCESS
+
+**Type:** success
+
+Expression result: {{expression}}
+
+---
+
+## EVALUATE_EXPRESSION_FAILED
+
+**Type:** error
+**Code:** EVALUATION_FAILED
+
+Failed to evaluate expression: {{error}}
+
+**Expression:** `{{expression}}`
+
+**Suggestions:**
+- Check that the expression is valid JavaScript
+- Ensure variables referenced exist in the current scope
+- If evaluating in a specific frame, verify the call frame ID is valid with `getCallStack()`
 
 ---
 
@@ -334,7 +502,25 @@ Timeout waiting for execution to pause
 
 **Type:** success
 
-Navigated to {{url}}
+Navigated to {{url}}{{#title}}
+
+Page title: {{title}}{{/title}}
+
+---
+
+## PAGE_GO_BACK_SUCCESS
+
+**Type:** success
+
+Navigated back{{#url}} to: {{url}}{{/url}}
+
+---
+
+## PAGE_GO_FORWARD_SUCCESS
+
+**Type:** success
+
+Navigated forward{{#url}} to: {{url}}{{/url}}
 
 ---
 
@@ -365,6 +551,30 @@ Element not found: `{{selector}}`
 **Type:** success
 
 Clicked element: `{{selector}}`
+
+---
+
+## TEXT_TYPE_SUCCESS
+
+**Type:** success
+
+Text typed into `{{selector}}`: "{{text}}"
+
+---
+
+## KEY_PRESS_SUCCESS
+
+**Type:** success
+
+Key pressed: `{{key}}`
+
+---
+
+## ELEMENT_HOVER_SUCCESS
+
+**Type:** success
+
+Hovered over element: `{{selector}}`
 
 ---
 
@@ -410,6 +620,39 @@ Console cleared successfully ({{count}} messages removed)
 
 ---
 
+## CONSOLE_MESSAGES_LIST
+
+**Type:** success
+
+Console Messages: {{count}} of {{totalCount}} total{{#type}} (filtered by type: {{type}}){{/type}}
+
+---
+
+## CONSOLE_MESSAGE_DETAIL
+
+**Type:** success
+
+Console message [{{id}}] - Type: {{type}}, Timestamp: {{timestamp}}
+Text: {{text}}
+
+---
+
+## CONSOLE_MESSAGES_RECENT
+
+**Type:** success
+
+Recent Console Messages: {{count}} of {{requestedCount}} requested ({{totalCount}} total){{#type}} (filtered by type: {{type}}){{/type}}
+
+---
+
+## CONSOLE_SEARCH_RESULTS
+
+**Type:** success
+
+Console Log Search: {{matchCount}} matches for pattern "{{pattern}}"{{#flags}} (flags: {{flags}}){{/flags}}{{#type}} (type: {{type}}){{/type}} out of {{totalSearched}} searched
+
+---
+
 ## NETWORK_MONITORING_ENABLED
 
 **Type:** success
@@ -423,6 +666,40 @@ Network monitoring enabled
 **Type:** success
 
 Network monitoring disabled
+
+---
+
+## NETWORK_CONDITIONS_SET
+
+**Type:** success
+
+Network conditions set to **{{preset}}**
+
+---
+
+## NETWORK_REQUESTS_LIST
+
+**Type:** success
+
+Network Requests: {{count}} of {{totalCount}} total{{#resourceType}} (filtered by type: {{resourceType}}){{/resourceType}}
+
+---
+
+## NETWORK_REQUEST_DETAIL
+
+**Type:** success
+
+Network Request [{{id}}]: {{method}} {{url}}
+Resource Type: {{resourceType}}, Status: {{status}}{{#failed}}
+FAILED: {{errorText}}{{/failed}}
+
+---
+
+## NETWORK_SEARCH_RESULTS
+
+**Type:** success
+
+Network Request Search: {{matchCount}} matches for pattern "{{pattern}}"{{#flags}} (flags: {{flags}}){{/flags}}{{#filtersText}} (filters: {{filtersText}}){{/filtersText}} out of {{totalSearched}} searched
 
 ---
 
@@ -574,6 +851,22 @@ Debugger session closed unexpectedly
 - The browser or Node.js process may have crashed or been closed
 - Use `getDebuggerStatus()` to check connection status
 - Reconnect with `connectDebugger()` or relaunch with `launchChrome()`
+
+---
+
+## COOKIE_SET_SUCCESS
+
+**Type:** success
+
+Cookie set: `{{name}}`
+
+---
+
+## LOCAL_STORAGE_SET_SUCCESS
+
+**Type:** success
+
+localStorage item set: `{{key}}` = "{{value}}"
 
 ---
 

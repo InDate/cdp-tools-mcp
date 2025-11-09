@@ -6,9 +6,10 @@ import { z } from 'zod';
 import type { CDPManager } from '../cdp-manager.js';
 import { PuppeteerManager } from '../puppeteer-manager.js';
 import { executeWithPauseDetection, formatActionResult } from '../debugger-aware-wrapper.js';
-import { checkBrowserAutomation, formatErrorResponse } from '../error-helpers.js';
+import { checkBrowserAutomation } from '../error-helpers.js';
 import { createTool } from '../validation-helpers.js';
 import { getConfiguredDebugPort } from '../index.js';
+import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
 
 // Zod schemas for DOM tools
 const querySelectorSchema = z.object({
@@ -31,7 +32,7 @@ export function createDOMTools(puppeteerManager: PuppeteerManager, cdpManager: C
       async (args) => {
         const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'querySelector', getConfiguredDebugPort());
         if (error) {
-          return formatErrorResponse(error);
+          return error;
         }
 
         const page = puppeteerManager.getPage();
@@ -59,13 +60,18 @@ export function createDOMTools(puppeteerManager: PuppeteerManager, cdpManager: C
           'querySelector'
         );
 
-        const response = formatActionResult(result, 'querySelector', result.result);
+        // Check if element was not found
+        if (!result.result || !result.result.found) {
+          return createErrorResponse('ELEMENT_NOT_FOUND', { selector: args.selector });
+        }
 
+        // Return element properties as code block - querySelector returns basic properties
+        const markdown = `Element found: \`${args.selector}\`\n\n${formatCodeBlock(result.result.properties)}`;
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify(response, null, 2),
+              text: markdown,
             },
           ],
         };
@@ -78,7 +84,7 @@ export function createDOMTools(puppeteerManager: PuppeteerManager, cdpManager: C
       async (args) => {
         const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'getElementProperties', getConfiguredDebugPort());
         if (error) {
-          return formatErrorResponse(error);
+          return error;
         }
 
         const page = puppeteerManager.getPage();
@@ -132,13 +138,18 @@ export function createDOMTools(puppeteerManager: PuppeteerManager, cdpManager: C
           'getElementProperties'
         );
 
-        const response = formatActionResult(result, 'getElementProperties', result.result);
+        // Check if element was not found
+        if (!result.result || result.result.error) {
+          return createErrorResponse('ELEMENT_NOT_FOUND', { selector: args.selector });
+        }
 
+        // Return element properties as code block
+        const markdown = `Element properties for \`${args.selector}\`:\n\n${formatCodeBlock(result.result.element)}`;
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify(response, null, 2),
+              text: markdown,
             },
           ],
         };
@@ -151,7 +162,7 @@ export function createDOMTools(puppeteerManager: PuppeteerManager, cdpManager: C
       async (args) => {
         const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'getDOMSnapshot', getConfiguredDebugPort());
         if (error) {
-          return formatErrorResponse(error);
+          return error;
         }
 
         const page = puppeteerManager.getPage();
@@ -193,16 +204,8 @@ export function createDOMTools(puppeteerManager: PuppeteerManager, cdpManager: C
           'getDOMSnapshot'
         );
 
-        const response = formatActionResult(result, 'getDOMSnapshot', result.result);
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(response, null, 2),
-            },
-          ],
-        };
+        // Return DOM snapshot using the message template
+        return createSuccessResponse('DOM_SNAPSHOT_SUCCESS', { depth: args.maxDepth }, result.result);
       }
     ),
   };

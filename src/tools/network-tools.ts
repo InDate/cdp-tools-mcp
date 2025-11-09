@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { PuppeteerManager } from '../puppeteer-manager.js';
 import { NetworkMonitor } from '../network-monitor.js';
 import { createTool } from '../validation-helpers.js';
+import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
 import type { Page } from 'puppeteer-core';
 
 // Zod schemas for network tools
@@ -52,28 +53,23 @@ export function createNetworkTools(puppeteerManager: PuppeteerManager, networkMo
           offset: args.offset,
         });
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                requests: requests.map(req => ({
-                  id: req.id,
-                  url: req.url,
-                  method: req.method,
-                  resourceType: req.resourceType,
-                  status: req.response?.status,
-                  statusText: req.response?.statusText,
-                  duration: req.timing?.duration,
-                  failed: req.failed,
-                  errorText: req.errorText,
-                })),
-                count: requests.length,
-                totalCount: networkMonitor.getCount(args.resourceType),
-              }, null, 2),
-            },
-          ],
-        };
+        const requestList = requests.map(req => ({
+          id: req.id,
+          url: req.url,
+          method: req.method,
+          resourceType: req.resourceType,
+          status: req.response?.status,
+          statusText: req.response?.statusText,
+          duration: req.timing?.duration,
+          failed: req.failed,
+          errorText: req.errorText,
+        }));
+
+        return createSuccessResponse('NETWORK_REQUESTS_LIST', {
+          count: requests.length,
+          totalCount: networkMonitor.getCount(args.resourceType),
+          resourceType: args.resourceType
+        }, requestList);
       }
     ),
 
@@ -84,39 +80,31 @@ export function createNetworkTools(puppeteerManager: PuppeteerManager, networkMo
         const request = networkMonitor.getRequest(args.id);
 
         if (!request) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  error: `Network request ${args.id} not found`,
-                }, null, 2),
-              },
-            ],
-          };
+          return createErrorResponse('NETWORK_REQUEST_NOT_FOUND', { id: args.id });
         }
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                request: {
-                  id: request.id,
-                  url: request.url,
-                  method: request.method,
-                  resourceType: request.resourceType,
-                  requestHeaders: request.requestHeaders,
-                  postData: request.postData,
-                  response: request.response,
-                  timing: request.timing,
-                  failed: request.failed,
-                  errorText: request.errorText,
-                },
-              }, null, 2),
-            },
-          ],
+        const data = {
+          id: request.id,
+          url: request.url,
+          method: request.method,
+          resourceType: request.resourceType,
+          requestHeaders: request.requestHeaders,
+          postData: request.postData,
+          response: request.response,
+          timing: request.timing,
+          failed: request.failed,
+          errorText: request.errorText,
         };
+
+        return createSuccessResponse('NETWORK_REQUEST_DETAIL', {
+          id: request.id,
+          url: request.url,
+          method: request.method,
+          resourceType: request.resourceType,
+          status: request.response?.status || 'N/A',
+          failed: request.failed,
+          errorText: request.errorText
+        }, data);
       }
     ),
 
@@ -125,32 +113,13 @@ export function createNetworkTools(puppeteerManager: PuppeteerManager, networkMo
       emptySchema,
       async () => {
         if (!puppeteerManager.isConnected()) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  error: 'Not connected to browser',
-                }, null, 2),
-              },
-            ],
-          };
+          return createErrorResponse('PUPPETEER_NOT_CONNECTED');
         }
 
         const page = puppeteerManager.getPage();
         networkMonitor.startMonitoring(page);
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                success: true,
-                message: 'Network monitoring enabled',
-              }, null, 2),
-            },
-          ],
-        };
+        return createSuccessResponse('NETWORK_MONITORING_ENABLED');
       }
     ),
 
@@ -159,32 +128,13 @@ export function createNetworkTools(puppeteerManager: PuppeteerManager, networkMo
       emptySchema,
       async () => {
         if (!puppeteerManager.isConnected()) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  error: 'Not connected to browser',
-                }, null, 2),
-              },
-            ],
-          };
+          return createErrorResponse('PUPPETEER_NOT_CONNECTED');
         }
 
         const page = puppeteerManager.getPage();
         networkMonitor.stopMonitoring(page);
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                success: true,
-                message: 'Network monitoring disabled',
-              }, null, 2),
-            },
-          ],
-        };
+        return createSuccessResponse('NETWORK_MONITORING_DISABLED');
       }
     ),
 
@@ -206,11 +156,10 @@ export function createNetworkTools(puppeteerManager: PuppeteerManager, networkMo
             content: [
               {
                 type: 'text',
-                text: JSON.stringify({
-                  error: `Invalid regex pattern: ${error}`,
-                }, null, 2),
+                text: `## Error\n\nInvalid regex pattern: ${error}\n\n**Suggestion:** Check your regex syntax and try again.`,
               },
             ],
+            isError: true,
           };
         }
 
@@ -240,35 +189,30 @@ export function createNetworkTools(puppeteerManager: PuppeteerManager, networkMo
           })
           .slice(0, args.limit);
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                pattern: args.pattern,
-                flags: args.flags,
-                filters: {
-                  resourceType: args.resourceType,
-                  method: args.method,
-                  statusCode: args.statusCode,
-                },
-                matches: matchingRequests.map(req => ({
-                  id: req.id,
-                  url: req.url,
-                  method: req.method,
-                  resourceType: req.resourceType,
-                  status: req.response?.status,
-                  statusText: req.response?.statusText,
-                  duration: req.timing?.duration,
-                  failed: req.failed,
-                  errorText: req.errorText,
-                })),
-                matchCount: matchingRequests.length,
-                totalSearched: allRequests.length,
-              }, null, 2),
-            },
-          ],
-        };
+        const matches = matchingRequests.map(req => ({
+          id: req.id,
+          url: req.url,
+          method: req.method,
+          resourceType: req.resourceType,
+          status: req.response?.status,
+          statusText: req.response?.statusText,
+          duration: req.timing?.duration,
+          failed: req.failed,
+          errorText: req.errorText,
+        }));
+
+        const filters = [];
+        if (args.resourceType) filters.push(`Resource Type: ${args.resourceType}`);
+        if (args.method) filters.push(`Method: ${args.method}`);
+        if (args.statusCode) filters.push(`Status: ${args.statusCode}`);
+
+        return createSuccessResponse('NETWORK_SEARCH_RESULTS', {
+          pattern: args.pattern,
+          flags: args.flags,
+          filtersText: filters.length > 0 ? filters.join(', ') : undefined,
+          matchCount: matchingRequests.length,
+          totalSearched: allRequests.length
+        }, matches);
       }
     ),
 
@@ -277,16 +221,7 @@ export function createNetworkTools(puppeteerManager: PuppeteerManager, networkMo
       setNetworkConditionsSchema,
       async (args) => {
         if (!puppeteerManager.isConnected()) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  error: 'Not connected to browser',
-                }, null, 2),
-              },
-            ],
-          };
+          return createErrorResponse('PUPPETEER_NOT_CONNECTED');
         }
 
         const page = puppeteerManager.getPage() as Page;
@@ -303,18 +238,9 @@ export function createNetworkTools(puppeteerManager: PuppeteerManager, networkMo
         const conditions = presets[args.preset];
         await cdpSession.send('Network.emulateNetworkConditions', conditions);
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                success: true,
-                message: `Network conditions set to ${args.preset}`,
-                conditions,
-              }, null, 2),
-            },
-          ],
-        };
+        return createSuccessResponse('NETWORK_CONDITIONS_SET', {
+          preset: args.preset
+        }, conditions);
       }
     ),
   };

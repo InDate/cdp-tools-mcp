@@ -5,6 +5,7 @@
 
 import type { CDPManager } from './cdp-manager.js';
 import type { PuppeteerManager } from './puppeteer-manager.js';
+import { createErrorResponse } from './messages.js';
 
 export interface StructuredError {
   success: false;
@@ -16,56 +17,26 @@ export interface StructuredError {
 
 /**
  * Check if browser automation is available and return error if not
+ * Returns an MCP error response or null if browser automation is available
  */
 export function checkBrowserAutomation(
   cdpManager: CDPManager,
   puppeteerManager: PuppeteerManager,
   toolName: string,
   debugPort?: number
-): StructuredError | null {
-  const defaultPort = debugPort || 9222;
-
+): { content: Array<{ type: 'text'; text: string }>; isError?: boolean } | null {
   if (!cdpManager.isConnected()) {
-    return {
-      success: false,
-      error: 'Not connected to debugger',
-      code: 'NOT_CONNECTED',
-      suggestions: [
-        'Connect to a debugger first using connectDebugger()',
-        'For Chrome: connectDebugger() - uses auto-assigned port',
-        'For Node.js: Set MCP_DEBUG_PORT=9229 environment variable before starting',
-      ],
-      example: `connectDebugger()`,
-    };
+    return createErrorResponse('DEBUGGER_NOT_CONNECTED');
   }
 
   const runtimeType = cdpManager.getRuntimeType();
 
   if (runtimeType === 'node') {
-    return {
-      success: false,
-      error: `Tool '${toolName}' requires browser automation, which is not available for Node.js debugging`,
-      code: 'NODEJS_NOT_SUPPORTED',
-      suggestions: [
-        'This tool only works with Chrome/browser debugging',
-        'For server-side debugging, use: setBreakpoint, getVariables, evaluateExpression',
-        'To debug browser code, use launchChrome() to start Chrome with debugging enabled',
-      ],
-      example: `launchChrome()  // Connect to Chrome instead`,
-    };
+    return createErrorResponse('NODEJS_NOT_SUPPORTED', { feature: toolName });
   }
 
   if (!puppeteerManager.isConnected()) {
-    return {
-      success: false,
-      error: 'Browser automation not available - Puppeteer not connected',
-      code: 'PUPPETEER_NOT_CONNECTED',
-      suggestions: [
-        'Reconnect to the debugger',
-        'This may happen if connection was partially established',
-      ],
-      example: 'disconnectDebugger() then connectDebugger()',
-    };
+    return createErrorResponse('PUPPETEER_NOT_CONNECTED');
   }
 
   return null;
@@ -73,13 +44,29 @@ export function checkBrowserAutomation(
 
 /**
  * Format a structured error as MCP response
+ * @deprecated Use createErrorResponse from messages.ts instead
+ * This function is kept for backward compatibility during migration
  */
 export function formatErrorResponse(error: StructuredError) {
+  // Convert to markdown format
+  let markdown = error.error;
+
+  if (error.suggestions && error.suggestions.length > 0) {
+    markdown += '\n\n**Suggestions:**\n';
+    error.suggestions.forEach(suggestion => {
+      markdown += `- ${suggestion}\n`;
+    });
+  }
+
+  if (error.example) {
+    markdown += `\n**Example:**\n\`\`\`javascript\n${error.example}\n\`\`\``;
+  }
+
   return {
     content: [
       {
         type: 'text',
-        text: JSON.stringify(error, null, 2),
+        text: markdown.trim(),
       },
     ],
     isError: true,

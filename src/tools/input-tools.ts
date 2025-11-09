@@ -6,9 +6,10 @@ import { z } from 'zod';
 import type { CDPManager } from '../cdp-manager.js';
 import { PuppeteerManager } from '../puppeteer-manager.js';
 import { executeWithPauseDetection, formatActionResult } from '../debugger-aware-wrapper.js';
-import { checkBrowserAutomation, formatErrorResponse } from '../error-helpers.js';
+import { checkBrowserAutomation } from '../error-helpers.js';
 import { createTool } from '../validation-helpers.js';
 import { getConfiguredDebugPort } from '../index.js';
+import { createSuccessResponse, createErrorResponse } from '../messages.js';
 
 // Zod schemas for input validation
 const clickElementSchema = z.object({
@@ -38,7 +39,7 @@ export function createInputTools(puppeteerManager: PuppeteerManager, cdpManager:
       async (args) => {
         const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'clickElement', getConfiguredDebugPort());
         if (error) {
-          return formatErrorResponse(error);
+          return error;
         }
 
         const page = puppeteerManager.getPage();
@@ -97,16 +98,17 @@ export function createInputTools(puppeteerManager: PuppeteerManager, cdpManager:
           'click'
         );
 
-        const response = formatActionResult(result, 'clickElement', result.result);
+        // Check if element was not found
+        if (!result.result || result.result.error) {
+          return createErrorResponse('ELEMENT_NOT_FOUND', { selector: args.selector });
+        }
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(response, null, 2),
-            },
-          ],
-        };
+        // Return success with warning if no click handler detected
+        if (result.result.warning) {
+          return createSuccessResponse('ELEMENT_CLICK_WARNING', { selector: args.selector });
+        }
+
+        return createSuccessResponse('ELEMENT_CLICK_SUCCESS', { selector: args.selector });
       }
     ),
 
@@ -116,7 +118,7 @@ export function createInputTools(puppeteerManager: PuppeteerManager, cdpManager:
       async (args) => {
         const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'typeText', getConfiguredDebugPort());
         if (error) {
-          return formatErrorResponse(error);
+          return error;
         }
 
         const page = puppeteerManager.getPage();
@@ -124,28 +126,32 @@ export function createInputTools(puppeteerManager: PuppeteerManager, cdpManager:
         const result = await executeWithPauseDetection(
           cdpManager,
           async () => {
+            // Check if element exists first
+            const element = await page.$(args.selector);
+            if (!element) {
+              return { error: `Element not found: ${args.selector}` };
+            }
+
             // Clear existing text first
             await page.click(args.selector, { clickCount: 3 });
             await page.keyboard.press('Backspace');
             // Type new text
             await page.type(args.selector, args.text, { delay: args.delay });
+
+            return { selector: args.selector, text: args.text };
           },
           'typeText'
         );
 
-        const response = formatActionResult(result, 'typeText', {
-          selector: args.selector,
-          text: args.text,
-        });
+        // Check if element was not found
+        if (result.result?.error) {
+          return createErrorResponse('ELEMENT_NOT_FOUND', { selector: args.selector });
+        }
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(response, null, 2),
-            },
-          ],
-        };
+        return createSuccessResponse('TEXT_TYPE_SUCCESS', {
+          selector: args.selector,
+          text: args.text
+        });
       }
     ),
 
@@ -155,29 +161,20 @@ export function createInputTools(puppeteerManager: PuppeteerManager, cdpManager:
       async (args) => {
         const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'pressKey', getConfiguredDebugPort());
         if (error) {
-          return formatErrorResponse(error);
+          return error;
         }
 
         const page = puppeteerManager.getPage();
 
-        const result = await executeWithPauseDetection(
+        await executeWithPauseDetection(
           cdpManager,
           () => page.keyboard.press(args.key as any),
           'pressKey'
         );
 
-        const response = formatActionResult(result, 'pressKey', {
-          key: args.key,
+        return createSuccessResponse('KEY_PRESS_SUCCESS', {
+          key: args.key
         });
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(response, null, 2),
-            },
-          ],
-        };
       }
     ),
 
@@ -187,29 +184,34 @@ export function createInputTools(puppeteerManager: PuppeteerManager, cdpManager:
       async (args) => {
         const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'hoverElement', getConfiguredDebugPort());
         if (error) {
-          return formatErrorResponse(error);
+          return error;
         }
 
         const page = puppeteerManager.getPage();
 
         const result = await executeWithPauseDetection(
           cdpManager,
-          () => page.hover(args.selector),
+          async () => {
+            // Check if element exists first
+            const element = await page.$(args.selector);
+            if (!element) {
+              return { error: `Element not found: ${args.selector}` };
+            }
+
+            await page.hover(args.selector);
+            return { selector: args.selector };
+          },
           'hoverElement'
         );
 
-        const response = formatActionResult(result, 'hoverElement', {
-          selector: args.selector,
-        });
+        // Check if element was not found
+        if (result.result?.error) {
+          return createErrorResponse('ELEMENT_NOT_FOUND', { selector: args.selector });
+        }
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(response, null, 2),
-            },
-          ],
-        };
+        return createSuccessResponse('ELEMENT_HOVER_SUCCESS', {
+          selector: args.selector
+        });
       }
     ),
   };

@@ -8,9 +8,10 @@ import { PuppeteerManager } from '../puppeteer-manager.js';
 import { ConsoleMonitor } from '../console-monitor.js';
 import { NetworkMonitor } from '../network-monitor.js';
 import { executeWithPauseDetection, formatActionResult } from '../debugger-aware-wrapper.js';
-import { checkBrowserAutomation, formatErrorResponse } from '../error-helpers.js';
+import { checkBrowserAutomation } from '../error-helpers.js';
 import { createTool } from '../validation-helpers.js';
 import { getConfiguredDebugPort } from '../index.js';
+import { createSuccessResponse, formatCodeBlock } from '../messages.js';
 
 // Schemas
 const navigateToSchema = z.object({
@@ -51,7 +52,7 @@ export function createPageTools(
       async (args) => {
         const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'navigateTo', getConfiguredDebugPort());
         if (error) {
-          return formatErrorResponse(error);
+          return error;
         }
 
         const page = puppeteerManager.getPage();
@@ -72,16 +73,15 @@ export function createPageTools(
           'navigateTo'
         );
 
-        const response = formatActionResult(result, 'navigateTo', result.result);
+        // Return success with page info as data
+        if (!result.result) {
+          return createSuccessResponse('PAGE_NAVIGATE_SUCCESS', { url: args.url });
+        }
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(response, null, 2),
-            },
-          ],
-        };
+        return createSuccessResponse('PAGE_NAVIGATE_SUCCESS', {
+          url: result.result.url,
+          title: result.result.title
+        });
       }
     ),
 
@@ -91,12 +91,12 @@ export function createPageTools(
       async (args) => {
         const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'reloadPage', getConfiguredDebugPort());
         if (error) {
-          return formatErrorResponse(error);
+          return error;
         }
 
         const page = puppeteerManager.getPage();
 
-        const result = await executeWithPauseDetection(
+        await executeWithPauseDetection(
           cdpManager,
           async () => {
             // Clear cache before reload if requested
@@ -116,16 +116,7 @@ export function createPageTools(
           'reloadPage'
         );
 
-        const response = formatActionResult(result, 'reloadPage', result.result);
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(response, null, 2),
-            },
-          ],
-        };
+        return createSuccessResponse('PAGE_RELOAD_SUCCESS');
       }
     ),
 
@@ -135,7 +126,7 @@ export function createPageTools(
       async () => {
         const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'goBack', getConfiguredDebugPort());
         if (error) {
-          return formatErrorResponse(error);
+          return error;
         }
 
         const page = puppeteerManager.getPage();
@@ -153,16 +144,13 @@ export function createPageTools(
           'goBack'
         );
 
-        const response = formatActionResult(result, 'goBack', result.result);
+        if (!result.result) {
+          return createSuccessResponse('PAGE_GO_BACK_SUCCESS');
+        }
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(response, null, 2),
-            },
-          ],
-        };
+        return createSuccessResponse('PAGE_GO_BACK_SUCCESS', {
+          url: result.result.url
+        });
       }
     ),
 
@@ -172,7 +160,7 @@ export function createPageTools(
       async () => {
         const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'goForward', getConfiguredDebugPort());
         if (error) {
-          return formatErrorResponse(error);
+          return error;
         }
 
         const page = puppeteerManager.getPage();
@@ -190,16 +178,13 @@ export function createPageTools(
           'goForward'
         );
 
-        const response = formatActionResult(result, 'goForward', result.result);
+        if (!result.result) {
+          return createSuccessResponse('PAGE_GO_FORWARD_SUCCESS');
+        }
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(response, null, 2),
-            },
-          ],
-        };
+        return createSuccessResponse('PAGE_GO_FORWARD_SUCCESS', {
+          url: result.result.url
+        });
       }
     ),
 
@@ -209,7 +194,7 @@ export function createPageTools(
       async () => {
         const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'getPageInfo', getConfiguredDebugPort());
         if (error) {
-          return formatErrorResponse(error);
+          return error;
         }
 
         const page = puppeteerManager.getPage();
@@ -225,13 +210,19 @@ export function createPageTools(
           'getPageInfo'
         );
 
-        const response = formatActionResult(result, 'getPageInfo', result.result);
+        if (!result.result) {
+          return {
+            content: [{ type: 'text', text: 'Unable to retrieve page information' }],
+          };
+        }
 
+        const pageInfo = result.result;
+        const markdown = `## Page Information\n\n**URL:** ${pageInfo.url}\n**Title:** ${pageInfo.title}\n\n${formatCodeBlock(pageInfo.viewport)}`;
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify(response, null, 2),
+              text: markdown,
             },
           ],
         };

@@ -33,6 +33,7 @@ import { createDOMTools } from './tools/dom-tools.js';
 import { createScreenshotTools } from './tools/screenshot-tools.js';
 import { createInputTools } from './tools/input-tools.js';
 import { createStorageTools } from './tools/storage-tools.js';
+import { createSuccessResponse, createErrorResponse, formatCodeBlock, getMessage } from './messages.js';
 import { createServer } from 'net';
 import { readFile } from 'fs/promises';
 import { join, dirname } from 'path';
@@ -253,58 +254,30 @@ const connectionTools = {
             }
           } catch (connectError) {
             // If auto-connect fails, still return success for launch
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: JSON.stringify({
-                    success: true,
-                    message: `Chrome launched with debugging on port ${result.port}`,
-                    port: result.port,
-                    pid: result.pid,
-                    autoConnectFailed: true,
-                    autoConnectError: `${connectError}`,
-                    note: 'Chrome launched successfully but auto-connect failed. Use connectDebugger() to connect manually.',
-                  }, null, 2),
-                },
-              ],
-            };
+            return createSuccessResponse('CHROME_LAUNCH_AUTO_CONNECT_FAILED', {
+              port: result.port,
+              error: `${connectError}`
+            }, {
+              port: result.port,
+              pid: result.pid,
+            });
           }
         }
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                success: true,
-                message: autoConnect
-                  ? `Chrome launched and debugger connected on port ${result.port}`
-                  : `Chrome launched with debugging on port ${result.port}`,
-                port: result.port,
-                pid: result.pid,
-                ...(autoConnect && {
-                  connectionId,
-                  runtimeType,
-                  features,
-                  note: 'Console monitoring auto-enabled. Page auto-reloaded to capture initial logs.',
-                }),
-              }, null, 2),
-            },
-          ],
-        };
+        // Format response based on whether auto-connect was used
+        if (autoConnect) {
+          return createSuccessResponse('CHROME_LAUNCH_SUCCESS', {
+            port: result.port,
+            connectionId,
+            runtimeType,
+            pid: result.pid,
+            features: features.join(', ')
+          });
+        } else {
+          return createSuccessResponse('CHROME_LAUNCH_NO_CONNECT', { port: result.port }, { pid: result.pid });
+        }
       } catch (error) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                success: false,
-                error: `Failed to launch Chrome: ${error}`,
-              }, null, 2),
-            },
-          ],
-        };
+        return createErrorResponse('CHROME_SPAWN_FAILED', { error: `${error}` });
       }
     }
   ),
@@ -315,30 +288,9 @@ const connectionTools = {
     async () => {
       try {
         chromeLauncher.kill();
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                success: true,
-                message: 'Chrome process killed',
-              }, null, 2),
-            },
-          ],
-        };
+        return createSuccessResponse('CHROME_KILLED');
       } catch (error) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                success: false,
-                error: `Failed to kill Chrome: ${error}`,
-              }, null, 2),
-            },
-          ],
-        };
+        return createErrorResponse('CHROME_SPAWN_FAILED', { error: `${error}` });
       }
     }
   ),
@@ -348,18 +300,7 @@ const connectionTools = {
     z.object({}).strict(),
     async () => {
       chromeLauncher.reset();
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              success: true,
-              message: 'Chrome launcher state reset',
-            }, null, 2),
-          },
-        ],
-      };
+      return createSuccessResponse('CHROME_LAUNCHER_RESET');
     }
   ),
 
@@ -368,17 +309,7 @@ const connectionTools = {
     z.object({}).strict(),
     async () => {
       const status = chromeLauncher.getStatus();
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              chrome: status,
-            }, null, 2),
-          },
-        ],
-      };
+      return createSuccessResponse('CHROME_STATUS', {}, status);
     }
   ),
 
@@ -445,8 +376,16 @@ const connectionTools = {
         // Update active manager references
         updateActiveManagers(connectionId);
 
-        // Get console log summary for Chrome connections
-        let consoleLogSummary;
+        // Build markdown response using template
+        let markdown = getMessage('DEBUGGER_CONNECT_SUCCESS', {
+          runtimeType,
+          host,
+          port: port.toString(),
+          connectionId,
+          features: features.join(', ')
+        });
+
+        // Add console log summary for Chrome connections
         if (runtimeType === 'chrome') {
           const connection = connectionManager.getConnection(connectionId);
           if (connection?.consoleMonitor) {
@@ -454,47 +393,22 @@ const connectionTools = {
             const errorCount = allMessages.filter(m => m.type === 'error').length;
             const warnCount = allMessages.filter(m => m.type === 'warn').length;
             const logCount = allMessages.filter(m => m.type === 'log').length;
-            consoleLogSummary = {
-              total: allMessages.length,
-              errors: errorCount,
-              warnings: warnCount,
-              logs: logCount,
-            };
+            markdown += `\n**Console Logs:** ${allMessages.length} total (${errorCount} errors, ${warnCount} warnings, ${logCount} logs)\n`;
           }
+          markdown += '\n**Note:** Console monitoring auto-enabled. Page auto-reloaded to capture initial logs.';
+        } else if (runtimeType === 'node') {
+          markdown += '\n**Note:** Browser automation features are not available for Node.js debugging.';
         }
 
         return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                success: true,
-                connectionId,
-                message: `Connected to ${runtimeType} debugger at ${host}:${port}`,
-                runtimeType,
-                features,
-                ...(consoleLogSummary && { consoleLogs: consoleLogSummary }),
-                note: runtimeType === 'chrome'
-                  ? 'Console monitoring auto-enabled. Page auto-reloaded to capture initial logs.'
-                  : runtimeType === 'node'
-                  ? 'Browser automation features are not available for Node.js debugging'
-                  : undefined,
-              }, null, 2),
-            },
-          ],
+          content: [{ type: 'text', text: markdown.trim() }],
         };
       } catch (error) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                success: false,
-                error: `Failed to connect: ${error}`,
-              }, null, 2),
-            },
-          ],
-        };
+        return createErrorResponse('DEBUGGER_CONNECT_FAILED', {
+          host,
+          port: port.toString(),
+          error: `${error}`
+        });
       }
     }
   ),
@@ -508,32 +422,16 @@ const connectionTools = {
       const connectionId = args.connectionId || connectionManager.getActiveConnectionId();
 
       if (!connectionId) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                success: false,
-                error: 'No active connection',
-              }, null, 2),
-            },
-          ],
-        };
+        return createErrorResponse('CONNECTION_NOT_FOUND');
       }
 
       const success = await connectionManager.closeConnection(connectionId);
 
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              success,
-              message: success ? `Disconnected from connection ${connectionId}` : 'Connection not found',
-            }, null, 2),
-          },
-        ],
-      };
+      if (success) {
+        return createSuccessResponse('DEBUGGER_DISCONNECT_SUCCESS', { connectionId });
+      } else {
+        return createErrorResponse('CONNECTION_SWITCH_FAILED', { connectionId });
+      }
     }
   ),
 
@@ -549,30 +447,12 @@ const connectionTools = {
         await sourceMapHandler.loadSourceMapsFromDirectory(directory);
         const loadedMaps = sourceMapHandler.getLoadedSourceMaps();
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                success: true,
-                message: `Loaded ${loadedMaps.length} source maps`,
-                sourceMaps: loadedMaps,
-              }, null, 2),
-            },
-          ],
-        };
+        return createSuccessResponse('SOURCE_MAPS_LOADED', {
+          count: loadedMaps.length.toString(),
+          directory
+        }, { sourceMaps: loadedMaps });
       } catch (error) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                success: false,
-                error: `Failed to load source maps: ${error}`,
-              }, null, 2),
-            },
-          ],
-        };
+        return createErrorResponse('SOURCE_MAPS_FAILED', { error: `${error}` });
       }
     }
   ),
@@ -587,18 +467,7 @@ const connectionTools = {
       const connection = connectionManager.getConnection(connectionId);
 
       if (!connection) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                connected: false,
-                message: 'No active connection',
-                totalConnections: connectionManager.getConnectionCount(),
-              }, null, 2),
-            },
-          ],
-        };
+        return createErrorResponse('CONNECTION_NOT_FOUND');
       }
 
       const cdpManager = connection.cdpManager;
@@ -612,27 +481,22 @@ const connectionTools = {
       const sourceMaps = sourceMapHandler.getLoadedSourceMaps();
       const puppeteerConnected = puppeteerManager?.isConnected() || false;
 
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              connectionId: connection.id,
-              connected,
-              runtimeType,
-              puppeteerConnected,
-              paused,
-              breakpoints: breakpointCounts.breakpoints,
-              logpoints: breakpointCounts.logpoints,
-              totalBreakpoints: breakpointCounts.total,
-              sourceMapCount: sourceMaps.length,
-              consoleMonitoring: consoleMonitor?.isActive() ? 'active' : 'inactive',
-              networkMonitoring: networkMonitor?.isActive() ? 'active' : 'inactive',
-              totalConnections: connectionManager.getConnectionCount(),
-            }, null, 2),
-          },
-        ],
+      const statusData = {
+        connectionId: connection.id,
+        connected,
+        runtimeType,
+        puppeteerConnected,
+        paused,
+        breakpoints: breakpointCounts.breakpoints,
+        logpoints: breakpointCounts.logpoints,
+        totalBreakpoints: breakpointCounts.total,
+        sourceMapCount: sourceMaps.length,
+        consoleMonitoring: consoleMonitor?.isActive() ? 'active' : 'inactive',
+        networkMonitoring: networkMonitor?.isActive() ? 'active' : 'inactive',
+        totalConnections: connectionManager.getConnectionCount(),
       };
+
+      return createSuccessResponse('CONNECTION_STATUS', {}, statusData);
     }
   ),
 
@@ -654,19 +518,12 @@ const connectionTools = {
         createdAt: new Date(conn.createdAt).toISOString(),
       }));
 
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              success: true,
-              totalConnections: connections.length,
-              activeConnectionId: activeId,
-              connections: connectionList,
-            }, null, 2),
-          },
-        ],
-      };
+      return createSuccessResponse('CONNECTIONS_LIST', {
+        totalConnections: connections.length.toString()
+      }, {
+        activeConnectionId: activeId,
+        connections: connectionList,
+      });
     }
   ),
 
@@ -681,22 +538,10 @@ const connectionTools = {
       if (success) {
         // Update active manager references
         updateActiveManagers(args.connectionId);
+        return createSuccessResponse('CONNECTION_SWITCH_SUCCESS', { connectionId: args.connectionId });
+      } else {
+        return createErrorResponse('CONNECTION_SWITCH_FAILED', { connectionId: args.connectionId });
       }
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              success,
-              message: success
-                ? `Switched to connection ${args.connectionId}`
-                : `Connection ${args.connectionId} not found`,
-              activeConnectionId: connectionManager.getActiveConnectionId(),
-            }, null, 2),
-          },
-        ],
-      };
     }
   ),
 };

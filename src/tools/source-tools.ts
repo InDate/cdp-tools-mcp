@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { CDPManager } from '../cdp-manager.js';
 import { SourceMapHandler } from '../sourcemap-handler.js';
 import { createTool } from '../validation-helpers.js';
+import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
 
 // Schema for getSourceCode
 const getSourceCodeSchema = z.object({
@@ -25,33 +26,20 @@ export function createSourceTools(cdpManager: CDPManager, sourceMapHandler: Sour
         try {
           const sourceCode = await cdpManager.getSourceCode(url, startLine, endLine);
 
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  url,
-                  startLine: startLine || 1,
-                  endLine: endLine || sourceCode.totalLines,
-                  totalLines: sourceCode.totalLines,
-                  sourceMap: sourceCode.hasSourceMap,
-                  code: sourceCode.code,
-                }, null, 2),
-              },
-            ],
-          };
+          // Format source code with line numbers
+          const codeBlock = formatCodeBlock(sourceCode.code, 'javascript');
+
+          return createSuccessResponse('SOURCE_CODE_SUCCESS', {
+            url,
+            startLine: (startLine || 1).toString(),
+            endLine: (endLine || sourceCode.totalLines).toString(),
+          }, {
+            totalLines: sourceCode.totalLines,
+            hasSourceMap: sourceCode.hasSourceMap,
+            code: codeBlock,
+          });
         } catch (error) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  error: `Failed to get source code: ${error}`,
-                  url,
-                }, null, 2),
-              },
-            ],
-          };
+          return createErrorResponse('SOURCE_CODE_FAILED', { error: `${error}` });
         }
       }
     ),

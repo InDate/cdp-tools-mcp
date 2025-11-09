@@ -9,6 +9,7 @@ import { executeWithPauseDetection, formatActionResult } from '../debugger-aware
 import { checkBrowserAutomation, formatErrorResponse } from '../error-helpers.js';
 import { createTool } from '../validation-helpers.js';
 import { getConfiguredDebugPort } from '../index.js';
+import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
 
 // Zod schemas for storage tools
 const getCookiesSchema = z.object({
@@ -45,29 +46,18 @@ export function createStorageTools(puppeteerManager: PuppeteerManager, cdpManage
       getCookiesSchema,
       async (args) => {
         if (!puppeteerManager.isConnected()) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  error: 'Not connected to browser',
-                }, null, 2),
-              },
-            ],
-          };
+          return createErrorResponse('PUPPETEER_NOT_CONNECTED');
         }
 
         const page = puppeteerManager.getPage();
         const cookies = args.url ? await page.cookies(args.url) : await page.cookies();
 
+        const markdown = `## Browser Cookies\n\n**Count:** ${cookies.length}\n\n${formatCodeBlock(cookies)}`;
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify({
-                cookies,
-                count: cookies.length,
-              }, null, 2),
+              text: markdown,
             },
           ],
         };
@@ -79,16 +69,7 @@ export function createStorageTools(puppeteerManager: PuppeteerManager, cdpManage
       setCookieSchema,
       async (args) => {
         if (!puppeteerManager.isConnected()) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  error: 'Not connected to browser',
-                }, null, 2),
-              },
-            ],
-          };
+          return createErrorResponse('PUPPETEER_NOT_CONNECTED');
         }
 
         const page = puppeteerManager.getPage();
@@ -105,18 +86,9 @@ export function createStorageTools(puppeteerManager: PuppeteerManager, cdpManage
 
         await page.setCookie(cookie);
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                success: true,
-                message: `Cookie ${args.name} set`,
-                cookie,
-              }, null, 2),
-            },
-          ],
-        };
+        return createSuccessResponse('COOKIE_SET_SUCCESS', {
+          name: args.name
+        }, cookie);
       }
     ),
 
@@ -125,16 +97,7 @@ export function createStorageTools(puppeteerManager: PuppeteerManager, cdpManage
       getLocalStorageSchema,
       async (args) => {
         if (!puppeteerManager.isConnected()) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  error: 'Not connected to browser',
-                }, null, 2),
-              },
-            ],
-          };
+          return createErrorResponse('PUPPETEER_NOT_CONNECTED');
         }
 
         const page = puppeteerManager.getPage();
@@ -158,13 +121,12 @@ export function createStorageTools(puppeteerManager: PuppeteerManager, cdpManage
           'getLocalStorage'
         );
 
-        const response = formatActionResult(result, 'getLocalStorage', { localStorage: result.result });
-
+        const markdown = `## localStorage\n\n${formatCodeBlock(result.result)}`;
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify(response, null, 2),
+              text: markdown,
             },
           ],
         };
@@ -176,21 +138,12 @@ export function createStorageTools(puppeteerManager: PuppeteerManager, cdpManage
       setLocalStorageSchema,
       async (args) => {
         if (!puppeteerManager.isConnected()) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  error: 'Not connected to browser',
-                }, null, 2),
-              },
-            ],
-          };
+          return createErrorResponse('PUPPETEER_NOT_CONNECTED');
         }
 
         const page = puppeteerManager.getPage();
 
-        const result = await executeWithPauseDetection(
+        await executeWithPauseDetection(
           cdpManager,
           () => page.evaluate((key: string, value: string) => {
             localStorage.setItem(key, value);
@@ -198,19 +151,10 @@ export function createStorageTools(puppeteerManager: PuppeteerManager, cdpManage
           'setLocalStorage'
         );
 
-        const response = formatActionResult(result, 'setLocalStorage', {
+        return createSuccessResponse('LOCAL_STORAGE_SET_SUCCESS', {
           key: args.key,
-          value: args.value,
+          value: args.value
         });
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(response, null, 2),
-            },
-          ],
-        };
       }
     ),
 
@@ -219,16 +163,7 @@ export function createStorageTools(puppeteerManager: PuppeteerManager, cdpManage
       clearStorageSchema,
       async (args) => {
         if (!puppeteerManager.isConnected()) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  error: 'Not connected to browser',
-                }, null, 2),
-              },
-            ],
-          };
+          return createErrorResponse('PUPPETEER_NOT_CONNECTED');
         }
 
         const page = puppeteerManager.getPage();
@@ -266,16 +201,12 @@ export function createStorageTools(puppeteerManager: PuppeteerManager, cdpManage
           'clearStorage'
         );
 
-        const response = formatActionResult(result, 'clearStorage', result.result);
+        if (!result.result) {
+          return createSuccessResponse('STORAGE_CLEARED', { types: types.join(', ') });
+        }
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(response, null, 2),
-            },
-          ],
-        };
+        const storageResult = result.result;
+        return createSuccessResponse('STORAGE_CLEARED', { types: storageResult.cleared.join(', ') });
       }
     ),
   };

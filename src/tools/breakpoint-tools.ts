@@ -138,17 +138,7 @@ export function createBreakpointTools(
 
         await cdpManager.removeBreakpoint(breakpointId);
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                success: true,
-                message: `Breakpoint ${breakpointId} removed`,
-              }, null, 2),
-            },
-          ],
-        };
+        return createSuccessResponse('BREAKPOINT_REMOVE_SUCCESS', { breakpointId });
       }
     ),
 
@@ -159,21 +149,35 @@ export function createBreakpointTools(
         const breakpoints = cdpManager.getBreakpoints();
         const counts = cdpManager.getBreakpointCounts();
 
+        // Build markdown response
+        let markdown = `## Active Breakpoints\n\n`;
+        markdown += `**Total:** ${counts.total} (${counts.breakpoints} breakpoint${counts.breakpoints !== 1 ? 's' : ''}, ${counts.logpoints} logpoint${counts.logpoints !== 1 ? 's' : ''})\n\n`;
+
+        if (breakpoints.length === 0) {
+          markdown += 'No active breakpoints.\n\n';
+          markdown += '**TIP:** Use `setBreakpoint()` to set a breakpoint or `setLogpoint()` to set a logpoint.';
+        } else {
+          markdown += '| ID | Type | Location |\n';
+          markdown += '|---|---|---|\n';
+
+          breakpoints.forEach(bp => {
+            const type = bp.isLogpoint ? 'logpoint' : 'breakpoint';
+            let location: string;
+            if (bp.originalLocation) {
+              location = `${bp.originalLocation.url}:${bp.originalLocation.lineNumber}${bp.originalLocation.columnNumber !== undefined ? `:${bp.originalLocation.columnNumber}` : ''}`;
+            } else {
+              // Fall back to scriptId-based location (CDP internal)
+              location = `scriptId:${bp.location.scriptId}:${bp.location.lineNumber + 1}${bp.location.columnNumber !== undefined ? `:${bp.location.columnNumber + 1}` : ''}`;
+            }
+            markdown += `| \`${bp.breakpointId}\` | ${type} | \`${location}\` |\n`;
+          });
+        }
+
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify({
-                breakpoints: breakpoints.map(bp => ({
-                  breakpointId: bp.breakpointId,
-                  location: bp.location,
-                  originalLocation: bp.originalLocation,
-                  type: bp.isLogpoint ? 'logpoint' : 'breakpoint',
-                })),
-                totalCount: counts.total,
-                breakpointCount: counts.breakpoints,
-                logpointCount: counts.logpoints,
-              }, null, 2),
+              text: markdown,
             },
           ],
         };
@@ -187,76 +191,56 @@ export function createBreakpointTools(
         const { breakpointId } = args;
 
         // Reset the counter in the tracker
-        if (logpointTracker) {
-          const metadata = logpointTracker.getLogpoint(breakpointId);
-
-          if (!metadata) {
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: JSON.stringify({
-                    success: false,
-                    error: `Logpoint ${breakpointId} not found in tracker`,
-                    suggestion: 'Verify the breakpoint ID is correct and refers to a logpoint (not a regular breakpoint)',
-                  }, null, 2),
-                },
-              ],
-            };
-          }
-
-          // Reset the counter in the tracker
-          const previousCount = metadata.executionCount;
-          logpointTracker.resetCounter(breakpointId);
-
-          // Reset the global counter in the page context
-          const logpointKey = `${metadata.url}:${metadata.lineNumber}`;
-          try {
-            await cdpManager.evaluateExpression(`
-              if (typeof globalThis.__llmCdpLogpointCounters !== 'undefined') {
-                globalThis.__llmCdpLogpointCounters['${logpointKey.replace(/'/g, "\\'")}'] = 0;
-              }
-            `);
-          } catch (error) {
-            // Ignore errors - counter may not exist yet
-          }
-
-          // Clear the logpoint limit exceeded state in CDPManager
-          cdpManager.clearLogpointLimitExceeded();
-
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  success: true,
-                  message: `Logpoint counter reset for ${breakpointId}`,
-                  logpoint: {
-                    breakpointId: metadata.breakpointId,
-                    location: `${metadata.url}:${metadata.lineNumber}`,
-                    logMessage: metadata.logMessage,
-                    maxExecutions: metadata.maxExecutions,
-                    previousExecutionCount: previousCount,
-                    newExecutionCount: 0,
-                  },
-                  note: `The logpoint can now execute ${metadata.maxExecutions} more times before pausing again. Use 'resume' to continue execution.`,
-                }, null, 2),
-              },
-            ],
-          };
-        } else {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  success: false,
-                  error: 'Logpoint tracker not initialized',
-                }, null, 2),
-              },
-            ],
-          };
+        if (!logpointTracker) {
+          return createErrorResponse('DEBUGGER_NOT_CONNECTED');
         }
+
+        const metadata = logpointTracker.getLogpoint(breakpointId);
+
+        if (!metadata) {
+          return createErrorResponse('BREAKPOINT_NOT_FOUND', { breakpointId });
+        }
+
+        // Reset the counter in the tracker
+        const previousCount = metadata.executionCount;
+        logpointTracker.resetCounter(breakpointId);
+
+        // Reset the global counter in the page context
+        const logpointKey = `${metadata.url}:${metadata.lineNumber}`;
+        try {
+          await cdpManager.evaluateExpression(`
+            if (typeof globalThis.__llmCdpLogpointCounters !== 'undefined') {
+              globalThis.__llmCdpLogpointCounters['${logpointKey.replace(/'/g, "\\'")}'] = 0;
+            }
+          `);
+        } catch (error) {
+          // Ignore errors - counter may not exist yet
+        }
+
+        // Clear the logpoint limit exceeded state in CDPManager
+        cdpManager.clearLogpointLimitExceeded();
+
+        // Build markdown response with details
+        let markdown = getErrorMessage('LOGPOINT_COUNTER_RESET', {
+          breakpointId,
+          maxExecutions: metadata.maxExecutions,
+        });
+
+        markdown += `\n\n**Logpoint Details:**\n`;
+        markdown += `- **Location:** \`${metadata.url}:${metadata.lineNumber}\`\n`;
+        markdown += `- **Log Message:** \`${metadata.logMessage}\`\n`;
+        markdown += `- **Previous Count:** ${previousCount}\n`;
+        markdown += `- **New Count:** 0\n`;
+        markdown += `\n**Next Step:** Use \`resume()\` to continue execution.`;
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: markdown,
+            },
+          ],
+        };
       }
     ),
 
@@ -274,15 +258,17 @@ export function createBreakpointTools(
         }
 
         if (expressions.length === 0) {
+          const markdown = `## Logpoint Validation\n\n` +
+            `**Status:** Valid\n` +
+            `**Message:** No expressions to validate in log message\n` +
+            `**Log Message:** \`${logMessage}\`\n\n` +
+            `**Note:** This log message contains no variable interpolations. It will output as-is.`;
+
           return {
             content: [
               {
                 type: 'text',
-                text: JSON.stringify({
-                  valid: true,
-                  message: 'No expressions to validate in log message',
-                  logMessage,
-                }, null, 2),
+                text: markdown,
               },
             ],
           };
@@ -313,28 +299,27 @@ export function createBreakpointTools(
             // Remove temp breakpoint
             await cdpManager.removeBreakpoint(tempBreakpoint.breakpointId);
 
-            const response: any = {
-              valid: 'unknown',
-              message: 'Unable to validate - code at this location has not been executed yet',
-              suggestion: 'Trigger the code path that contains this line, or set the logpoint and check console for errors',
-              expressions,
-              logMessage,
-              location: {
-                requested: { line: lineNumber, column: columnNumber },
-                actual: { line: actualLineUser, column: actualColumnUser },
-                matched: !locationDiffers
-              }
-            };
+            let markdown = `## Logpoint Validation\n\n`;
+            markdown += `**Status:** Unknown\n`;
+            markdown += `**Message:** Unable to validate - code at this location has not been executed yet\n\n`;
+            markdown += `**Expressions:** ${expressions.map(e => `\`${e}\``).join(', ')}\n`;
+            markdown += `**Log Message:** \`${logMessage}\`\n\n`;
+            markdown += `**Location:**\n`;
+            markdown += `- **Requested:** Line ${lineNumber}${columnNumber ? `:${columnNumber}` : ''}\n`;
+            markdown += `- **Actual:** Line ${actualLineUser}${actualColumnUser ? `:${actualColumnUser}` : ''}\n`;
+            markdown += `- **Matched:** ${!locationDiffers ? 'Yes' : 'No'}\n\n`;
 
             if (locationDiffers) {
-              response.warning = `CDP mapped your requested location ${lineNumber}:${columnNumber || 'auto'} to ${actualLineUser}:${actualColumnUser || 'auto'}`;
+              markdown += `**Warning:** CDP mapped your requested location ${lineNumber}:${columnNumber || 'auto'} to ${actualLineUser}:${actualColumnUser || 'auto'}\n\n`;
             }
+
+            markdown += `**Suggestion:** Trigger the code path that contains this line, or set the logpoint and check console for errors`;
 
             return {
               content: [
                 {
                   type: 'text',
-                  text: JSON.stringify(response, null, 2),
+                  text: markdown,
                 },
               ],
             };
@@ -402,24 +387,40 @@ export function createBreakpointTools(
             // Ignore errors getting code snippet
           }
 
-          // Build response
-          const response: any = {
-            valid: allValid,
-            message: allValid
-              ? 'All expressions are valid at this location'
-              : `${invalidExpressions.length} expression(s) failed to evaluate`,
-            location: {
-              requested: { line: lineNumber, column: columnNumber },
-              actual: { line: actualLineUser, column: actualColumnUser },
-              matched: !locationDiffers
-            },
-            results,
-            availableVariables: availableVariables.length > 0 ? availableVariables : undefined,
-            codeContext,
-          };
+          // Build markdown response
+          let markdown = `## Logpoint Validation\n\n`;
+          markdown += `**Status:** ${allValid ? 'Valid ✓' : 'Failed ✗'}\n`;
+          markdown += `**Message:** ${allValid ? 'All expressions are valid at this location' : `${invalidExpressions.length} expression(s) failed to evaluate`}\n\n`;
+
+          // Location info
+          markdown += `**Location:**\n`;
+          markdown += `- **Requested:** Line ${lineNumber}${columnNumber ? `:${columnNumber}` : ''}\n`;
+          markdown += `- **Actual:** Line ${actualLineUser}${actualColumnUser ? `:${actualColumnUser}` : ''}\n`;
+          markdown += `- **Matched:** ${!locationDiffers ? 'Yes' : 'No'}\n\n`;
 
           if (locationDiffers) {
-            response.warning = `CDP mapped your requested location ${lineNumber}:${columnNumber || 'auto'} to ${actualLineUser}:${actualColumnUser || 'auto'}`;
+            markdown += `**Warning:** CDP mapped your requested location ${lineNumber}:${columnNumber || 'auto'} to ${actualLineUser}:${actualColumnUser || 'auto'}\n\n`;
+          }
+
+          // Expression results
+          markdown += `**Expression Results:**\n\n`;
+          markdown += `| Expression | Valid | Value/Error |\n`;
+          markdown += `|---|---|---|\n`;
+          results.forEach(r => {
+            const status = r.valid ? '✓' : '✗';
+            const valueStr = r.valid ? JSON.stringify(r.value) : r.error;
+            markdown += `| \`${r.expression}\` | ${status} | ${valueStr} |\n`;
+          });
+          markdown += `\n`;
+
+          // Available variables
+          if (availableVariables.length > 0) {
+            markdown += `**Available Variables:** ${availableVariables.map(v => `\`${v}\``).join(', ')}\n\n`;
+          }
+
+          // Code context
+          if (codeContext) {
+            markdown += `**Code Context:**\n\`\`\`javascript\n${codeContext}\n\`\`\`\n\n`;
           }
 
           // If validation failed, search for better locations
@@ -435,13 +436,16 @@ export function createBreakpointTools(
               );
 
               if (suggestions.length > 0) {
-                response.suggestions = suggestions.slice(0, 3);  // Top 3 suggestions
-                response.suggestion = `Consider using one of the suggested locations where ${suggestions[0].score}% of expressions are valid`;
+                markdown += `**Suggestions:**\n`;
+                suggestions.slice(0, 3).forEach((s: any) => {
+                  markdown += `- Line ${s.line}${s.column ? `:${s.column}` : ''} - ${s.score}% of expressions valid\n`;
+                });
+                markdown += `\n**Recommendation:** Consider using line ${suggestions[0].line} where ${suggestions[0].score}% of expressions are valid`;
               } else {
-                response.suggestion = 'Check variable names and scopes. Variables must be in scope at the logpoint location.';
+                markdown += `**Suggestion:** Check variable names and scopes. Variables must be in scope at the logpoint location.`;
               }
             } catch (err) {
-              response.suggestion = 'Check variable names and scopes. Variables must be in scope at the logpoint location.';
+              markdown += `**Suggestion:** Check variable names and scopes. Variables must be in scope at the logpoint location.`;
             }
           }
 
@@ -449,23 +453,14 @@ export function createBreakpointTools(
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(response, null, 2),
+                text: markdown,
               },
             ],
           };
         } catch (error) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  valid: false,
-                  error: `Validation failed: ${error}`,
-                  message: 'Could not validate logpoint expression',
-                }, null, 2),
-              },
-            ],
-          };
+          return createErrorResponse('LOGPOINT_VALIDATE_FAILED', {
+            error: String(error),
+          });
         }
       }
     ),
@@ -504,9 +499,12 @@ export function createBreakpointTools(
         let logExpression = `
           (function() {
             try {
-              // Initialize global counter storage if needed
+              // Initialize global storage if needed
               if (typeof globalThis.__llmCdpLogpointCounters === 'undefined') {
                 globalThis.__llmCdpLogpointCounters = {};
+              }
+              if (typeof globalThis.__llmCdpLogpointErrors === 'undefined') {
+                globalThis.__llmCdpLogpointErrors = [];
               }
 
               // Get/increment counter for this logpoint
@@ -519,10 +517,17 @@ export function createBreakpointTools(
                 return true; // PAUSE - limit exceeded
               }
 
-              // Evaluate expressions
-              const values = {
-                ${expressions.map(expr => `'${expr}': ${expr}`).join(',\n                ')}
-              };
+              // Evaluate expressions safely - wrap each in try-catch to prevent one failure from breaking all
+              const values = {};
+              ${expressions.map(expr => {
+                const escapedExpr = expr.replace(/'/g, "\\'");
+                return `
+              try {
+                values['${escapedExpr}'] = ${expr};
+              } catch (e) {
+                values['${escapedExpr}'] = '[Error: ' + e.message + ']';
+              }`;
+              }).join('')}
 
               // Helper to safely stringify values (handles objects, arrays, circular refs)
               const safeStringify = (value) => {
@@ -540,9 +545,13 @@ export function createBreakpointTools(
                 }
               };
 
-              // Build log message
-              let message = '${logMessage}';
-              ${expressions.map(expr => `message = message.replace('{${expr}}', safeStringify(values['${expr}']));`).join('\n              ')}
+              // Build log message (using JSON.stringify to safely escape the template)
+              let message = ${JSON.stringify(logMessage)};
+              ${expressions.map(expr => {
+                // Escape single quotes in the expression key for safe string literal
+                const escapedExpr = expr.replace(/'/g, "\\'");
+                return `message = message.replace('{${expr}}', safeStringify(values['${escapedExpr}']));`;
+              }).join('\n              ')}
 
               // Log to console
               console.log('[Logpoint] ${targetUrl}:${targetLine}:${targetColumn || 'auto'}:', message);
@@ -564,10 +573,24 @@ export function createBreakpointTools(
               }
 
             } catch(e) {
-              console.error('[Logpoint] Error at ${targetUrl}:${targetLine}:${targetColumn || 'auto'}:', e.message);
-              console.error('[Logpoint] Note: CDP may have mapped your requested location to a different line:column');
-              console.error('[Logpoint] Actual location may differ from requested. Variables scope depends on actual location.');
-              console.error('[Logpoint] Use validateLogpoint to check expressions before setting logpoints.');
+              // Store error in global array for retrieval via searchConsoleLogs
+              const errorInfo = {
+                type: 'logpoint-error',
+                location: '${targetUrl}:${targetLine}:${targetColumn || 'auto'}',
+                expressions: ${JSON.stringify(expressions)},
+                error: e.message,
+                stack: e.stack || e.toString(),
+                timestamp: new Date().toISOString()
+              };
+              globalThis.__llmCdpLogpointErrors.push(errorInfo);
+
+              // Keep only last 50 errors to prevent memory issues
+              if (globalThis.__llmCdpLogpointErrors.length > 50) {
+                globalThis.__llmCdpLogpointErrors.shift();
+              }
+
+              // Log error to console with warning level for visibility
+              console.warn('[Logpoint Error] ' + '${targetUrl}:${targetLine}' + ': ' + e.message + ' | Expressions: ' + ${JSON.stringify(expressions)}.join(', '));
             }
             return false; // Don't pause (unless limit exceeded above)
           })()
@@ -589,22 +612,22 @@ export function createBreakpointTools(
             logExpression
           );
         } catch (error: any) {
+          let markdown = `## Failed to Set Logpoint\n\n`;
+          markdown += `**Error:** ${error.message}\n\n`;
+          markdown += `**Details:**\n`;
+          markdown += `- **Requested:** \`${url}:${lineNumber}\`\n`;
+          markdown += `- **Target:** \`${targetUrl}:${targetLine}\`\n\n`;
+
+          if (error.message.includes('not loaded')) {
+            markdown += `**Suggestion:** The script has not been loaded by the runtime yet. Try navigating to the page or reloading.`;
+          } else {
+            markdown += `**Suggestion:** Verify the file has been loaded and the line number is valid.`;
+          }
+
           return {
             content: [{
               type: 'text',
-              text: JSON.stringify({
-                success: false,
-                error: `Failed to set logpoint: ${error.message}`,
-                details: {
-                  requestedFile: url,
-                  requestedLine: lineNumber,
-                  targetFile: targetUrl,
-                  targetLine: targetLine,
-                },
-                suggestion: error.message.includes('not loaded')
-                  ? 'The script has not been loaded by the runtime yet. Try navigating to the page or reloading.'
-                  : 'Verify the file has been loaded and the line number is valid.'
-              }, null, 2)
+              text: markdown,
             }],
             isError: true
           };
@@ -688,38 +711,49 @@ export function createBreakpointTools(
             }
 
             // Return detailed error response
+            let errorMarkdown = `## Logpoint Validation Failed\n\n`;
+            errorMarkdown += `**Error:** Logpoint expressions failed validation at actual CDP location\n\n`;
+
+            errorMarkdown += `**Requested Location:**\n`;
+            errorMarkdown += `- **URL:** \`${url}\`\n`;
+            errorMarkdown += `- **Line:** ${lineNumber}${columnNumber ? `:${columnNumber}` : ''}\n\n`;
+
+            errorMarkdown += `**Actual Location (CDP Mapped):**\n`;
+            errorMarkdown += `- **Line:** ${actualLineUser}${actualColumnUser ? `:${actualColumnUser}` : ''}\n`;
+            errorMarkdown += `- **Offset:** ${actualLineUser - lineNumber > 0 ? '+' : ''}${actualLineUser - lineNumber} lines\n`;
+            errorMarkdown += `- **Reason:** V8 mapped to nearest valid breakpoint location\n\n`;
+
+            const failedExprs = validation.results.filter((r: any) => !r.valid).map((r: any) => r.expression);
+            errorMarkdown += `**Failed Expressions:** ${failedExprs.map((e: string) => `\`${e}\``).join(', ')}\n\n`;
+
+            errorMarkdown += `**Code Context:**\n\`\`\`javascript\n${codeContext}\n\`\`\`\n\n`;
+
+            if (validation.availableVariables && validation.availableVariables.length > 0) {
+              errorMarkdown += `**Available Variables:** ${validation.availableVariables.map((v: string) => `\`${v}\``).join(', ')}\n\n`;
+            }
+
+            if (suggestions.length > 0) {
+              errorMarkdown += `**Suggestions:**\n`;
+              suggestions.forEach((s: any) => {
+                errorMarkdown += `- Line ${s.line}${s.column ? `:${s.column}` : ''} - ${s.score}% of expressions valid\n`;
+              });
+              errorMarkdown += `\n`;
+
+              if (suggestions[0].score === 100) {
+                errorMarkdown += `**Recommendation:** Set logpoint at line ${suggestions[0].line}:${suggestions[0].column || 'auto'} instead where all expressions are in scope.`;
+              } else {
+                errorMarkdown += `**Recommendation:** Variables not in scope at actual location ${actualLineUser}:${actualColumnUser || 'auto'}. Try using validateLogpoint to find a better location.`;
+              }
+            } else {
+              errorMarkdown += `**Recommendation:** Variables not in scope at actual location ${actualLineUser}:${actualColumnUser || 'auto'}. Try using validateLogpoint to find a better location.`;
+            }
+
             return {
               content: [{
                 type: 'text',
-                text: JSON.stringify({
-                  success: false,
-                  error: 'Logpoint expressions failed validation at actual CDP location',
-                  requested: {
-                    line: lineNumber,  // Original user request (1-based)
-                    column: columnNumber,
-                    url
-                  },
-                  actual: {
-                    line: actualLineUser,  // Where CDP actually set it (1-based)
-                    column: actualColumnUser,
-                    lineOffset: actualLineUser - lineNumber,
-                    columnOffset: actualColumnUser && columnNumber ? actualColumnUser - columnNumber : null,
-                    reason: 'V8 mapped to nearest valid breakpoint location'
-                  },
-                  validation: {
-                    failedExpressions: validation.results.filter(r => !r.valid).map(r => r.expression),
-                    results: validation.results,
-                  },
-                  codeContext: {
-                    actualLocation: codeContext,
-                    availableVariables: validation.availableVariables || []
-                  },
-                  suggestions: suggestions.length > 0 ? suggestions : undefined,
-                  helpMessage: suggestions.length > 0 && suggestions[0].score === 100
-                    ? `Set logpoint at line ${suggestions[0].line}:${suggestions[0].column || 'auto'} instead where all expressions are in scope.`
-                    : `Variables not in scope at actual location ${actualLineUser}:${actualColumnUser || 'auto'}. Try using validateLogpoint to find a better location.`
-                }, null, 2)
-              }]
+                text: errorMarkdown,
+              }],
+              isError: true
             };
           }
 
@@ -747,37 +781,41 @@ export function createBreakpointTools(
           expressionsForResponse.push(match[1]);
         }
 
-        // Build response based on whether location differs
-        const responseData: any = {
-          success: true,
-          breakpointId: breakpoint.breakpointId,
-          location: {
-            requested: { line: lineNumber, column: columnNumber },
-            actual: { line: actualLineUser, column: actualColumnUser },
-            matched: !locationDiffers
-          },
-          logMessage,
-          expressions: expressionsForResponse,
-          condition: condition || 'none',
-          note: 'This logpoint will log to the browser console without pausing execution',
-        };
+        // Build markdown success response
+        let markdown = `## Logpoint Set Successfully\n\n`;
+        markdown += `**Breakpoint ID:** \`${breakpoint.breakpointId}\`\n`;
+        markdown += `**Location:** \`${targetUrl}:${actualLineUser}${actualColumnUser ? `:${actualColumnUser}` : ''}\`\n`;
+        markdown += `**Log Message:** \`${logMessage}\`\n`;
+
+        if (expressionsForResponse.length > 0) {
+          markdown += `**Expressions:** ${expressionsForResponse.map(e => `\`${e}\``).join(', ')}\n`;
+        }
+
+        if (condition) {
+          markdown += `**Condition:** \`${condition}\`\n`;
+        }
+
+        markdown += `**Max Executions:** ${maxExecutions}\n\n`;
 
         // If location differs, add warning and validation info
         if (locationDiffers && expressions.length > 0) {
-          responseData.warning = `Logpoint was set at line ${actualLineUser}:${actualColumnUser || 'auto'} (not ${lineNumber}:${columnNumber || 'auto'}) due to V8 line mapping. All expressions validated successfully at this location.`;
-          responseData.message = `Logpoint set at ${targetUrl}:${actualLineUser}:${actualColumnUser || 'auto'} (requested ${lineNumber}:${columnNumber || 'auto'})`;
-        } else {
-          responseData.message = `Logpoint set at ${targetUrl}:${targetLine}:${targetColumn || 'auto'}`;
-          if (expressionsForResponse.length > 0) {
-            responseData.tip = 'If you see console errors about undefined variables, use validateLogpoint to check expression validity';
-          }
+          markdown += `**⚠️ Warning:** Logpoint was set at line ${actualLineUser}:${actualColumnUser || 'auto'} (not ${lineNumber}:${columnNumber || 'auto'}) due to V8 line mapping. All expressions validated successfully at this location.\n\n`;
+        } else if (locationDiffers) {
+          markdown += `**⚠️ Note:** CDP mapped your requested location ${lineNumber}:${columnNumber || 'auto'} to ${actualLineUser}:${actualColumnUser || 'auto'}\n\n`;
+        }
+
+        markdown += `**Note:** This logpoint will log to the browser console without pausing execution`;
+
+        if (expressionsForResponse.length > 0) {
+          markdown += `\n\n**TIP:** Each expression is wrapped in try-catch. If an expression fails, it will show \`[Error: message]\` in the log.`;
+          markdown += `\nTo see logpoint errors, use: \`searchConsoleLogs({pattern: "Logpoint Error"})\``;
         }
 
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify(responseData, null, 2),
+              text: markdown,
             },
           ],
         };

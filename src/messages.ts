@@ -228,15 +228,28 @@ class MessageManager {
 
   /**
    * Format a message template with variable substitution
-   * Supports {{variable}} syntax
+   * Supports {{variable}} syntax and {{#variable}}...{{/variable}} conditionals
    */
   private formatMessage(template: string, variables: Record<string, any>): string {
-    return template.replace(/\{\{(\w+)\}\}/g, (match, key) => {
+    // First pass: Handle conditional blocks {{#var}}...{{/var}}
+    // Using [\s\S] to match across newlines
+    let result = template.replace(/\{\{#(\w+)\}\}([\s\S]*?)\{\{\/\1\}\}/g, (match, key, content) => {
+      // Check if variable exists and is truthy
+      if (variables[key]) {
+        return content; // Keep content if variable is truthy
+      }
+      return ''; // Remove entire block if variable is falsy/undefined
+    });
+
+    // Second pass: Simple variable substitution {{var}}
+    result = result.replace(/\{\{(\w+)\}\}/g, (match, key) => {
       if (key in variables) {
         return String(variables[key]);
       }
       return match; // Keep placeholder if variable not provided
     });
+
+    return result;
   }
 
   /**
