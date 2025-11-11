@@ -5,6 +5,7 @@
 import { z } from 'zod';
 import type { CDPManager } from '../cdp-manager.js';
 import { PuppeteerManager } from '../puppeteer-manager.js';
+import type { ConnectionManager } from '../connection-manager.js';
 import { executeWithPauseDetection, formatActionResult } from '../debugger-aware-wrapper.js';
 import { checkBrowserAutomation } from '../error-helpers.js';
 import { createTool } from '../validation-helpers.js';
@@ -15,37 +16,49 @@ import { createSuccessResponse, createErrorResponse } from '../messages.js';
 const clickElementSchema = z.object({
   selector: z.string(),
   clickCount: z.number().default(1),
+  connectionId: z.string().describe('The connection ID of the tab to click in'),
 }).strict();
 
 const typeTextSchema = z.object({
   selector: z.string(),
   text: z.string(),
   delay: z.number().default(0),
+  connectionId: z.string().describe('The connection ID of the tab to type in'),
 }).strict();
 
 const pressKeySchema = z.object({
   key: z.string(),
+  connectionId: z.string().describe('The connection ID of the tab to press keys in'),
 }).strict();
 
 const hoverElementSchema = z.object({
   selector: z.string(),
+  connectionId: z.string().describe('The connection ID of the tab to hover in'),
 }).strict();
 
-export function createInputTools(puppeteerManager: PuppeteerManager, cdpManager: CDPManager) {
+export function createInputTools(puppeteerManager: PuppeteerManager, cdpManager: CDPManager, connectionManager: ConnectionManager) {
   return {
     clickElement: createTool(
       'Click an element by CSS selector. Automatically handles breakpoints.',
       clickElementSchema,
       async (args) => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'clickElement', getConfiguredDebugPort());
+        // Get connection-specific managers
+        const connection = connectionManager.getConnection(args.connectionId);
+        if (!connection) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        }
+        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
+        const targetCdpManager = connection.cdpManager;
+
+        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'clickElement', getConfiguredDebugPort());
         if (error) {
           return error;
         }
 
-        const page = puppeteerManager.getPage();
+        const page = targetPuppeteerManager.getPage();
 
         const result = await executeWithPauseDetection(
-          cdpManager,
+          targetCdpManager,
           async () => {
             // Check if element exists and is clickable
             const element = await page.$(args.selector);
@@ -116,15 +129,23 @@ export function createInputTools(puppeteerManager: PuppeteerManager, cdpManager:
       'Type text into an element. Automatically handles breakpoints.',
       typeTextSchema,
       async (args) => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'typeText', getConfiguredDebugPort());
+        // Get connection-specific managers
+        const connection = connectionManager.getConnection(args.connectionId);
+        if (!connection) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        }
+        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
+        const targetCdpManager = connection.cdpManager;
+
+        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'typeText', getConfiguredDebugPort());
         if (error) {
           return error;
         }
 
-        const page = puppeteerManager.getPage();
+        const page = targetPuppeteerManager.getPage();
 
         const result = await executeWithPauseDetection(
-          cdpManager,
+          targetCdpManager,
           async () => {
             // Check if element exists first
             const element = await page.$(args.selector);
@@ -159,15 +180,23 @@ export function createInputTools(puppeteerManager: PuppeteerManager, cdpManager:
       'Press a keyboard key or key combination. Automatically handles breakpoints.',
       pressKeySchema,
       async (args) => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'pressKey', getConfiguredDebugPort());
+        // Get connection-specific managers
+        const connection = connectionManager.getConnection(args.connectionId);
+        if (!connection) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        }
+        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
+        const targetCdpManager = connection.cdpManager;
+
+        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'pressKey', getConfiguredDebugPort());
         if (error) {
           return error;
         }
 
-        const page = puppeteerManager.getPage();
+        const page = targetPuppeteerManager.getPage();
 
         await executeWithPauseDetection(
-          cdpManager,
+          targetCdpManager,
           () => page.keyboard.press(args.key as any),
           'pressKey'
         );
@@ -182,15 +211,23 @@ export function createInputTools(puppeteerManager: PuppeteerManager, cdpManager:
       'Hover over an element. Automatically handles breakpoints.',
       hoverElementSchema,
       async (args) => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'hoverElement', getConfiguredDebugPort());
+        // Get connection-specific managers
+        const connection = connectionManager.getConnection(args.connectionId);
+        if (!connection) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        }
+        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
+        const targetCdpManager = connection.cdpManager;
+
+        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'hoverElement', getConfiguredDebugPort());
         if (error) {
           return error;
         }
 
-        const page = puppeteerManager.getPage();
+        const page = targetPuppeteerManager.getPage();
 
         const result = await executeWithPauseDetection(
-          cdpManager,
+          targetCdpManager,
           async () => {
             // Check if element exists first
             const element = await page.$(args.selector);

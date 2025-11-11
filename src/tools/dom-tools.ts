@@ -5,6 +5,7 @@
 import { z } from 'zod';
 import type { CDPManager } from '../cdp-manager.js';
 import { PuppeteerManager } from '../puppeteer-manager.js';
+import type { ConnectionManager } from '../connection-manager.js';
 import { executeWithPauseDetection, formatActionResult } from '../debugger-aware-wrapper.js';
 import { checkBrowserAutomation } from '../error-helpers.js';
 import { createTool } from '../validation-helpers.js';
@@ -14,31 +15,42 @@ import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../
 // Zod schemas for DOM tools
 const querySelectorSchema = z.object({
   selector: z.string(),
+  connectionId: z.string().describe('Connection ID of the tab'),
 }).strict();
 
 const getElementPropertiesSchema = z.object({
   selector: z.string(),
+  connectionId: z.string().describe('Connection ID of the tab'),
 }).strict();
 
 const getDOMSnapshotSchema = z.object({
   maxDepth: z.number().optional().default(5),
+  connectionId: z.string().describe('Connection ID of the tab'),
 }).strict();
 
-export function createDOMTools(puppeteerManager: PuppeteerManager, cdpManager: CDPManager) {
+export function createDOMTools(puppeteerManager: PuppeteerManager, cdpManager: CDPManager, connectionManager: ConnectionManager) {
   return {
     querySelector: createTool(
       'Find an element by CSS selector. Automatically handles breakpoints.',
       querySelectorSchema,
       async (args) => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'querySelector', getConfiguredDebugPort());
+        // Get connection-specific managers
+        const connection = connectionManager.getConnection(args.connectionId);
+        if (!connection) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        }
+        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
+        const targetCdpManager = connection.cdpManager;
+
+        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'querySelector', getConfiguredDebugPort());
         if (error) {
           return error;
         }
 
-        const page = puppeteerManager.getPage();
+        const page = targetPuppeteerManager.getPage();
 
         const result = await executeWithPauseDetection(
-          cdpManager,
+          targetCdpManager,
           async () => {
             const element = await page.$(args.selector);
 
@@ -82,15 +94,23 @@ export function createDOMTools(puppeteerManager: PuppeteerManager, cdpManager: C
       'Get detailed properties of an element. Automatically handles breakpoints.',
       getElementPropertiesSchema,
       async (args) => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'getElementProperties', getConfiguredDebugPort());
+        // Get connection-specific managers
+        const connection = connectionManager.getConnection(args.connectionId);
+        if (!connection) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        }
+        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
+        const targetCdpManager = connection.cdpManager;
+
+        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'getElementProperties', getConfiguredDebugPort());
         if (error) {
           return error;
         }
 
-        const page = puppeteerManager.getPage();
+        const page = targetPuppeteerManager.getPage();
 
         const result = await executeWithPauseDetection(
-          cdpManager,
+          targetCdpManager,
           async () => {
             const element = await page.$(args.selector);
 
@@ -160,15 +180,23 @@ export function createDOMTools(puppeteerManager: PuppeteerManager, cdpManager: C
       'Get a text-based snapshot of the DOM structure. Automatically handles breakpoints.',
       getDOMSnapshotSchema,
       async (args) => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'getDOMSnapshot', getConfiguredDebugPort());
+        // Get connection-specific managers
+        const connection = connectionManager.getConnection(args.connectionId);
+        if (!connection) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        }
+        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
+        const targetCdpManager = connection.cdpManager;
+
+        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'getDOMSnapshot', getConfiguredDebugPort());
         if (error) {
           return error;
         }
 
-        const page = puppeteerManager.getPage();
+        const page = targetPuppeteerManager.getPage();
 
         const result = await executeWithPauseDetection(
-          cdpManager,
+          targetCdpManager,
           async () => {
             // Get DOM snapshot using accessibility tree
             const snapshot = await page.accessibility.snapshot();

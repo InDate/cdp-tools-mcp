@@ -7,22 +7,37 @@ import type { CDPManager } from '../cdp-manager.js';
 import { PuppeteerManager } from '../puppeteer-manager.js';
 import { ConsoleMonitor } from '../console-monitor.js';
 import { NetworkMonitor } from '../network-monitor.js';
+import type { ConnectionManager } from '../connection-manager.js';
 import { executeWithPauseDetection, formatActionResult } from '../debugger-aware-wrapper.js';
 import { checkBrowserAutomation } from '../error-helpers.js';
 import { createTool } from '../validation-helpers.js';
 import { getConfiguredDebugPort } from '../index.js';
-import { createSuccessResponse, formatCodeBlock } from '../messages.js';
+import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
 
 // Schemas
 const navigateToSchema = z.object({
   url: z.string(),
   waitUntil: z.enum(['load', 'domcontentloaded', 'networkidle0', 'networkidle2']).default('load'),
+  connectionId: z.string().describe('Connection ID of the tab to navigate'),
 }).strict();
 
 const reloadPageSchema = z.object({
   ignoreCache: z.boolean().default(false).describe('Clear browser cache before reloading (default: false)'),
   waitUntil: z.enum(['load', 'domcontentloaded', 'networkidle0', 'networkidle2']).default('load').describe('When to consider navigation complete: load (default), domcontentloaded, networkidle0, or networkidle2'),
   timeout: z.number().default(30000).describe('Maximum time to wait for reload in milliseconds (default: 30000ms / 30s)'),
+  connectionId: z.string().describe('Connection ID of the tab'),
+}).strict();
+
+const goBackSchema = z.object({
+  connectionId: z.string().describe('Connection ID of the tab'),
+}).strict();
+
+const goForwardSchema = z.object({
+  connectionId: z.string().describe('Connection ID of the tab'),
+}).strict();
+
+const getPageInfoSchema = z.object({
+  connectionId: z.string().describe('Connection ID of the tab'),
 }).strict();
 
 const emptySchema = z.object({}).strict();
@@ -31,17 +46,18 @@ export function createPageTools(
   puppeteerManager: PuppeteerManager,
   cdpManager: CDPManager,
   consoleMonitor: ConsoleMonitor,
-  networkMonitor: NetworkMonitor
+  networkMonitor: NetworkMonitor,
+  connectionManager: ConnectionManager
 ) {
   /**
    * Auto-restart console and network monitoring after navigation
    */
-  const restartMonitoring = (page: any) => {
-    if (consoleMonitor.isActive()) {
-      consoleMonitor.startMonitoring(page);
+  const restartMonitoring = (page: any, monitor: ConsoleMonitor, netMonitor: NetworkMonitor) => {
+    if (monitor.isActive()) {
+      monitor.startMonitoring(page);
     }
-    if (networkMonitor.isActive()) {
-      networkMonitor.startMonitoring(page);
+    if (netMonitor.isActive()) {
+      netMonitor.startMonitoring(page);
     }
   };
 
@@ -50,20 +66,31 @@ export function createPageTools(
       'Navigate to a URL. Automatically handles breakpoints.',
       navigateToSchema,
       async (args) => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'navigateTo', getConfiguredDebugPort());
+        // Get connection-specific managers
+        const connection = connectionManager.getConnection(args.connectionId);
+        if (!connection) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        }
+
+        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
+        const targetCdpManager = connection.cdpManager;
+        const targetConsoleMonitor = connection.consoleMonitor || consoleMonitor;
+        const targetNetworkMonitor = connection.networkMonitor || networkMonitor;
+
+        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'navigateTo', getConfiguredDebugPort());
         if (error) {
           return error;
         }
 
-        const page = puppeteerManager.getPage();
+        const page = targetPuppeteerManager.getPage();
 
         const result = await executeWithPauseDetection(
-          cdpManager,
+          targetCdpManager,
           async () => {
             await page.goto(args.url, { waitUntil: args.waitUntil });
 
             // Auto-restart monitoring after navigation
-            restartMonitoring(page);
+            restartMonitoring(page, targetConsoleMonitor, targetNetworkMonitor);
 
             return {
               url: page.url(),
@@ -89,15 +116,26 @@ export function createPageTools(
       'Reload the current page. Automatically handles breakpoints.',
       reloadPageSchema,
       async (args) => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'reloadPage', getConfiguredDebugPort());
+        // Get connection-specific managers
+        const connection = connectionManager.getConnection(args.connectionId);
+        if (!connection) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        }
+
+        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
+        const targetCdpManager = connection.cdpManager;
+        const targetConsoleMonitor = connection.consoleMonitor || consoleMonitor;
+        const targetNetworkMonitor = connection.networkMonitor || networkMonitor;
+
+        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'reloadPage', getConfiguredDebugPort());
         if (error) {
           return error;
         }
 
-        const page = puppeteerManager.getPage();
+        const page = targetPuppeteerManager.getPage();
 
         await executeWithPauseDetection(
-          cdpManager,
+          targetCdpManager,
           async () => {
             // Clear cache before reload if requested
             if (args.ignoreCache) {
@@ -109,7 +147,7 @@ export function createPageTools(
             await page.reload({ waitUntil: args.waitUntil, timeout: args.timeout });
 
             // Auto-restart monitoring after reload
-            restartMonitoring(page);
+            restartMonitoring(page, targetConsoleMonitor, targetNetworkMonitor);
 
             return { url: page.url(), waitUntil: args.waitUntil };
           },
@@ -122,22 +160,33 @@ export function createPageTools(
 
     goBack: createTool(
       'Navigate backward in browser history. Automatically handles breakpoints.',
-      emptySchema,
-      async () => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'goBack', getConfiguredDebugPort());
+      goBackSchema,
+      async (args) => {
+        // Get connection-specific managers
+        const connection = connectionManager.getConnection(args.connectionId);
+        if (!connection) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        }
+
+        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
+        const targetCdpManager = connection.cdpManager;
+        const targetConsoleMonitor = connection.consoleMonitor || consoleMonitor;
+        const targetNetworkMonitor = connection.networkMonitor || networkMonitor;
+
+        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'goBack', getConfiguredDebugPort());
         if (error) {
           return error;
         }
 
-        const page = puppeteerManager.getPage();
+        const page = targetPuppeteerManager.getPage();
 
         const result = await executeWithPauseDetection(
-          cdpManager,
+          targetCdpManager,
           async () => {
             await page.goBack({ waitUntil: 'load' });
 
             // Auto-restart monitoring after navigation
-            restartMonitoring(page);
+            restartMonitoring(page, targetConsoleMonitor, targetNetworkMonitor);
 
             return { url: page.url() };
           },
@@ -156,22 +205,33 @@ export function createPageTools(
 
     goForward: createTool(
       'Navigate forward in browser history. Automatically handles breakpoints.',
-      emptySchema,
-      async () => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'goForward', getConfiguredDebugPort());
+      goForwardSchema,
+      async (args) => {
+        // Get connection-specific managers
+        const connection = connectionManager.getConnection(args.connectionId);
+        if (!connection) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        }
+
+        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
+        const targetCdpManager = connection.cdpManager;
+        const targetConsoleMonitor = connection.consoleMonitor || consoleMonitor;
+        const targetNetworkMonitor = connection.networkMonitor || networkMonitor;
+
+        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'goForward', getConfiguredDebugPort());
         if (error) {
           return error;
         }
 
-        const page = puppeteerManager.getPage();
+        const page = targetPuppeteerManager.getPage();
 
         const result = await executeWithPauseDetection(
-          cdpManager,
+          targetCdpManager,
           async () => {
             await page.goForward({ waitUntil: 'load' });
 
             // Auto-restart monitoring after navigation
-            restartMonitoring(page);
+            restartMonitoring(page, targetConsoleMonitor, targetNetworkMonitor);
 
             return { url: page.url() };
           },
@@ -190,17 +250,26 @@ export function createPageTools(
 
     getPageInfo: createTool(
       'Get information about the current page. Automatically handles breakpoints.',
-      emptySchema,
-      async () => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'getPageInfo', getConfiguredDebugPort());
+      getPageInfoSchema,
+      async (args) => {
+        // Get connection-specific managers
+        const connection = connectionManager.getConnection(args.connectionId);
+        if (!connection) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        }
+
+        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
+        const targetCdpManager = connection.cdpManager;
+
+        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'getPageInfo', getConfiguredDebugPort());
         if (error) {
           return error;
         }
 
-        const page = puppeteerManager.getPage();
+        const page = targetPuppeteerManager.getPage();
 
         const result = await executeWithPauseDetection(
-          cdpManager,
+          targetCdpManager,
           async () => {
             const url = page.url();
             const title = await page.title();
