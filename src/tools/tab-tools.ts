@@ -147,11 +147,12 @@ export function createTabTools(
           const warnCount = allMessages.filter((m: StoredConsoleMessage) => m.type === 'warn').length;
 
           // Format response
-          const markdown = `New tab created and connected
-Connection ID: ${connectionId}, Reference: ${args.reference}
+          const markdown = `New tab created and connected - Reference: ${args.reference}
 Title: ${title}
 URL: ${url}
-Console: ${allMessages.length} logs (${errorCount} errors, ${warnCount} warnings)`;
+Console: ${allMessages.length} logs (${errorCount} errors, ${warnCount} warnings)
+
+**TIP:** Browser tools now use \`connectionReason\` instead of connectionId. Use 3 descriptive words like "search wikipedia results" or "${args.reference}" to automatically create/reuse this tab.`;
 
           return {
             content: [{ type: 'text', text: markdown }],
