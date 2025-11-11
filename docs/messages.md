@@ -805,6 +805,21 @@ Not connected to browser. This operation requires browser automation support.
 
 ---
 
+## PAGE_NOT_LOADED
+
+**Type:** error
+**Code:** PAGE_NOT_LOADED
+
+No page loaded. The tool `{{toolName}}` requires a web page to be loaded first.
+
+**Suggestions:**
+1. Navigate to a URL with `navigateTo({ url: 'https://example.com' })`
+2. Or launch Chrome with a URL: `launchChrome({ url: 'https://example.com' })`
+
+**Note:** Chrome starts with a blank page by default. You must navigate to a URL before using tools that interact with page content.
+
+---
+
 ## NODEJS_NOT_SUPPORTED
 
 **Type:** error
@@ -905,3 +920,84 @@ Common variables used across messages:
 - `{{types}}` - List of storage types
 - `{{depth}}` - DOM traversal depth
 - `{{sampleOutput}}` - Example output from validation
+- `{{reference}}` - Tab reference name
+- `{{newReference}}` - New tab reference name
+- `{{closedReference}}` - Closed tab reference
+- `{{newActiveReference}}` - New active tab reference
+- `{{newActiveConnectionId}}` - New active connection ID
+- `{{closedConnectionId}}` - Closed connection ID
+
+---
+
+## Tab Management Messages
+
+## TAB_CREATE_SUCCESS
+
+**Type:** success
+
+Tab created successfully!
+
+**Connection ID:** {{connectionId}}
+**Reference:** {{reference}}
+**URL:** {{url}}
+**Title:** {{title}}
+
+---
+
+## TAB_CREATE_FAILED
+
+**Type:** error
+**Code:** TAB_CREATE_FAILED
+
+Failed to create new tab: {{error}}
+
+**Suggestions:**
+- Ensure a Chrome browser is already running (use `launchChrome` first)
+- Check that the browser connection is still active
+
+---
+
+## TAB_RENAME_SUCCESS
+
+**Type:** success
+
+Tab renamed successfully!
+
+**Connection ID:** {{connectionId}}
+**New Reference:** {{newReference}}
+
+---
+
+## TAB_SWITCH_SUCCESS
+
+**Type:** success
+
+Switched to tab: {{reference}}
+
+**Connection ID:** {{connectionId}}
+**URL:** {{url}}
+**Title:** {{title}}
+
+---
+
+## TAB_CLOSE_SUCCESS
+
+**Type:** success
+
+Tab closed successfully!
+
+**Closed Connection:** {{closedConnectionId}} ({{closedReference}})
+**New Active Connection:** {{newActiveConnectionId}} ({{newActiveReference}})
+
+---
+
+## TAB_CLOSE_FAILED
+
+**Type:** error
+**Code:** TAB_CLOSE_FAILED
+
+Failed to close tab: {{connectionId}}
+
+**Suggestions:**
+- Verify the connection ID is correct using `listTabs()`
+- The tab may have already been closed

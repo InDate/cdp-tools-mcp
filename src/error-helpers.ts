@@ -23,7 +23,8 @@ export function checkBrowserAutomation(
   cdpManager: CDPManager,
   puppeteerManager: PuppeteerManager,
   toolName: string,
-  debugPort?: number
+  debugPort?: number,
+  requirePageLoad?: boolean
 ): { content: Array<{ type: 'text'; text: string }>; isError?: boolean } | null {
   if (!cdpManager.isConnected()) {
     return createErrorResponse('DEBUGGER_NOT_CONNECTED');
@@ -37,6 +38,15 @@ export function checkBrowserAutomation(
 
   if (!puppeteerManager.isConnected()) {
     return createErrorResponse('PUPPETEER_NOT_CONNECTED');
+  }
+
+  // Check if a page has been loaded (optional)
+  if (requirePageLoad) {
+    const page = puppeteerManager.getPage();
+    const url = page?.url();
+    if (!url || url === 'about:blank' || url === 'chrome://newtab/' || url === 'chrome://new-tab-page/') {
+      return createErrorResponse('PAGE_NOT_LOADED', { toolName });
+    }
   }
 
   return null;
