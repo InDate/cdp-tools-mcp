@@ -96,6 +96,17 @@ Failed to connect to debugger at {{host}}:{{port}}: {{error}}
 
 ---
 
+## DEBUGGER_NOT_RUNNING
+
+**Type:** error
+**Code:** NOT_RUNNING
+
+{{message}}
+
+**Note:** This error occurs when trying to connect to a debugger that is not running on the specified port.
+
+---
+
 ## DEBUGGER_NOT_CONNECTED
 
 **Type:** error

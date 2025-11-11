@@ -179,6 +179,26 @@ async function waitForChromeReady(port: number, maxAttempts: number = 10): Promi
   throw new Error(`Chrome debugging port ${port} failed to become inspectable within timeout. Try increasing the wait time or check if Chrome started correctly.`);
 }
 
+/**
+ * Check if Chrome is running and accessible on the specified port
+ * Returns true if Chrome is responding to debug protocol requests
+ */
+async function isChromeRunning(port: number): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 1000);
+
+    const response = await fetch(`http://localhost:${port}/json/version`, {
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 // Connection management tools
 const connectionTools = {
   launchChrome: createTool(
@@ -380,8 +400,28 @@ URL: ${pageUrl}${consoleStats}`;
     async (args) => {
       const host = args.host || 'localhost';
       const port = args.port || getConfiguredDebugPort();
+      const defaultPort = getConfiguredDebugPort();
+      const isDefaultPort = port === defaultPort;
 
       try {
+        // Check if Chrome/debugger is running before attempting connection
+        const isRunning = await isChromeRunning(port);
+
+        if (!isRunning) {
+          // Provide clear error message based on port type
+          if (isDefaultPort && host === 'localhost') {
+            return createErrorResponse('DEBUGGER_NOT_RUNNING', {
+              port: port.toString(),
+              message: `Chrome is not running on port ${port}. Use \`launchChrome()\` to start Chrome first.`
+            });
+          } else {
+            return createErrorResponse('DEBUGGER_NOT_RUNNING', {
+              port: port.toString(),
+              message: `No debugger found on ${host}:${port}. For Chrome, use \`launchChrome({ port: ${port} })\`. For Node.js, start with \`node --inspect=${port} app.js\``
+            });
+          }
+        }
+
         // Check if browser already exists on this port
         const browserAlreadyExists = connectionManager.hasBrowser(host, port);
 
