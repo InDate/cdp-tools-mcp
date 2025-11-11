@@ -138,6 +138,18 @@ export class ConnectionManager {
   }
 
   /**
+   * Find a connection by reference name
+   */
+  findConnectionByReference(reference: string): Connection | null {
+    for (const connection of this.connections.values()) {
+      if (connection.reference === reference) {
+        return connection;
+      }
+    }
+    return null;
+  }
+
+  /**
    * Get all connections
    */
   listConnections(): Connection[] {
