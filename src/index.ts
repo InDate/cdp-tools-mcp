@@ -21,6 +21,7 @@ import { ConsoleMonitor } from './console-monitor.js';
 import { NetworkMonitor } from './network-monitor.js';
 import { ConnectionManager } from './connection-manager.js';
 import { LogpointExecutionTracker } from './logpoint-execution-tracker.js';
+import { PortReserver } from './port-reserver.js';
 import { validateParams, createTool } from './validation-helpers.js';
 import { createBreakpointTools } from './tools/breakpoint-tools.js';
 import { createExecutionTools } from './tools/execution-tools.js';
@@ -32,7 +33,9 @@ import { createPageTools } from './tools/page-tools.js';
 import { createDOMTools } from './tools/dom-tools.js';
 import { createScreenshotTools } from './tools/screenshot-tools.js';
 import { createInputTools } from './tools/input-tools.js';
+import { createContentTools } from './tools/content-tools.js';
 import { createStorageTools } from './tools/storage-tools.js';
+import { createTabTools } from './tools/tab-tools.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock, getMessage } from './messages.js';
 import { createServer } from 'net';
 import { readFile } from 'fs/promises';
@@ -89,12 +92,20 @@ async function getDebugPort(): Promise<number> {
 
 // Get the debug port (will be initialized in main())
 let DEBUG_PORT = 9222;
+let RESERVED_PORT = 9222; // The port physically reserved by socket binding
 
 /**
  * Get the current debug port (exported for use in error messages)
  */
 export function getConfiguredDebugPort(): number {
   return DEBUG_PORT;
+}
+
+/**
+ * Get the reserved port (the one we hold with socket binding)
+ */
+export function getReservedPort(): number {
+  return RESERVED_PORT;
 }
 
 /**
@@ -115,6 +126,7 @@ const sourceMapHandler = new SourceMapHandler();
 const chromeLauncher = new ChromeLauncher();
 const connectionManager = new ConnectionManager();
 const logpointTracker = new LogpointExecutionTracker();
+const portReserver = new PortReserver();
 
 /**
  * Create and configure the MCP server with instructions
@@ -174,28 +186,38 @@ const connectionTools = {
     z.object({
       url: z.string().optional().describe('Optional URL to open (default: blank page)'),
       autoConnect: z.boolean().optional().default(true).describe('Automatically connect debugger after launch (default: true)'),
-      port: z.number().optional().describe('The debugging port (optional, defaults to this session\'s auto-assigned port). Use this to launch multiple Chrome instances on different ports.'),
+      port: z.number().optional().describe('The debugging port (optional, defaults to this session\'s reserved port). Use this to launch multiple Chrome instances on different ports.'),
+      headless: z.boolean().optional().default(false).describe('Launch in headless mode (no visible window, prevents focus stealing). Default: false'),
     }).strict(),
     async (args) => {
-      const port = args.port || await findAvailablePort(getConfiguredDebugPort());
-      console.error(`[llm-cdp] launchChrome: Using port ${port} (requested: ${args.port}, configured: ${getConfiguredDebugPort()})`);
+      // Use reserved port unless explicitly specified
+      const port = args.port || getReservedPort();
+      console.error(`[llm-cdp] launchChrome: Using port ${port} (requested: ${args.port}, reserved: ${getReservedPort()})`);
       const url = args.url;
       const autoConnect = args.autoConnect ?? true;
 
       try {
-        const result = await chromeLauncher.launch(port, url);
+        // Check if Chrome is already running on this port (browser already exists)
+        const browserAlreadyExists = connectionManager.hasBrowser('localhost', port);
+        let isNewBrowser = false;
+
+        if (!browserAlreadyExists) {
+          // Launch new Chrome instance (will release port reservation)
+          const result = await chromeLauncher.launch(port, url, portReserver, args.headless);
+          isNewBrowser = true;
+        }
 
         // Auto-connect if requested
         let connectionId: string | undefined;
         let runtimeType: string | undefined;
-        let features: string[] = [];
+        let title = 'New Tab';
+        let pageUrl = 'about:blank';
+        let consoleStats = '';
 
         if (autoConnect) {
           try {
-            // Wait for Chrome to become ready and inspectable
-            await waitForChromeReady(port);
-
-            // Create connection managers for this connection
+            // Chrome is already ready (launch() waits for port binding)
+            // Create connection managers for this tab
             const cdpManager = new CDPManager(sourceMapHandler);
             const puppeteerManager = new PuppeteerManager();
             const consoleMonitor = new ConsoleMonitor();
@@ -204,32 +226,42 @@ const connectionTools = {
             // Connect to CDP
             await cdpManager.connect('localhost', port);
             runtimeType = cdpManager.getRuntimeType();
-            features = ['debugging'];
 
             // Connect Puppeteer for Chrome
             if (runtimeType === 'chrome') {
               await puppeteerManager.connect('localhost', port);
+
+              // Create new tab if browser already existed, otherwise use existing page
+              if (browserAlreadyExists) {
+                await puppeteerManager.newPage();
+              }
 
               // Start monitoring console and network
               const page = puppeteerManager.getPage();
               consoleMonitor.startMonitoring(page);
               networkMonitor.startMonitoring(page);
 
-              // Auto-reload page to capture initial console logs
+              // Navigate to URL if provided
+              if (url) {
+                await page.goto(url, { waitUntil: 'load', timeout: 30000 });
+              }
+
+              // Auto-reload page to capture initial console logs (only if not navigating and has content)
               const currentUrl = page.url();
-              if (currentUrl && currentUrl !== 'about:blank') {
+              if (!url && currentUrl && currentUrl !== 'about:blank') {
                 try {
-                  // Use 'load' instead of 'networkidle0' for compatibility with file:// URLs
                   await page.reload({ waitUntil: 'load', timeout: 5000 });
                   await new Promise(resolve => setTimeout(resolve, 500));
                 } catch (reloadError: any) {
-                  // Log warning but don't fail - page might already be loaded
                   console.error(`[llm-cdp] Warning: Page reload failed: ${reloadError.message}`);
                 }
               }
-
-              features.push('browser-automation', 'console-monitoring', 'network-monitoring');
             }
+
+            // Get page index for tracking
+            const pages = await puppeteerManager.getPages();
+            const currentPage = puppeteerManager.getPage();
+            const pageIndex = pages.findIndex(p => p === currentPage);
 
             // Register connection
             connectionId = connectionManager.createConnection(
@@ -238,43 +270,52 @@ const connectionTools = {
               consoleMonitor,
               networkMonitor,
               'localhost',
-              port
+              port,
+              undefined, // reference will be set later
+              pageIndex
             );
 
             // Update active manager references
             updateActiveManagers(connectionId);
 
-            // Get console log summary for Chrome connections
+            // Get page info and console stats for Chrome connections
             if (runtimeType === 'chrome') {
+              const page = puppeteerManager.getPage();
+              pageUrl = page.url();
+              title = await page.title();
+
               const allMessages = consoleMonitor.getMessages({});
               const errorCount = allMessages.filter(m => m.type === 'error').length;
               const warnCount = allMessages.filter(m => m.type === 'warn').length;
-              const logCount = allMessages.filter(m => m.type === 'log').length;
-              features.push(`consoleLogs: ${allMessages.length} (${errorCount} errors, ${warnCount} warnings)`);
+              consoleStats = `\nConsole: ${allMessages.length} logs (${errorCount} errors, ${warnCount} warnings)`;
             }
           } catch (connectError) {
             // If auto-connect fails, still return success for launch
             return createSuccessResponse('CHROME_LAUNCH_AUTO_CONNECT_FAILED', {
-              port: result.port,
+              port: port.toString(),
               error: `${connectError}`
             }, {
-              port: result.port,
-              pid: result.pid,
+              port: port,
+              isNewBrowser,
             });
           }
         }
 
         // Format response based on whether auto-connect was used
         if (autoConnect) {
-          return createSuccessResponse('CHROME_LAUNCH_SUCCESS', {
-            port: result.port,
-            connectionId,
-            runtimeType,
-            pid: result.pid,
-            features: features.join(', ')
-          });
+          const message = `Chrome launched and connected
+Connection ID: ${connectionId}
+Title: ${title}
+URL: ${pageUrl}${consoleStats}`;
+
+          // Add instruction to provide tab reference
+          const instruction = '\n\n**IMPORTANT:** Please provide a reference name for this tab using the `renameTab` tool (e.g., "wikipedia-search", "product-page").';
+
+          return {
+            content: [{ type: 'text', text: message + instruction }],
+          };
         } else {
-          return createSuccessResponse('CHROME_LAUNCH_NO_CONNECT', { port: result.port }, { pid: result.pid });
+          return createSuccessResponse('CHROME_LAUNCH_NO_CONNECT', { port: port.toString() }, { port, isNewBrowser });
         }
       } catch (error) {
         return createErrorResponse('CHROME_SPAWN_FAILED', { error: `${error}` });
@@ -288,6 +329,23 @@ const connectionTools = {
     async () => {
       try {
         chromeLauncher.kill();
+
+        // Clean up all connections for the browser that was killed
+        const port = getReservedPort();
+        const connectionsToClose = connectionManager.getConnectionsForBrowser('localhost', port);
+        for (const conn of connectionsToClose) {
+          await connectionManager.closeConnection(conn.id);
+          console.error(`[llm-cdp] Closed connection ${conn.id} after killing Chrome`);
+        }
+
+        // Re-reserve the port immediately after killing Chrome
+        try {
+          await portReserver.reserve(port);
+          console.error(`[llm-cdp] Re-reserved port ${port} after killing Chrome`);
+        } catch (reserveError) {
+          console.error(`[llm-cdp] Warning: Failed to re-reserve port ${port}: ${reserveError}`);
+        }
+
         return createSuccessResponse('CHROME_KILLED');
       } catch (error) {
         return createErrorResponse('CHROME_SPAWN_FAILED', { error: `${error}` });
@@ -324,7 +382,10 @@ const connectionTools = {
       const port = args.port || getConfiguredDebugPort();
 
       try {
-        // Create new managers for this connection
+        // Check if browser already exists on this port
+        const browserAlreadyExists = connectionManager.hasBrowser(host, port);
+
+        // Create new managers for this tab/connection
         const cdpManager = new CDPManager(sourceMapHandler);
         const puppeteerManager = new PuppeteerManager();
         const consoleMonitor = new ConsoleMonitor();
@@ -339,6 +400,11 @@ const connectionTools = {
         // Only connect Puppeteer for Chrome (browser automation)
         if (runtimeType === 'chrome') {
           await puppeteerManager.connect(host, port);
+
+          // Create new tab if browser already existed
+          if (browserAlreadyExists) {
+            await puppeteerManager.newPage();
+          }
 
           // Start monitoring console and network
           const page = puppeteerManager.getPage();
@@ -363,6 +429,14 @@ const connectionTools = {
           features.push('browser-automation', 'console-monitoring', 'network-monitoring');
         }
 
+        // Get page index for tracking
+        let pageIndex: number | undefined;
+        if (runtimeType === 'chrome') {
+          const pages = await puppeteerManager.getPages();
+          const currentPage = puppeteerManager.getPage();
+          pageIndex = pages.findIndex(p => p === currentPage);
+        }
+
         // Register connection with ConnectionManager
         const connectionId = connectionManager.createConnection(
           cdpManager,
@@ -370,7 +444,9 @@ const connectionTools = {
           runtimeType === 'chrome' ? consoleMonitor : undefined,
           runtimeType === 'chrome' ? networkMonitor : undefined,
           host,
-          port
+          port,
+          undefined, // reference will be set later
+          pageIndex
         );
 
         // Update active manager references
@@ -396,6 +472,8 @@ const connectionTools = {
             markdown += `\n**Console Logs:** ${allMessages.length} total (${errorCount} errors, ${warnCount} warnings, ${logCount} logs)\n`;
           }
           markdown += '\n**Note:** Console monitoring auto-enabled. Page auto-reloaded to capture initial logs.';
+          // Add instruction to provide tab reference
+          markdown += '\n\n**IMPORTANT:** Please provide a reference name for this tab using the `renameTab` tool (e.g., "wikipedia-search", "product-page").';
         } else if (runtimeType === 'node') {
           markdown += '\n**Note:** Browser automation features are not available for Node.js debugging.';
         }
@@ -612,6 +690,8 @@ logpointTracker.setLimitExceededCallback((metadata) => {
 // Combine all tools
 const allTools = {
   ...connectionTools,
+  // Tab Management tools
+  ...createTabTools(connectionManager, sourceMapHandler, updateActiveManagers),
   // CDP Debugging tools
   ...createBreakpointTools(proxyCdpManager, sourceMapHandler, logpointTracker),
   ...createExecutionTools(proxyCdpManager),
@@ -620,10 +700,11 @@ const allTools = {
   // Browser Automation tools
   ...createConsoleTools(proxyPuppeteerManager, proxyConsoleMonitor),
   ...createNetworkTools(proxyPuppeteerManager, proxyNetworkMonitor),
-  ...createPageTools(proxyPuppeteerManager, proxyCdpManager, proxyConsoleMonitor, proxyNetworkMonitor),
-  ...createDOMTools(proxyPuppeteerManager, proxyCdpManager),
-  ...createScreenshotTools(proxyPuppeteerManager, proxyCdpManager),
-  ...createInputTools(proxyPuppeteerManager, proxyCdpManager),
+  ...createPageTools(proxyPuppeteerManager, proxyCdpManager, proxyConsoleMonitor, proxyNetworkMonitor, connectionManager),
+  ...createDOMTools(proxyPuppeteerManager, proxyCdpManager, connectionManager),
+  ...createScreenshotTools(proxyPuppeteerManager, proxyCdpManager, connectionManager),
+  ...createInputTools(proxyPuppeteerManager, proxyCdpManager, connectionManager),
+  ...createContentTools(proxyPuppeteerManager, proxyCdpManager, connectionManager),
   ...createStorageTools(proxyPuppeteerManager, proxyCdpManager),
 };
 
@@ -704,9 +785,18 @@ function registerToolHandlers(server: Server) {
 
 // Start the server
 async function main() {
-  // Initialize debug port
+  // Initialize and reserve debug port
   DEBUG_PORT = await getDebugPort();
-  console.error(`[llm-cdp] Using debug port: ${DEBUG_PORT}`);
+  RESERVED_PORT = DEBUG_PORT;
+
+  // Reserve the port by binding a socket to it
+  try {
+    await portReserver.reserve(RESERVED_PORT);
+    console.error(`[llm-cdp] Reserved debug port: ${RESERVED_PORT}`);
+  } catch (error) {
+    console.error(`[llm-cdp] Failed to reserve port ${RESERVED_PORT}: ${error}`);
+    process.exit(1);
+  }
 
   // Create server with instructions
   const server = await createMCPServer();
@@ -723,6 +813,7 @@ async function main() {
     await connectionManager.closeAll();
     sourceMapHandler.clear();
     chromeLauncher.kill();
+    await portReserver.release();
     process.exit(0);
   });
 }
