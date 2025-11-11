@@ -182,6 +182,7 @@ async function waitForChromeReady(port: number, maxAttempts: number = 10): Promi
 /**
  * Check if Chrome is running and accessible on the specified port
  * Returns true if Chrome is responding to debug protocol requests
+ * Returns false if port is reserved (chrome-not-running) or connection fails
  */
 async function isChromeRunning(port: number): Promise<boolean> {
   try {
@@ -193,6 +194,14 @@ async function isChromeRunning(port: number): Promise<boolean> {
     });
 
     clearTimeout(timeoutId);
+
+    // Check if this is the port reserver responding
+    const text = await response.text();
+    if (text.trim() === 'chrome-not-running') {
+      return false;
+    }
+
+    // Otherwise, check if we got a valid Chrome response
     return response.ok;
   } catch {
     return false;

@@ -29,6 +29,13 @@ export class PortReserver {
       this.isReserving = true;
       this.server = createServer();
 
+      // Handle incoming connections - respond immediately to indicate port is reserved
+      this.server.on('connection', (socket) => {
+        // Send a clear signal that this port is reserved and Chrome is not running
+        socket.write('chrome-not-running\r\n');
+        socket.end();
+      });
+
       this.server.on('error', (err: any) => {
         this.isReserving = false;
         if (err.code === 'EADDRINUSE') {
