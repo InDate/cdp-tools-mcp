@@ -127,12 +127,11 @@ Launch Chrome with debugging enabled automatically.
 - `connectionId`: ID of the debugger connection (if autoConnect is true)
 
 #### `connectDebugger`
-Connect to a Chrome or Node.js debugger instance. Automatically detects runtime type and enables appropriate features. If Chrome is not running on the default port, it will be automatically launched.
+Connect to a Chrome or Node.js debugger instance. Automatically detects runtime type and enables appropriate features.
 
 **Parameters:**
 - `host` (string, optional): Debugger host (default: "localhost")
 - `port` (number, optional): Debugger port (default: auto-assigned port for this session)
-- `autoLaunch` (boolean, optional): Automatically launch Chrome if not running on the default port (default: true). Only applies to default port on localhost, not custom ports.
 
 **Example:**
 ```json
@@ -148,13 +147,6 @@ Connect to a Chrome or Node.js debugger instance. Automatically detects runtime 
 - `features`: Array of available features for this runtime
   - Chrome: `["debugging", "browser-automation", "console-monitoring", "network-monitoring"]`
   - Node.js: `["debugging"]`
-
-**Auto-Launch Behavior:**
-When connecting to the default port on localhost:
-- If Chrome is not running, it will be automatically launched with a blank page
-- Auto-launch only works for the default session port (not custom ports)
-- This ensures a smoother workflow without requiring manual Chrome startup
-- To disable auto-launch, set `autoLaunch: false`
 
 **Chrome-Specific Behavior:**
 When connecting to Chrome (port 9222):

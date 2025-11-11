@@ -179,49 +179,6 @@ async function waitForChromeReady(port: number, maxAttempts: number = 10): Promi
   throw new Error(`Chrome debugging port ${port} failed to become inspectable within timeout. Try increasing the wait time or check if Chrome started correctly.`);
 }
 
-/**
- * Check if Chrome is running and accessible on the specified port
- * Returns true if Chrome is responding to debug protocol requests
- */
-async function isChromeRunning(port: number): Promise<boolean> {
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 1000);
-
-    const response = await fetch(`http://localhost:${port}/json/version`, {
-      signal: controller.signal
-    });
-
-    clearTimeout(timeoutId);
-    return response.ok;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Internal helper to launch Chrome with proper port handling
- * Shared by launchChrome tool and connectDebugger auto-launch
- */
-async function launchChromeInternal(
-  port: number,
-  url?: string,
-  headless: boolean = false
-): Promise<{ port: number; pid: number; isNewBrowser: boolean }> {
-  // Check if Chrome is already running on this port (browser already exists)
-  const browserAlreadyExists = connectionManager.hasBrowser('localhost', port);
-
-  if (browserAlreadyExists) {
-    // Browser already running, no need to launch
-    return { port, pid: -1, isNewBrowser: false };
-  }
-
-  // Launch new Chrome instance (will release port reservation internally)
-  const result = await chromeLauncher.launch(port, url, portReserver, headless);
-
-  return { port, pid: result.pid || -1, isNewBrowser: true };
-}
-
 // Connection management tools
 const connectionTools = {
   launchChrome: createTool(
@@ -240,8 +197,15 @@ const connectionTools = {
       const autoConnect = args.autoConnect ?? true;
 
       try {
-        // Launch Chrome using shared helper
-        const { isNewBrowser } = await launchChromeInternal(port, url, args.headless);
+        // Check if Chrome is already running on this port (browser already exists)
+        const browserAlreadyExists = connectionManager.hasBrowser('localhost', port);
+        let isNewBrowser = false;
+
+        if (!browserAlreadyExists) {
+          // Launch new Chrome instance (will release port reservation)
+          const result = await chromeLauncher.launch(port, url, portReserver, args.headless);
+          isNewBrowser = true;
+        }
 
         // Auto-connect if requested
         let connectionId: string | undefined;
@@ -268,7 +232,7 @@ const connectionTools = {
               await puppeteerManager.connect('localhost', port);
 
               // Create new tab if browser already existed, otherwise use existing page
-              if (!isNewBrowser) {
+              if (browserAlreadyExists) {
                 await puppeteerManager.newPage();
               }
 
@@ -340,11 +304,12 @@ const connectionTools = {
         // Format response based on whether auto-connect was used
         if (autoConnect) {
           const message = `Chrome launched and connected
+Connection ID: ${connectionId}
 Title: ${title}
 URL: ${pageUrl}${consoleStats}`;
 
-          // Add instruction about using connectionReason
-          const instruction = '\n\n**TIP:** Browser tools now accept a `connectionReason` parameter (3 descriptive words). This automatically creates/reuses tabs for parallel agent workflows.';
+          // Add instruction to provide tab reference
+          const instruction = '\n\n**IMPORTANT:** Please provide a reference name for this tab using the `renameTab` tool (e.g., "wikipedia-search", "product-page").';
 
           return {
             content: [{ type: 'text', text: message + instruction }],
@@ -407,53 +372,14 @@ URL: ${pageUrl}${consoleStats}`;
   ),
 
   connectDebugger: createTool(
-    'Connect to a Chrome or Node.js debugger instance. Automatically launches Chrome if not running on the default port.',
+    'Connect to a Chrome or Node.js debugger instance',
     z.object({
       host: z.string().optional().default('localhost').describe('The debugger host (default: localhost)'),
       port: z.number().optional().describe('The debugger port (optional, defaults to this session\'s auto-assigned port). Use this to connect to debuggers on different ports (e.g., Node.js on 9229, Chrome on 9222).'),
-      autoLaunch: z.boolean().optional().default(true).describe('Automatically launch Chrome if not running on the default port (default: true). Only applies to default port, not custom ports.'),
     }).strict(),
     async (args) => {
       const host = args.host || 'localhost';
       const port = args.port || getConfiguredDebugPort();
-      const autoLaunch = args.autoLaunch !== undefined ? args.autoLaunch : true;
-      const defaultPort = getConfiguredDebugPort();
-      const isDefaultPort = port === defaultPort;
-      let chromeAutoLaunched = false;
-
-      // Auto-launch Chrome if not running (only for default port)
-      if (autoLaunch && isDefaultPort && host === 'localhost') {
-        const isRunning = await isChromeRunning(port);
-
-        if (!isRunning) {
-          try {
-            console.error(`[llm-cdp] Chrome not detected on port ${port}, auto-launching...`);
-
-            // Check if we have a browser instance tracker
-            const browserAlreadyExists = connectionManager.hasBrowser(host, port);
-
-            if (!browserAlreadyExists) {
-              // Release port reservation so Chrome can bind to it
-              portReserver.release();
-
-              // Launch Chrome on default port
-              await chromeLauncher.launch(port, undefined, portReserver, false);
-
-              // Wait for Chrome to be ready
-              await waitForChromeReady(port);
-
-              chromeAutoLaunched = true;
-              console.error(`[llm-cdp] Chrome auto-launched successfully on port ${port}`);
-            }
-          } catch (launchError) {
-            return createErrorResponse('DEBUGGER_AUTO_LAUNCH_FAILED', {
-              host,
-              port: port.toString(),
-              error: `${launchError}`
-            });
-          }
-        }
-      }
 
       try {
         // Check if browser already exists on this port
@@ -545,14 +471,7 @@ URL: ${pageUrl}${consoleStats}`;
             const logCount = allMessages.filter(m => m.type === 'log').length;
             markdown += `\n**Console Logs:** ${allMessages.length} total (${errorCount} errors, ${warnCount} warnings, ${logCount} logs)\n`;
           }
-
-          // Add note about auto-launch if it occurred
-          if (chromeAutoLaunched) {
-            markdown += '\n**Note:** Chrome was auto-launched on the default port. Console monitoring auto-enabled. Page auto-reloaded to capture initial logs.';
-          } else {
-            markdown += '\n**Note:** Console monitoring auto-enabled. Page auto-reloaded to capture initial logs.';
-          }
-
+          markdown += '\n**Note:** Console monitoring auto-enabled. Page auto-reloaded to capture initial logs.';
           // Add instruction to provide tab reference
           markdown += '\n\n**IMPORTANT:** Please provide a reference name for this tab using the `renameTab` tool (e.g., "wikipedia-search", "product-page").';
         } else if (runtimeType === 'node') {
