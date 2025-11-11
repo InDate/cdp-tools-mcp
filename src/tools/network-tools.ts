@@ -3,6 +3,9 @@
  */
 
 import { z } from 'zod';
+import { promises as fs } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
 import { PuppeteerManager } from '../puppeteer-manager.js';
 import { NetworkMonitor } from '../network-monitor.js';
 import { createTool } from '../validation-helpers.js';
@@ -18,6 +21,7 @@ const listNetworkRequestsSchema = z.object({
 
 const getNetworkRequestSchema = z.object({
   id: z.string(),
+  includeBody: z.boolean().default(false).describe('If true, saves the response body to disk and returns the file path instead of including it inline'),
 }).strict();
 
 const searchNetworkRequestsSchema = z.object({
@@ -74,13 +78,50 @@ export function createNetworkTools(puppeteerManager: PuppeteerManager, networkMo
     ),
 
     getNetworkRequest: createTool(
-      'Get detailed information about a specific network request',
+      'Get detailed information about a specific network request. By default, returns metadata including bodySize and bodyTokens WITHOUT the response body to avoid token overflow. Set includeBody=true to save the body to disk and get a file path.',
       getNetworkRequestSchema,
       async (args) => {
         const request = networkMonitor.getRequest(args.id);
 
         if (!request) {
           return createErrorResponse('NETWORK_REQUEST_NOT_FOUND', { id: args.id });
+        }
+
+        // Prepare response object, potentially saving body to disk
+        let responseData = request.response;
+        let bodyPath: string | undefined;
+
+        if (args.includeBody && request.response?.body) {
+          // Save body to disk and return path instead of inline body
+          const networkBodiesDir = join(homedir(), '.claude', 'network-bodies');
+          await fs.mkdir(networkBodiesDir, { recursive: true });
+
+          // Create filename based on request ID and sanitized URL
+          const urlParts = new URL(request.url);
+          const sanitizedPath = urlParts.pathname.replace(/[^a-zA-Z0-9]/g, '_');
+          const filename = `${request.id}_${sanitizedPath}.txt`;
+          bodyPath = join(networkBodiesDir, filename);
+
+          await fs.writeFile(bodyPath, request.response.body, 'utf-8');
+
+          // Create response object without the body
+          responseData = {
+            status: request.response.status,
+            statusText: request.response.statusText,
+            headers: request.response.headers,
+            bodySize: request.response.bodySize,
+            bodyTokens: request.response.bodyTokens,
+            bodyPath,
+          };
+        } else if (!args.includeBody && request.response) {
+          // Don't include body in response by default
+          responseData = {
+            status: request.response.status,
+            statusText: request.response.statusText,
+            headers: request.response.headers,
+            bodySize: request.response.bodySize,
+            bodyTokens: request.response.bodyTokens,
+          };
         }
 
         const data = {
@@ -90,21 +131,33 @@ export function createNetworkTools(puppeteerManager: PuppeteerManager, networkMo
           resourceType: request.resourceType,
           requestHeaders: request.requestHeaders,
           postData: request.postData,
-          response: request.response,
+          response: responseData,
           timing: request.timing,
           failed: request.failed,
           errorText: request.errorText,
         };
 
-        return createSuccessResponse('NETWORK_REQUEST_DETAIL', {
+        const metadata: any = {
           id: request.id,
           url: request.url,
           method: request.method,
           resourceType: request.resourceType,
           status: request.response?.status || 'N/A',
           failed: request.failed,
-          errorText: request.errorText
-        }, data);
+          errorText: request.errorText,
+        };
+
+        if (request.response?.bodySize !== undefined) {
+          metadata.bodySize = `${request.response.bodySize} characters`;
+        }
+        if (request.response?.bodyTokens !== undefined) {
+          metadata.bodyTokens = `~${request.response.bodyTokens} tokens`;
+        }
+        if (bodyPath) {
+          metadata.bodyPath = bodyPath;
+        }
+
+        return createSuccessResponse('NETWORK_REQUEST_DETAIL', metadata, data);
       }
     ),
 

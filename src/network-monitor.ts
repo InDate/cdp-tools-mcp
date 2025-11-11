@@ -17,6 +17,9 @@ export interface StoredNetworkRequest {
     statusText: string;
     headers: Record<string, string>;
     body?: string;
+    bodySize?: number;
+    bodyTokens?: number;
+    bodyPath?: string;
   };
   timing?: {
     startTime: number;
@@ -117,6 +120,9 @@ export class NetworkMonitor {
       try {
         // Get response body (only for certain content types to avoid binary data issues)
         let body: string | undefined;
+        let bodySize: number | undefined;
+        let bodyTokens: number | undefined;
+
         const contentType = response.headers()['content-type'] || '';
         const isText = contentType.includes('text') ||
                       contentType.includes('json') ||
@@ -125,6 +131,12 @@ export class NetworkMonitor {
         if (isText) {
           try {
             body = await response.text();
+            // Track body size and estimate token count
+            if (body) {
+              bodySize = body.length;
+              // Rough estimation: 1 token ≈ 4 characters
+              bodyTokens = Math.ceil(bodySize / 4);
+            }
           } catch {
             // Ignore errors when reading body
           }
@@ -135,6 +147,8 @@ export class NetworkMonitor {
           statusText: response.statusText(),
           headers: response.headers(),
           body,
+          bodySize,
+          bodyTokens,
         };
       } catch (error) {
         // Response might not be available
