@@ -19,15 +19,25 @@ export interface Connection {
   host: string;
   port: number;
   createdAt: number;
+  reference?: string; // User-provided tab reference (e.g., "agent1-wikipedia")
+  pageIndex?: number; // Index of the page/tab in the browser
+}
+
+// Browser instance tracking (multiple connections can share one browser)
+interface BrowserInstance {
+  host: string;
+  port: number;
+  connectionIds: string[]; // Connections using this browser
 }
 
 export class ConnectionManager {
   private connections: Map<string, Connection> = new Map();
+  private browsers: Map<string, BrowserInstance> = new Map(); // Key: "host:port"
   private activeConnectionId: string | null = null;
   private connectionCounter = 0;
 
   /**
-   * Create a new connection
+   * Create a new connection (tab)
    */
   createConnection(
     cdpManager: CDPManager,
@@ -35,28 +45,10 @@ export class ConnectionManager {
     consoleMonitor?: ConsoleMonitor,
     networkMonitor?: NetworkMonitor,
     host: string = 'localhost',
-    port: number = 9222
+    port: number = 9222,
+    reference?: string,
+    pageIndex?: number
   ): string {
-    // Check if a connection to this host:port already exists
-    const existingConnection = this.findConnectionByHostPort(host, port);
-    if (existingConnection) {
-      console.warn(`[ConnectionManager] Connection to ${host}:${port} already exists (${existingConnection.id}). Reusing existing connection.`);
-
-      // Clean up the new managers that won't be used (they may already be connected)
-      cdpManager.disconnect().catch((err) => {
-        console.error('[ConnectionManager] Error disconnecting orphaned cdpManager:', err);
-      });
-      if (puppeteerManager) {
-        puppeteerManager.disconnect().catch((err) => {
-          console.error('[ConnectionManager] Error disconnecting orphaned puppeteerManager:', err);
-        });
-      }
-
-      // Set it as active and return existing ID
-      this.activeConnectionId = existingConnection.id;
-      return existingConnection.id;
-    }
-
     const id = `conn-${++this.connectionCounter}`;
     const type = cdpManager.getRuntimeType();
 
@@ -70,9 +62,23 @@ export class ConnectionManager {
       host,
       port,
       createdAt: Date.now(),
+      reference,
+      pageIndex,
     };
 
     this.connections.set(id, connection);
+
+    // Track browser instance
+    const browserKey = `${host}:${port}`;
+    if (!this.browsers.has(browserKey)) {
+      this.browsers.set(browserKey, {
+        host,
+        port,
+        connectionIds: [id],
+      });
+    } else {
+      this.browsers.get(browserKey)!.connectionIds.push(id);
+    }
 
     // Set as active if it's the first connection
     if (this.connections.size === 1) {
@@ -83,15 +89,37 @@ export class ConnectionManager {
   }
 
   /**
-   * Find a connection by host and port
+   * Check if a browser instance exists at this host:port
    */
-  private findConnectionByHostPort(host: string, port: number): Connection | null {
-    for (const connection of this.connections.values()) {
-      if (connection.host === host && connection.port === port) {
-        return connection;
-      }
+  hasBrowser(host: string, port: number): boolean {
+    const browserKey = `${host}:${port}`;
+    return this.browsers.has(browserKey);
+  }
+
+  /**
+   * Get all connections for a specific browser
+   */
+  getConnectionsForBrowser(host: string, port: number): Connection[] {
+    const browserKey = `${host}:${port}`;
+    const browser = this.browsers.get(browserKey);
+    if (!browser) {
+      return [];
     }
-    return null;
+    return browser.connectionIds
+      .map(id => this.connections.get(id))
+      .filter((conn): conn is Connection => conn !== undefined);
+  }
+
+  /**
+   * Update tab reference for a connection
+   */
+  updateReference(connectionId: string, reference: string): boolean {
+    const connection = this.connections.get(connectionId);
+    if (!connection) {
+      return false;
+    }
+    connection.reference = reference;
+    return true;
   }
 
   /**
@@ -135,7 +163,7 @@ export class ConnectionManager {
   }
 
   /**
-   * Close a connection
+   * Close a connection (tab)
    */
   async closeConnection(id: string): Promise<boolean> {
     const connection = this.connections.get(id);
@@ -148,12 +176,28 @@ export class ConnectionManager {
       const page = connection.puppeteerManager.getPage();
       connection.consoleMonitor?.stopMonitoring(page);
       connection.networkMonitor?.stopMonitoring(page);
+
+      // Close the page/tab
+      try {
+        await page.close();
+      } catch (error) {
+        console.error(`[ConnectionManager] Error closing page: ${error}`);
+      }
     }
 
-    // Disconnect managers
+    // Disconnect managers only for this connection
     await connection.cdpManager.disconnect();
-    if (connection.puppeteerManager) {
-      await connection.puppeteerManager.disconnect();
+    // Note: Don't disconnect puppeteerManager as it's shared across tabs
+
+    // Remove from browser tracking
+    const browserKey = `${connection.host}:${connection.port}`;
+    const browser = this.browsers.get(browserKey);
+    if (browser) {
+      browser.connectionIds = browser.connectionIds.filter(connId => connId !== id);
+      // If no more connections, remove browser entry
+      if (browser.connectionIds.length === 0) {
+        this.browsers.delete(browserKey);
+      }
     }
 
     // Remove from registry
