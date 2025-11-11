@@ -5,6 +5,7 @@
 import { z } from 'zod';
 import type { CDPManager } from '../cdp-manager.js';
 import { PuppeteerManager } from '../puppeteer-manager.js';
+import type { ConnectionManager } from '../connection-manager.js';
 import { executeWithPauseDetection, formatActionResult } from '../debugger-aware-wrapper.js';
 import { checkBrowserAutomation } from '../error-helpers.js';
 import { createTool } from '../validation-helpers.js';
@@ -13,7 +14,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
 
-export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpManager: CDPManager) {
+export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpManager: CDPManager, connectionManager: ConnectionManager) {
   /**
    * Save screenshot buffer to disk
    */
@@ -58,6 +59,7 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
     clip: clipSchema.optional(),
     saveToDisk: z.string().optional(),
     autoSaveThreshold: z.number().default(1).describe('Auto-save to disk if size >= this (bytes). Default: 1 byte (always saves)'),
+    connectionId: z.string().describe('Connection ID of the tab'),
   }).strict();
 
   const takeViewportScreenshotSchema = z.object({
@@ -66,6 +68,7 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
     clip: clipSchema.optional(),
     saveToDisk: z.string().optional(),
     autoSaveThreshold: z.number().default(1).describe('Auto-save to disk if size >= this (bytes). Default: 1 byte (always saves)'),
+    connectionId: z.string().describe('Connection ID of the tab'),
   }).strict();
 
   const takeElementScreenshotSchema = z.object({
@@ -74,6 +77,7 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
     quality: z.number().min(0).max(100).optional(),
     saveToDisk: z.string().optional(),
     autoSaveThreshold: z.number().default(1).describe('Auto-save to disk if size >= this (bytes). Default: 1 byte (always saves)'),
+    connectionId: z.string().describe('Connection ID of the tab'),
   }).strict();
 
   return {
@@ -81,12 +85,20 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
       'Take a screenshot of the full page. Automatically saves to disk (default behavior) to avoid token limits. Returns file path. Default quality is 30 for JPEG.',
       takeScreenshotSchema,
       async (args) => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'takeScreenshot', getConfiguredDebugPort());
+        // Get connection from connectionId
+        const connection = connectionManager.getConnection(args.connectionId);
+        if (!connection) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        }
+        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
+        const targetCdpManager = connection.cdpManager;
+
+        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'takeScreenshot', getConfiguredDebugPort(), true);
         if (error) {
           return error;
         }
 
-        const page = puppeteerManager.getPage();
+        const page = targetPuppeteerManager.getPage();
         const fullPage = args.fullPage;
         const type = args.type;
         const quality = args.quality ?? (args.clip ? 50 : 30);
@@ -131,12 +143,20 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
       'Take a screenshot of the current viewport. Automatically saves to disk (default behavior) to avoid token limits. Returns file path. Default quality is 30 for JPEG.',
       takeViewportScreenshotSchema,
       async (args) => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'takeViewportScreenshot', getConfiguredDebugPort());
+        // Get connection from connectionId
+        const connection = connectionManager.getConnection(args.connectionId);
+        if (!connection) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        }
+        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
+        const targetCdpManager = connection.cdpManager;
+
+        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'takeViewportScreenshot', getConfiguredDebugPort(), true);
         if (error) {
           return error;
         }
 
-        const page = puppeteerManager.getPage();
+        const page = targetPuppeteerManager.getPage();
         const type = args.type;
         const quality = args.quality ?? (args.clip ? 50 : 30);
 
@@ -180,17 +200,25 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
       'Take a screenshot of a specific element. Automatically saves to disk (default behavior) to avoid token limits. Returns file path. Default quality is 50 for JPEG. Automatically handles breakpoints.',
       takeElementScreenshotSchema,
       async (args) => {
-        const error = checkBrowserAutomation(cdpManager, puppeteerManager, 'takeElementScreenshot', getConfiguredDebugPort());
+        // Get connection from connectionId
+        const connection = connectionManager.getConnection(args.connectionId);
+        if (!connection) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        }
+        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
+        const targetCdpManager = connection.cdpManager;
+
+        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'takeElementScreenshot', getConfiguredDebugPort(), true);
         if (error) {
           return error;
         }
 
-        const page = puppeteerManager.getPage();
+        const page = targetPuppeteerManager.getPage();
         const type = args.type;
         const quality = args.quality ?? 50;
 
         const result = await executeWithPauseDetection(
-          cdpManager,
+          targetCdpManager,
           async () => {
             const element = await page.$(args.selector);
 
