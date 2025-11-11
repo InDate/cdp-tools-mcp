@@ -18,26 +18,26 @@ import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../
 const navigateToSchema = z.object({
   url: z.string(),
   waitUntil: z.enum(['load', 'domcontentloaded', 'networkidle0', 'networkidle2']).default('load'),
-  connectionId: z.string().describe('Connection ID of the tab to navigate'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
 }).strict();
 
 const reloadPageSchema = z.object({
   ignoreCache: z.boolean().default(false).describe('Clear browser cache before reloading (default: false)'),
   waitUntil: z.enum(['load', 'domcontentloaded', 'networkidle0', 'networkidle2']).default('load').describe('When to consider navigation complete: load (default), domcontentloaded, networkidle0, or networkidle2'),
   timeout: z.number().default(30000).describe('Maximum time to wait for reload in milliseconds (default: 30000ms / 30s)'),
-  connectionId: z.string().describe('Connection ID of the tab'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
 }).strict();
 
 const goBackSchema = z.object({
-  connectionId: z.string().describe('Connection ID of the tab'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
 }).strict();
 
 const goForwardSchema = z.object({
-  connectionId: z.string().describe('Connection ID of the tab'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
 }).strict();
 
 const getPageInfoSchema = z.object({
-  connectionId: z.string().describe('Connection ID of the tab'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
 }).strict();
 
 const emptySchema = z.object({}).strict();
@@ -47,7 +47,8 @@ export function createPageTools(
   cdpManager: CDPManager,
   consoleMonitor: ConsoleMonitor,
   networkMonitor: NetworkMonitor,
-  connectionManager: ConnectionManager
+  connectionManager: ConnectionManager,
+  resolveConnectionFromReason: (connectionReason: string) => Promise<any>
 ) {
   /**
    * Auto-restart console and network monitoring after navigation
@@ -66,16 +67,18 @@ export function createPageTools(
       'Navigate to a URL. Automatically handles breakpoints.',
       navigateToSchema,
       async (args) => {
-        // Get connection-specific managers
-        const connection = connectionManager.getConnection(args.connectionId);
-        if (!connection) {
-          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        // Resolve connection from reason
+        const resolved = await resolveConnectionFromReason(args.connectionReason);
+        if (!resolved) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', {
+            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
+          });
         }
 
-        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
-        const targetCdpManager = connection.cdpManager;
-        const targetConsoleMonitor = connection.consoleMonitor || consoleMonitor;
-        const targetNetworkMonitor = connection.networkMonitor || networkMonitor;
+        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
+        const targetCdpManager = resolved.cdpManager;
+        const targetConsoleMonitor = resolved.consoleMonitor || consoleMonitor;
+        const targetNetworkMonitor = resolved.networkMonitor || networkMonitor;
 
         const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'navigateTo', getConfiguredDebugPort());
         if (error) {
@@ -116,16 +119,18 @@ export function createPageTools(
       'Reload the current page. Automatically handles breakpoints.',
       reloadPageSchema,
       async (args) => {
-        // Get connection-specific managers
-        const connection = connectionManager.getConnection(args.connectionId);
-        if (!connection) {
-          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        // Resolve connection from reason
+        const resolved = await resolveConnectionFromReason(args.connectionReason);
+        if (!resolved) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', {
+            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
+          });
         }
 
-        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
-        const targetCdpManager = connection.cdpManager;
-        const targetConsoleMonitor = connection.consoleMonitor || consoleMonitor;
-        const targetNetworkMonitor = connection.networkMonitor || networkMonitor;
+        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
+        const targetCdpManager = resolved.cdpManager;
+        const targetConsoleMonitor = resolved.consoleMonitor || consoleMonitor;
+        const targetNetworkMonitor = resolved.networkMonitor || networkMonitor;
 
         const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'reloadPage', getConfiguredDebugPort());
         if (error) {
@@ -162,16 +167,18 @@ export function createPageTools(
       'Navigate backward in browser history. Automatically handles breakpoints.',
       goBackSchema,
       async (args) => {
-        // Get connection-specific managers
-        const connection = connectionManager.getConnection(args.connectionId);
-        if (!connection) {
-          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        // Resolve connection from reason
+        const resolved = await resolveConnectionFromReason(args.connectionReason);
+        if (!resolved) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', {
+            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
+          });
         }
 
-        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
-        const targetCdpManager = connection.cdpManager;
-        const targetConsoleMonitor = connection.consoleMonitor || consoleMonitor;
-        const targetNetworkMonitor = connection.networkMonitor || networkMonitor;
+        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
+        const targetCdpManager = resolved.cdpManager;
+        const targetConsoleMonitor = resolved.consoleMonitor || consoleMonitor;
+        const targetNetworkMonitor = resolved.networkMonitor || networkMonitor;
 
         const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'goBack', getConfiguredDebugPort());
         if (error) {
@@ -207,16 +214,18 @@ export function createPageTools(
       'Navigate forward in browser history. Automatically handles breakpoints.',
       goForwardSchema,
       async (args) => {
-        // Get connection-specific managers
-        const connection = connectionManager.getConnection(args.connectionId);
-        if (!connection) {
-          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        // Resolve connection from reason
+        const resolved = await resolveConnectionFromReason(args.connectionReason);
+        if (!resolved) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', {
+            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
+          });
         }
 
-        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
-        const targetCdpManager = connection.cdpManager;
-        const targetConsoleMonitor = connection.consoleMonitor || consoleMonitor;
-        const targetNetworkMonitor = connection.networkMonitor || networkMonitor;
+        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
+        const targetCdpManager = resolved.cdpManager;
+        const targetConsoleMonitor = resolved.consoleMonitor || consoleMonitor;
+        const targetNetworkMonitor = resolved.networkMonitor || networkMonitor;
 
         const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'goForward', getConfiguredDebugPort());
         if (error) {
@@ -252,14 +261,16 @@ export function createPageTools(
       'Get information about the current page. Automatically handles breakpoints.',
       getPageInfoSchema,
       async (args) => {
-        // Get connection-specific managers
-        const connection = connectionManager.getConnection(args.connectionId);
-        if (!connection) {
-          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        // Resolve connection from reason
+        const resolved = await resolveConnectionFromReason(args.connectionReason);
+        if (!resolved) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', {
+            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
+          });
         }
 
-        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
-        const targetCdpManager = connection.cdpManager;
+        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
+        const targetCdpManager = resolved.cdpManager;
 
         const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'getPageInfo', getConfiguredDebugPort());
         if (error) {

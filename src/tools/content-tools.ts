@@ -19,24 +19,24 @@ const extractTextSchema = z.object({
   section: z.string().optional().describe('Section heading to extract (only used when mode=section)'),
   search: z.string().optional().describe('Search term to filter sections by (case-insensitive)'),
   save: z.boolean().optional().default(false).describe('Save extracted text to disk (.claude/extracts/)'),
-  connectionId: z.string().describe('Connection ID of the tab'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
 }).strict();
 
 const findClickableElementsSchema = z.object({
   search: z.string().optional().describe('Search term to filter clickable elements (searches in text and href)'),
   limit: z.number().optional().default(50).describe('Maximum number of results to return (default: 50)'),
   types: z.array(z.enum(['link', 'button', 'input'])).optional().describe('Filter by element types'),
-  connectionId: z.string().describe('Connection ID of the tab'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
 }).strict();
 
 const findInputElementsSchema = z.object({
   search: z.string().optional().describe('Search term to filter input elements (searches in label, placeholder, name, id)'),
   limit: z.number().optional().default(50).describe('Maximum number of results to return (default: 50)'),
   types: z.array(z.enum(['text', 'email', 'password', 'number', 'tel', 'url', 'search', 'textarea', 'select', 'checkbox', 'radio', 'file', 'date', 'other'])).optional().describe('Filter by input types'),
-  connectionId: z.string().describe('Connection ID of the tab'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
 }).strict();
 
-export function createContentTools(puppeteerManager: PuppeteerManager, cdpManager: CDPManager, connectionManager: ConnectionManager) {
+export function createContentTools(puppeteerManager: PuppeteerManager, cdpManager: CDPManager, connectionManager: ConnectionManager, resolveConnectionFromReason: (connectionReason: string) => Promise<any>) {
   /**
    * Save extracted content to disk
    */
@@ -62,13 +62,16 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
       'Extract text content from webpage with outline/full/section modes. Returns metadata and structure first, then extract selectively. Supports search and save to disk.',
       extractTextSchema,
       async (args) => {
-        // Get connection-specific managers from connectionId
-        const connection = connectionManager.getConnection(args.connectionId);
-        if (!connection) {
-          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        // Resolve connection from reason
+        const resolved = await resolveConnectionFromReason(args.connectionReason);
+        if (!resolved) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', {
+            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
+          });
         }
-        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
-        const targetCdpManager = connection.cdpManager;
+
+        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
+        const targetCdpManager = resolved.cdpManager;
 
         const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'extractText', getConfiguredDebugPort(), true);
         if (error) {
@@ -292,13 +295,16 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
       'Find all clickable elements on the page (links, buttons, inputs). Returns total count with search/filter capability.',
       findClickableElementsSchema,
       async (args) => {
-        // Get connection-specific managers from connectionId
-        const connection = connectionManager.getConnection(args.connectionId);
-        if (!connection) {
-          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        // Resolve connection from reason
+        const resolved = await resolveConnectionFromReason(args.connectionReason);
+        if (!resolved) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', {
+            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
+          });
         }
-        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
-        const targetCdpManager = connection.cdpManager;
+
+        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
+        const targetCdpManager = resolved.cdpManager;
 
         const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'findClickableElements', getConfiguredDebugPort(), true);
         if (error) {
@@ -447,13 +453,16 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
       'Find all input/form elements on the page (text fields, selects, checkboxes, etc.). Returns outline with total count, types breakdown, and search capability.',
       findInputElementsSchema,
       async (args) => {
-        // Get connection-specific managers from connectionId
-        const connection = connectionManager.getConnection(args.connectionId);
-        if (!connection) {
-          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        // Resolve connection from reason
+        const resolved = await resolveConnectionFromReason(args.connectionReason);
+        if (!resolved) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', {
+            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
+          });
         }
-        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
-        const targetCdpManager = connection.cdpManager;
+
+        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
+        const targetCdpManager = resolved.cdpManager;
 
         const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'findInputElements', getConfiguredDebugPort(), true);
         if (error) {

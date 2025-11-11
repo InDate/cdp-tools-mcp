@@ -14,7 +14,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
 
-export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpManager: CDPManager, connectionManager: ConnectionManager) {
+export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpManager: CDPManager, connectionManager: ConnectionManager, resolveConnectionFromReason: (connectionReason: string) => Promise<any>) {
   /**
    * Save screenshot buffer to disk
    */
@@ -59,7 +59,7 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
     clip: clipSchema.optional(),
     saveToDisk: z.string().optional(),
     autoSaveThreshold: z.number().default(1).describe('Auto-save to disk if size >= this (bytes). Default: 1 byte (always saves)'),
-    connectionId: z.string().describe('Connection ID of the tab'),
+    connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
   }).strict();
 
   const takeViewportScreenshotSchema = z.object({
@@ -68,7 +68,7 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
     clip: clipSchema.optional(),
     saveToDisk: z.string().optional(),
     autoSaveThreshold: z.number().default(1).describe('Auto-save to disk if size >= this (bytes). Default: 1 byte (always saves)'),
-    connectionId: z.string().describe('Connection ID of the tab'),
+    connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
   }).strict();
 
   const takeElementScreenshotSchema = z.object({
@@ -77,7 +77,7 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
     quality: z.number().min(0).max(100).optional(),
     saveToDisk: z.string().optional(),
     autoSaveThreshold: z.number().default(1).describe('Auto-save to disk if size >= this (bytes). Default: 1 byte (always saves)'),
-    connectionId: z.string().describe('Connection ID of the tab'),
+    connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
   }).strict();
 
   return {
@@ -85,13 +85,15 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
       'Take a screenshot of the full page. Automatically saves to disk (default behavior) to avoid token limits. Returns file path. Default quality is 30 for JPEG.',
       takeScreenshotSchema,
       async (args) => {
-        // Get connection from connectionId
-        const connection = connectionManager.getConnection(args.connectionId);
-        if (!connection) {
-          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        // Resolve connection from reason
+        const resolved = await resolveConnectionFromReason(args.connectionReason);
+        if (!resolved) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', {
+            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
+          });
         }
-        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
-        const targetCdpManager = connection.cdpManager;
+        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
+        const targetCdpManager = resolved.cdpManager;
 
         const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'takeScreenshot', getConfiguredDebugPort(), true);
         if (error) {
@@ -143,13 +145,15 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
       'Take a screenshot of the current viewport. Automatically saves to disk (default behavior) to avoid token limits. Returns file path. Default quality is 30 for JPEG.',
       takeViewportScreenshotSchema,
       async (args) => {
-        // Get connection from connectionId
-        const connection = connectionManager.getConnection(args.connectionId);
-        if (!connection) {
-          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        // Resolve connection from reason
+        const resolved = await resolveConnectionFromReason(args.connectionReason);
+        if (!resolved) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', {
+            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
+          });
         }
-        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
-        const targetCdpManager = connection.cdpManager;
+        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
+        const targetCdpManager = resolved.cdpManager;
 
         const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'takeViewportScreenshot', getConfiguredDebugPort(), true);
         if (error) {
@@ -200,13 +204,15 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
       'Take a screenshot of a specific element. Automatically saves to disk (default behavior) to avoid token limits. Returns file path. Default quality is 50 for JPEG. Automatically handles breakpoints.',
       takeElementScreenshotSchema,
       async (args) => {
-        // Get connection from connectionId
-        const connection = connectionManager.getConnection(args.connectionId);
-        if (!connection) {
-          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        // Resolve connection from reason
+        const resolved = await resolveConnectionFromReason(args.connectionReason);
+        if (!resolved) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', {
+            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
+          });
         }
-        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
-        const targetCdpManager = connection.cdpManager;
+        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
+        const targetCdpManager = resolved.cdpManager;
 
         const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'takeElementScreenshot', getConfiguredDebugPort(), true);
         if (error) {

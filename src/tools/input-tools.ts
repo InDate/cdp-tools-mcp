@@ -16,39 +16,47 @@ import { createSuccessResponse, createErrorResponse } from '../messages.js';
 const clickElementSchema = z.object({
   selector: z.string(),
   clickCount: z.number().default(1),
-  connectionId: z.string().describe('The connection ID of the tab to click in'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
 }).strict();
 
 const typeTextSchema = z.object({
   selector: z.string(),
   text: z.string(),
   delay: z.number().default(0),
-  connectionId: z.string().describe('The connection ID of the tab to type in'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
 }).strict();
 
 const pressKeySchema = z.object({
   key: z.string(),
-  connectionId: z.string().describe('The connection ID of the tab to press keys in'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
 }).strict();
 
 const hoverElementSchema = z.object({
   selector: z.string(),
-  connectionId: z.string().describe('The connection ID of the tab to hover in'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
 }).strict();
 
-export function createInputTools(puppeteerManager: PuppeteerManager, cdpManager: CDPManager, connectionManager: ConnectionManager) {
+export function createInputTools(
+  puppeteerManager: PuppeteerManager,
+  cdpManager: CDPManager,
+  connectionManager: ConnectionManager,
+  resolveConnectionFromReason: (connectionReason: string) => Promise<any>
+) {
   return {
     clickElement: createTool(
       'Click an element by CSS selector. Automatically handles breakpoints.',
       clickElementSchema,
       async (args) => {
-        // Get connection-specific managers
-        const connection = connectionManager.getConnection(args.connectionId);
-        if (!connection) {
-          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        // Resolve connection from reason
+        const resolved = await resolveConnectionFromReason(args.connectionReason);
+        if (!resolved) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', {
+            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
+          });
         }
-        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
-        const targetCdpManager = connection.cdpManager;
+
+        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
+        const targetCdpManager = resolved.cdpManager;
 
         const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'clickElement', getConfiguredDebugPort());
         if (error) {
@@ -129,13 +137,16 @@ export function createInputTools(puppeteerManager: PuppeteerManager, cdpManager:
       'Type text into an element. Automatically handles breakpoints.',
       typeTextSchema,
       async (args) => {
-        // Get connection-specific managers
-        const connection = connectionManager.getConnection(args.connectionId);
-        if (!connection) {
-          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        // Resolve connection from reason
+        const resolved = await resolveConnectionFromReason(args.connectionReason);
+        if (!resolved) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', {
+            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
+          });
         }
-        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
-        const targetCdpManager = connection.cdpManager;
+
+        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
+        const targetCdpManager = resolved.cdpManager;
 
         const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'typeText', getConfiguredDebugPort());
         if (error) {
@@ -180,13 +191,16 @@ export function createInputTools(puppeteerManager: PuppeteerManager, cdpManager:
       'Press a keyboard key or key combination. Automatically handles breakpoints.',
       pressKeySchema,
       async (args) => {
-        // Get connection-specific managers
-        const connection = connectionManager.getConnection(args.connectionId);
-        if (!connection) {
-          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        // Resolve connection from reason
+        const resolved = await resolveConnectionFromReason(args.connectionReason);
+        if (!resolved) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', {
+            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
+          });
         }
-        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
-        const targetCdpManager = connection.cdpManager;
+
+        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
+        const targetCdpManager = resolved.cdpManager;
 
         const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'pressKey', getConfiguredDebugPort());
         if (error) {
@@ -211,13 +225,16 @@ export function createInputTools(puppeteerManager: PuppeteerManager, cdpManager:
       'Hover over an element. Automatically handles breakpoints.',
       hoverElementSchema,
       async (args) => {
-        // Get connection-specific managers
-        const connection = connectionManager.getConnection(args.connectionId);
-        if (!connection) {
-          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        // Resolve connection from reason
+        const resolved = await resolveConnectionFromReason(args.connectionReason);
+        if (!resolved) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', {
+            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
+          });
         }
-        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
-        const targetCdpManager = connection.cdpManager;
+
+        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
+        const targetCdpManager = resolved.cdpManager;
 
         const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'hoverElement', getConfiguredDebugPort());
         if (error) {

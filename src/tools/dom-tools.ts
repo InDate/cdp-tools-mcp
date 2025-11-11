@@ -15,32 +15,40 @@ import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../
 // Zod schemas for DOM tools
 const querySelectorSchema = z.object({
   selector: z.string(),
-  connectionId: z.string().describe('Connection ID of the tab'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
 }).strict();
 
 const getElementPropertiesSchema = z.object({
   selector: z.string(),
-  connectionId: z.string().describe('Connection ID of the tab'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
 }).strict();
 
 const getDOMSnapshotSchema = z.object({
   maxDepth: z.number().optional().default(5),
-  connectionId: z.string().describe('Connection ID of the tab'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
 }).strict();
 
-export function createDOMTools(puppeteerManager: PuppeteerManager, cdpManager: CDPManager, connectionManager: ConnectionManager) {
+export function createDOMTools(
+  puppeteerManager: PuppeteerManager,
+  cdpManager: CDPManager,
+  connectionManager: ConnectionManager,
+  resolveConnectionFromReason: (connectionReason: string) => Promise<any>
+) {
   return {
     querySelector: createTool(
       'Find an element by CSS selector. Automatically handles breakpoints.',
       querySelectorSchema,
       async (args) => {
-        // Get connection-specific managers
-        const connection = connectionManager.getConnection(args.connectionId);
-        if (!connection) {
-          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        // Resolve connection from reason
+        const resolved = await resolveConnectionFromReason(args.connectionReason);
+        if (!resolved) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', {
+            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
+          });
         }
-        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
-        const targetCdpManager = connection.cdpManager;
+
+        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
+        const targetCdpManager = resolved.cdpManager;
 
         const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'querySelector', getConfiguredDebugPort());
         if (error) {
@@ -59,7 +67,7 @@ export function createDOMTools(puppeteerManager: PuppeteerManager, cdpManager: C
             }
 
             // Get element properties
-            const properties = await element.evaluate((el) => ({
+            const properties = await element.evaluate((el: any) => ({
               tagName: el.tagName.toLowerCase(),
               id: el.id,
               className: el.className,
@@ -94,13 +102,16 @@ export function createDOMTools(puppeteerManager: PuppeteerManager, cdpManager: C
       'Get detailed properties of an element. Automatically handles breakpoints.',
       getElementPropertiesSchema,
       async (args) => {
-        // Get connection-specific managers
-        const connection = connectionManager.getConnection(args.connectionId);
-        if (!connection) {
-          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        // Resolve connection from reason
+        const resolved = await resolveConnectionFromReason(args.connectionReason);
+        if (!resolved) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', {
+            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
+          });
         }
-        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
-        const targetCdpManager = connection.cdpManager;
+
+        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
+        const targetCdpManager = resolved.cdpManager;
 
         const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'getElementProperties', getConfiguredDebugPort());
         if (error) {
@@ -180,13 +191,16 @@ export function createDOMTools(puppeteerManager: PuppeteerManager, cdpManager: C
       'Get a text-based snapshot of the DOM structure. Automatically handles breakpoints.',
       getDOMSnapshotSchema,
       async (args) => {
-        // Get connection-specific managers
-        const connection = connectionManager.getConnection(args.connectionId);
-        if (!connection) {
-          return createErrorResponse('CONNECTION_NOT_FOUND', { connectionId: args.connectionId });
+        // Resolve connection from reason
+        const resolved = await resolveConnectionFromReason(args.connectionReason);
+        if (!resolved) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', {
+            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
+          });
         }
-        const targetPuppeteerManager = connection.puppeteerManager || puppeteerManager;
-        const targetCdpManager = connection.cdpManager;
+
+        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
+        const targetCdpManager = resolved.cdpManager;
 
         const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'getDOMSnapshot', getConfiguredDebugPort());
         if (error) {
