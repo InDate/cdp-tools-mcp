@@ -93,6 +93,22 @@ Failed to connect to debugger at {{host}}:{{port}}: {{error}}
 - Verify the debugger is running and listening on the specified port
 - For Chrome: Launch with `launchChrome()` or start with `--remote-debugging-port={{port}}`
 - For Node.js: Start with `node --inspect={{port}} app.js`
+- Note: Auto-launch only works for the default port on localhost
+
+---
+
+## DEBUGGER_AUTO_LAUNCH_FAILED
+
+**Type:** error
+**Code:** AUTO_LAUNCH_FAILED
+
+Failed to auto-launch Chrome on port {{port}}: {{error}}
+
+**Suggestions:**
+- Try manually launching Chrome with `launchChrome()`
+- Check if another process is using port {{port}}
+- Verify Chrome is installed and accessible
+- Set `autoLaunch: false` to disable automatic Chrome launch
 
 ---
 
