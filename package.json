@@ -7,7 +7,11 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "start": "node build/index.js"
+    "start": "node build/index.js",
+    "test": "vitest",
+    "test:ui": "vitest --ui",
+    "test:run": "vitest run",
+    "test:coverage": "vitest run --coverage"
   },
   "keywords": [
     "mcp",
@@ -28,6 +32,9 @@
   "devDependencies": {
     "@types/chrome-remote-interface": "^0.31.14",
     "@types/node": "^22.10.2",
-    "typescript": "^5.7.2"
+    "@vitest/ui": "^3.2.4",
+    "happy-dom": "^20.0.10",
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.4"
   }
 }

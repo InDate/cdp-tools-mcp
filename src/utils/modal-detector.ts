@@ -1,50 +1,38 @@
-// @ts-nocheck
 /**
- * TypeScript checking is disabled for this file because it contains browser-side code
- * within page.evaluate() callbacks. The code inside evaluate() runs in the browser context,
- * not in Node.js, so TypeScript cannot properly type-check the DOM APIs, window object,
- * and other browser-specific globals that are available there.
+ * Modal detection utilities for Puppeteer pages
+ *
+ * This module provides functions to detect and classify modals on web pages.
+ * It uses the core detection logic from modal-detection-core.ts and executes
+ * it in the browser context via page.evaluate().
  */
+
 import type { Page } from 'puppeteer-core';
 import { debugLog } from '../debug-logger.js';
+import type {
+  ModalDetectionOptions,
+  DetectedModalInfo,
+  BrowserModalInfo,
+  ModalType,
+  DismissStrategy,
+  BoundingBox,
+} from './modal-detection-core.js';
+import {
+  MODAL_PATTERNS,
+  COMMON_MODAL_SELECTORS,
+  isElementBlockingViewport,
+  classifyModal,
+  getDismissStrategies,
+  getUniqueSelector,
+} from './modal-detection-core.js';
 
-export interface DetectedModal {
-  selector: string;
-  type: ModalType;
-  zIndex: number;
-  boundingBox: {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  };
-  dismissStrategies: DismissStrategy[];
-  confidence: number; // 0-100
-  description: string;
-}
-
-export type ModalType =
-  | 'cookie-consent'
-  | 'newsletter-popup'
-  | 'age-verification'
-  | 'generic-dialog'
-  | 'blocking-overlay'
-  | 'unknown';
-
-export type DismissStrategy =
-  | 'accept'
-  | 'reject'
-  | 'close'
-  | 'remove';
-
-export interface ModalDetectionOptions {
-  minZIndex?: number; // Default: 100
-  minViewportCoverage?: number; // Default: 0.25 (25%)
-  includeBackdrops?: boolean; // Default: true
-}
+// Re-export types for backward compatibility
+export type { ModalType, DismissStrategy, ModalDetectionOptions };
+export interface DetectedModal extends DetectedModalInfo {}
 
 /**
  * Detects modals and blocking overlays on the page
+ *
+ * This is the fixed implementation that uses elementFromPoint for reliable detection
  */
 export async function detectModals(
   page: Page,
@@ -56,376 +44,148 @@ export async function detectModals(
     includeBackdrops = true,
   } = options;
 
-  // Debug: log page URL before evaluate
   const pageUrl = page.url();
-  await debugLog('ModalDetector', `About to evaluate on page: ${pageUrl}`);
+  await debugLog('ModalDetector', `Detecting modals on page: ${pageUrl}`);
   await debugLog('ModalDetector', `Options: minZIndex=${minZIndex}, minViewportCoverage=${minViewportCoverage}, includeBackdrops=${includeBackdrops}`);
 
-  const modals = await page.evaluate((opts: any) => {
-    const { minZIndex, minViewportCoverage, includeBackdrops } = opts;
-    const detectedModals: any[] = [];
+  // Serialize functions and data to pass into browser context
+  const modals = await page.evaluate(
+    (opts: {
+      minZIndex: number;
+      minViewportCoverage: number;
+      includeBackdrops: boolean;
+      modalPatterns: any;
+      commonSelectors: string[];
+      // Functions as strings to execute in browser
+      isElementBlockingViewportFn: string;
+      classifyModalFn: string;
+      getDismissStrategiesFn: string;
+      getUniqueSelectorFn: string;
+    }) => {
+      const {
+        minZIndex,
+        minViewportCoverage,
+        includeBackdrops,
+        modalPatterns,
+        commonSelectors,
+        isElementBlockingViewportFn,
+        classifyModalFn,
+        getDismissStrategiesFn,
+        getUniqueSelectorFn,
+      } = opts;
 
-    // Common modal/dialog selectors and patterns
-    const modalPatterns = {
-      cookieConsent: {
-        selectors: [
-          '[class*="cookie" i][class*="banner" i]',
-          '[class*="cookie" i][class*="consent" i]',
-          '[class*="cookie" i][class*="notice" i]',
-          '[id*="cookie" i][id*="banner" i]',
-          '[id*="cookie" i][id*="consent" i]',
-          '#onetrust-banner-sdk',
-          '#cookiescript_injected',
-          '.cookie-banner',
-          '.cc-banner',
-          '.cookie-consent',
-        ],
-        textPatterns: /cookie|consent|privacy|gdpr/i,
-      },
-      newsletter: {
-        selectors: [
-          '[class*="newsletter" i][class*="popup" i]',
-          '[class*="newsletter" i][class*="modal" i]',
-          '[class*="subscribe" i][class*="popup" i]',
-          '[class*="email" i][class*="signup" i]',
-          '[id*="newsletter" i][id*="popup" i]',
-        ],
-        textPatterns: /newsletter|subscribe|sign up|email|join/i,
-      },
-      ageVerification: {
-        selectors: [
-          '[class*="age" i][class*="verify" i]',
-          '[class*="age" i][class*="gate" i]',
-          '[id*="age" i][id*="verify" i]',
-        ],
-        textPatterns: /age verification|are you.*old|18\+|21\+|enter.*birth/i,
-      },
-      genericDialog: {
-        selectors: [
-          '[role="dialog"]',
-          '[aria-modal="true"]',
-          '.modal',
-          '.dialog',
-          '[class*="modal" i]',
-          '[class*="dialog" i]',
-          '[class*="popup" i]',
-        ],
-        textPatterns: null,
-      },
-    };
+      // Reconstruct functions in browser context
+      // eslint-disable-next-line no-eval
+      const isElementBlockingViewportFunc = eval(`(${isElementBlockingViewportFn})`);
+      // eslint-disable-next-line no-eval
+      const classifyModalFunc = eval(`(${classifyModalFn})`);
+      // eslint-disable-next-line no-eval
+      const getDismissStrategiesFunc = eval(`(${getDismissStrategiesFn})`);
+      // eslint-disable-next-line no-eval
+      const getUniqueSelectorFunc = eval(`(${getUniqueSelectorFn})`);
 
-    // Helper to check if element is visible and blocking
-    function isElementBlockingViewport(el: Element): boolean {
-      const style = window.getComputedStyle(el);
+      const detectedModals: any[] = [];
+      const candidateElements: any[] = [];
 
-      // Check basic visibility
-      if (
-        style.display === 'none' ||
-        style.visibility === 'hidden' ||
-        parseFloat(style.opacity) < 0.1
-      ) {
-        return false;
-      }
-
-      // Check if element has blocking potential
-      const position = style.position;
-      if (position !== 'fixed' && position !== 'absolute') {
-        return false;
-      }
-
-      // Check z-index
-      const zIndex = parseInt(style.zIndex, 10);
-      if (!isNaN(zIndex) && zIndex < minZIndex) {
-        return false;
-      }
-
-      // Check viewport coverage
-      const rect = el.getBoundingClientRect();
-      const viewportArea = window.innerWidth * window.innerHeight;
-      const elementArea = rect.width * rect.height;
-      const coverage = elementArea / viewportArea;
-
-      return coverage >= minViewportCoverage;
-    }
-
-    // Helper to classify modal type
-    function classifyModal(el: Element): { type: string; confidence: number; description: string } {
-      const text = el.textContent?.toLowerCase() || '';
-      const html = el.innerHTML.toLowerCase();
-      const className = el.className.toLowerCase();
-      const id = el.id.toLowerCase();
-
-      // Cookie consent detection
-      if (
-        modalPatterns.cookieConsent.selectors.some(sel => {
-          try { return el.matches(sel); } catch { return false; }
-        }) ||
-        modalPatterns.cookieConsent.textPatterns.test(text) ||
-        modalPatterns.cookieConsent.textPatterns.test(className) ||
-        modalPatterns.cookieConsent.textPatterns.test(id)
-      ) {
-        return {
-          type: 'cookie-consent',
-          confidence: 90,
-          description: 'Cookie consent banner',
-        };
-      }
-
-      // Newsletter popup detection
-      if (
-        modalPatterns.newsletter.selectors.some(sel => {
-          try { return el.matches(sel); } catch { return false; }
-        }) ||
-        modalPatterns.newsletter.textPatterns.test(text)
-      ) {
-        return {
-          type: 'newsletter-popup',
-          confidence: 85,
-          description: 'Newsletter subscription popup',
-        };
-      }
-
-      // Age verification detection
-      if (
-        modalPatterns.ageVerification.selectors.some(sel => {
-          try { return el.matches(sel); } catch { return false; }
-        }) ||
-        modalPatterns.ageVerification.textPatterns.test(text)
-      ) {
-        return {
-          type: 'age-verification',
-          confidence: 95,
-          description: 'Age verification dialog',
-        };
-      }
-
-      // Generic dialog with ARIA attributes
-      if (
-        el.getAttribute('role') === 'dialog' ||
-        el.getAttribute('aria-modal') === 'true'
-      ) {
-        return {
-          type: 'generic-dialog',
-          confidence: 75,
-          description: 'Generic modal dialog',
-        };
-      }
-
-      // Backdrop/overlay (usually paired with modal)
-      if (
-        (className.includes('backdrop') ||
-          className.includes('overlay') ||
-          id.includes('backdrop') ||
-          id.includes('overlay')) &&
-        !text.trim()
-      ) {
-        return {
-          type: 'blocking-overlay',
-          confidence: 70,
-          description: 'Blocking backdrop/overlay',
-        };
-      }
-
-      return {
-        type: 'unknown',
-        confidence: 50,
-        description: 'Unknown blocking element',
-      };
-    }
-
-    // Helper to determine dismiss strategies
-    function getDismissStrategies(el: Element, modalType: string): string[] {
-      const strategies = new Set<string>();
-
-      // Always allow DOM removal as fallback
-      strategies.add('remove');
-
-      // Look for close/dismiss buttons
-      const closeButtons = el.querySelectorAll(
-        'button, [role="button"], a, .close, .dismiss, [class*="close" i]'
-      );
-
-      closeButtons.forEach((btn: any) => {
-        const text = (btn.textContent || '').toLowerCase();
-        const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
-        const className = btn.className.toLowerCase();
-        const combined = `${text} ${ariaLabel} ${className}`;
-
-        if (
-          /accept|agree|allow|enable|ok|got it|i accept/i.test(combined) ||
-          btn.matches('[class*="accept" i], [id*="accept" i]')
-        ) {
-          strategies.add('accept');
-        }
-
-        if (
-          /reject|decline|deny|disable|no thanks|refuse/i.test(combined) ||
-          btn.matches('[class*="reject" i], [id*="reject" i], [class*="decline" i]')
-        ) {
-          strategies.add('reject');
-        }
-
-        if (
-          /close|dismiss|×|✕|✖/i.test(combined) ||
-          btn.matches('[class*="close" i], [class*="dismiss" i], .close, .dismiss')
-        ) {
-          strategies.add('close');
+      // Scan using common selectors
+      commonSelectors.forEach((selector) => {
+        try {
+          const elements = (globalThis as any).document.querySelectorAll(selector);
+          elements.forEach((el: any) => {
+            if (!candidateElements.includes(el) &&
+                isElementBlockingViewportFunc(el, minZIndex, minViewportCoverage)) {
+              candidateElements.push(el);
+            }
+          });
+        } catch (e) {
+          // Ignore selector errors
         }
       });
 
-      // Type-specific defaults
-      if (modalType === 'cookie-consent' && !strategies.has('accept')) {
-        strategies.add('accept'); // Assume there's an accept button
-      }
-
-      return Array.from(strategies);
-    }
-
-    // Helper to generate unique selector
-    function getUniqueSelector(el: Element): string {
-      // Try ID first
-      if (el.id) {
-        return `#${el.id}`;
-      }
-
-      // Try unique class combinations
-      if (el.className && typeof el.className === 'string') {
-        const classes = el.className.split(/\s+/).filter(Boolean);
-        if (classes.length > 0) {
-          const selector = `.${classes.join('.')}`;
-          if (document.querySelectorAll(selector).length === 1) {
-            return selector;
-          }
-        }
-      }
-
-      // Build path-based selector
-      const path: string[] = [];
-      let current: Element | null = el;
-
-      while (current && current !== document.body) {
-        let selector = current.tagName.toLowerCase();
-
-        if (current.id) {
-          selector += `#${current.id}`;
-          path.unshift(selector);
-          break;
-        }
-
-        if (current.className && typeof current.className === 'string') {
-          const classes = current.className.split(/\s+/).filter(Boolean);
-          if (classes.length > 0) {
-            selector += `.${classes[0]}`;
-          }
-        }
-
-        path.unshift(selector);
-        current = current.parentElement;
-      }
-
-      return path.join(' > ');
-    }
-
-    // Scan all elements - use a more targeted approach
-    // Instead of scanning all elements, look for common modal patterns first
-    const commonModalSelectors = [
-      '[role="dialog"]',
-      '[aria-modal="true"]',
-      '[class*="modal" i]',
-      '[class*="dialog" i]',
-      '[class*="popup" i]',
-      '[class*="overlay" i]',
-      '[class*="cookie" i]',
-      '[id*="modal" i]',
-      '[id*="dialog" i]',
-      '[id*="popup" i]',
-      '[id*="cookie" i]',
-    ];
-
-    const candidateElements: Element[] = [];
-
-    // First, try common selectors
-    commonModalSelectors.forEach((selector) => {
-      try {
-        const elements = document.querySelectorAll(selector);
-        elements.forEach(el => {
-          if (!candidateElements.includes(el) && isElementBlockingViewport(el)) {
+      // Fallback: scan all fixed/absolute positioned elements if no candidates found
+      if (candidateElements.length === 0) {
+        const allElements = (globalThis as any).document.querySelectorAll('*');
+        allElements.forEach((el: any) => {
+          const style = (globalThis as any).window.getComputedStyle(el);
+          if ((style.position === 'fixed' || style.position === 'absolute') &&
+              isElementBlockingViewportFunc(el, minZIndex, minViewportCoverage)) {
             candidateElements.push(el);
           }
         });
-      } catch (e) {
-        // Ignore selector errors
       }
-    });
 
-    // If we found candidates, don't do expensive full scan
-    // If no candidates, fall back to scanning all fixed/absolute positioned elements
-    if (candidateElements.length === 0) {
-      const allFixed = document.querySelectorAll('*');
-      allFixed.forEach(el => {
-        const style = window.getComputedStyle(el);
-        if ((style.position === 'fixed' || style.position === 'absolute') &&
-            isElementBlockingViewport(el)) {
-          candidateElements.push(el);
+      // Process candidates
+      candidateElements.forEach((el: any) => {
+        const rect = el.getBoundingClientRect();
+        const style = (globalThis as any).window.getComputedStyle(el);
+        const zIndex = parseInt(style.zIndex, 10) || 0;
+
+        const classification = classifyModalFunc(el, modalPatterns);
+        const strategies = getDismissStrategiesFunc(el, classification.type);
+
+        // Filter out backdrops if requested
+        if (!includeBackdrops && classification.type === 'blocking-overlay') {
+          return;
         }
+
+        detectedModals.push({
+          selector: getUniqueSelectorFunc(el),
+          type: classification.type,
+          zIndex,
+          boundingBox: {
+            x: rect.left,
+            y: rect.top,
+            width: rect.width,
+            height: rect.height,
+          },
+          dismissStrategies: strategies,
+          confidence: classification.confidence,
+          description: classification.description,
+        });
       });
+
+      // Sort by z-index (highest first) and confidence
+      detectedModals.sort((a, b) => {
+        if (b.zIndex !== a.zIndex) {
+          return b.zIndex - a.zIndex;
+        }
+        return b.confidence - a.confidence;
+      });
+
+      return detectedModals;
+    },
+    {
+      minZIndex,
+      minViewportCoverage,
+      includeBackdrops,
+      modalPatterns: MODAL_PATTERNS,
+      commonSelectors: COMMON_MODAL_SELECTORS,
+      // Serialize functions as strings
+      isElementBlockingViewportFn: isElementBlockingViewport.toString(),
+      classifyModalFn: classifyModal.toString(),
+      getDismissStrategiesFn: getDismissStrategies.toString(),
+      getUniqueSelectorFn: getUniqueSelector.toString(),
     }
+  );
 
-    // Process candidates
-    // TODO: Add better error handling - errors in classifyModal or getDismissStrategies can fail silently
-    candidateElements.forEach((el: any) => {
-      const rect = el.getBoundingClientRect();
-      const style = window.getComputedStyle(el);
-      const zIndex = parseInt(style.zIndex, 10) || 0;
-
-      const classification = classifyModal(el);
-      const strategies = getDismissStrategies(el, classification.type);
-
-      // Filter out backdrops if requested
-      if (!includeBackdrops && classification.type === 'blocking-overlay') {
-        return;
-      }
-
-      detectedModals.push({
-        selector: getUniqueSelector(el),
-        type: classification.type,
-        zIndex,
-        boundingBox: {
-          x: rect.left,
-          y: rect.top,
-          width: rect.width,
-          height: rect.height,
-        },
-        dismissStrategies: strategies,
-        confidence: classification.confidence,
-        description: classification.description,
-      });
-    });
-
-    // Sort by z-index (highest first) and confidence
-    detectedModals.sort((a, b) => {
-      if (b.zIndex !== a.zIndex) {
-        return b.zIndex - a.zIndex;
-      }
-      return b.confidence - a.confidence;
-    });
-
-    return detectedModals;
-  }, { minZIndex, minViewportCoverage, includeBackdrops });
-
-  await debugLog('ModalDetector', `page.evaluate returned ${modals.length} modals`);
+  await debugLog('ModalDetector', `Detected ${modals.length} modal(s)`);
   return modals as DetectedModal[];
 }
 
 /**
  * Checks if a specific element is blocked by a modal/overlay
+ *
+ * This uses the reverse approach (elementFromPoint) which is more reliable
+ * than proactive scanning
  */
 export async function isElementBlocked(
   page: Page,
   selector: string
 ): Promise<{ blocked: boolean; blockingModal?: DetectedModal }> {
-  const result = await page.evaluate((sel: any) => {
-    const element = document.querySelector(sel);
+  await debugLog('ModalDetector', `Checking if element ${selector} is blocked`);
+
+  const result = await page.evaluate((sel: string) => {
+    const element = (globalThis as any).document.querySelector(sel);
     if (!element) {
       return { blocked: false, error: 'Element not found' };
     }
@@ -435,7 +195,7 @@ export async function isElementBlocked(
     const centerY = rect.top + rect.height / 2;
 
     // Check what element is at the target's center point
-    const topElement = document.elementFromPoint(centerX, centerY);
+    const topElement = (globalThis as any).document.elementFromPoint(centerX, centerY);
 
     if (!topElement) {
       return { blocked: false };
@@ -447,23 +207,30 @@ export async function isElementBlocked(
     }
 
     // Find the blocking element's topmost ancestor that's fixed/absolute
-    let blockingElement: Element | null = topElement;
-    while (blockingElement && blockingElement !== document.body) {
-      const style = window.getComputedStyle(blockingElement);
+    let blockingElement: any = topElement;
+    while (blockingElement && blockingElement !== (globalThis as any).document.body) {
+      const style = (globalThis as any).window.getComputedStyle(blockingElement);
       const position = style.position;
 
       if (position === 'fixed' || position === 'absolute') {
         const zIndex = parseInt(style.zIndex, 10) || 0;
         const blockingRect = blockingElement.getBoundingClientRect();
 
+        // Generate selector for blocking element
+        let blockingSelector: string;
+        if (blockingElement.id) {
+          blockingSelector = `#${blockingElement.id}`;
+        } else if (blockingElement.className && typeof blockingElement.className === 'string') {
+          const classes = blockingElement.className.split(/\s+/).filter(Boolean);
+          blockingSelector = classes.length > 0 ? `.${classes[0]}` : blockingElement.tagName.toLowerCase();
+        } else {
+          blockingSelector = blockingElement.tagName.toLowerCase();
+        }
+
         return {
           blocked: true,
           blockingElement: {
-            selector: blockingElement.id
-              ? `#${blockingElement.id}`
-              : blockingElement.className
-                ? `.${blockingElement.className.split(/\s+/)[0]}`
-                : blockingElement.tagName.toLowerCase(),
+            selector: blockingSelector,
             zIndex,
             boundingBox: {
               x: blockingRect.left,
@@ -482,6 +249,7 @@ export async function isElementBlocked(
   }, selector);
 
   if (!result.blocked) {
+    await debugLog('ModalDetector', `Element ${selector} is not blocked`);
     return { blocked: false };
   }
 
@@ -492,17 +260,27 @@ export async function isElementBlocked(
       m => m.selector === result.blockingElement.selector
     );
 
-    return {
-      blocked: true,
-      blockingModal: matchingModal || {
-        ...result.blockingElement,
-        type: 'unknown' as ModalType,
-        dismissStrategies: ['remove'] as DismissStrategy[],
-        confidence: 50,
-        description: 'Unknown blocking element',
-      },
-    };
+    if (matchingModal) {
+      await debugLog('ModalDetector', `Element ${selector} is blocked by modal: ${matchingModal.type}`);
+      return {
+        blocked: true,
+        blockingModal: matchingModal,
+      };
+    } else {
+      await debugLog('ModalDetector', `Element ${selector} is blocked by unknown element`);
+      return {
+        blocked: true,
+        blockingModal: {
+          ...result.blockingElement,
+          type: 'unknown' as ModalType,
+          dismissStrategies: ['remove'] as DismissStrategy[],
+          confidence: 50,
+          description: 'Unknown blocking element',
+        },
+      };
+    }
   }
 
+  await debugLog('ModalDetector', `Element ${selector} is blocked (reason unknown)`);
   return { blocked: true };
 }

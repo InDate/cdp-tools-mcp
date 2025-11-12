@@ -12,6 +12,7 @@ import { createTool } from '../validation-helpers.js';
 import { getConfiguredDebugPort } from '../index.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import { isElementBlocked, detectModals } from '../utils/modal-detector.js';
+import { dismissModalByStrategy, selectDismissalStrategy } from '../utils/modal-dismissal.js';
 
 // Zod schemas for input validation
 const clickElementSchema = z.object({
@@ -428,9 +429,7 @@ export function createInputTools(
 /**
  * Helper function to dismiss a modal
  *
- * TODO: This is duplicate code - same logic exists in modal-tools.ts dismissModalByStrategy().
- * Should be extracted to a shared utility function in src/utils/modal-dismissal.ts
- * See KNOWN_LIMITATIONS.md "Duplicate Code in Multiple Files" section.
+ * This is a thin wrapper around the shared dismissal logic from modal-dismissal.ts
  */
 async function dismissModalHelper(
   page: any,
@@ -445,122 +444,12 @@ async function dismissModalHelper(
     return { success: false, error: 'Modal not found' };
   }
 
-  // Determine effective strategy
-  let effectiveStrategy = strategy;
-  if (strategy === 'auto') {
-    switch (modal.type) {
-      case 'cookie-consent':
-        effectiveStrategy = modal.dismissStrategies.includes('accept') ? 'accept' : 'close';
-        break;
-      case 'newsletter-popup':
-        effectiveStrategy = modal.dismissStrategies.includes('close') ? 'close' : 'reject';
-        break;
-      case 'age-verification':
-        effectiveStrategy = modal.dismissStrategies.includes('accept') ? 'accept' : 'remove';
-        break;
-      default:
-        effectiveStrategy = modal.dismissStrategies.includes('close') ? 'close' : 'remove';
-    }
-  }
+  // Use shared dismissal logic
+  const effectiveStrategy = selectDismissalStrategy(modal, strategy);
+  const result = await dismissModalByStrategy(page, modal, effectiveStrategy, 3);
 
-  // Remove strategy - just remove from DOM
-  if (effectiveStrategy === 'remove') {
-    try {
-      await page.evaluate((sel: any) => {
-        const element = (globalThis as any).document.querySelector(sel);
-        if (element) {
-          element.remove();
-        }
-      }, modalSelector);
-      return { success: true };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  }
-
-  // Button click strategies
-  const buttonSelectors = await page.evaluate(
-    (sel: any, strat: any) => {
-      const modal = (globalThis as any).document.querySelector(sel);
-      if (!modal) return [];
-
-      const selectors: string[] = [];
-      let textPatterns: RegExp;
-      let classPatterns: string[];
-
-      // TODO: These button text patterns are English-only. Non-English sites will fail button detection.
-      // Workaround: Use strategy: 'remove' for non-English sites.
-      // See KNOWN_LIMITATIONS.md "Language Limitations" section for details.
-      switch (strat) {
-        case 'accept':
-          textPatterns = /accept|agree|allow|enable|ok|got it|i accept|continue|yes/i;
-          classPatterns = ['accept', 'agree', 'allow'];
-          break;
-        case 'reject':
-          textPatterns = /reject|decline|deny|disable|no thanks|refuse/i;
-          classPatterns = ['reject', 'decline', 'deny'];
-          break;
-        case 'close':
-          textPatterns = /close|dismiss|×|✕|skip|no thanks/i;
-          classPatterns = ['close', 'dismiss', 'skip'];
-          break;
-        default:
-          return [];
-      }
-
-      const buttons = modal.querySelectorAll('button, [role="button"], a[href="#"]');
-      buttons.forEach((btn: any, idx: any) => {
-        const text = (btn.textContent || '').trim().toLowerCase();
-        const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
-        const className = btn.className.toLowerCase();
-        const combined = `${text} ${ariaLabel} ${className}`;
-
-        if (textPatterns.test(combined)) {
-          if (btn.id) {
-            selectors.push(`#${btn.id}`);
-          } else {
-            selectors.push(`${sel} button:nth-of-type(${idx + 1})`);
-          }
-        }
-      });
-
-      return [...new Set(selectors)];
-    },
-    modalSelector,
-    effectiveStrategy
-  );
-
-  // Try clicking buttons
-  for (const btnSelector of buttonSelectors) {
-    try {
-      const button = await page.$(btnSelector);
-      if (button) {
-        await button.click();
-
-        // Wait for modal to disappear (with timeout)
-        try {
-          await page.waitForSelector(modalSelector, { hidden: true, timeout: 1000 });
-          return { success: true };
-        } catch (e) {
-          // Modal didn't disappear, try next button
-          continue;
-        }
-      }
-    } catch (error) {
-      continue;
-    }
-  }
-
-  // Fallback to DOM removal
-  try {
-    await page.evaluate((sel: any) => {
-      const element = (globalThis as any).document.querySelector(sel);
-      if (element) {
-        element.remove();
-      }
-    }, modalSelector);
-    return { success: true };
-  } catch (error: any) {
-    return { success: false, error: error.message };
-  }
+  return {
+    success: result.success,
+    error: result.error,
+  };
 }
