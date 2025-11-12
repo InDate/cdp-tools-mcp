@@ -33,6 +33,7 @@ async function checkWeasyPrintAvailable(): Promise<{ available: boolean; version
 
     let output = '';
     let errorOutput = '';
+    let resolved = false;
 
     process.stdout.on('data', (data) => {
       output += data.toString();
@@ -43,6 +44,10 @@ async function checkWeasyPrintAvailable(): Promise<{ available: boolean; version
     });
 
     process.on('close', (code) => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timeoutHandle);
+
       if (code === 0) {
         const version = output.trim() || errorOutput.trim(); // Version might be on stderr
         const result = { available: true, version };
@@ -59,6 +64,10 @@ async function checkWeasyPrintAvailable(): Promise<{ available: boolean; version
     });
 
     process.on('error', (err) => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timeoutHandle);
+
       const result = {
         available: false,
         error: `Failed to execute weasyprint: ${err.message}`
@@ -68,8 +77,11 @@ async function checkWeasyPrintAvailable(): Promise<{ available: boolean; version
     });
 
     // Timeout after 5 seconds
-    setTimeout(() => {
+    const timeoutHandle = setTimeout(() => {
+      if (resolved) return;
+      resolved = true;
       process.kill();
+
       const result = {
         available: false,
         error: 'WeasyPrint check timed out'
