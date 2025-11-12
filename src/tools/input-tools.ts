@@ -11,12 +11,15 @@ import { checkBrowserAutomation } from '../error-helpers.js';
 import { createTool } from '../validation-helpers.js';
 import { getConfiguredDebugPort } from '../index.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
+import { isElementBlocked, detectModals } from '../utils/modal-detector.js';
 
 // Zod schemas for input validation
 const clickElementSchema = z.object({
   selector: z.string(),
   clickCount: z.number().default(1),
   connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
+  handleModals: z.boolean().default(false).describe('Automatically detect and dismiss blocking modals before clicking. Default: false'),
+  dismissStrategy: z.enum(['accept', 'reject', 'close', 'remove', 'auto']).default('auto').describe('Strategy to use when dismissing modals if handleModals is true. Default: auto'),
 }).strict();
 
 const typeTextSchema = z.object({
@@ -24,6 +27,8 @@ const typeTextSchema = z.object({
   text: z.string(),
   delay: z.number().default(0),
   connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
+  handleModals: z.boolean().default(false).describe('Automatically detect and dismiss blocking modals before typing. Default: false'),
+  dismissStrategy: z.enum(['accept', 'reject', 'close', 'remove', 'auto']).default('auto').describe('Strategy to use when dismissing modals if handleModals is true. Default: auto'),
 }).strict();
 
 const pressKeySchema = z.object({
@@ -34,6 +39,8 @@ const pressKeySchema = z.object({
 const hoverElementSchema = z.object({
   selector: z.string(),
   connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
+  handleModals: z.boolean().default(false).describe('Automatically detect and dismiss blocking modals before hovering. Default: false'),
+  dismissStrategy: z.enum(['accept', 'reject', 'close', 'remove', 'auto']).default('auto').describe('Strategy to use when dismissing modals if handleModals is true. Default: auto'),
 }).strict();
 
 export function createInputTools(
@@ -74,6 +81,44 @@ export function createInputTools(
               return {
                 error: `Element not found: ${args.selector}`,
               };
+            }
+
+            // Check if element is blocked by modal
+            const blockingCheck = await isElementBlocked(page, args.selector);
+
+            if (blockingCheck.blocked && blockingCheck.blockingModal) {
+              if (args.handleModals) {
+                // Auto-dismiss modal
+                const dismissResult = await dismissModalHelper(
+                  page,
+                  blockingCheck.blockingModal.selector,
+                  args.dismissStrategy
+                );
+
+                // Check if dismissal was successful
+                if (!dismissResult.success) {
+                  return {
+                    error: `Failed to dismiss blocking modal: ${dismissResult.error || 'Unknown error'}`,
+                    blockingModal: blockingCheck.blockingModal,
+                  };
+                }
+
+                // Re-check if element is still blocked
+                const recheckBlocking = await isElementBlocked(page, args.selector);
+                if (recheckBlocking.blocked) {
+                  return {
+                    error: `Element still blocked after dismissing modal`,
+                    blockingModal: recheckBlocking.blockingModal,
+                  };
+                }
+              } else {
+                // Return error with modal information
+                return {
+                  error: `Element is blocked by modal`,
+                  blockingModal: blockingCheck.blockingModal,
+                  suggestion: `Enable handleModals parameter or call dismissModal tool first`,
+                };
+              }
             }
 
             // Check if element has click handlers
@@ -121,6 +166,17 @@ export function createInputTools(
 
         // Check if element was not found
         if (!result.result || result.result.error) {
+          // Check if error is due to blocking modal
+          if (result.result?.blockingModal) {
+            return createErrorResponse('ELEMENT_BLOCKED_BY_MODAL', {
+              selector: args.selector,
+              modalType: result.result.blockingModal.type,
+              modalDescription: result.result.blockingModal.description,
+              modalSelector: result.result.blockingModal.selector,
+              suggestion: result.result.suggestion,
+              availableStrategies: result.result.blockingModal.dismissStrategies,
+            });
+          }
           return createErrorResponse('ELEMENT_NOT_FOUND', { selector: args.selector });
         }
 
@@ -164,6 +220,44 @@ export function createInputTools(
               return { error: `Element not found: ${args.selector}` };
             }
 
+            // Check if element is blocked by modal
+            const blockingCheck = await isElementBlocked(page, args.selector);
+
+            if (blockingCheck.blocked && blockingCheck.blockingModal) {
+              if (args.handleModals) {
+                // Auto-dismiss modal
+                const dismissResult = await dismissModalHelper(
+                  page,
+                  blockingCheck.blockingModal.selector,
+                  args.dismissStrategy
+                );
+
+                // Check if dismissal was successful
+                if (!dismissResult.success) {
+                  return {
+                    error: `Failed to dismiss blocking modal: ${dismissResult.error || 'Unknown error'}`,
+                    blockingModal: blockingCheck.blockingModal,
+                  };
+                }
+
+                // Re-check if element is still blocked
+                const recheckBlocking = await isElementBlocked(page, args.selector);
+                if (recheckBlocking.blocked) {
+                  return {
+                    error: `Element still blocked after dismissing modal`,
+                    blockingModal: recheckBlocking.blockingModal,
+                  };
+                }
+              } else {
+                // Return error with modal information
+                return {
+                  error: `Element is blocked by modal`,
+                  blockingModal: blockingCheck.blockingModal,
+                  suggestion: `Enable handleModals parameter or call dismissModal tool first`,
+                };
+              }
+            }
+
             // Clear existing text first
             await page.click(args.selector, { clickCount: 3 });
             await page.keyboard.press('Backspace');
@@ -177,6 +271,17 @@ export function createInputTools(
 
         // Check if element was not found
         if (result.result?.error) {
+          // Check if error is due to blocking modal
+          if (result.result?.blockingModal) {
+            return createErrorResponse('ELEMENT_BLOCKED_BY_MODAL', {
+              selector: args.selector,
+              modalType: result.result.blockingModal.type,
+              modalDescription: result.result.blockingModal.description,
+              modalSelector: result.result.blockingModal.selector,
+              suggestion: result.result.suggestion,
+              availableStrategies: result.result.blockingModal.dismissStrategies,
+            });
+          }
           return createErrorResponse('ELEMENT_NOT_FOUND', { selector: args.selector });
         }
 
@@ -252,6 +357,44 @@ export function createInputTools(
               return { error: `Element not found: ${args.selector}` };
             }
 
+            // Check if element is blocked by modal
+            const blockingCheck = await isElementBlocked(page, args.selector);
+
+            if (blockingCheck.blocked && blockingCheck.blockingModal) {
+              if (args.handleModals) {
+                // Auto-dismiss modal
+                const dismissResult = await dismissModalHelper(
+                  page,
+                  blockingCheck.blockingModal.selector,
+                  args.dismissStrategy
+                );
+
+                // Check if dismissal was successful
+                if (!dismissResult.success) {
+                  return {
+                    error: `Failed to dismiss blocking modal: ${dismissResult.error || 'Unknown error'}`,
+                    blockingModal: blockingCheck.blockingModal,
+                  };
+                }
+
+                // Re-check if element is still blocked
+                const recheckBlocking = await isElementBlocked(page, args.selector);
+                if (recheckBlocking.blocked) {
+                  return {
+                    error: `Element still blocked after dismissing modal`,
+                    blockingModal: recheckBlocking.blockingModal,
+                  };
+                }
+              } else {
+                // Return error with modal information
+                return {
+                  error: `Element is blocked by modal`,
+                  blockingModal: blockingCheck.blockingModal,
+                  suggestion: `Enable handleModals parameter or call dismissModal tool first`,
+                };
+              }
+            }
+
             await page.hover(args.selector);
             return { selector: args.selector };
           },
@@ -260,6 +403,17 @@ export function createInputTools(
 
         // Check if element was not found
         if (result.result?.error) {
+          // Check if error is due to blocking modal
+          if (result.result?.blockingModal) {
+            return createErrorResponse('ELEMENT_BLOCKED_BY_MODAL', {
+              selector: args.selector,
+              modalType: result.result.blockingModal.type,
+              modalDescription: result.result.blockingModal.description,
+              modalSelector: result.result.blockingModal.selector,
+              suggestion: result.result.suggestion,
+              availableStrategies: result.result.blockingModal.dismissStrategies,
+            });
+          }
           return createErrorResponse('ELEMENT_NOT_FOUND', { selector: args.selector });
         }
 
@@ -269,4 +423,144 @@ export function createInputTools(
       }
     ),
   };
+}
+
+/**
+ * Helper function to dismiss a modal
+ *
+ * TODO: This is duplicate code - same logic exists in modal-tools.ts dismissModalByStrategy().
+ * Should be extracted to a shared utility function in src/utils/modal-dismissal.ts
+ * See KNOWN_LIMITATIONS.md "Duplicate Code in Multiple Files" section.
+ */
+async function dismissModalHelper(
+  page: any,
+  modalSelector: string,
+  strategy: 'accept' | 'reject' | 'close' | 'remove' | 'auto'
+): Promise<{ success: boolean; error?: string }> {
+  // Get modal info to determine strategy
+  const modals = await detectModals(page);
+  const modal = modals.find(m => m.selector === modalSelector);
+
+  if (!modal) {
+    return { success: false, error: 'Modal not found' };
+  }
+
+  // Determine effective strategy
+  let effectiveStrategy = strategy;
+  if (strategy === 'auto') {
+    switch (modal.type) {
+      case 'cookie-consent':
+        effectiveStrategy = modal.dismissStrategies.includes('accept') ? 'accept' : 'close';
+        break;
+      case 'newsletter-popup':
+        effectiveStrategy = modal.dismissStrategies.includes('close') ? 'close' : 'reject';
+        break;
+      case 'age-verification':
+        effectiveStrategy = modal.dismissStrategies.includes('accept') ? 'accept' : 'remove';
+        break;
+      default:
+        effectiveStrategy = modal.dismissStrategies.includes('close') ? 'close' : 'remove';
+    }
+  }
+
+  // Remove strategy - just remove from DOM
+  if (effectiveStrategy === 'remove') {
+    try {
+      await page.evaluate((sel: any) => {
+        const element = (globalThis as any).document.querySelector(sel);
+        if (element) {
+          element.remove();
+        }
+      }, modalSelector);
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  // Button click strategies
+  const buttonSelectors = await page.evaluate(
+    (sel: any, strat: any) => {
+      const modal = (globalThis as any).document.querySelector(sel);
+      if (!modal) return [];
+
+      const selectors: string[] = [];
+      let textPatterns: RegExp;
+      let classPatterns: string[];
+
+      // TODO: These button text patterns are English-only. Non-English sites will fail button detection.
+      // Workaround: Use strategy: 'remove' for non-English sites.
+      // See KNOWN_LIMITATIONS.md "Language Limitations" section for details.
+      switch (strat) {
+        case 'accept':
+          textPatterns = /accept|agree|allow|enable|ok|got it|i accept|continue|yes/i;
+          classPatterns = ['accept', 'agree', 'allow'];
+          break;
+        case 'reject':
+          textPatterns = /reject|decline|deny|disable|no thanks|refuse/i;
+          classPatterns = ['reject', 'decline', 'deny'];
+          break;
+        case 'close':
+          textPatterns = /close|dismiss|×|✕|skip|no thanks/i;
+          classPatterns = ['close', 'dismiss', 'skip'];
+          break;
+        default:
+          return [];
+      }
+
+      const buttons = modal.querySelectorAll('button, [role="button"], a[href="#"]');
+      buttons.forEach((btn: any, idx: any) => {
+        const text = (btn.textContent || '').trim().toLowerCase();
+        const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+        const className = btn.className.toLowerCase();
+        const combined = `${text} ${ariaLabel} ${className}`;
+
+        if (textPatterns.test(combined)) {
+          if (btn.id) {
+            selectors.push(`#${btn.id}`);
+          } else {
+            selectors.push(`${sel} button:nth-of-type(${idx + 1})`);
+          }
+        }
+      });
+
+      return [...new Set(selectors)];
+    },
+    modalSelector,
+    effectiveStrategy
+  );
+
+  // Try clicking buttons
+  for (const btnSelector of buttonSelectors) {
+    try {
+      const button = await page.$(btnSelector);
+      if (button) {
+        await button.click();
+
+        // Wait for modal to disappear (with timeout)
+        try {
+          await page.waitForSelector(modalSelector, { hidden: true, timeout: 1000 });
+          return { success: true };
+        } catch (e) {
+          // Modal didn't disappear, try next button
+          continue;
+        }
+      }
+    } catch (error) {
+      continue;
+    }
+  }
+
+  // Fallback to DOM removal
+  try {
+    await page.evaluate((sel: any) => {
+      const element = (globalThis as any).document.querySelector(sel);
+      if (element) {
+        element.remove();
+      }
+    }, modalSelector);
+    return { success: true };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
 }
