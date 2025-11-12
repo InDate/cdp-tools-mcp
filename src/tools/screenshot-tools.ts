@@ -318,6 +318,49 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
         const result = await executeWithPauseDetection(
           targetCdpManager,
           async () => {
+            // Validate page has content to print
+            const pageUrl = page.url();
+
+            // Reject chrome:// and about: URLs
+            if (pageUrl.startsWith('chrome://') || pageUrl.startsWith('about:')) {
+              return {
+                error: `Cannot print ${pageUrl}. Please navigate to a web page with content first.`
+              };
+            }
+
+            // Check if page has meaningful content
+            const hasContent = await page.evaluate(() => {
+              // @ts-ignore - This code runs in browser context
+              const body = document.body;
+              if (!body) return false;
+
+              // Check if body has text content
+              const text = body.innerText.trim();
+              if (text.length > 10) return true;
+
+              // Check if body has visible elements (images, videos, etc.)
+              const elements = body.querySelectorAll('img, video, canvas, svg, iframe');
+              if (elements.length > 0) return true;
+
+              // Check if there are any styled elements with dimensions
+              const styledElements = body.querySelectorAll('div, section, article, main');
+              for (const el of Array.from(styledElements)) {
+                // @ts-ignore - This code runs in browser context
+                const rect = el.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) {
+                  return true;
+                }
+              }
+
+              return false;
+            });
+
+            if (!hasContent) {
+              return {
+                error: 'Page appears to be blank or has no printable content. Please navigate to a page with content first.'
+              };
+            }
+
             const cdpSession = await page.createCDPSession();
 
             // A4 defaults in cm: 21.0 x 29.7
@@ -367,10 +410,10 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
           'printToPDF'
         );
 
-        // Check for errors
-        if (!result.success || result.error) {
+        // Check for errors (including validation errors)
+        if (!result.success || result.error || result.result?.error) {
           return createErrorResponse('PDF_GENERATION_FAILED', {
-            error: result.error || 'Unknown error occurred',
+            error: result.result?.error || result.error || 'Unknown error occurred',
           });
         }
 
