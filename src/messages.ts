@@ -122,8 +122,8 @@ class MessageManager {
           continue; // Example code block follows
         }
 
-        // Skip other metadata lines
-        if (line.startsWith('**')) {
+        // Skip only specific metadata lines, not all lines starting with **
+        if (line.startsWith('**Type:**') || line.startsWith('**Code:**')) {
           inSuggestions = false;
           continue;
         }
@@ -409,5 +409,32 @@ export function createSuccessResponse(messageId: string, variables?: Record<stri
         text: getFormattedResponse(messageId, variables, data),
       },
     ],
+  };
+}
+
+/**
+ * Format a tool success response (for tools that don't use message templates)
+ */
+export function formatToolSuccess(message: string, data?: any): MCPResponse {
+  let text = message;
+  if (data) {
+    text += '\n\n' + formatCodeBlock(data);
+  }
+  return {
+    content: [{ type: 'text', text }],
+  };
+}
+
+/**
+ * Format a tool error response (for tools that don't use message templates)
+ */
+export function formatToolError(code: string, message: string, data?: any): MCPResponse {
+  let text = `**Error (${code}):** ${message}`;
+  if (data) {
+    text += '\n\n' + formatCodeBlock(data);
+  }
+  return {
+    content: [{ type: 'text', text }],
+    isError: true,
   };
 }

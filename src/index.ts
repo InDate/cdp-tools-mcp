@@ -36,11 +36,14 @@ import { createInputTools } from './tools/input-tools.js';
 import { createContentTools } from './tools/content-tools.js';
 import { createStorageTools } from './tools/storage-tools.js';
 import { createTabTools } from './tools/tab-tools.js';
+import { createDownloadTools } from './tools/download-tools.js';
+import { createModalTools } from './tools/modal-tools.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock, getMessage } from './messages.js';
 import { createServer } from 'net';
 import { readFile } from 'fs/promises';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { debugLog, enableDebugLogging, disableDebugLogging, isDebugEnabled } from './debug-logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -221,18 +224,21 @@ const connectionTools = {
     async (args) => {
       // Use reserved port unless explicitly specified
       const port = args.port || getReservedPort();
-      console.error(`[llm-cdp] launchChrome: Using port ${port} (requested: ${args.port}, reserved: ${getReservedPort()})`);
+      await debugLog('index', `launchChrome called: port=${port}, requested=${args.port}, reserved=${getReservedPort()}, url=${args.url}, autoConnect=${args.autoConnect}`);
       const url = args.url;
       const autoConnect = args.autoConnect ?? true;
 
       try {
         // Check if Chrome is already running on this port (browser already exists)
         const browserAlreadyExists = connectionManager.hasBrowser('localhost', port);
+        await debugLog('index', `browserAlreadyExists: ${browserAlreadyExists}`);
         let isNewBrowser = false;
 
         if (!browserAlreadyExists) {
+          await debugLog('index', `Launching new Chrome instance on port ${port}...`);
           // Launch new Chrome instance (will release port reservation)
           const result = await chromeLauncher.launch(port, url, portReserver, args.headless);
+          await debugLog('index', `Chrome launched successfully: ${JSON.stringify(result)}`);
           isNewBrowser = true;
         }
 
@@ -400,6 +406,48 @@ URL: ${pageUrl}${consoleStats}`;
     }
   ),
 
+  setDebugLogging: createTool(
+    'Enable or disable debug logging for troubleshooting',
+    z.object({
+      enabled: z.boolean().describe('Set to true to enable debug logging, false to disable'),
+    }).strict(),
+    async (args) => {
+      if (args.enabled) {
+        enableDebugLogging();
+        return createSuccessResponse('DEBUG_LOGGING_ENABLED', {
+          message: 'Debug logging enabled. Logs will be written to .claude/logs/debug.log'
+        }, {
+          enabled: true,
+          message: 'Debug logging enabled. Logs will be written to .claude/logs/debug.log'
+        });
+      } else {
+        disableDebugLogging();
+        return createSuccessResponse('DEBUG_LOGGING_DISABLED', {
+          message: 'Debug logging disabled'
+        }, {
+          enabled: false,
+          message: 'Debug logging disabled'
+        });
+      }
+    }
+  ),
+
+  getDebugLoggingStatus: createTool(
+    'Check if debug logging is currently enabled',
+    z.object({}).strict(),
+    async () => {
+      const enabled = isDebugEnabled();
+      return createSuccessResponse('DEBUG_LOGGING_STATUS', {
+        status: enabled ? 'enabled' : 'disabled',
+        enabled,  // Pass boolean for conditionals
+        logFile: '.claude/logs/debug.log'
+      }, {
+        enabled,
+        logFile: '.claude/logs/debug.log'
+      });
+    }
+  ),
+
   connectDebugger: createTool(
     'Connect to a Chrome or Node.js debugger instance',
     z.object({
@@ -412,11 +460,16 @@ URL: ${pageUrl}${consoleStats}`;
       const defaultPort = getConfiguredDebugPort();
       const isDefaultPort = port === defaultPort;
 
+      await debugLog('index', `connectDebugger called: host=${host}, port=${port}, defaultPort=${defaultPort}`);
+
       try {
         // Check if Chrome/debugger is running before attempting connection
+        await debugLog('index', `Checking if Chrome is running on port ${port}...`);
         const isRunning = await isChromeRunning(port);
+        await debugLog('index', `isChromeRunning result: ${isRunning}`);
 
         if (!isRunning) {
+          await debugLog('index', `Chrome not running on port ${port}, returning error`);
           // Provide clear error message based on port type
           if (isDefaultPort && host === 'localhost') {
             return createErrorResponse('DEBUGGER_NOT_RUNNING', {
@@ -833,7 +886,10 @@ const allTools = {
   ...createScreenshotTools(proxyPuppeteerManager, proxyCdpManager, connectionManager, resolveConnectionFromReason),
   ...createInputTools(proxyPuppeteerManager, proxyCdpManager, connectionManager, resolveConnectionFromReason),
   ...createContentTools(proxyPuppeteerManager, proxyCdpManager, connectionManager, resolveConnectionFromReason),
+  ...createModalTools(resolveConnectionFromReason),
   ...createStorageTools(proxyPuppeteerManager, proxyCdpManager),
+  // Download tools
+  ...createDownloadTools(),
 };
 
 /**

@@ -597,6 +597,29 @@ Element `{{selector}}` was clicked, but may not have a click handler attached. V
 
 ---
 
+## ELEMENT_BLOCKED_BY_MODAL
+
+**Type:** error
+**Code:** ELEMENT_BLOCKED
+
+Cannot interact with element `{{selector}}` - blocked by {{modalDescription}}
+
+**Modal details:**
+- Type: {{modalType}}
+- Selector: `{{modalSelector}}`
+- Available dismiss strategies: {{availableStrategies}}
+
+**Suggestions:**
+- Use `dismissModal()` tool to remove the blocking modal first
+- Enable `handleModals: true` parameter to automatically dismiss modals
+- Use `detectModals()` to see all blocking elements on the page
+
+{{#suggestion}}
+**Hint:** {{suggestion}}
+{{/suggestion}}
+
+---
+
 ## SCREENSHOT_SAVED
 
 **Type:** success
@@ -1012,3 +1035,191 @@ Failed to close tab: {{connectionId}}
 **Suggestions:**
 - Verify the connection ID is correct using `listTabs()`
 - The tab may have already been closed
+
+---
+
+## DEBUG_LOGGING_ENABLED
+
+**Type:** success
+**Code:** DEBUG_LOGGING_ENABLED
+
+{{message}}
+
+Debug logs will be written to `.claude/logs/debug.log` and visible in the MCP server's stderr output.
+
+---
+
+## DEBUG_LOGGING_DISABLED
+
+**Type:** success
+**Code:** DEBUG_LOGGING_DISABLED
+
+{{message}}
+
+Debug logging is now disabled. No logs will be written.
+
+---
+
+## DEBUG_LOGGING_STATUS
+
+**Type:** success
+**Code:** DEBUG_LOGGING_STATUS
+
+Debug logging is currently **{{status}}**.
+{{#enabled}}
+Logs are being written to: `{{logFile}}`
+{{/enabled}}
+
+---
+
+## FILE_DOWNLOADED
+
+**Type:** success
+**Code:** FILE_DOWNLOADED
+
+File downloaded successfully from `{{url}}`
+
+Saved to: `{{filepath}}`
+Size: {{size}}
+
+---
+
+## FILE_DOWNLOADED_OVERWROTE
+
+**Type:** success
+**Code:** FILE_DOWNLOADED_OVERWROTE
+
+File downloaded and **overwrote existing file** at `{{filepath}}`
+
+Downloaded from: `{{url}}`
+Size: {{size}}
+
+---
+
+## FILE_ALREADY_EXISTS
+
+**Type:** error
+**Code:** FILE_ALREADY_EXISTS
+
+**ERROR:** A file named `{{filename}}` already exists at this location.
+
+**Existing file:**
+- Path: `{{filepath}}`
+- Size: {{existingSize}}
+- Last modified: {{existingModified}}
+
+**New file from `{{url}}`:**
+- Size: {{newSize}}
+
+Please choose a different, more descriptive filename or set `overwriteIfExists: true` to replace the existing file.
+
+---
+
+## CANNOT_OVERWRITE_NONEXISTENT
+
+**Type:** error
+**Code:** CANNOT_OVERWRITE_NONEXISTENT
+
+**ERROR:** Cannot set `overwriteIfExists: true` for a file that doesn't exist yet.
+
+The file `{{filename}}` does not exist at `{{filepath}}`.
+
+Remove the `overwriteIfExists` parameter (it defaults to false) for new downloads.
+
+---
+
+## FILE_DOWNLOAD_FAILED
+
+**Type:** error
+**Code:** FILE_DOWNLOAD_FAILED
+
+Failed to download file from `{{url}}`
+
+{{#status}}HTTP {{status}}: {{statusText}}{{/status}}
+{{#error}}Error: {{error}}{{/error}}
+
+**Suggestions:**
+- Verify the URL is correct and accessible
+- Check your network connection
+- Ensure the server is responding
+
+---
+
+## INVALID_FILENAME
+
+**Type:** error
+**Code:** INVALID_FILENAME
+
+**ERROR:** Invalid filename `{{filename}}`
+
+Reason: {{reason}}
+
+Please use a valid filename without path separators or special characters.
+
+---
+
+## FILE_TOO_LARGE
+
+**Type:** error
+**Code:** FILE_TOO_LARGE
+
+**ERROR:** File is too large to download
+
+The file at `{{url}}` is {{size}}, which exceeds the maximum allowed size of {{maxSize}}.
+
+For security and performance reasons, files larger than {{maxSize}} cannot be downloaded automatically.
+
+---
+
+## FILE_QUARANTINED
+
+**Type:** error
+**Code:** FILE_QUARANTINED
+
+**WARNING:** File has been quarantined due to security concerns
+
+**File:** `{{filename}}`
+**Reason:** {{reason}}
+**Size:** {{size}}
+**Content-Type:** {{contentType}}
+**Quarantine Location:** `{{quarantinePath}}`
+
+The file was downloaded but renamed with a `.quarantined` extension and moved to quarantine to prevent accidental execution. If you trust this file, you can manually rename and move it from the quarantine location.
+
+---
+
+## FILE_SAVE_FAILED
+
+**Type:** error
+**Code:** FILE_SAVE_FAILED
+
+**ERROR:** Failed to save file to disk
+
+The file was downloaded successfully but could not be saved to `{{filepath}}`
+
+Error: {{error}}
+
+**Possible causes:**
+- Disk is full
+- No write permission to the directory
+- File system error
+
+---
+
+## FILE_DOWNLOAD_NETWORK_ERROR
+
+**Type:** error
+**Code:** FILE_DOWNLOAD_NETWORK_ERROR
+
+**ERROR:** Network error while downloading file
+
+Failed to connect to `{{url}}`
+
+Error: {{error}}
+
+**Suggestions:**
+- Check your internet connection
+- Verify the URL is accessible
+- Ensure the server is online
+
+---
