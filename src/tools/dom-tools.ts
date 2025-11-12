@@ -15,17 +15,17 @@ import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../
 // Zod schemas for DOM tools
 const querySelectorSchema = z.object({
   selector: z.string(),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
 }).strict();
 
 const getElementPropertiesSchema = z.object({
   selector: z.string(),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
 }).strict();
 
 const getDOMSnapshotSchema = z.object({
   maxDepth: z.number().optional().default(5),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
 }).strict();
 
 export function createDOMTools(

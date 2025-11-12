@@ -7,7 +7,7 @@ import { promises as fs } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { PuppeteerManager } from '../puppeteer-manager.js';
-import { NetworkMonitor } from '../network-monitor.js';
+import { NetworkMonitor, StoredNetworkRequest } from '../network-monitor.js';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
 import type { Page } from 'puppeteer-core';
@@ -17,11 +17,13 @@ const listNetworkRequestsSchema = z.object({
   resourceType: z.string().optional(),
   limit: z.number().default(100),
   offset: z.number().default(0),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
 }).strict();
 
 const getNetworkRequestSchema = z.object({
   id: z.string(),
   includeBody: z.boolean().default(false).describe('If true, saves the response body to disk and returns the file path instead of including it inline'),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
 }).strict();
 
 const searchNetworkRequestsSchema = z.object({
@@ -31,33 +33,50 @@ const searchNetworkRequestsSchema = z.object({
   statusCode: z.string().optional(),
   flags: z.string().default(''),
   limit: z.number().default(50),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
 }).strict();
 
 const setNetworkConditionsSchema = z.object({
   preset: z.enum(['offline', 'slow-3g', 'fast-3g', 'fast-4g', 'online']),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
 }).strict();
 
 const emptySchema = z.object({}).strict();
 
-export function createNetworkTools(puppeteerManager: PuppeteerManager, networkMonitor: NetworkMonitor) {
+export function createNetworkTools(
+  puppeteerManager: PuppeteerManager,
+  networkMonitor: NetworkMonitor,
+  resolveConnectionFromReason: (connectionReason: string) => Promise<any>
+) {
   return {
     listNetworkRequests: createTool(
       'List network requests with optional resource type filtering. For searching specific URLs, use searchNetworkRequests instead.',
       listNetworkRequestsSchema,
       async (args) => {
-        // Start monitoring if not already active
-        if (!networkMonitor.isActive() && puppeteerManager.isConnected()) {
-          const page = puppeteerManager.getPage();
-          networkMonitor.startMonitoring(page);
+        // Resolve connection from reason
+        const resolved = await resolveConnectionFromReason(args.connectionReason);
+        if (!resolved) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', {
+            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
+          });
         }
 
-        const requests = networkMonitor.getRequests({
+        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
+        const targetNetworkMonitor = resolved.networkMonitor || networkMonitor;
+
+        // Start monitoring if not already active
+        if (!targetNetworkMonitor.isActive() && targetPuppeteerManager.isConnected()) {
+          const page = targetPuppeteerManager.getPage();
+          targetNetworkMonitor.startMonitoring(page);
+        }
+
+        const requests = targetNetworkMonitor.getRequests({
           resourceType: args.resourceType,
           limit: args.limit,
           offset: args.offset,
         });
 
-        const requestList = requests.map(req => ({
+        const requestList = requests.map((req: StoredNetworkRequest) => ({
           id: req.id,
           url: req.url,
           method: req.method,
@@ -71,7 +90,7 @@ export function createNetworkTools(puppeteerManager: PuppeteerManager, networkMo
 
         return createSuccessResponse('NETWORK_REQUESTS_LIST', {
           count: requests.length,
-          totalCount: networkMonitor.getCount(args.resourceType),
+          totalCount: targetNetworkMonitor.getCount(args.resourceType),
           resourceType: args.resourceType
         }, requestList);
       }
@@ -81,7 +100,19 @@ export function createNetworkTools(puppeteerManager: PuppeteerManager, networkMo
       'Get detailed information about a specific network request. By default, returns metadata including bodySize and bodyTokens WITHOUT the response body to avoid token overflow. Set includeBody=true to save the body to disk and get a file path.',
       getNetworkRequestSchema,
       async (args) => {
-        const request = networkMonitor.getRequest(args.id);
+        // If connectionReason is provided, resolve connection
+        let targetNetworkMonitor = networkMonitor;
+        if (args.connectionReason) {
+          const resolved = await resolveConnectionFromReason(args.connectionReason);
+          if (!resolved) {
+            return createErrorResponse('CONNECTION_NOT_FOUND', {
+              message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
+            });
+          }
+          targetNetworkMonitor = resolved.networkMonitor || networkMonitor;
+        }
+
+        const request = targetNetworkMonitor.getRequest(args.id);
 
         if (!request) {
           return createErrorResponse('NETWORK_REQUEST_NOT_FOUND', { id: args.id });
@@ -195,10 +226,21 @@ export function createNetworkTools(puppeteerManager: PuppeteerManager, networkMo
       'Search network requests using regex pattern (more efficient than listNetworkRequests for finding specific requests)',
       searchNetworkRequestsSchema,
       async (args) => {
+        // Resolve connection from reason
+        const resolved = await resolveConnectionFromReason(args.connectionReason);
+        if (!resolved) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', {
+            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
+          });
+        }
+
+        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
+        const targetNetworkMonitor = resolved.networkMonitor || networkMonitor;
+
         // Start monitoring if not already active
-        if (!networkMonitor.isActive() && puppeteerManager.isConnected()) {
-          const page = puppeteerManager.getPage();
-          networkMonitor.startMonitoring(page);
+        if (!targetNetworkMonitor.isActive() && targetPuppeteerManager.isConnected()) {
+          const page = targetPuppeteerManager.getPage();
+          targetNetworkMonitor.startMonitoring(page);
         }
 
         let regex: RegExp;
@@ -217,10 +259,10 @@ export function createNetworkTools(puppeteerManager: PuppeteerManager, networkMo
         }
 
         // Get all requests and filter
-        const allRequests = networkMonitor.getRequests({ resourceType: args.resourceType });
+        const allRequests = targetNetworkMonitor.getRequests({ resourceType: args.resourceType });
 
         const matchingRequests = allRequests
-          .filter(req => {
+          .filter((req: StoredNetworkRequest) => {
             // Filter by URL pattern
             if (!regex.test(req.url)) return false;
 
@@ -242,7 +284,7 @@ export function createNetworkTools(puppeteerManager: PuppeteerManager, networkMo
           })
           .slice(0, args.limit);
 
-        const matches = matchingRequests.map(req => ({
+        const matches = matchingRequests.map((req: StoredNetworkRequest) => ({
           id: req.id,
           url: req.url,
           method: req.method,
@@ -273,11 +315,21 @@ export function createNetworkTools(puppeteerManager: PuppeteerManager, networkMo
       'Emulate network conditions (throttling)',
       setNetworkConditionsSchema,
       async (args) => {
-        if (!puppeteerManager.isConnected()) {
+        // Resolve connection from reason
+        const resolved = await resolveConnectionFromReason(args.connectionReason);
+        if (!resolved) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', {
+            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
+          });
+        }
+
+        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
+
+        if (!targetPuppeteerManager.isConnected()) {
           return createErrorResponse('PUPPETEER_NOT_CONNECTED');
         }
 
-        const page = puppeteerManager.getPage() as Page;
+        const page = targetPuppeteerManager.getPage() as Page;
         const cdpSession = await page.createCDPSession();
 
         const presets: Record<string, any> = {

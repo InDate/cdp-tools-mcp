@@ -18,26 +18,26 @@ import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../
 const navigateToSchema = z.object({
   url: z.string(),
   waitUntil: z.enum(['load', 'domcontentloaded', 'networkidle0', 'networkidle2']).default('load'),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
 }).strict();
 
 const reloadPageSchema = z.object({
   ignoreCache: z.boolean().default(false).describe('Clear browser cache before reloading (default: false)'),
   waitUntil: z.enum(['load', 'domcontentloaded', 'networkidle0', 'networkidle2']).default('load').describe('When to consider navigation complete: load (default), domcontentloaded, networkidle0, or networkidle2'),
   timeout: z.number().default(30000).describe('Maximum time to wait for reload in milliseconds (default: 30000ms / 30s)'),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
 }).strict();
 
 const goBackSchema = z.object({
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
 }).strict();
 
 const goForwardSchema = z.object({
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
 }).strict();
 
 const getPageInfoSchema = z.object({
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
 }).strict();
 
 const emptySchema = z.object({}).strict();

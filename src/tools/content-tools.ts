@@ -19,21 +19,21 @@ const extractTextSchema = z.object({
   section: z.string().optional().describe('Section heading to extract (only used when mode=section)'),
   search: z.string().optional().describe('Search term to filter sections by (case-insensitive)'),
   save: z.boolean().optional().default(false).describe('Save extracted text to disk (.claude/extracts/)'),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
 }).strict();
 
 const findClickableElementsSchema = z.object({
   search: z.string().optional().describe('Search term to filter clickable elements (searches in text and href)'),
   limit: z.number().optional().default(50).describe('Maximum number of results to return (default: 50)'),
   types: z.array(z.enum(['link', 'button', 'input'])).optional().describe('Filter by element types'),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
 }).strict();
 
 const findInputElementsSchema = z.object({
   search: z.string().optional().describe('Search term to filter input elements (searches in label, placeholder, name, id)'),
   limit: z.number().optional().default(50).describe('Maximum number of results to return (default: 50)'),
   types: z.array(z.enum(['text', 'email', 'password', 'number', 'tel', 'url', 'search', 'textarea', 'select', 'checkbox', 'radio', 'file', 'date', 'other'])).optional().describe('Filter by input types'),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
 }).strict();
 
 export function createContentTools(puppeteerManager: PuppeteerManager, cdpManager: CDPManager, connectionManager: ConnectionManager, resolveConnectionFromReason: (connectionReason: string) => Promise<any>) {

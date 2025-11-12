@@ -879,8 +879,8 @@ const allTools = {
   ...createInspectionTools(proxyCdpManager, sourceMapHandler),
   ...createSourceTools(proxyCdpManager, sourceMapHandler),
   // Browser Automation tools
-  ...createConsoleTools(proxyPuppeteerManager, proxyConsoleMonitor),
-  ...createNetworkTools(proxyPuppeteerManager, proxyNetworkMonitor),
+  ...createConsoleTools(proxyPuppeteerManager, proxyConsoleMonitor, resolveConnectionFromReason),
+  ...createNetworkTools(proxyPuppeteerManager, proxyNetworkMonitor, resolveConnectionFromReason),
   ...createPageTools(proxyPuppeteerManager, proxyCdpManager, proxyConsoleMonitor, proxyNetworkMonitor, connectionManager, resolveConnectionFromReason),
   ...createDOMTools(proxyPuppeteerManager, proxyCdpManager, connectionManager, resolveConnectionFromReason),
   ...createScreenshotTools(proxyPuppeteerManager, proxyCdpManager, connectionManager, resolveConnectionFromReason),

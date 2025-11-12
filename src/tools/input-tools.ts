@@ -18,7 +18,7 @@ import { dismissModalByStrategy, selectDismissalStrategy } from '../utils/modal-
 const clickElementSchema = z.object({
   selector: z.string(),
   clickCount: z.number().default(1),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
   handleModals: z.boolean().default(false).describe('Automatically detect and dismiss blocking modals before clicking. Default: false'),
   dismissStrategy: z.enum(['accept', 'reject', 'close', 'remove', 'auto']).default('auto').describe('Strategy to use when dismissing modals if handleModals is true. Default: auto'),
 }).strict();
@@ -27,19 +27,19 @@ const typeTextSchema = z.object({
   selector: z.string(),
   text: z.string(),
   delay: z.number().default(0),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
   handleModals: z.boolean().default(false).describe('Automatically detect and dismiss blocking modals before typing. Default: false'),
   dismissStrategy: z.enum(['accept', 'reject', 'close', 'remove', 'auto']).default('auto').describe('Strategy to use when dismissing modals if handleModals is true. Default: auto'),
 }).strict();
 
 const pressKeySchema = z.object({
   key: z.string(),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
 }).strict();
 
 const hoverElementSchema = z.object({
   selector: z.string(),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
   handleModals: z.boolean().default(false).describe('Automatically detect and dismiss blocking modals before hovering. Default: false'),
   dismissStrategy: z.enum(['accept', 'reject', 'close', 'remove', 'auto']).default('auto').describe('Strategy to use when dismissing modals if handleModals is true. Default: auto'),
 }).strict();

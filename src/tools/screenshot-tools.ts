@@ -432,7 +432,7 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
     clip: clipSchema.optional(),
     saveToDisk: z.string().optional(),
     autoSaveThreshold: z.number().default(1).describe('Auto-save to disk if size >= this (bytes). Default: 1 byte (always saves)'),
-    connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
+    connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
   }).strict();
 
   const takeViewportScreenshotSchema = z.object({
@@ -441,7 +441,7 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
     clip: clipSchema.optional(),
     saveToDisk: z.string().optional(),
     autoSaveThreshold: z.number().default(1).describe('Auto-save to disk if size >= this (bytes). Default: 1 byte (always saves)'),
-    connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
+    connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
   }).strict();
 
   const takeElementScreenshotSchema = z.object({
@@ -450,7 +450,7 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
     quality: z.number().min(0).max(100).optional(),
     saveToDisk: z.string().optional(),
     autoSaveThreshold: z.number().default(1).describe('Auto-save to disk if size >= this (bytes). Default: 1 byte (always saves)'),
-    connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
+    connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
   }).strict();
 
   return {
@@ -668,7 +668,7 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
     printToPDF: createTool(
       'Print the current page to PDF using Chrome (default) or WeasyPrint engine',
       z.object({
-        connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
+        connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
         saveToDisk: z.string().optional().describe('Optional path to save PDF file. If not provided, PDF data is returned as base64 (Chrome engine only).'),
         engine: z.enum(['chrome', 'weasyprint']).optional().default('chrome').describe('PDF rendering engine. Chrome: fast, basic CSS. WeasyPrint: superior CSS Paged Media support (page-break-*, orphans, widows) for professional documents. Default: chrome'),
         // Chrome-specific options
