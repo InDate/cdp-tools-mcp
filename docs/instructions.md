@@ -71,6 +71,14 @@ connectDebugger (to existing Node.js process with --inspect flag)
   - `clickElement`, `typeText`, `pressKey` automatically handle paused state
   - `takeScreenshot` can capture current state at any time
 
+- **Modal/Overlay Handling**:
+  - Many websites show blocking modals (cookie consents, newsletter popups, age gates)
+  - **RECOMMENDED**: Enable `handleModals: true` on interaction tools for automatic modal dismissal
+  - Dismissal strategies: `accept` (click agree/allow), `reject` (click decline), `close` (click X), `remove` (delete from DOM), `auto` (smart selection)
+  - Example: `clickElement` with `handleModals: true, dismissStrategy: 'auto'`
+  - **NOTE**: `detectModals` tool currently has issues (see TEST_RESULTS.md) - use `handleModals` parameter instead
+  - **Limitations**: English-only button text, no Shadow DOM/iframe support (see KNOWN_LIMITATIONS.md)
+
 ### Debugging Node.js Applications
 
 1. Start your Node.js app with debugging enabled:
@@ -121,6 +129,42 @@ connectDebugger (to existing Node.js process with --inspect flag)
 3. `evaluateExpression` (test expressions in browser console context)
 4. `getDOMSnapshot` (get overview of page structure)
 
+### Handling Modal Dialogs
+
+**When modals block page interactions:**
+
+1. **Recommended Approach**: Use `handleModals: true` on interaction tools
+   - Automatically detects and dismisses blocking modals
+   - Works reliably with `clickElement`, `typeText`, and `hoverElement`
+   - Example: `clickElement({ selector: '.buy-button', handleModals: true, dismissStrategy: 'auto' })`
+
+2. **Dismissal strategies**:
+   - `auto` (recommended): Smart selection based on modal type (accept for cookies, close for newsletters, etc.)
+   - `accept`: Click "Accept"/"Agree"/"Allow" buttons (best for cookie consents)
+   - `reject`: Click "Reject"/"Decline" buttons
+   - `close`: Click "X"/"Close" buttons (best for newsletters)
+   - `remove`: Delete modal from DOM (fallback when buttons don't work or for non-English sites)
+
+3. **Known Limitations** (see KNOWN_LIMITATIONS.md for full details):
+   - `detectModals` tool currently returns 0 results (known bug under investigation)
+   - Button detection is English-only (use `strategy: 'remove'` for non-English sites)
+   - No Shadow DOM or iframe support
+   - Default 25% viewport coverage may miss small banners
+
+**Examples:**
+```
+# Recommended: Automatic handling
+clickElement({ selector: '.buy-button', handleModals: true, dismissStrategy: 'auto' })
+
+# For non-English sites, use 'remove' strategy
+clickElement({ selector: '.comprar-button', handleModals: true, dismissStrategy: 'remove' })
+
+# Manual approach (less reliable due to detectModals issues)
+# Note: Currently not recommended - detectModals may return 0 results
+dismissModal({ selector: '#cookieBanner', strategy: 'accept' })
+clickElement({ selector: '.buy-button' })
+```
+
 ## Important Notes
 
 - **Logpoint execution limits**: By default, logpoints execute 20 times before pausing to prevent log flooding. Use `resetLogpointCounter` to continue or adjust `maxExecutions` when setting logpoints.
@@ -162,5 +206,7 @@ connectDebugger (to existing Node.js process with --inspect flag)
 **Screenshot Tools**: `takeScreenshot`, `takeViewportScreenshot`, `takeElementScreenshot`
 
 **Input Tools**: `clickElement`, `typeText`, `pressKey`, `hoverElement`
+
+**Modal Tools**: `detectModals`, `dismissModal`
 
 **Storage Tools**: `getCookies`, `setCookie`, `getLocalStorage`, `setLocalStorage`, `clearStorage`
