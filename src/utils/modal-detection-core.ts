@@ -13,12 +13,53 @@
  * At runtime, these functions execute in the browser where DOM APIs exist.
  */
 
+/**
+ * Modal type classification
+ */
+export type ModalType =
+  | 'cookie-consent'
+  | 'newsletter-popup'
+  | 'age-verification'
+  | 'generic-dialog'
+  | 'blocking-overlay'
+  | 'unknown';
+
+/**
+ * Available dismiss strategies
+ */
+export type DismissStrategy = 'accept' | 'reject' | 'close' | 'remove';
+
+/**
+ * Bounding box coordinates
+ */
+export interface BoundingBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Modal detection options
+ */
 export interface ModalDetectionOptions {
   minZIndex?: number;
   minViewportCoverage?: number;
   includeBackdrops?: boolean;
 }
 
+/**
+ * Modal classification result
+ */
+export interface ModalClassification {
+  type: ModalType;
+  confidence: number;
+  description: string;
+}
+
+/**
+ * Detected modal information (returned from page.evaluate)
+ */
 export interface DetectedModalInfo {
   selector: string;
   type: ModalType;
@@ -29,50 +70,29 @@ export interface DetectedModalInfo {
   description: string;
 }
 
-export interface BoundingBox {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-export type ModalType =
-  | 'cookie-consent'
-  | 'newsletter-popup'
-  | 'age-verification'
-  | 'generic-dialog'
-  | 'blocking-overlay'
-  | 'unknown';
-
-export type DismissStrategy =
-  | 'accept'
-  | 'reject'
-  | 'close'
-  | 'remove';
-
-export interface ModalPatterns {
-  cookieConsent: {
-    selectors: string[];
-    textPatterns: RegExp;
+/**
+ * Browser-side modal detection types
+ * These types are used within page.evaluate() context
+ */
+export interface BrowserModalInfo {
+  selector: string;
+  type: string;
+  zIndex: number;
+  boundingBox: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
   };
-  newsletter: {
-    selectors: string[];
-    textPatterns: RegExp;
-  };
-  ageVerification: {
-    selectors: string[];
-    textPatterns: RegExp;
-  };
-  genericDialog: {
-    selectors: string[];
-    textPatterns: RegExp | null;
-  };
+  dismissStrategies: string[];
+  confidence: number;
+  description: string;
 }
 
 /**
  * Common modal/dialog selectors and patterns
  */
-export const MODAL_PATTERNS: ModalPatterns = {
+export const MODAL_PATTERNS = {
   cookieConsent: {
     selectors: [
       '[class*="cookie" i][class*="banner" i]',
@@ -138,30 +158,12 @@ export const COMMON_MODAL_SELECTORS = [
 ];
 
 /**
- * Browser-side modal detection types
- * These types are used within page.evaluate() context
- */
-export interface BrowserModalInfo {
-  selector: string;
-  type: string;
-  zIndex: number;
-  boundingBox: {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  };
-  dismissStrategies: string[];
-  confidence: number;
-  description: string;
-}
-
-/**
  * Check if element meets basic visibility criteria
  * Runs in browser context via page.evaluate()
  */
 export function isBasicVisible(el: any): boolean {
-  const style = (globalThis as any).window.getComputedStyle(el);
+  const global: any = globalThis;
+  const style = global.window.getComputedStyle(el);
 
   if (style.display === 'none') return false;
   if (style.visibility === 'hidden') return false;
@@ -175,7 +177,8 @@ export function isBasicVisible(el: any): boolean {
  * Runs in browser context via page.evaluate()
  */
 export function isBlockingPosition(el: any): boolean {
-  const style = (globalThis as any).window.getComputedStyle(el);
+  const global: any = globalThis;
+  const style = global.window.getComputedStyle(el);
   const position = style.position;
 
   return position === 'fixed' || position === 'absolute';
@@ -186,11 +189,11 @@ export function isBlockingPosition(el: any): boolean {
  * Runs in browser context via page.evaluate()
  */
 export function hasMinimumZIndex(el: any, minZIndex: number): boolean {
-  const style = (globalThis as any).window.getComputedStyle(el);
+  const global: any = globalThis;
+  const style = global.window.getComputedStyle(el);
   const zIndex = parseInt(style.zIndex, 10);
 
   if (isNaN(zIndex)) return true; // No z-index set, might still be on top
-
   return zIndex >= minZIndex;
 }
 
@@ -199,8 +202,9 @@ export function hasMinimumZIndex(el: any, minZIndex: number): boolean {
  * Runs in browser context via page.evaluate()
  */
 export function coversMinimumViewport(el: any, minCoverage: number): boolean {
+  const global: any = globalThis;
   const rect = el.getBoundingClientRect();
-  const viewportArea = (globalThis as any).window.innerWidth * (globalThis as any).window.innerHeight;
+  const viewportArea = global.window.innerWidth * global.window.innerHeight;
   const elementArea = rect.width * rect.height;
   const coverage = elementArea / viewportArea;
 
@@ -213,6 +217,7 @@ export function coversMinimumViewport(el: any, minCoverage: number): boolean {
  * Runs in browser context via page.evaluate()
  */
 export function isVisibleOnTop(el: any): boolean {
+  const global: any = globalThis;
   const rect = el.getBoundingClientRect();
 
   // Check center point
@@ -220,12 +225,11 @@ export function isVisibleOnTop(el: any): boolean {
   const centerY = rect.top + rect.height / 2;
 
   // Check if center is in viewport
-  if (centerX < 0 || centerX > (globalThis as any).window.innerWidth || centerY < 0 || centerY > (globalThis as any).window.innerHeight) {
+  if (centerX < 0 || centerX > global.window.innerWidth || centerY < 0 || centerY > global.window.innerHeight) {
     return false;
   }
 
-  const topElement = (globalThis as any).document.elementFromPoint(centerX, centerY);
-
+  const topElement = global.document.elementFromPoint(centerX, centerY);
   if (!topElement) return false;
 
   // Element is on top if the top element is the element itself or a child
@@ -255,11 +259,10 @@ export function isElementBlockingViewport(
  * Classify modal type based on content and attributes
  * Runs in browser context via page.evaluate()
  */
-export function classifyModal(el: any, patterns: ModalPatterns): {
-  type: string;
-  confidence: number;
-  description: string;
-} {
+export function classifyModal(
+  el: any,
+  patterns: typeof MODAL_PATTERNS
+): ModalClassification {
   const text = el.textContent?.toLowerCase() || '';
   const className = el.className?.toLowerCase() || '';
   const id = el.id?.toLowerCase() || '';
@@ -273,9 +276,10 @@ export function classifyModal(el: any, patterns: ModalPatterns): {
     }
   });
 
-  const matchesCookieText = patterns.cookieConsent.textPatterns.test(text) ||
-                           patterns.cookieConsent.textPatterns.test(className) ||
-                           patterns.cookieConsent.textPatterns.test(id);
+  const matchesCookieText =
+    patterns.cookieConsent.textPatterns.test(text) ||
+    patterns.cookieConsent.textPatterns.test(className) ||
+    patterns.cookieConsent.textPatterns.test(id);
 
   if (matchesCookieSelector || matchesCookieText) {
     return {
@@ -333,11 +337,13 @@ export function classifyModal(el: any, patterns: ModalPatterns): {
   }
 
   // Backdrop/overlay (usually paired with modal)
-  if ((className.includes('backdrop') ||
-       className.includes('overlay') ||
-       id.includes('backdrop') ||
-       id.includes('overlay')) &&
-      !text.trim()) {
+  if (
+    (className.includes('backdrop') ||
+      className.includes('overlay') ||
+      id.includes('backdrop') ||
+      id.includes('overlay')) &&
+    !text.trim()
+  ) {
     return {
       type: 'blocking-overlay',
       confidence: 70,
@@ -356,16 +362,14 @@ export function classifyModal(el: any, patterns: ModalPatterns): {
  * Determine dismissal strategies available for a modal
  * Runs in browser context via page.evaluate()
  */
-export function getDismissStrategies(el: any, modalType: string): string[] {
-  const strategies = new Set<string>();
+export function getDismissStrategies(el: any, modalType: string): DismissStrategy[] {
+  const strategies = new Set<DismissStrategy>();
 
   // Always allow DOM removal as fallback
   strategies.add('remove');
 
   // Look for close/dismiss buttons
-  const closeButtons = el.querySelectorAll(
-    'button, [role="button"], a, .close, .dismiss, [class*="close" i]'
-  );
+  const closeButtons = el.querySelectorAll('button, [role="button"], a, .close, .dismiss, [class*="close" i]');
 
   closeButtons.forEach((btn: any) => {
     const text = (btn.textContent || '').toLowerCase();
@@ -373,18 +377,24 @@ export function getDismissStrategies(el: any, modalType: string): string[] {
     const className = btn.className?.toLowerCase() || '';
     const combined = `${text} ${ariaLabel} ${className}`;
 
-    if (/accept|agree|allow|enable|ok|got it|i accept/i.test(combined) ||
-        btn.matches('[class*="accept" i], [id*="accept" i]')) {
+    if (
+      /accept|agree|allow|enable|ok|got it|i accept/i.test(combined) ||
+      btn.matches('[class*="accept" i], [id*="accept" i]')
+    ) {
       strategies.add('accept');
     }
 
-    if (/reject|decline|deny|disable|no thanks|refuse/i.test(combined) ||
-        btn.matches('[class*="reject" i], [id*="reject" i], [class*="decline" i]')) {
+    if (
+      /reject|decline|deny|disable|no thanks|refuse/i.test(combined) ||
+      btn.matches('[class*="reject" i], [id*="reject" i], [class*="decline" i]')
+    ) {
       strategies.add('reject');
     }
 
-    if (/close|dismiss|×|✕|✖/i.test(combined) ||
-        btn.matches('[class*="close" i], [class*="dismiss" i], .close, .dismiss')) {
+    if (
+      /close|dismiss|×|✕|✖/i.test(combined) ||
+      btn.matches('[class*="close" i], [class*="dismiss" i], .close, .dismiss')
+    ) {
       strategies.add('close');
     }
   });
@@ -412,7 +422,8 @@ export function getUniqueSelector(el: any): string {
     const classes = el.className.split(/\s+/).filter(Boolean);
     if (classes.length > 0) {
       const selector = `.${classes.join('.')}`;
-      if ((globalThis as any).document.querySelectorAll(selector).length === 1) {
+      const global: any = globalThis;
+      if (global.document.querySelectorAll(selector).length === 1) {
         return selector;
       }
     }
@@ -421,8 +432,9 @@ export function getUniqueSelector(el: any): string {
   // Build path-based selector
   const path: string[] = [];
   let current: any = el;
+  const global: any = globalThis;
 
-  while (current && current !== (globalThis as any).document.body) {
+  while (current && current !== global.document.body) {
     let selector = current.tagName.toLowerCase();
 
     if (current.id) {
