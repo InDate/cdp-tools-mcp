@@ -14,7 +14,6 @@ import {
   getDismissStrategies,
   getUniqueSelector,
   MODAL_PATTERNS,
-  type ModalPatterns,
 } from './modal-detection-core.js';
 
 // Mock DOM environment
