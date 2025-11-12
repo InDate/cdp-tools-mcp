@@ -195,6 +195,13 @@ async function generatePDFWithWeasyPrint(
     wpArgs.push('--base-url', args.baseUrl);
   }
 
+  // Inject A4 page size via CSS to match Chrome default (WeasyPrint has no --page-size flag)
+  // Create temporary CSS file with @page rule
+  const tempCssPath = path.join(process.cwd(), '.claude', 'temp', `a4-page-${Date.now()}.css`);
+  await fs.mkdir(path.dirname(tempCssPath), { recursive: true });
+  await fs.writeFile(tempCssPath, '@page { size: A4; margin: 1cm; }');
+  wpArgs.push('--stylesheet', tempCssPath);
+
   if (args.stylesheets && args.stylesheets.length > 0) {
     for (const stylesheet of args.stylesheets) {
       wpArgs.push('--stylesheet', stylesheet);
@@ -256,6 +263,13 @@ async function generatePDFWithWeasyPrint(
     }, timeoutMs);
   });
 
+  // Clean up temp CSS file
+  try {
+    await fs.unlink(tempCssPath);
+  } catch {
+    // Ignore cleanup errors
+  }
+
   if (!result.success) {
     return {
       success: false,
@@ -310,15 +324,15 @@ async function generatePDFWithChrome(
   try {
     const cdpSession = await page.createCDPSession();
 
-    // A4 defaults in cm: 21.0 x 29.7
-    const defaultWidthCm = 21.0;
-    const defaultHeightCm = 29.7;
+    // A4 paper size in cm: 21.0 x 29.7 (default for consistency with WeasyPrint)
+    const a4WidthCm = 21.0;
+    const a4HeightCm = 29.7;
 
     // Convert cm to inches (CDP expects inches): 1 cm = 0.393701 inches
     const cmToInches = (cm: number) => cm * 0.393701;
 
-    const paperWidthInches = args.paperWidthCm ? cmToInches(args.paperWidthCm) : cmToInches(defaultWidthCm);
-    const paperHeightInches = args.paperHeightCm ? cmToInches(args.paperHeightCm) : cmToInches(defaultHeightCm);
+    const paperWidthInches = args.paperWidthCm ? cmToInches(args.paperWidthCm) : cmToInches(a4WidthCm);
+    const paperHeightInches = args.paperHeightCm ? cmToInches(args.paperHeightCm) : cmToInches(a4HeightCm);
 
     // Use CDP Page.printToPDF command
     const pdfData = await cdpSession.send('Page.printToPDF', {
@@ -652,36 +666,26 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
     ),
 
     printToPDF: createTool(
-      'Generate PDF from current page. Chrome: fast rendering for previews and simple layouts. WeasyPrint: professional quality with superior CSS Paged Media support (page-break-after, orphans, widows) for production documents and reports. Default: chrome',
-      z.union([
-        // Chrome engine schema (engine optional, defaults to 'chrome')
-        z.object({
-          engine: z.literal('chrome').optional(),
-          connectionReason: z.string().describe('Brief reason for needing this browser connection'),
-          saveToDisk: z.string().optional().describe('Optional path to save PDF file. If not provided, PDF data is returned as base64.'),
-          landscape: z.boolean().optional().default(false).describe('Print in landscape orientation (default: false)'),
-          printBackground: z.boolean().optional().default(true).describe('Print background graphics (default: true)'),
-          scale: z.number().optional().default(1).describe('Scale of the webpage rendering (default: 1, range: 0.1 to 2)'),
-          paperWidthCm: z.number().optional().describe('Paper width in centimeters (default: 21.0 for A4)'),
-          paperHeightCm: z.number().optional().describe('Paper height in centimeters (default: 29.7 for A4)'),
-        }).strict(),
-        // WeasyPrint engine schema (engine required)
-        z.object({
-          engine: z.literal('weasyprint'),
-          connectionReason: z.string().describe('Brief reason for needing this browser connection'),
-          saveToDisk: z.string().describe('Path to save PDF file (required for WeasyPrint)'),
-          mediaType: z.enum(['print', 'screen']).optional().default('print').describe('CSS media type (default: print)'),
-          baseUrl: z.string().optional().describe('Base URL for resolving relative URLs in the HTML'),
-          stylesheets: z.array(z.string()).optional().describe('Additional CSS stylesheet paths to include'),
-          optimizeImages: z.boolean().optional().default(true).describe('Optimize embedded images (default: true)'),
-          timeout: z.number().optional().describe('Timeout in milliseconds (default: 30000, max: 120000)').refine(val => val === undefined || (val >= 1000 && val <= 120000), {
-            message: 'Timeout must be between 1000ms and 120000ms'
-          }),
-        }).strict(),
-      ]).transform((val) => ({
-        ...val,
-        engine: val.engine || 'chrome' as const
-      })),
+      'Print the current page to PDF using Chrome (default) or WeasyPrint engine',
+      z.object({
+        connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended, e.g., \'search wikipedia results\', \'test checkout flow\'). Auto-creates/reuses tabs.'),
+        saveToDisk: z.string().optional().describe('Optional path to save PDF file. If not provided, PDF data is returned as base64 (Chrome engine only).'),
+        engine: z.enum(['chrome', 'weasyprint']).optional().default('chrome').describe('PDF rendering engine. Chrome: fast, basic CSS. WeasyPrint: superior CSS Paged Media support (page-break-*, orphans, widows) for professional documents. Default: chrome'),
+        // Chrome-specific options
+        landscape: z.boolean().optional().default(false).describe('Print in landscape orientation (default: false, Chrome only)'),
+        printBackground: z.boolean().optional().default(true).describe('Print background graphics (default: true, Chrome only)'),
+        scale: z.number().optional().default(1).describe('Scale of the webpage rendering (default: 1, range: 0.1 to 2, Chrome only)'),
+        paperWidthCm: z.number().optional().describe('Paper width in centimeters (default: 21.0 for A4, Chrome only)'),
+        paperHeightCm: z.number().optional().describe('Paper height in centimeters (default: 29.7 for A4, Chrome only)'),
+        // WeasyPrint-specific options
+        mediaType: z.enum(['print', 'screen']).optional().default('print').describe('CSS media type (default: print, WeasyPrint only)'),
+        baseUrl: z.string().optional().describe('Base URL for resolving relative URLs in the HTML (WeasyPrint only)'),
+        stylesheets: z.array(z.string()).optional().describe('Additional CSS stylesheet paths to include (WeasyPrint only)'),
+        optimizeImages: z.boolean().optional().default(true).describe('Optimize embedded images (default: true, WeasyPrint only)'),
+        timeout: z.number().optional().describe('Timeout in milliseconds for WeasyPrint (default: 30000, max: 120000, WeasyPrint only)').refine(val => val === undefined || (val >= 1000 && val <= 120000), {
+          message: 'Timeout must be between 1000ms and 120000ms'
+        }),
+      }).strict(),
       async (args) => {
         // Get page connection
         const resolved = await resolveConnectionFromReason(args.connectionReason);
