@@ -20,6 +20,11 @@ import {
   MODAL_PATTERNS,
   COMMON_MODAL_SELECTORS,
   isElementBlockingViewport,
+  isBasicVisible,
+  isBlockingPosition,
+  hasMinimumZIndex,
+  coversMinimumViewport,
+  isVisibleOnTop,
   classifyModal,
   getDismissStrategies,
   getUniqueSelector,
@@ -48,6 +53,30 @@ export async function detectModals(
   await debugLog('ModalDetector', `Detecting modals on page: ${pageUrl}`);
   await debugLog('ModalDetector', `Options: minZIndex=${minZIndex}, minViewportCoverage=${minViewportCoverage}, includeBackdrops=${includeBackdrops}`);
 
+  // Serialize RegExp patterns in MODAL_PATTERNS to strings
+  const serializedPatterns = {
+    cookieConsent: {
+      ...MODAL_PATTERNS.cookieConsent,
+      textPatterns: MODAL_PATTERNS.cookieConsent.textPatterns.source,
+      textPatternsFlags: MODAL_PATTERNS.cookieConsent.textPatterns.flags,
+    },
+    newsletter: {
+      ...MODAL_PATTERNS.newsletter,
+      textPatterns: MODAL_PATTERNS.newsletter.textPatterns.source,
+      textPatternsFlags: MODAL_PATTERNS.newsletter.textPatterns.flags,
+    },
+    ageVerification: {
+      ...MODAL_PATTERNS.ageVerification,
+      textPatterns: MODAL_PATTERNS.ageVerification.textPatterns.source,
+      textPatternsFlags: MODAL_PATTERNS.ageVerification.textPatterns.flags,
+    },
+    genericDialog: {
+      ...MODAL_PATTERNS.genericDialog,
+      textPatterns: null,
+      textPatternsFlags: null,
+    },
+  };
+
   // Serialize functions and data to pass into browser context
   const modals = await page.evaluate(
     (opts: {
@@ -57,6 +86,11 @@ export async function detectModals(
       modalPatterns: any;
       commonSelectors: string[];
       // Functions as strings to execute in browser
+      isBasicVisibleFn: string;
+      isBlockingPositionFn: string;
+      hasMinimumZIndexFn: string;
+      coversMinimumViewportFn: string;
+      isVisibleOnTopFn: string;
       isElementBlockingViewportFn: string;
       classifyModalFn: string;
       getDismissStrategiesFn: string;
@@ -68,21 +102,71 @@ export async function detectModals(
         includeBackdrops,
         modalPatterns,
         commonSelectors,
+        isBasicVisibleFn,
+        isBlockingPositionFn,
+        hasMinimumZIndexFn,
+        coversMinimumViewportFn,
+        isVisibleOnTopFn,
         isElementBlockingViewportFn,
         classifyModalFn,
         getDismissStrategiesFn,
         getUniqueSelectorFn,
       } = opts;
 
-      // Reconstruct functions in browser context
+      const global: any = globalThis;
+
+      // Reconstruct RegExp patterns from serialized strings
+      const reconstructedPatterns = {
+        cookieConsent: {
+          ...modalPatterns.cookieConsent,
+          textPatterns: new RegExp(modalPatterns.cookieConsent.textPatterns, modalPatterns.cookieConsent.textPatternsFlags),
+        },
+        newsletter: {
+          ...modalPatterns.newsletter,
+          textPatterns: new RegExp(modalPatterns.newsletter.textPatterns, modalPatterns.newsletter.textPatternsFlags),
+        },
+        ageVerification: {
+          ...modalPatterns.ageVerification,
+          textPatterns: new RegExp(modalPatterns.ageVerification.textPatterns, modalPatterns.ageVerification.textPatternsFlags),
+        },
+        genericDialog: {
+          ...modalPatterns.genericDialog,
+          textPatterns: null,
+        },
+      };
+
+      // Reconstruct helper functions first (needed by isElementBlockingViewport)
+      // Use eval without parentheses to define functions in scope
       // eslint-disable-next-line no-eval
-      const isElementBlockingViewportFunc = eval(`(${isElementBlockingViewportFn})`);
+      eval(isBasicVisibleFn);
       // eslint-disable-next-line no-eval
-      const classifyModalFunc = eval(`(${classifyModalFn})`);
+      eval(isBlockingPositionFn);
       // eslint-disable-next-line no-eval
-      const getDismissStrategiesFunc = eval(`(${getDismissStrategiesFn})`);
+      eval(hasMinimumZIndexFn);
       // eslint-disable-next-line no-eval
-      const getUniqueSelectorFunc = eval(`(${getUniqueSelectorFn})`);
+      eval(coversMinimumViewportFn);
+      // eslint-disable-next-line no-eval
+      eval(isVisibleOnTopFn);
+
+      // Now reconstruct main functions (these depend on the helpers above)
+      // eslint-disable-next-line no-eval
+      eval(isElementBlockingViewportFn);
+      // eslint-disable-next-line no-eval
+      eval(classifyModalFn);
+      // eslint-disable-next-line no-eval
+      eval(getDismissStrategiesFn);
+      // eslint-disable-next-line no-eval
+      eval(getUniqueSelectorFn);
+
+      // Reference the now-defined functions
+      // @ts-ignore - Functions are defined by eval above
+      const isElementBlockingViewportFunc = isElementBlockingViewport;
+      // @ts-ignore
+      const classifyModalFunc = classifyModal;
+      // @ts-ignore
+      const getDismissStrategiesFunc = getDismissStrategies;
+      // @ts-ignore
+      const getUniqueSelectorFunc = getUniqueSelector;
 
       const detectedModals: any[] = [];
       const candidateElements: any[] = [];
@@ -90,23 +174,23 @@ export async function detectModals(
       // Scan using common selectors
       commonSelectors.forEach((selector) => {
         try {
-          const elements = (globalThis as any).document.querySelectorAll(selector);
+          const elements = global.document.querySelectorAll(selector);
           elements.forEach((el: any) => {
             if (!candidateElements.includes(el) &&
                 isElementBlockingViewportFunc(el, minZIndex, minViewportCoverage)) {
               candidateElements.push(el);
             }
           });
-        } catch (e) {
+        } catch (e: any) {
           // Ignore selector errors
         }
       });
 
       // Fallback: scan all fixed/absolute positioned elements if no candidates found
       if (candidateElements.length === 0) {
-        const allElements = (globalThis as any).document.querySelectorAll('*');
+        const allElements = global.document.querySelectorAll('*');
         allElements.forEach((el: any) => {
-          const style = (globalThis as any).window.getComputedStyle(el);
+          const style = global.window.getComputedStyle(el);
           if ((style.position === 'fixed' || style.position === 'absolute') &&
               isElementBlockingViewportFunc(el, minZIndex, minViewportCoverage)) {
             candidateElements.push(el);
@@ -115,33 +199,39 @@ export async function detectModals(
       }
 
       // Process candidates
-      candidateElements.forEach((el: any) => {
-        const rect = el.getBoundingClientRect();
-        const style = (globalThis as any).window.getComputedStyle(el);
-        const zIndex = parseInt(style.zIndex, 10) || 0;
+      candidateElements.forEach((el: any, idx: number) => {
+        try {
+          const rect = el.getBoundingClientRect();
+          const style = global.window.getComputedStyle(el);
+          const zIndex = parseInt(style.zIndex, 10) || 0;
 
-        const classification = classifyModalFunc(el, modalPatterns);
-        const strategies = getDismissStrategiesFunc(el, classification.type);
+          const classification = classifyModalFunc(el, reconstructedPatterns);
+          const strategies = getDismissStrategiesFunc(el, classification.type);
 
-        // Filter out backdrops if requested
-        if (!includeBackdrops && classification.type === 'blocking-overlay') {
-          return;
+          // Filter out backdrops if requested
+          if (!includeBackdrops && classification.type === 'blocking-overlay') {
+            return;
+          }
+
+          const selector = getUniqueSelectorFunc(el);
+
+          detectedModals.push({
+            selector: selector,
+            type: classification.type,
+            zIndex,
+            boundingBox: {
+              x: rect.left,
+              y: rect.top,
+              width: rect.width,
+              height: rect.height,
+            },
+            dismissStrategies: strategies,
+            confidence: classification.confidence,
+            description: classification.description,
+          });
+        } catch (e: any) {
+          // Ignore errors processing individual candidates
         }
-
-        detectedModals.push({
-          selector: getUniqueSelectorFunc(el),
-          type: classification.type,
-          zIndex,
-          boundingBox: {
-            x: rect.left,
-            y: rect.top,
-            width: rect.width,
-            height: rect.height,
-          },
-          dismissStrategies: strategies,
-          confidence: classification.confidence,
-          description: classification.description,
-        });
       });
 
       // Sort by z-index (highest first) and confidence
@@ -158,9 +248,15 @@ export async function detectModals(
       minZIndex,
       minViewportCoverage,
       includeBackdrops,
-      modalPatterns: MODAL_PATTERNS,
+      modalPatterns: serializedPatterns,
       commonSelectors: COMMON_MODAL_SELECTORS,
-      // Serialize functions as strings
+      // Serialize helper functions first
+      isBasicVisibleFn: isBasicVisible.toString(),
+      isBlockingPositionFn: isBlockingPosition.toString(),
+      hasMinimumZIndexFn: hasMinimumZIndex.toString(),
+      coversMinimumViewportFn: coversMinimumViewport.toString(),
+      isVisibleOnTopFn: isVisibleOnTop.toString(),
+      // Then serialize main functions
       isElementBlockingViewportFn: isElementBlockingViewport.toString(),
       classifyModalFn: classifyModal.toString(),
       getDismissStrategiesFn: getDismissStrategies.toString(),
@@ -185,7 +281,8 @@ export async function isElementBlocked(
   await debugLog('ModalDetector', `Checking if element ${selector} is blocked`);
 
   const result = await page.evaluate((sel: string) => {
-    const element = (globalThis as any).document.querySelector(sel);
+    const global: any = globalThis;
+    const element = global.document.querySelector(sel);
     if (!element) {
       return { blocked: false, error: 'Element not found' };
     }
@@ -195,7 +292,7 @@ export async function isElementBlocked(
     const centerY = rect.top + rect.height / 2;
 
     // Check what element is at the target's center point
-    const topElement = (globalThis as any).document.elementFromPoint(centerX, centerY);
+    const topElement = global.document.elementFromPoint(centerX, centerY);
 
     if (!topElement) {
       return { blocked: false };
@@ -208,8 +305,8 @@ export async function isElementBlocked(
 
     // Find the blocking element's topmost ancestor that's fixed/absolute
     let blockingElement: any = topElement;
-    while (blockingElement && blockingElement !== (globalThis as any).document.body) {
-      const style = (globalThis as any).window.getComputedStyle(blockingElement);
+    while (blockingElement && blockingElement !== global.document.body) {
+      const style = global.window.getComputedStyle(blockingElement);
       const position = style.position;
 
       if (position === 'fixed' || position === 'absolute') {
