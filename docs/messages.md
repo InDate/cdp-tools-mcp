@@ -1231,6 +1231,8 @@ Error: {{error}}
 
 PDF saved successfully to `{{filepath}}`
 File size: {{fileSize}}
+{{#engine}}Engine: {{engine}}{{/engine}}
+{{#version}}Version: {{version}}{{/version}}
 
 ---
 
@@ -1254,5 +1256,45 @@ Size: {{size}}
 **ERROR:** Failed to generate PDF
 
 Error: {{error}}
+
+---
+
+## WEASYPRINT_NOT_FOUND
+
+**Type:** error
+**Code:** WEASYPRINT_NOT_FOUND
+
+**ERROR:** WeasyPrint is not installed or not found in PATH
+
+WeasyPrint is required for advanced PDF generation with superior CSS page break support.
+
+**Suggestions:**
+- Install WeasyPrint: `pip install weasyprint`
+- Verify installation: `weasyprint --version`
+- Ensure WeasyPrint is in your system PATH
+- Use `printToPDF` tool for basic PDF generation with Chrome instead
+
+**Note:** WeasyPrint requires Python 3.7+ and additional system dependencies (Cairo, Pango, GdkPixbuf). See https://doc.courtbouillon.org/weasyprint/stable/first_steps.html#installation
+
+Error: {{error}}
+
+---
+
+## WEASYPRINT_EXECUTION_FAILED
+
+**Type:** error
+**Code:** WEASYPRINT_EXECUTION_FAILED
+
+**ERROR:** WeasyPrint failed to generate PDF
+
+The WeasyPrint process encountered an error during PDF generation.
+
+Error: {{error}}
+
+**Suggestions:**
+- Check HTML/CSS syntax for errors
+- Verify all referenced resources (images, stylesheets) are accessible
+- Check WeasyPrint logs for detailed error information
+- Try the `printToPDF` tool for basic PDF generation with Chrome instead
 
 ---
