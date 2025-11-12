@@ -653,10 +653,10 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
 
     printToPDF: createTool(
       'Generate PDF from current page. Chrome: fast rendering for previews and simple layouts. WeasyPrint: professional quality with superior CSS Paged Media support (page-break-after, orphans, widows) for production documents and reports. Default: chrome',
-      z.discriminatedUnion('engine', [
-        // Chrome engine schema
+      z.union([
+        // Chrome engine schema (engine optional, defaults to 'chrome')
         z.object({
-          engine: z.literal('chrome').default('chrome' as const),
+          engine: z.literal('chrome').optional(),
           connectionReason: z.string().describe('Brief reason for needing this browser connection'),
           saveToDisk: z.string().optional().describe('Optional path to save PDF file. If not provided, PDF data is returned as base64.'),
           landscape: z.boolean().optional().default(false).describe('Print in landscape orientation (default: false)'),
@@ -665,7 +665,7 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
           paperWidthCm: z.number().optional().describe('Paper width in centimeters (default: 21.0 for A4)'),
           paperHeightCm: z.number().optional().describe('Paper height in centimeters (default: 29.7 for A4)'),
         }).strict(),
-        // WeasyPrint engine schema
+        // WeasyPrint engine schema (engine required)
         z.object({
           engine: z.literal('weasyprint'),
           connectionReason: z.string().describe('Brief reason for needing this browser connection'),
@@ -678,7 +678,10 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
             message: 'Timeout must be between 1000ms and 120000ms'
           }),
         }).strict(),
-      ]),
+      ]).transform((val) => ({
+        ...val,
+        engine: val.engine || 'chrome' as const
+      })),
       async (args) => {
         // Get page connection
         const resolved = await resolveConnectionFromReason(args.connectionReason);
@@ -694,14 +697,25 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
 
         // Branch based on engine
         if (args.engine === 'weasyprint') {
-          // WeasyPrint engine
+          // WeasyPrint engine - TypeScript needs help with union types
+          const wpArgs = args as {
+            engine: 'weasyprint';
+            connectionReason: string;
+            saveToDisk: string;
+            mediaType?: 'print' | 'screen';
+            baseUrl?: string;
+            stylesheets?: string[];
+            optimizeImages?: boolean;
+            timeout?: number;
+          };
+
           const result = await generatePDFWithWeasyPrint(page, {
-            saveToDisk: args.saveToDisk,
-            mediaType: args.mediaType,
-            baseUrl: args.baseUrl,
-            stylesheets: args.stylesheets,
-            optimizeImages: args.optimizeImages,
-            timeout: args.timeout,
+            saveToDisk: wpArgs.saveToDisk,
+            mediaType: wpArgs.mediaType,
+            baseUrl: wpArgs.baseUrl,
+            stylesheets: wpArgs.stylesheets,
+            optimizeImages: wpArgs.optimizeImages,
+            timeout: wpArgs.timeout,
           });
 
           if (!result.success) {
@@ -726,17 +740,28 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
           });
         }
 
-        // Chrome engine
+        // Chrome engine - TypeScript needs help with union types
+        const chromeArgs = args as {
+          engine?: 'chrome';
+          connectionReason: string;
+          saveToDisk?: string;
+          landscape?: boolean;
+          printBackground?: boolean;
+          scale?: number;
+          paperWidthCm?: number;
+          paperHeightCm?: number;
+        };
+
         const result = await executeWithPauseDetection(
           targetCdpManager,
           async () => {
             return await generatePDFWithChrome(page, targetCdpManager, {
-              saveToDisk: args.saveToDisk,
-              landscape: args.landscape,
-              printBackground: args.printBackground,
-              scale: args.scale,
-              paperWidthCm: args.paperWidthCm,
-              paperHeightCm: args.paperHeightCm,
+              saveToDisk: chromeArgs.saveToDisk,
+              landscape: chromeArgs.landscape,
+              printBackground: chromeArgs.printBackground,
+              scale: chromeArgs.scale,
+              paperWidthCm: chromeArgs.paperWidthCm,
+              paperHeightCm: chromeArgs.paperHeightCm,
             });
           },
           'printToPDF'
