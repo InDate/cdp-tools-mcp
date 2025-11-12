@@ -1223,3 +1223,36 @@ Error: {{error}}
 - Ensure the server is online
 
 ---
+
+## PDF_SAVED
+
+**Type:** success
+**Code:** PDF_SAVED
+
+PDF saved successfully to `{{filepath}}`
+File size: {{fileSize}}
+
+---
+
+## PDF_GENERATED
+
+**Type:** success
+**Code:** PDF_GENERATED
+
+PDF generated successfully
+Size: {{size}}
+
+{{note}}
+
+---
+
+## PDF_GENERATION_FAILED
+
+**Type:** error
+**Code:** PDF_GENERATION_FAILED
+
+**ERROR:** Failed to generate PDF
+
+Error: {{error}}
+
+---
