@@ -199,6 +199,15 @@ Console: ${allMessages.length} logs (${errorCount} errors, ${warnCount} warnings
           updateActiveManagers(args.connectionId);
           const connection = connectionManager.getConnection(args.connectionId);
 
+          // Sync Puppeteer page reference to match the connection's page index
+          if (connection?.puppeteerManager?.isConnected() && connection.pageIndex !== undefined) {
+            try {
+              await connection.puppeteerManager.setPage(connection.pageIndex);
+            } catch (error) {
+              // Ignore errors - page might not exist
+            }
+          }
+
           // Get current page info
           let url = 'Unknown';
           let title = 'Unknown';
