@@ -4,11 +4,13 @@
  */
 
 import { createServer, Server } from 'net';
+import { debugLog } from './debug-logger.js';
 
 export class PortReserver {
   private server: Server | null = null;
   private port: number | null = null;
   private isReserving = false;
+  private connections: Set<any> = new Set();
 
   /**
    * Reserve a port by binding a TCP socket to it
@@ -16,7 +18,7 @@ export class PortReserver {
   async reserve(port: number): Promise<void> {
     // If already reserving this port, do nothing
     if (this.port === port && this.server) {
-      console.error(`[PortReserver] Port ${port} already reserved`);
+      await debugLog('PortReserver', `Port ${port} already reserved`);
       return;
     }
 
@@ -31,6 +33,16 @@ export class PortReserver {
 
       // Handle incoming connections - respond immediately to indicate port is reserved
       this.server.on('connection', (socket) => {
+        debugLog('PortReserver', `Received connection on port ${port}, responding with 'chrome-not-running'`);
+
+        // Track this connection
+        this.connections.add(socket);
+
+        // Remove from tracking when closed
+        socket.on('close', () => {
+          this.connections.delete(socket);
+        });
+
         // Send a clear signal that this port is reserved and Chrome is not running
         socket.write('chrome-not-running\r\n');
         socket.end();
@@ -49,7 +61,7 @@ export class PortReserver {
       this.server.listen(port, '127.0.0.1', () => {
         this.port = port;
         this.isReserving = false;
-        console.error(`[PortReserver] Successfully reserved port ${port}`);
+        debugLog('PortReserver', `Successfully reserved port ${port}`);
         resolve();
       });
     });
@@ -63,13 +75,38 @@ export class PortReserver {
       return;
     }
 
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const portToRelease = this.port;
-      this.server!.close(() => {
-        console.error(`[PortReserver] Released port ${portToRelease}`);
+
+      // Destroy all active connections first to ensure server.close() completes quickly
+      debugLog('PortReserver', `Closing ${this.connections.size} active connections before release`);
+      for (const socket of this.connections) {
+        socket.destroy();
+      }
+      this.connections.clear();
+
+      // Add timeout as safety net in case close still hangs
+      const timeout = setTimeout(() => {
+        debugLog('PortReserver', `WARNING: Release timeout for port ${portToRelease}, forcing cleanup`);
         this.server = null;
         this.port = null;
         resolve();
+      }, 2000);
+
+      this.server!.close((err) => {
+        clearTimeout(timeout);
+        if (err) {
+          debugLog('PortReserver', `Error releasing port ${portToRelease}: ${err}`);
+          // Still clean up state even on error
+          this.server = null;
+          this.port = null;
+          resolve(); // Don't reject - we want to continue
+        } else {
+          debugLog('PortReserver', `Released port ${portToRelease}`);
+          this.server = null;
+          this.port = null;
+          resolve();
+        }
       });
     });
   }
