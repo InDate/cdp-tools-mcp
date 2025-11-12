@@ -8,6 +8,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { getErrorMessage } from './messages.js';
 import type { PortReserver } from './port-reserver.js';
+import { debugLog } from './debug-logger.js';
 
 export class ChromeLauncher {
   private chromeProcess: ChildProcess | null = null;
@@ -49,14 +50,14 @@ export class ChromeLauncher {
 
         if (response.ok) {
           // Chrome is ready and inspectable
-          console.error(`[ChromeLauncher] Chrome ready on port ${port} after ${i + 1} attempts`);
+          await debugLog('ChromeLauncher', `Chrome ready on port ${port} after ${i + 1} attempts`);
           return;
         }
       } catch (error) {
         // Chrome not ready yet, continue polling
         // Only log every 5 attempts to reduce noise
         if (i % 5 === 0) {
-          console.error(`[ChromeLauncher] Waiting for Chrome on port ${port} (attempt ${i + 1}/${maxAttempts})`);
+          await debugLog('ChromeLauncher', `Waiting for Chrome on port ${port} (attempt ${i + 1}/${maxAttempts}) - error: ${error}`);
         }
       }
 
@@ -73,14 +74,19 @@ export class ChromeLauncher {
    * Waits for Chrome to actually bind to the port before resolving
    */
   async launch(port: number = 9222, url?: string, portReserver?: PortReserver, headless: boolean = false): Promise<{ port: number; pid: number }> {
+    await debugLog('ChromeLauncher', `launch() called with port ${port}, portReserver=${!!portReserver}, isReserved=${portReserver?.isReserved()}`);
+
     if (this.chromeProcess) {
       throw new Error(getErrorMessage('CHROME_ALREADY_RUNNING'));
     }
 
     // Release port reservation if provided, so Chrome can bind to it
     if (portReserver && portReserver.isReserved()) {
-      console.error(`[ChromeLauncher] Releasing port ${port} for Chrome to use`);
+      await debugLog('ChromeLauncher', `Releasing port ${port} for Chrome to use`);
       await portReserver.release();
+      await debugLog('ChromeLauncher', `Port ${port} released successfully`);
+    } else {
+      await debugLog('ChromeLauncher', `NOT releasing port - portReserver=${!!portReserver}, isReserved=${portReserver?.isReserved()}`);
     }
 
     this.debugPort = port;
@@ -111,12 +117,14 @@ export class ChromeLauncher {
     }
 
     try {
+      await debugLog('ChromeLauncher', `Spawning Chrome process on port ${port}...`);
       this.chromeProcess = spawn(chromePath, args, {
         detached: true,
         stdio: 'ignore',
       });
 
       const pid = this.chromeProcess.pid;
+      await debugLog('ChromeLauncher', `Chrome process spawned with PID ${pid}`);
 
       // Handle process errors and unexpected exits
       let processExited = false;
@@ -128,9 +136,11 @@ export class ChromeLauncher {
       this.chromeProcess.once('error', exitHandler);
 
       // Wait for Chrome to actually start and bind to the port
+      await debugLog('ChromeLauncher', `Waiting for Chrome to become ready on port ${port}...`);
       try {
         await this.waitForChromeReady(port);
       } catch (waitError) {
+        await debugLog('ChromeLauncher', `waitForChromeReady failed: ${waitError}`);
         // Clean up if Chrome failed to start
         if (this.chromeProcess && !this.chromeProcess.killed) {
           this.chromeProcess.kill();
@@ -152,9 +162,10 @@ export class ChromeLauncher {
       // Unref so the process doesn't keep Node.js alive
       this.chromeProcess.unref();
 
-      console.error(`[ChromeLauncher] Chrome successfully started on port ${port} with PID ${pid}`);
+      await debugLog('ChromeLauncher', `Chrome successfully started on port ${port} with PID ${pid}`);
       return { port, pid: pid || -1 };
     } catch (error) {
+      await debugLog('ChromeLauncher', `Failed to launch Chrome: ${error}`);
       throw new Error(`Failed to launch Chrome: ${error}`);
     }
   }
