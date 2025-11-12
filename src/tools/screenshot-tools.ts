@@ -13,6 +13,72 @@ import { getConfiguredDebugPort } from '../index.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
+import { spawn } from 'child_process';
+
+// WeasyPrint availability cache
+let weasyPrintCache: { available: boolean; version?: string; error?: string; checkedAt: number } | null = null;
+const CACHE_TTL = 60000; // 1 minute
+
+/**
+ * Check if WeasyPrint is installed and available
+ */
+async function checkWeasyPrintAvailable(): Promise<{ available: boolean; version?: string; error?: string }> {
+  // Return cached result if fresh
+  if (weasyPrintCache && (Date.now() - weasyPrintCache.checkedAt) < CACHE_TTL) {
+    return { available: weasyPrintCache.available, version: weasyPrintCache.version, error: weasyPrintCache.error };
+  }
+
+  return new Promise((resolve) => {
+    const process = spawn('weasyprint', ['--version']);
+
+    let output = '';
+    let errorOutput = '';
+
+    process.stdout.on('data', (data) => {
+      output += data.toString();
+    });
+
+    process.stderr.on('data', (data) => {
+      errorOutput += data.toString();
+    });
+
+    process.on('close', (code) => {
+      if (code === 0) {
+        const version = output.trim() || errorOutput.trim(); // Version might be on stderr
+        const result = { available: true, version };
+        weasyPrintCache = { ...result, checkedAt: Date.now() };
+        resolve(result);
+      } else {
+        const result = {
+          available: false,
+          error: 'WeasyPrint not found in PATH or failed to execute'
+        };
+        weasyPrintCache = { ...result, checkedAt: Date.now() };
+        resolve(result);
+      }
+    });
+
+    process.on('error', (err) => {
+      const result = {
+        available: false,
+        error: `Failed to execute weasyprint: ${err.message}`
+      };
+      weasyPrintCache = { ...result, checkedAt: Date.now() };
+      resolve(result);
+    });
+
+    // Timeout after 5 seconds
+    setTimeout(() => {
+      process.kill();
+      const result = {
+        available: false,
+        error: 'WeasyPrint check timed out'
+      };
+      weasyPrintCache = { ...result, checkedAt: Date.now() };
+      resolve(result);
+    }, 5000);
+  });
+}
 
 export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpManager: CDPManager, connectionManager: ConnectionManager, resolveConnectionFromReason: (connectionReason: string) => Promise<any>) {
   /**
@@ -430,6 +496,154 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
           size: result.result?.size,
           note: 'PDF generated successfully. Use saveToDisk parameter to save to a file.',
         });
+      }
+    ),
+
+    printToPDFAdvanced: createTool(
+      'Generate professional PDF with WeasyPrint (superior CSS page break support for reports and documents)',
+      z.object({
+        connectionReason: z.string().describe('Brief reason for needing this browser connection (to extract HTML from current page)'),
+        saveToDisk: z.string().describe('Required path to save PDF file'),
+        mediaType: z.enum(['print', 'screen']).default('print').describe('CSS media type (default: print)'),
+        baseUrl: z.string().optional().describe('Base URL for resolving relative URLs in the HTML'),
+        stylesheets: z.array(z.string()).optional().describe('Additional CSS stylesheet paths to include'),
+        optimizeImages: z.boolean().default(true).describe('Optimize embedded images (default: true)'),
+      }).strict(),
+      async (args) => {
+        // Check if WeasyPrint is available
+        const wpCheck = await checkWeasyPrintAvailable();
+        if (!wpCheck.available) {
+          return createErrorResponse('WEASYPRINT_NOT_FOUND', {
+            error: wpCheck.error || 'WeasyPrint not found',
+            version: wpCheck.version
+          });
+        }
+
+        // Get current page connection
+        const resolved = await resolveConnectionFromReason(args.connectionReason);
+        if (!resolved) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', {
+            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
+          });
+        }
+
+        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
+        const page = targetPuppeteerManager.getPage();
+
+        try {
+          // Extract HTML from current page
+          const pageUrl = page.url();
+          const htmlContent = await page.content();
+
+          // Create temp directory
+          const tempDir = path.join(process.cwd(), '.claude', 'temp');
+          await fs.mkdir(tempDir, { recursive: true });
+
+          // Write HTML to temp file
+          const timestamp = Date.now();
+          const tempHtmlPath = path.join(tempDir, `weasyprint-${timestamp}.html`);
+          await fs.writeFile(tempHtmlPath, htmlContent, 'utf-8');
+
+          // Prepare output path
+          const outputPath = path.isAbsolute(args.saveToDisk)
+            ? args.saveToDisk
+            : path.join(process.cwd(), args.saveToDisk);
+
+          // Ensure output directory exists
+          await fs.mkdir(path.dirname(outputPath), { recursive: true });
+
+          // Build WeasyPrint command
+          const wpArgs = [tempHtmlPath, outputPath];
+
+          // Add options
+          wpArgs.push('--media-type', args.mediaType);
+
+          if (args.baseUrl) {
+            wpArgs.push('--base-url', args.baseUrl);
+          } else if (pageUrl && !pageUrl.startsWith('about:') && !pageUrl.startsWith('chrome:')) {
+            // Use page URL as base URL if available
+            wpArgs.push('--base-url', pageUrl);
+          }
+
+          if (args.stylesheets && args.stylesheets.length > 0) {
+            for (const stylesheet of args.stylesheets) {
+              wpArgs.push('--stylesheet', stylesheet);
+            }
+          }
+
+          if (args.optimizeImages) {
+            wpArgs.push('--optimize-images');
+          }
+
+          // Execute WeasyPrint
+          const result = await new Promise<{ success: boolean; error?: string }>((resolve) => {
+            const wpProcess = spawn('weasyprint', wpArgs);
+
+            let errorOutput = '';
+
+            wpProcess.stderr.on('data', (data) => {
+              errorOutput += data.toString();
+            });
+
+            wpProcess.on('close', (code) => {
+              if (code === 0) {
+                resolve({ success: true });
+              } else {
+                resolve({
+                  success: false,
+                  error: errorOutput || `WeasyPrint exited with code ${code}`
+                });
+              }
+            });
+
+            wpProcess.on('error', (err) => {
+              resolve({
+                success: false,
+                error: `Failed to execute WeasyPrint: ${err.message}`
+              });
+            });
+
+            // Timeout after 30 seconds
+            setTimeout(() => {
+              wpProcess.kill();
+              resolve({
+                success: false,
+                error: 'WeasyPrint execution timed out after 30 seconds'
+              });
+            }, 30000);
+          });
+
+          // Clean up temp file
+          try {
+            await fs.unlink(tempHtmlPath);
+          } catch (cleanupError) {
+            // Ignore cleanup errors
+          }
+
+          // Check result
+          if (!result.success) {
+            return createErrorResponse('WEASYPRINT_EXECUTION_FAILED', {
+              error: result.error || 'Unknown error'
+            });
+          }
+
+          // Get PDF file size
+          const stats = await fs.stat(outputPath);
+          const fileSizeMB = (stats.size / 1_000_000).toFixed(2);
+
+          return createSuccessResponse('PDF_SAVED', {
+            filepath: outputPath,
+            fileSize: `${fileSizeMB} MB`,
+            engine: 'weasyprint',
+            version: wpCheck.version
+          });
+
+        } catch (error: any) {
+          return createErrorResponse('PDF_GENERATION_FAILED', {
+            error: error.message,
+            engine: 'weasyprint'
+          });
+        }
       }
     ),
   };
