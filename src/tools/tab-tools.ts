@@ -60,7 +60,6 @@ export function createTabTools(
           }
 
           markdown += `### Tab: ${reference}${activeMarker}\n`;
-          markdown += `- **Connection ID:** ${conn.id}\n`;
           markdown += `- **Reference:** ${reference}\n`;
           markdown += `- **URL:** ${url}\n`;
           markdown += `- **Title:** ${title}\n`;
@@ -68,7 +67,7 @@ export function createTabTools(
           markdown += `\n`;
         }
 
-        markdown += '\n**Tip:** Use `switchTab(connectionId)` to switch to a different tab, or `createTab(reference)` to open a new one.';
+        markdown += '\n**Tip:** Use `switchTab(reference)` to switch to a different tab, or `createTab(reference)` to open a new one.';
 
         return {
           content: [{ type: 'text', text: markdown }],
@@ -79,7 +78,7 @@ export function createTabTools(
     createTab: createTool(
       'Create a new tab in the browser with a required reference name',
       z.object({
-        reference: z.string().describe('Required reference name for this tab (e.g., "agent1-search", "product-details")'),
+        reference: z.string().describe('3 descriptive words for this tab activity'),
         url: z.string().optional().describe('Optional URL to navigate to in the new tab'),
       }).strict(),
       async (args) => {
@@ -168,20 +167,29 @@ Console: ${allMessages.length} logs (${errorCount} errors, ${warnCount} warnings
     renameTab: createTool(
       'Rename/update the reference for a tab',
       z.object({
-        connectionId: z.string().describe('The connection ID of the tab to rename'),
-        newReference: z.string().describe('The new reference name for the tab'),
+        reference: z.string().describe('3 descriptive words of the tab to rename'),
+        newReference: z.string().describe('3 new descriptive words for the tab'),
       }).strict(),
       async (args) => {
-        const success = connectionManager.updateReference(args.connectionId, args.newReference);
+        // Find connection by reference
+        const connection = connectionManager.findConnectionByReference(args.reference);
+
+        if (!connection) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', {
+            reference: args.reference
+          });
+        }
+
+        const success = connectionManager.updateReference(connection.id, args.newReference);
 
         if (success) {
           return createSuccessResponse('TAB_RENAME_SUCCESS', {
-            connectionId: args.connectionId,
+            oldReference: args.reference,
             newReference: args.newReference
           });
         } else {
           return createErrorResponse('CONNECTION_NOT_FOUND', {
-            connectionId: args.connectionId
+            reference: args.reference
           });
         }
       }
@@ -190,14 +198,22 @@ Console: ${allMessages.length} logs (${errorCount} errors, ${warnCount} warnings
     switchTab: createTool(
       'Switch the active tab to a different connection',
       z.object({
-        connectionId: z.string().describe('The connection ID of the tab to switch to'),
+        reference: z.string().describe('3 descriptive words of the tab to switch to'),
       }).strict(),
       async (args) => {
-        const success = connectionManager.setActiveConnection(args.connectionId);
+        // Find connection by reference
+        const connection = connectionManager.findConnectionByReference(args.reference);
+
+        if (!connection) {
+          return createErrorResponse('CONNECTION_NOT_FOUND', {
+            reference: args.reference
+          });
+        }
+
+        const success = connectionManager.setActiveConnection(connection.id);
 
         if (success) {
-          updateActiveManagers(args.connectionId);
-          const connection = connectionManager.getConnection(args.connectionId);
+          updateActiveManagers(connection.id);
 
           // Sync Puppeteer page reference to match the connection's page index
           if (connection?.puppeteerManager?.isConnected() && connection.pageIndex !== undefined) {
@@ -211,7 +227,7 @@ Console: ${allMessages.length} logs (${errorCount} errors, ${warnCount} warnings
           // Get current page info
           let url = 'Unknown';
           let title = 'Unknown';
-          let reference = connection?.reference || 'No reference';
+          const reference = connection?.reference || 'No reference';
 
           if (connection?.puppeteerManager?.isConnected()) {
             try {
@@ -224,14 +240,13 @@ Console: ${allMessages.length} logs (${errorCount} errors, ${warnCount} warnings
           }
 
           return createSuccessResponse('TAB_SWITCH_SUCCESS', {
-            connectionId: args.connectionId,
             reference,
             url,
             title
           });
         } else {
           return createErrorResponse('CONNECTION_NOT_FOUND', {
-            connectionId: args.connectionId
+            reference: args.reference
           });
         }
       }
@@ -240,18 +255,20 @@ Console: ${allMessages.length} logs (${errorCount} errors, ${warnCount} warnings
     closeTab: createTool(
       'Close a specific tab',
       z.object({
-        connectionId: z.string().describe('The connection ID of the tab to close'),
+        reference: z.string().describe('3 descriptive words of the tab to close'),
       }).strict(),
       async (args) => {
-        const connection = connectionManager.getConnection(args.connectionId);
+        // Find connection by reference
+        const connection = connectionManager.findConnectionByReference(args.reference);
+
         if (!connection) {
           return createErrorResponse('CONNECTION_NOT_FOUND', {
-            connectionId: args.connectionId
+            reference: args.reference
           });
         }
 
         const reference = connection.reference || 'Unknown';
-        const success = await connectionManager.closeConnection(args.connectionId);
+        const success = await connectionManager.closeConnection(connection.id);
 
         if (success) {
           // Get info about new active tab
@@ -260,14 +277,12 @@ Console: ${allMessages.length} logs (${errorCount} errors, ${warnCount} warnings
           const newActiveReference = newActive?.reference || 'None';
 
           return createSuccessResponse('TAB_CLOSE_SUCCESS', {
-            closedConnectionId: args.connectionId,
             closedReference: reference,
-            newActiveConnectionId: newActiveId || 'none',
             newActiveReference
           });
         } else {
           return createErrorResponse('TAB_CLOSE_FAILED', {
-            connectionId: args.connectionId
+            reference: args.reference
           });
         }
       }

@@ -49,7 +49,7 @@ Chrome is already running. You can either:
 **Type:** success
 
 Chrome launched and debugger connected on port {{port}}
-Connection ID: {{connectionId}}, Runtime: {{runtimeType}}, PID: {{pid}}
+Reference: {{reference}}, Runtime: {{runtimeType}}, PID: {{pid}}
 Features: {{features}}
 
 ---
@@ -77,7 +77,7 @@ Chrome launched successfully but auto-connect failed: {{error}}
 **Type:** success
 
 Connected to {{runtimeType}} debugger on {{host}}:{{port}}
-Connection ID: {{connectionId}}
+Reference: {{reference}}
 Features: {{features}}
 
 ---
@@ -133,7 +133,7 @@ connectDebugger({ host: 'localhost', port: 9222 })
 
 **Type:** success
 
-Disconnected from connection {{connectionId}}
+Disconnected from connection: {{reference}}
 
 ---
 
@@ -195,7 +195,7 @@ Active debugger connections ({{totalConnections}} total)
 
 **Type:** success
 
-Switched to connection {{connectionId}}
+Switched to connection: {{reference}}
 
 ---
 
@@ -204,7 +204,7 @@ Switched to connection {{connectionId}}
 **Type:** error
 **Code:** CONNECTION_NOT_FOUND
 
-Connection {{connectionId}} not found
+Connection with reference "{{reference}}" not found
 
 **Suggestion:** Use `listConnections()` to see all available connections.
 
@@ -937,7 +937,7 @@ Common variables used across messages:
 - `{{lineNumber}}` - Line number in source code
 - `{{columnNumber}}` - Column number in source code (optional)
 - `{{breakpointId}}` - Unique breakpoint identifier
-- `{{connectionId}}` - Debugger connection identifier
+- `{{reference}}` - Connection reference name
 - `{{runtimeType}}` - 'chrome' or 'node'
 - `{{error}}` - Error message or details
 - `{{selector}}` - CSS selector string
@@ -954,12 +954,10 @@ Common variables used across messages:
 - `{{types}}` - List of storage types
 - `{{depth}}` - DOM traversal depth
 - `{{sampleOutput}}` - Example output from validation
-- `{{reference}}` - Tab reference name
 - `{{newReference}}` - New tab reference name
+- `{{oldReference}}` - Old tab reference name
 - `{{closedReference}}` - Closed tab reference
 - `{{newActiveReference}}` - New active tab reference
-- `{{newActiveConnectionId}}` - New active connection ID
-- `{{closedConnectionId}}` - Closed connection ID
 
 ---
 
@@ -971,7 +969,6 @@ Common variables used across messages:
 
 Tab created successfully!
 
-**Connection ID:** {{connectionId}}
 **Reference:** {{reference}}
 **URL:** {{url}}
 **Title:** {{title}}
@@ -997,7 +994,7 @@ Failed to create new tab: {{error}}
 
 Tab renamed successfully!
 
-**Connection ID:** {{connectionId}}
+**Old Reference:** {{oldReference}}
 **New Reference:** {{newReference}}
 
 ---
@@ -1008,7 +1005,6 @@ Tab renamed successfully!
 
 Switched to tab: {{reference}}
 
-**Connection ID:** {{connectionId}}
 **URL:** {{url}}
 **Title:** {{title}}
 
@@ -1020,8 +1016,8 @@ Switched to tab: {{reference}}
 
 Tab closed successfully!
 
-**Closed Connection:** {{closedConnectionId}} ({{closedReference}})
-**New Active Connection:** {{newActiveConnectionId}} ({{newActiveReference}})
+**Closed Tab:** {{closedReference}}
+**New Active Tab:** {{newActiveReference}}
 
 ---
 
@@ -1030,10 +1026,10 @@ Tab closed successfully!
 **Type:** error
 **Code:** TAB_CLOSE_FAILED
 
-Failed to close tab: {{connectionId}}
+Failed to close tab: {{reference}}
 
 **Suggestions:**
-- Verify the connection ID is correct using `listTabs()`
+- Verify the reference is correct using `listTabs()`
 - The tab may have already been closed
 
 ---

@@ -14,6 +14,7 @@ import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../
 // Zod schemas for storage tools
 const getCookiesSchema = z.object({
   url: z.string().optional(),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
 }).strict();
 
 const setCookieSchema = z.object({
@@ -24,32 +25,58 @@ const setCookieSchema = z.object({
   expires: z.number().optional(),
   httpOnly: z.boolean().default(false),
   secure: z.boolean().default(false),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
 }).strict();
 
 const getLocalStorageSchema = z.object({
   key: z.string().optional(),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
 }).strict();
 
 const setLocalStorageSchema = z.object({
   key: z.string(),
   value: z.string(),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
 }).strict();
 
 const clearStorageSchema = z.object({
   types: z.array(z.enum(['cookies', 'localStorage', 'sessionStorage'])).optional(),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
 }).strict();
 
-export function createStorageTools(puppeteerManager: PuppeteerManager, cdpManager: CDPManager) {
+export function createStorageTools(
+  puppeteerManager: PuppeteerManager,
+  cdpManager: CDPManager,
+  resolveConnectionFromReason?: (connectionReason: string) => Promise<{
+    connection: any;
+    cdpManager: CDPManager;
+    puppeteerManager: any;
+    consoleMonitor: any;
+    networkMonitor: any;
+  } | null>
+) {
   return {
     getCookies: createTool(
       'Get browser cookies',
       getCookiesSchema,
       async (args) => {
-        if (!puppeteerManager.isConnected()) {
+        const { connectionReason } = args;
+
+        // Resolve connection if connectionReason is provided
+        let targetPuppeteerManager = puppeteerManager;
+        if (connectionReason && resolveConnectionFromReason) {
+          const resolved = await resolveConnectionFromReason(connectionReason);
+          if (!resolved || !resolved.puppeteerManager) {
+            return createErrorResponse('PUPPETEER_NOT_CONNECTED');
+          }
+          targetPuppeteerManager = resolved.puppeteerManager;
+        }
+
+        if (!targetPuppeteerManager.isConnected()) {
           return createErrorResponse('PUPPETEER_NOT_CONNECTED');
         }
 
-        const page = puppeteerManager.getPage();
+        const page = targetPuppeteerManager.getPage();
         const cookies = args.url ? await page.cookies(args.url) : await page.cookies();
 
         const markdown = `## Browser Cookies\n\n**Count:** ${cookies.length}\n\n${formatCodeBlock(cookies)}`;
@@ -68,11 +95,23 @@ export function createStorageTools(puppeteerManager: PuppeteerManager, cdpManage
       'Set a browser cookie',
       setCookieSchema,
       async (args) => {
-        if (!puppeteerManager.isConnected()) {
+        const { connectionReason } = args;
+
+        // Resolve connection if connectionReason is provided
+        let targetPuppeteerManager = puppeteerManager;
+        if (connectionReason && resolveConnectionFromReason) {
+          const resolved = await resolveConnectionFromReason(connectionReason);
+          if (!resolved || !resolved.puppeteerManager) {
+            return createErrorResponse('PUPPETEER_NOT_CONNECTED');
+          }
+          targetPuppeteerManager = resolved.puppeteerManager;
+        }
+
+        if (!targetPuppeteerManager.isConnected()) {
           return createErrorResponse('PUPPETEER_NOT_CONNECTED');
         }
 
-        const page = puppeteerManager.getPage();
+        const page = targetPuppeteerManager.getPage();
 
         const cookie: any = {
           name: args.name,
@@ -96,14 +135,28 @@ export function createStorageTools(puppeteerManager: PuppeteerManager, cdpManage
       'Get localStorage items. Automatically handles breakpoints.',
       getLocalStorageSchema,
       async (args) => {
-        if (!puppeteerManager.isConnected()) {
+        const { connectionReason } = args;
+
+        // Resolve connection if connectionReason is provided
+        let targetPuppeteerManager = puppeteerManager;
+        let targetCdpManager = cdpManager;
+        if (connectionReason && resolveConnectionFromReason) {
+          const resolved = await resolveConnectionFromReason(connectionReason);
+          if (!resolved || !resolved.puppeteerManager) {
+            return createErrorResponse('PUPPETEER_NOT_CONNECTED');
+          }
+          targetPuppeteerManager = resolved.puppeteerManager;
+          targetCdpManager = resolved.cdpManager;
+        }
+
+        if (!targetPuppeteerManager.isConnected()) {
           return createErrorResponse('PUPPETEER_NOT_CONNECTED');
         }
 
-        const page = puppeteerManager.getPage();
+        const page = targetPuppeteerManager.getPage();
 
         const result = await executeWithPauseDetection(
-          cdpManager,
+          targetCdpManager,
           () => page.evaluate((key: string | undefined) => {
             if (key) {
               return { [key]: localStorage.getItem(key) };
@@ -137,14 +190,28 @@ export function createStorageTools(puppeteerManager: PuppeteerManager, cdpManage
       'Set a localStorage item. Automatically handles breakpoints.',
       setLocalStorageSchema,
       async (args) => {
-        if (!puppeteerManager.isConnected()) {
+        const { connectionReason } = args;
+
+        // Resolve connection if connectionReason is provided
+        let targetPuppeteerManager = puppeteerManager;
+        let targetCdpManager = cdpManager;
+        if (connectionReason && resolveConnectionFromReason) {
+          const resolved = await resolveConnectionFromReason(connectionReason);
+          if (!resolved || !resolved.puppeteerManager) {
+            return createErrorResponse('PUPPETEER_NOT_CONNECTED');
+          }
+          targetPuppeteerManager = resolved.puppeteerManager;
+          targetCdpManager = resolved.cdpManager;
+        }
+
+        if (!targetPuppeteerManager.isConnected()) {
           return createErrorResponse('PUPPETEER_NOT_CONNECTED');
         }
 
-        const page = puppeteerManager.getPage();
+        const page = targetPuppeteerManager.getPage();
 
         await executeWithPauseDetection(
-          cdpManager,
+          targetCdpManager,
           () => page.evaluate((key: string, value: string) => {
             localStorage.setItem(key, value);
           }, args.key, args.value),
@@ -162,15 +229,29 @@ export function createStorageTools(puppeteerManager: PuppeteerManager, cdpManage
       'Clear cookies and storage. Automatically handles breakpoints.',
       clearStorageSchema,
       async (args) => {
-        if (!puppeteerManager.isConnected()) {
+        const { connectionReason } = args;
+
+        // Resolve connection if connectionReason is provided
+        let targetPuppeteerManager = puppeteerManager;
+        let targetCdpManager = cdpManager;
+        if (connectionReason && resolveConnectionFromReason) {
+          const resolved = await resolveConnectionFromReason(connectionReason);
+          if (!resolved || !resolved.puppeteerManager) {
+            return createErrorResponse('PUPPETEER_NOT_CONNECTED');
+          }
+          targetPuppeteerManager = resolved.puppeteerManager;
+          targetCdpManager = resolved.cdpManager;
+        }
+
+        if (!targetPuppeteerManager.isConnected()) {
           return createErrorResponse('PUPPETEER_NOT_CONNECTED');
         }
 
-        const page = puppeteerManager.getPage();
+        const page = targetPuppeteerManager.getPage();
         const types = args.types || ['cookies', 'localStorage', 'sessionStorage'];
 
         const result = await executeWithPauseDetection(
-          cdpManager,
+          targetCdpManager,
           async () => {
             const cleared: string[] = [];
 

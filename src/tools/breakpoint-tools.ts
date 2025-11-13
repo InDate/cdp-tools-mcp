@@ -15,16 +15,21 @@ const setBreakpointSchema = z.object({
   lineNumber: z.number().describe('The line number (1-based)'),
   columnNumber: z.number().optional().describe('The column number (optional, 0-based)'),
   condition: z.string().optional().describe('Optional condition expression - breakpoint only triggers when this evaluates to true'),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs. Only needed for browser debugging, not Node.js.'),
 }).strict();
 
 const removeBreakpointSchema = z.object({
   breakpointId: z.string().describe('The breakpoint ID to remove'),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs. Only needed for browser debugging, not Node.js.'),
 }).strict();
 
-const listBreakpointsSchema = z.object({}).strict();
+const listBreakpointsSchema = z.object({
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs. Only needed for browser debugging, not Node.js.'),
+}).strict();
 
 const resetLogpointCounterSchema = z.object({
   breakpointId: z.string().describe('The logpoint breakpoint ID to reset'),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs. Only needed for browser debugging, not Node.js.'),
 }).strict();
 
 const setLogpointSchema = z.object({
@@ -36,6 +41,7 @@ const setLogpointSchema = z.object({
   includeCallStack: z.boolean().default(false).describe('Include call stack in log output (default: false)'),
   includeVariables: z.boolean().default(false).describe('Include local variables in log output (default: false)'),
   maxExecutions: z.number().int().min(1).default(20).describe('Maximum number of times this logpoint can execute before pausing (default: 20, minimum: 1). When the limit is reached, execution will pause and show captured logs with options to reset or remove the logpoint. Unlimited execution is not allowed.'),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs. Only needed for browser debugging, not Node.js.'),
 }).strict();
 
 const validateLogpointSchema = z.object({
@@ -44,23 +50,41 @@ const validateLogpointSchema = z.object({
   columnNumber: z.number().optional().describe('Optional column number (1-based). If not provided, CDP will choose the execution point.'),
   logMessage: z.string().describe('Message to log with {expression} interpolation'),
   timeout: z.number().default(2000).describe('Maximum time to wait for code execution in milliseconds (default: 2000ms)'),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs. Only needed for browser debugging, not Node.js.'),
 }).strict();
 
 export function createBreakpointTools(
   cdpManager: CDPManager,
   sourceMapHandler: SourceMapHandler,
-  logpointTracker?: LogpointExecutionTracker
+  logpointTracker?: LogpointExecutionTracker,
+  resolveConnectionFromReason?: (connectionReason: string) => Promise<{
+    connection: any;
+    cdpManager: CDPManager;
+    puppeteerManager: any;
+    consoleMonitor: any;
+    networkMonitor: any;
+  } | null>
 ) {
   return {
     setBreakpoint: createTool(
       'Set a breakpoint at a specific file and line number. Supports conditional breakpoints that only pause when a condition is true.',
       setBreakpointSchema,
       async (args) => {
-        const { url, lineNumber, columnNumber } = args;
+        const { url, lineNumber, columnNumber, connectionReason } = args;
+
+        // Resolve connection if connectionReason is provided
+        let targetCdpManager = cdpManager;
+        if (connectionReason && resolveConnectionFromReason) {
+          const resolved = await resolveConnectionFromReason(connectionReason);
+          if (!resolved) {
+            return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+          }
+          targetCdpManager = resolved.cdpManager;
+        }
 
         // Check connection and runtime type
-        const runtimeType = cdpManager.getRuntimeType();
-        const isConnected = cdpManager.isConnected();
+        const runtimeType = targetCdpManager.getRuntimeType();
+        const isConnected = targetCdpManager.isConnected();
 
         if (!isConnected) {
           return createErrorResponse('DEBUGGER_NOT_CONNECTED');
@@ -81,12 +105,12 @@ export function createBreakpointTools(
         }
 
         try {
-          const breakpoint = await cdpManager.setBreakpoint(targetUrl, targetLine, targetColumn, args.condition);
+          const breakpoint = await targetCdpManager.setBreakpoint(targetUrl, targetLine, targetColumn, args.condition);
 
           // Inject clickable console link
           const icon = args.condition ? '🔶' : '🔴';
           const label = args.condition ? 'Conditional breakpoint set at' : 'Breakpoint set at';
-          await cdpManager.injectConsoleLink(targetUrl, targetLine, `${icon} ${label}`);
+          await targetCdpManager.injectConsoleLink(targetUrl, targetLine, `${icon} ${label}`);
 
           // Return markdown-only success response
           return createSuccessResponse('BREAKPOINT_SET_SUCCESS', {
@@ -129,14 +153,24 @@ export function createBreakpointTools(
       'Remove a specific breakpoint by its ID',
       removeBreakpointSchema,
       async (args) => {
-        const { breakpointId } = args;
+        const { breakpointId, connectionReason } = args;
+
+        // Resolve connection if connectionReason is provided
+        let targetCdpManager = cdpManager;
+        if (connectionReason && resolveConnectionFromReason) {
+          const resolved = await resolveConnectionFromReason(connectionReason);
+          if (!resolved) {
+            return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+          }
+          targetCdpManager = resolved.cdpManager;
+        }
 
         // Unregister from logpoint tracker if it's a logpoint
         if (logpointTracker) {
           logpointTracker.unregisterLogpoint(breakpointId);
         }
 
-        await cdpManager.removeBreakpoint(breakpointId);
+        await targetCdpManager.removeBreakpoint(breakpointId);
 
         return createSuccessResponse('BREAKPOINT_REMOVE_SUCCESS', { breakpointId });
       }
@@ -145,9 +179,20 @@ export function createBreakpointTools(
     listBreakpoints: createTool(
       'List all active breakpoints',
       listBreakpointsSchema,
-      async () => {
-        const breakpoints = cdpManager.getBreakpoints();
-        const counts = cdpManager.getBreakpointCounts();
+      async (args) => {
+        const { connectionReason } = args;
+
+        // Resolve connection if connectionReason is provided
+        let targetCdpManager = cdpManager;
+        if (connectionReason && resolveConnectionFromReason) {
+          const resolved = await resolveConnectionFromReason(connectionReason);
+          if (!resolved) {
+            return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+          }
+          targetCdpManager = resolved.cdpManager;
+        }
+        const breakpoints = targetCdpManager.getBreakpoints();
+        const counts = targetCdpManager.getBreakpointCounts();
 
         // Build markdown response
         let markdown = `## Active Breakpoints\n\n`;
@@ -188,7 +233,17 @@ export function createBreakpointTools(
       'Reset the execution counter for a logpoint, allowing it to execute another maxExecutions times. Use this after a logpoint has reached its limit and you want to continue collecting more logs.',
       resetLogpointCounterSchema,
       async (args) => {
-        const { breakpointId } = args;
+        const { breakpointId, connectionReason } = args;
+
+        // Resolve connection if connectionReason is provided
+        let targetCdpManager = cdpManager;
+        if (connectionReason && resolveConnectionFromReason) {
+          const resolved = await resolveConnectionFromReason(connectionReason);
+          if (!resolved) {
+            return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+          }
+          targetCdpManager = resolved.cdpManager;
+        }
 
         // Reset the counter in the tracker
         if (!logpointTracker) {
@@ -208,7 +263,7 @@ export function createBreakpointTools(
         // Reset the global counter in the page context
         const logpointKey = `${metadata.url}:${metadata.lineNumber}`;
         try {
-          await cdpManager.evaluateExpression(`
+          await targetCdpManager.evaluateExpression(`
             if (typeof globalThis.__llmCdpLogpointCounters !== 'undefined') {
               globalThis.__llmCdpLogpointCounters['${logpointKey.replace(/'/g, "\\'")}'] = 0;
             }
@@ -218,7 +273,7 @@ export function createBreakpointTools(
         }
 
         // Clear the logpoint limit exceeded state in CDPManager
-        cdpManager.clearLogpointLimitExceeded();
+        targetCdpManager.clearLogpointLimitExceeded();
 
         // Build markdown response with details
         let markdown = getErrorMessage('LOGPOINT_COUNTER_RESET', {
@@ -248,7 +303,17 @@ export function createBreakpointTools(
       'Validate a logpoint expression before setting it. Tests if the expressions in the log message can be evaluated and provides helpful feedback.',
       validateLogpointSchema,
       async (args) => {
-        const { url, lineNumber, columnNumber, logMessage, timeout } = args;
+        const { url, lineNumber, columnNumber, logMessage, timeout, connectionReason } = args;
+
+        // Resolve connection if connectionReason is provided
+        let targetCdpManager = cdpManager;
+        if (connectionReason && resolveConnectionFromReason) {
+          const resolved = await resolveConnectionFromReason(connectionReason);
+          if (!resolved) {
+            return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+          }
+          targetCdpManager = resolved.cdpManager;
+        }
 
         // Parse logMessage to extract expressions
         const expressionMatches = logMessage.matchAll(/\{([^}]+)\}/g);
@@ -276,7 +341,7 @@ export function createBreakpointTools(
 
         // Set a temporary breakpoint to test the expressions
         try {
-          const tempBreakpoint = await cdpManager.setBreakpoint(url, lineNumber, columnNumber);
+          const tempBreakpoint = await targetCdpManager.setBreakpoint(url, lineNumber, columnNumber);
 
           // Get actual location from CDP (0-based)
           const actualCdpLine = tempBreakpoint.location.lineNumber;
@@ -295,9 +360,9 @@ export function createBreakpointTools(
           await new Promise(resolve => setTimeout(resolve, timeout));
 
           // Check if we're paused at the breakpoint
-          if (!cdpManager.isPaused()) {
+          if (!targetCdpManager.isPaused()) {
             // Remove temp breakpoint
-            await cdpManager.removeBreakpoint(tempBreakpoint.breakpointId);
+            await targetCdpManager.removeBreakpoint(tempBreakpoint.breakpointId);
 
             let markdown = `## Logpoint Validation\n\n`;
             markdown += `**Status:** Unknown\n`;
@@ -329,11 +394,11 @@ export function createBreakpointTools(
           const results: Array<{ expression: string; valid: boolean; value?: any; error?: string }> = [];
           let availableVariables: string[] = [];
 
-          const callFrame = cdpManager.getCallStack()?.[0];
+          const callFrame = targetCdpManager.getCallStack()?.[0];
           if (callFrame) {
             // Get available variables at this location
             try {
-              const vars = await cdpManager.getVariables(callFrame.callFrameId, false);
+              const vars = await targetCdpManager.getVariables(callFrame.callFrameId, false);
               availableVariables = vars.map((v: any) => v.name);
             } catch (err) {
               // Ignore errors getting variables
@@ -342,7 +407,7 @@ export function createBreakpointTools(
             // Evaluate each expression
             for (const expr of expressions) {
               try {
-                const value = await cdpManager.evaluateExpression(expr, callFrame.callFrameId);
+                const value = await targetCdpManager.evaluateExpression(expr, callFrame.callFrameId);
                 results.push({
                   expression: expr,
                   valid: true,
@@ -368,10 +433,10 @@ export function createBreakpointTools(
           }
 
           // Resume execution
-          await cdpManager.resume();
+          await targetCdpManager.resume();
 
           // Remove temp breakpoint
-          await cdpManager.removeBreakpoint(tempBreakpoint.breakpointId);
+          await targetCdpManager.removeBreakpoint(tempBreakpoint.breakpointId);
 
           const allValid = results.every(r => r.valid);
           const invalidExpressions = results.filter(r => !r.valid);
@@ -381,7 +446,7 @@ export function createBreakpointTools(
           try {
             const startLine = Math.max(1, actualLineUser - 1);
             const endLine = actualLineUser + 1;
-            const sourceResult = await cdpManager.getSourceCode(url, startLine, endLine);
+            const sourceResult = await targetCdpManager.getSourceCode(url, startLine, endLine);
             codeContext = sourceResult.code;
           } catch (err) {
             // Ignore errors getting code snippet
@@ -426,7 +491,7 @@ export function createBreakpointTools(
           // If validation failed, search for better locations
           if (!allValid) {
             try {
-              const suggestions = await cdpManager.findBestLogpointLocation(
+              const suggestions = await targetCdpManager.findBestLogpointLocation(
                 url,
                 lineNumber,
                 columnNumber,
@@ -469,7 +534,17 @@ export function createBreakpointTools(
       'Set a logpoint that logs without pausing execution (like Chrome DevTools Logpoints). By default, logpoints are limited to 20 executions to prevent flooding logs. When a logpoint reaches its limit, execution pauses and you must either reset the counter or remove the logpoint. Use maxExecutions parameter to adjust the limit (minimum 1, no unlimited option).',
       setLogpointSchema,
       async (args) => {
-        const { url, lineNumber, columnNumber, logMessage, condition, includeCallStack, includeVariables, maxExecutions } = args;
+        const { url, lineNumber, columnNumber, logMessage, condition, includeCallStack, includeVariables, maxExecutions, connectionReason } = args;
+
+        // Resolve connection if connectionReason is provided
+        let targetCdpManager = cdpManager;
+        if (connectionReason && resolveConnectionFromReason) {
+          const resolved = await resolveConnectionFromReason(connectionReason);
+          if (!resolved) {
+            return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+          }
+          targetCdpManager = resolved.cdpManager;
+        }
 
         // Try to map through source maps if this is a TypeScript file
         let targetUrl = url;
@@ -601,13 +676,13 @@ export function createBreakpointTools(
           logExpression = `(${condition}) && ${logExpression}`;
         }
 
-        // Use cdpManager.setBreakpoint to ensure proper state management
+        // Use targetCdpManager.setBreakpoint to ensure proper state management
         // This ensures state.breakpoints Map is updated immediately
         let breakpoint: any;
         try {
-          breakpoint = await cdpManager.setBreakpoint(
+          breakpoint = await targetCdpManager.setBreakpoint(
             targetUrl,
-            targetLine,  // cdpManager.setBreakpoint expects 1-based numbers
+            targetLine,  // targetCdpManager.setBreakpoint expects 1-based numbers
             targetColumn,
             logExpression
           );
@@ -654,7 +729,7 @@ export function createBreakpointTools(
         // If location differs AND we have expressions to validate
         if (locationDiffers && expressions.length > 0) {
           // Validate expressions at actual location
-          const validation = await cdpManager.validateLogpointAtActualLocation(
+          const validation = await targetCdpManager.validateLogpointAtActualLocation(
             targetUrl,
             actualLineUser,  // 1-based
             actualColumnUser, // 1-based
@@ -671,7 +746,7 @@ export function createBreakpointTools(
             }
 
             try {
-              await cdpManager.removeBreakpoint(breakpoint.breakpointId);
+              await targetCdpManager.removeBreakpoint(breakpoint.breakpointId);
             } catch (removeError: any) {
               // Log but continue - state might already be cleaned up
               console.error(`[llm-cdp] Warning: Failed to remove invalid logpoint: ${removeError.message}`);
@@ -680,7 +755,7 @@ export function createBreakpointTools(
             // Get code snippet at actual location (3 lines context)
             let codeContext = '';
             try {
-              const sourceCode = await cdpManager.getSourceCode(
+              const sourceCode = await targetCdpManager.getSourceCode(
                 targetUrl,
                 Math.max(1, actualLineUser - 1),  // 1 line before
                 actualLineUser + 1  // 1 line after
@@ -693,7 +768,7 @@ export function createBreakpointTools(
             // Search for better locations
             let suggestions: any[] = [];
             try {
-              suggestions = await cdpManager.findBestLogpointLocation(
+              suggestions = await targetCdpManager.findBestLogpointLocation(
                 targetUrl,
                 lineNumber,
                 columnNumber,
@@ -772,7 +847,7 @@ export function createBreakpointTools(
         }
 
         // Inject console notification
-        await cdpManager.injectConsoleLink(targetUrl, targetLine, '📝 Logpoint set at');
+        await targetCdpManager.injectConsoleLink(targetUrl, targetLine, '📝 Logpoint set at');
 
         // Parse expressions to include in the response
         const expressionMatchesForResponse = logMessage.matchAll(/\{([^}]+)\}/g);

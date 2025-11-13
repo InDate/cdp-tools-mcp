@@ -8,8 +8,10 @@ import { SourceMapHandler } from '../sourcemap-handler.js';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
 
-// Empty schema for tools with no parameters
-const emptySchema = z.object({}).strict();
+// Schema for getCallStack
+const getCallStackSchema = z.object({
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs. Only needed for browser debugging, not Node.js.'),
+}).strict();
 
 // Schema for getVariables
 const getVariablesSchema = z.object({
@@ -18,6 +20,7 @@ const getVariablesSchema = z.object({
   filter: z.string().optional().describe('Regex pattern to filter variable names (only applies when includeGlobal is true)'),
   expandObjects: z.boolean().default(true).describe('Expand object/array contents to show actual values instead of just type descriptions (default: true)'),
   maxDepth: z.number().default(2).describe('Maximum depth for object/array expansion (default: 2, prevents infinite recursion)'),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs. Only needed for browser debugging, not Node.js.'),
 }).strict();
 
 // Schema for evaluateExpression
@@ -26,6 +29,7 @@ const evaluateExpressionSchema = z.object({
   callFrameId: z.string().optional().describe('Optional call frame ID to evaluate in a specific frame context'),
   expandObjects: z.boolean().default(true).describe('Expand object/array contents in the result (default: true)'),
   maxDepth: z.number().default(2).describe('Maximum depth for object/array expansion (default: 2)'),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs. Only needed for browser debugging, not Node.js.'),
 }).strict();
 
 // Schema for searchCode
@@ -45,13 +49,35 @@ const searchFunctionsSchema = z.object({
   limit: z.number().default(50).describe('Maximum number of results to return (default: 50)'),
 }).strict();
 
-export function createInspectionTools(cdpManager: CDPManager, sourceMapHandler: SourceMapHandler) {
+export function createInspectionTools(
+  cdpManager: CDPManager,
+  sourceMapHandler: SourceMapHandler,
+  resolveConnectionFromReason?: (connectionReason: string) => Promise<{
+    connection: any;
+    cdpManager: CDPManager;
+    puppeteerManager: any;
+    consoleMonitor: any;
+    networkMonitor: any;
+  } | null>
+) {
   return {
     getCallStack: createTool(
       'Get the current call stack when paused at a breakpoint',
-      emptySchema,
-      async () => {
-        const callStack = cdpManager.getCallStack();
+      getCallStackSchema,
+      async (args) => {
+        const { connectionReason } = args;
+
+        // Resolve connection if connectionReason is provided
+        let targetCdpManager = cdpManager;
+        if (connectionReason && resolveConnectionFromReason) {
+          const resolved = await resolveConnectionFromReason(connectionReason);
+          if (!resolved) {
+            return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+          }
+          targetCdpManager = resolved.cdpManager;
+        }
+
+        const callStack = targetCdpManager.getCallStack();
 
         if (!callStack) {
           return createErrorResponse('NOT_PAUSED');
@@ -94,10 +120,20 @@ export function createInspectionTools(cdpManager: CDPManager, sourceMapHandler: 
       'Get all variables in scope for a specific call frame',
       getVariablesSchema,
       async (args) => {
-        const { callFrameId, includeGlobal, filter, expandObjects, maxDepth } = args;
+        const { callFrameId, includeGlobal, filter, expandObjects, maxDepth, connectionReason } = args;
+
+        // Resolve connection if connectionReason is provided
+        let targetCdpManager = cdpManager;
+        if (connectionReason && resolveConnectionFromReason) {
+          const resolved = await resolveConnectionFromReason(connectionReason);
+          if (!resolved) {
+            return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+          }
+          targetCdpManager = resolved.cdpManager;
+        }
 
         try {
-          const variables = await cdpManager.getVariables(callFrameId, includeGlobal, filter, expandObjects, maxDepth);
+          const variables = await targetCdpManager.getVariables(callFrameId, includeGlobal, filter, expandObjects, maxDepth);
 
           // Group variables by scope type
           const groupedVariables: Record<string, any[]> = {};
@@ -131,10 +167,20 @@ export function createInspectionTools(cdpManager: CDPManager, sourceMapHandler: 
       'Evaluate a JavaScript expression in the current context',
       evaluateExpressionSchema,
       async (args) => {
-        const { expression, callFrameId, expandObjects, maxDepth } = args;
+        const { expression, callFrameId, expandObjects, maxDepth, connectionReason } = args;
+
+        // Resolve connection if connectionReason is provided
+        let targetCdpManager = cdpManager;
+        if (connectionReason && resolveConnectionFromReason) {
+          const resolved = await resolveConnectionFromReason(connectionReason);
+          if (!resolved) {
+            return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+          }
+          targetCdpManager = resolved.cdpManager;
+        }
 
         try {
-          const result = await cdpManager.evaluateExpression(expression, callFrameId, expandObjects, maxDepth);
+          const result = await targetCdpManager.evaluateExpression(expression, callFrameId, expandObjects, maxDepth);
 
           // The manual construction in evaluateExpression was intentionally added to
           // solve a specific problem - ensuring that expression results are always visible with proper

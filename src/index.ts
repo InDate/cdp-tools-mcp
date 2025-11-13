@@ -451,10 +451,12 @@ URL: ${pageUrl}${consoleStats}`;
   connectDebugger: createTool(
     'Connect to a Chrome or Node.js debugger instance',
     z.object({
+      reference: z.string().describe('3 descriptive words describing this debugging activity'),
       host: z.string().optional().default('localhost').describe('The debugger host (default: localhost)'),
       port: z.number().optional().describe('The debugger port (optional, defaults to this session\'s auto-assigned port). Use this to connect to debuggers on different ports (e.g., Node.js on 9229, Chrome on 9222).'),
     }).strict(),
     async (args) => {
+      const reference = args.reference.toLowerCase().trim().replace(/\s+/g, '-');
       const host = args.host || 'localhost';
       const port = args.port || getConfiguredDebugPort();
       const defaultPort = getConfiguredDebugPort();
@@ -547,7 +549,7 @@ URL: ${pageUrl}${consoleStats}`;
           runtimeType === 'chrome' ? networkMonitor : undefined,
           host,
           port,
-          undefined, // reference will be set later
+          reference, // Set reference from parameter
           pageIndex
         );
 
@@ -559,7 +561,7 @@ URL: ${pageUrl}${consoleStats}`;
           runtimeType,
           host,
           port: port.toString(),
-          connectionId,
+          reference,
           features: features.join(', ')
         });
 
@@ -596,21 +598,24 @@ URL: ${pageUrl}${consoleStats}`;
   disconnectDebugger: createTool(
     'Disconnect from the debugger',
     z.object({
-      connectionId: z.string().optional().describe('Connection ID to disconnect (optional, defaults to active connection)'),
+      reference: z.string().describe('3 descriptive words of the connection to disconnect'),
     }).strict(),
     async (args) => {
-      const connectionId = args.connectionId || connectionManager.getActiveConnectionId();
+      // Find connection by reference
+      const connection = connectionManager.findConnectionByReference(args.reference);
 
-      if (!connectionId) {
-        return createErrorResponse('CONNECTION_NOT_FOUND');
+      if (!connection) {
+        return createErrorResponse('CONNECTION_NOT_FOUND', {
+          reference: args.reference
+        });
       }
 
-      const success = await connectionManager.closeConnection(connectionId);
+      const success = await connectionManager.closeConnection(connection.id);
 
       if (success) {
-        return createSuccessResponse('DEBUGGER_DISCONNECT_SUCCESS', { connectionId });
+        return createSuccessResponse('DEBUGGER_DISCONNECT_SUCCESS', { reference: args.reference });
       } else {
-        return createErrorResponse('CONNECTION_SWITCH_FAILED', { connectionId });
+        return createErrorResponse('CONNECTION_SWITCH_FAILED', { reference: args.reference });
       }
     }
   ),
@@ -640,14 +645,16 @@ URL: ${pageUrl}${consoleStats}`;
   getDebuggerStatus: createTool(
     'Get the current status of the debugger connection',
     z.object({
-      connectionId: z.string().optional().describe('Connection ID to check (optional, defaults to active connection)'),
+      reference: z.string().describe('3 descriptive words of the connection to check'),
     }).strict(),
     async (args) => {
-      const connectionId = args.connectionId;
-      const connection = connectionManager.getConnection(connectionId);
+      // Find connection by reference
+      const connection = connectionManager.findConnectionByReference(args.reference);
 
       if (!connection) {
-        return createErrorResponse('CONNECTION_NOT_FOUND');
+        return createErrorResponse('CONNECTION_NOT_FOUND', {
+          reference: args.reference
+        });
       }
 
       const cdpManager = connection.cdpManager;
@@ -662,7 +669,7 @@ URL: ${pageUrl}${consoleStats}`;
       const puppeteerConnected = puppeteerManager?.isConnected() || false;
 
       const statusData = {
-        connectionId: connection.id,
+        reference: connection.reference || 'No reference',
         connected,
         runtimeType,
         puppeteerConnected,
@@ -686,9 +693,11 @@ URL: ${pageUrl}${consoleStats}`;
     async () => {
       const connections = connectionManager.listConnections();
       const activeId = connectionManager.getActiveConnectionId();
+      const activeConnection = activeId ? connectionManager.getConnection(activeId) : null;
+      const activeReference = activeConnection?.reference || 'None';
 
       const connectionList = connections.map(conn => ({
-        id: conn.id,
+        reference: conn.reference || 'No reference',
         type: conn.type,
         host: conn.host,
         port: conn.port,
@@ -701,7 +710,7 @@ URL: ${pageUrl}${consoleStats}`;
       return createSuccessResponse('CONNECTIONS_LIST', {
         totalConnections: connections.length.toString()
       }, {
-        activeConnectionId: activeId,
+        activeReference,
         connections: connectionList,
       });
     }
@@ -710,17 +719,26 @@ URL: ${pageUrl}${consoleStats}`;
   switchConnection: createTool(
     'Switch the active debugger connection',
     z.object({
-      connectionId: z.string().describe('Connection ID to switch to'),
+      reference: z.string().describe('3 descriptive words of the connection to switch to'),
     }).strict(),
     async (args) => {
-      const success = connectionManager.setActiveConnection(args.connectionId);
+      // Find connection by reference
+      const connection = connectionManager.findConnectionByReference(args.reference);
+
+      if (!connection) {
+        return createErrorResponse('CONNECTION_NOT_FOUND', {
+          reference: args.reference
+        });
+      }
+
+      const success = connectionManager.setActiveConnection(connection.id);
 
       if (success) {
         // Update active manager references
-        updateActiveManagers(args.connectionId);
-        return createSuccessResponse('CONNECTION_SWITCH_SUCCESS', { connectionId: args.connectionId });
+        updateActiveManagers(connection.id);
+        return createSuccessResponse('CONNECTION_SWITCH_SUCCESS', { reference: args.reference });
       } else {
-        return createErrorResponse('CONNECTION_SWITCH_FAILED', { connectionId: args.connectionId });
+        return createErrorResponse('CONNECTION_SWITCH_FAILED', { reference: args.reference });
       }
     }
   ),
@@ -757,58 +775,10 @@ async function resolveConnectionFromReason(connectionReason: string): Promise<{
   // Sanitize: lowercase, trim, spaces to hyphens
   const reference = connectionReason.toLowerCase().trim().replace(/\s+/g, '-');
 
-  // Try to find existing connection by ID first
-  let connection = connectionManager.getConnection(reference);
+  // Find connection by reference only
+  const connection = connectionManager.findConnectionByReference(reference);
 
-  // If not found by ID, try to find by reference
-  if (!connection) {
-    connection = connectionManager.findConnectionByReference(reference);
-  }
-
-  // If still not found, create new tab with this reference
-  if (!connection) {
-    // Get the current browser to create tab in
-    const connections = connectionManager.listConnections();
-    const chromeConnection = connections.find(conn => conn.type === 'chrome' && conn.puppeteerManager?.isConnected());
-
-    if (!chromeConnection) {
-      // No browser available - return null so caller can show proper error
-      return null;
-    }
-
-    // Create new tab
-    const cdpManager = new CDPManager(sourceMapHandler);
-    const puppeteerManager = new PuppeteerManager();
-    const consoleMonitor = new ConsoleMonitor();
-    const networkMonitor = new NetworkMonitor();
-
-    const host = chromeConnection.host;
-    const port = chromeConnection.port;
-
-    await cdpManager.connect(host, port);
-    await puppeteerManager.connect(host, port);
-
-    const page = await puppeteerManager.newPage();
-    consoleMonitor.startMonitoring(page);
-    networkMonitor.startMonitoring(page);
-
-    const pages = await puppeteerManager.getPages();
-    const pageIndex = pages.findIndex(p => p === page);
-
-    const connectionId = connectionManager.createConnection(
-      cdpManager,
-      puppeteerManager,
-      consoleMonitor,
-      networkMonitor,
-      host,
-      port,
-      reference,
-      pageIndex
-    );
-
-    connection = connectionManager.getConnection(connectionId);
-  }
-
+  // If not found, return null to show error
   if (!connection) {
     return null;
   }
@@ -874,10 +844,10 @@ const allTools = {
   // Tab Management tools
   ...createTabTools(connectionManager, sourceMapHandler, updateActiveManagers),
   // CDP Debugging tools
-  ...createBreakpointTools(proxyCdpManager, sourceMapHandler, logpointTracker),
-  ...createExecutionTools(proxyCdpManager),
-  ...createInspectionTools(proxyCdpManager, sourceMapHandler),
-  ...createSourceTools(proxyCdpManager, sourceMapHandler),
+  ...createBreakpointTools(proxyCdpManager, sourceMapHandler, logpointTracker, resolveConnectionFromReason),
+  ...createExecutionTools(proxyCdpManager, resolveConnectionFromReason),
+  ...createInspectionTools(proxyCdpManager, sourceMapHandler, resolveConnectionFromReason),
+  ...createSourceTools(proxyCdpManager, sourceMapHandler, resolveConnectionFromReason),
   // Browser Automation tools
   ...createConsoleTools(proxyPuppeteerManager, proxyConsoleMonitor, resolveConnectionFromReason),
   ...createNetworkTools(proxyPuppeteerManager, proxyNetworkMonitor, resolveConnectionFromReason),
@@ -887,7 +857,7 @@ const allTools = {
   ...createInputTools(proxyPuppeteerManager, proxyCdpManager, connectionManager, resolveConnectionFromReason),
   ...createContentTools(proxyPuppeteerManager, proxyCdpManager, connectionManager, resolveConnectionFromReason),
   ...createModalTools(resolveConnectionFromReason),
-  ...createStorageTools(proxyPuppeteerManager, proxyCdpManager),
+  ...createStorageTools(proxyPuppeteerManager, proxyCdpManager, resolveConnectionFromReason),
   // Download tools
   ...createDownloadTools(),
 };

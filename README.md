@@ -124,25 +124,18 @@ Launch Chrome with debugging enabled automatically.
 **Returns:**
 - `port`: The debugging port
 - `pid`: Process ID of the Chrome instance
-- `connectionId`: ID of the debugger connection (if autoConnect is true)
+- `reference`: Reference name of the debugger connection (if autoConnect is true)
 
 #### `connectDebugger`
 Connect to a Chrome or Node.js debugger instance. Automatically detects runtime type and enables appropriate features.
 
 **Parameters:**
+- `reference` (string, required): 3 descriptive words for this debugging activity
 - `host` (string, optional): Debugger host (default: "localhost")
 - `port` (number, optional): Debugger port (default: auto-assigned port for this session)
 
-**Example:**
-```json
-{
-  "host": "localhost",
-  "port": 9229
-}
-```
-
 **Returns:**
-- `connectionId`: Unique identifier for this connection
+- `reference`: Reference name for this connection
 - `runtimeType`: `"chrome"`, `"node"`, or `"unknown"`
 - `features`: Array of available features for this runtime
   - Chrome: `["debugging", "browser-automation", "console-monitoring", "network-monitoring"]`
@@ -161,7 +154,7 @@ When connecting to Chrome (port 9222):
 Disconnect from a debugger connection.
 
 **Parameters:**
-- `connectionId` (string, optional): Specific connection to disconnect (defaults to active connection)
+- `reference` (string, required): 3 descriptive words of the connection to disconnect
 
 #### `loadSourceMaps`
 Load source maps from a directory (for TypeScript debugging).
@@ -180,10 +173,10 @@ Load source maps from a directory (for TypeScript debugging).
 Get current debugger connection status, including breakpoint count and loaded source maps.
 
 **Parameters:**
-- `connectionId` (string, optional): Specific connection to check (defaults to active connection)
+- `reference` (string, required): 3 descriptive words of the connection to check
 
 **Returns:**
-- `connectionId`: The connection identifier
+- `reference`: The connection reference name
 - `connected`: Whether the connection is active
 - `runtimeType`: `"chrome"`, `"node"`, or `"unknown"`
 - `paused`: Whether execution is currently paused
@@ -200,7 +193,7 @@ List all active debugger connections.
 
 **Returns:**
 Array of connections, each containing:
-- `id`: Connection identifier
+- `reference`: Connection reference name
 - `type`: Runtime type (`"chrome"`, `"node"`, or `"unknown"`)
 - `host`: Connection host
 - `port`: Connection port
@@ -214,10 +207,10 @@ Array of connections, each containing:
 {
   "success": true,
   "totalConnections": 2,
-  "activeConnectionId": "conn-1",
+  "activeReference": "debugging payment flow",
   "connections": [
     {
-      "id": "conn-1",
+      "reference": "debugging payment flow",
       "type": "chrome",
       "host": "localhost",
       "port": 9222,
@@ -227,7 +220,7 @@ Array of connections, each containing:
       "createdAt": "2025-01-05T12:00:00.000Z"
     },
     {
-      "id": "conn-2",
+      "reference": "testing api endpoints",
       "type": "node",
       "host": "localhost",
       "port": 9229,
@@ -244,16 +237,9 @@ Array of connections, each containing:
 Switch the active debugger connection.
 
 **Parameters:**
-- `connectionId` (string, required): Connection ID to switch to
+- `reference` (string, required): 3 descriptive words of the connection to switch to
 
-**Example:**
-```json
-{
-  "connectionId": "conn-2"
-}
-```
-
-**Note:** All debugging tools operate on the active connection by default. However, you can target a specific connection by passing an optional `connectionId` parameter to any tool.
+**Note:** All debugging tools operate on the active connection by default. For browser automation tools, you can target a specific connection by passing a `connectionReason` parameter to automatically create or reuse tabs.
 
 ### Breakpoint Management
 
@@ -1056,15 +1042,7 @@ Debug multiple applications simultaneously - perfect for full-stack development 
 ### How It Works
 
 1. **Connect to Multiple Debuggers:**
-   ```json
-   // Connect to Chrome browser
-   {"tool": "connectDebugger", "args": {"port": 9222}}
-   // Returns: {"connectionId": "conn-1", "runtimeType": "chrome"}
-
-   // Connect to Node.js backend
-   {"tool": "connectDebugger", "args": {"port": 9229}}
-   // Returns: {"connectionId": "conn-2", "runtimeType": "node"}
-   ```
+   Each connection requires 3 descriptive words about what you're debugging.
 
 2. **View All Connections:**
    ```json
@@ -1073,10 +1051,7 @@ Debug multiple applications simultaneously - perfect for full-stack development 
    ```
 
 3. **Switch Between Connections:**
-   ```json
-   {"tool": "switchConnection", "args": {"connectionId": "conn-1"}}
-   // All subsequent tools operate on conn-1
-   ```
+   Use the same 3 descriptive words to switch between connections.
 
 4. **Independent Debugging State:**
    - Each connection maintains its own breakpoints
@@ -1084,10 +1059,7 @@ Debug multiple applications simultaneously - perfect for full-stack development 
    - Variables and call stacks are connection-specific
 
 5. **Target Specific Connection (Advanced):**
-   ```json
-   // Most tools accept optional connectionId parameter
-   {"tool": "getDebuggerStatus", "args": {"connectionId": "conn-2"}}
-   ```
+   Browser automation tools accept connectionReason parameter with 3 descriptive words.
 
 ### Runtime Type Detection
 
@@ -1109,8 +1081,9 @@ The debugger automatically detects whether you're connected to Chrome or Node.js
 
 - First connection automatically becomes active
 - Use `listConnections()` regularly to track active connections
-- Close unused connections to free resources: `disconnectDebugger({"connectionId": "conn-X"})`
+- Close unused connections to free resources
 - Browser-only tools will return helpful errors when used on Node.js connections
+- Always use 3 descriptive words that describe the debugging activity, not the application
 
 ## TypeScript Support
 
@@ -1189,13 +1162,7 @@ The server automatically handles source maps for TypeScript debugging:
 ### **Runtime Separation**
 - **Chrome and Node.js run in separate processes** - You must connect to each separately
 - Setting a breakpoint on server code while connected to Chrome will fail (and vice versa)
-- For full-stack debugging, use multi-connection support:
-  ```json
-  {"tool": "connectDebugger", "args": {"port": 9222}}  // Chrome
-  {"tool": "connectDebugger", "args": {"port": 9229}}  // Node.js
-  {"tool": "listConnections"}  // See both connections
-  {"tool": "switchConnection", "args": {"connectionId": "conn-2"}}  // Switch between them
-  ```
+- For full-stack debugging, use multi-connection support with 3 descriptive words for each activity
 
 ### **Variable Inspection Workflow**
 - Variables can only be inspected when **execution is paused** at a breakpoint
