@@ -19,6 +19,7 @@ export interface Connection {
   host: string;
   port: number;
   createdAt: number;
+  lastActivityAt: number; // Last time this connection was used
   reference?: string; // User-provided tab reference (e.g., "agent1-wikipedia")
   pageIndex?: number; // Index of the page/tab in the browser
 }
@@ -52,6 +53,7 @@ export class ConnectionManager {
     const id = `conn-${++this.connectionCounter}`;
     const type = cdpManager.getRuntimeType();
 
+    const now = Date.now();
     const connection: Connection = {
       id,
       type,
@@ -61,7 +63,8 @@ export class ConnectionManager {
       networkMonitor,
       host,
       port,
-      createdAt: Date.now(),
+      createdAt: now,
+      lastActivityAt: now,
       reference,
       pageIndex,
     };
@@ -246,5 +249,72 @@ export class ConnectionManager {
    */
   getConnectionCount(): number {
     return this.connections.size;
+  }
+
+  /**
+   * Update the lastActivityAt timestamp for a connection
+   */
+  updateActivity(id: string): void {
+    const connection = this.connections.get(id);
+    if (connection) {
+      connection.lastActivityAt = Date.now();
+    }
+  }
+
+  /**
+   * Close connections that have been inactive for longer than the specified duration
+   * @param inactivityMs - Inactivity duration in milliseconds (default: 5 minutes)
+   * @returns Number of connections closed
+   */
+  async closeInactiveConnections(inactivityMs: number = 5 * 60 * 1000): Promise<number> {
+    const now = Date.now();
+    const connectionsToClose: string[] = [];
+
+    for (const [id, connection] of this.connections.entries()) {
+      const inactiveDuration = now - connection.lastActivityAt;
+      if (inactiveDuration > inactivityMs) {
+        connectionsToClose.push(id);
+      }
+    }
+
+    for (const id of connectionsToClose) {
+      await this.closeConnection(id);
+    }
+
+    return connectionsToClose.length;
+  }
+
+  /**
+   * Get list of inactive connections
+   * @param inactivityMs - Inactivity duration in milliseconds (default: 5 minutes)
+   * @returns Array of inactive connections with their info
+   */
+  getInactiveConnections(inactivityMs: number = 5 * 60 * 1000): Array<{
+    id: string;
+    reference?: string;
+    inactiveForMs: number;
+    createdAt: number;
+  }> {
+    const now = Date.now();
+    const inactive: Array<{
+      id: string;
+      reference?: string;
+      inactiveForMs: number;
+      createdAt: number;
+    }> = [];
+
+    for (const connection of this.connections.values()) {
+      const inactiveDuration = now - connection.lastActivityAt;
+      if (inactiveDuration > inactivityMs) {
+        inactive.push({
+          id: connection.id,
+          reference: connection.reference,
+          inactiveForMs: inactiveDuration,
+          createdAt: connection.createdAt,
+        });
+      }
+    }
+
+    return inactive;
   }
 }

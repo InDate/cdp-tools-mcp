@@ -339,8 +339,11 @@ const connectionTools = {
 
         // Format response based on whether auto-connect was used
         if (autoConnect) {
+          const connection = connectionManager.getConnection(connectionId);
+          const reference = connection?.reference || UNNAMED_CONNECTION;
+
           const message = `Chrome launched and connected
-Connection ID: ${connectionId}
+Connection Reference: ${reference}
 Title: ${title}
 URL: ${pageUrl}${consoleStats}`;
 
@@ -776,6 +779,8 @@ const updateActiveManagers = (connectionId?: string) => {
     activePuppeteerManager = connection.puppeteerManager || null;
     activeConsoleMonitor = connection.consoleMonitor || null;
     activeNetworkMonitor = connection.networkMonitor || null;
+    // Update activity timestamp whenever connection is accessed
+    connectionManager.updateActivity(connection.id);
   }
 };
 
@@ -800,6 +805,9 @@ async function resolveConnectionFromReason(connectionReason: string): Promise<{
   if (!connection) {
     return null;
   }
+
+  // Update activity timestamp when connection is accessed
+  connectionManager.updateActivity(connection.id);
 
   return {
     connection,
@@ -980,13 +988,60 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
-  // Cleanup on exit
-  process.on('SIGINT', async () => {
-    await connectionManager.closeAll();
-    sourceMapHandler.clear();
-    chromeLauncher.kill();
-    await portReserver.release();
+  // Start periodic cleanup of inactive connections (every 2 minutes)
+  const CLEANUP_INTERVAL = 2 * 60 * 1000; // 2 minutes
+  const INACTIVITY_THRESHOLD = 5 * 60 * 1000; // 5 minutes
+  const cleanupInterval = setInterval(async () => {
+    try {
+      const closedCount = await connectionManager.closeInactiveConnections(INACTIVITY_THRESHOLD);
+      if (closedCount > 0) {
+        console.error(`[llm-cdp] Closed ${closedCount} inactive connection(s)`);
+
+        // If no connections remain and Chrome is running, kill Chrome
+        if (!connectionManager.hasConnections() && chromeLauncher.isRunning()) {
+          console.error('[llm-cdp] No active connections, killing Chrome...');
+          await chromeLauncher.kill();
+        }
+      }
+    } catch (error) {
+      console.error(`[llm-cdp] Error during cleanup: ${error}`);
+    }
+  }, CLEANUP_INTERVAL);
+
+  // Cleanup function for graceful shutdown
+  let isCleaningUp = false;
+  const cleanup = async (signal: string) => {
+    if (isCleaningUp) {
+      return; // Prevent multiple cleanup calls
+    }
+    isCleaningUp = true;
+
+    console.error(`[llm-cdp] Received ${signal}, cleaning up...`);
+
+    try {
+      clearInterval(cleanupInterval); // Stop periodic cleanup
+      await connectionManager.closeAll();
+      sourceMapHandler.clear();
+      await chromeLauncher.kill();
+      await portReserver.release();
+      console.error('[llm-cdp] Cleanup complete');
+    } catch (error) {
+      console.error(`[llm-cdp] Cleanup error: ${error}`);
+    }
+
     process.exit(0);
+  };
+
+  // Handle various termination signals
+  process.on('SIGINT', () => cleanup('SIGINT'));   // Ctrl+C
+  process.on('SIGTERM', () => cleanup('SIGTERM')); // Graceful shutdown (systemd, Docker, etc.)
+  process.on('SIGHUP', () => cleanup('SIGHUP'));   // Terminal hangup
+
+  // Handle normal exit (catch-all)
+  process.on('exit', () => {
+    if (!isCleaningUp) {
+      console.error('[llm-cdp] Process exiting');
+    }
   });
 }
 

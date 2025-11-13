@@ -119,7 +119,6 @@ export class ChromeLauncher {
     try {
       await debugLog('ChromeLauncher', `Spawning Chrome process on port ${port}...`);
       this.chromeProcess = spawn(chromePath, args, {
-        detached: true,
         stdio: 'ignore',
       });
 
@@ -159,9 +158,6 @@ export class ChromeLauncher {
       this.chromeProcess.removeListener('exit', exitHandler);
       this.chromeProcess.removeListener('error', exitHandler);
 
-      // Unref so the process doesn't keep Node.js alive
-      this.chromeProcess.unref();
-
       await debugLog('ChromeLauncher', `Chrome successfully started on port ${port} with PID ${pid}`);
       return { port, pid: pid || -1 };
     } catch (error) {
@@ -186,12 +182,60 @@ export class ChromeLauncher {
 
   /**
    * Kill the Chrome process
+   * First attempts graceful shutdown with SIGTERM, then force kills with SIGKILL if needed
    */
-  kill(): void {
-    if (this.chromeProcess && !this.chromeProcess.killed) {
-      this.chromeProcess.kill();
-      this.chromeProcess = null;
+  async kill(): Promise<void> {
+    if (!this.chromeProcess || this.chromeProcess.killed) {
+      return;
     }
+
+    const pid = this.chromeProcess.pid;
+    if (!pid) {
+      this.chromeProcess = null;
+      return;
+    }
+
+    await debugLog('ChromeLauncher', `Killing Chrome process (PID: ${pid})`);
+
+    // Try graceful shutdown first (SIGTERM)
+    try {
+      this.chromeProcess.kill('SIGTERM');
+      await debugLog('ChromeLauncher', `Sent SIGTERM to Chrome (PID: ${pid})`);
+    } catch (error) {
+      await debugLog('ChromeLauncher', `Failed to send SIGTERM: ${error}`);
+    }
+
+    // Wait 500ms for graceful shutdown, then force kill if needed
+    await new Promise<void>((resolve) => {
+      const timeout = setTimeout(() => {
+        try {
+          // Check if process still exists using signal 0 (doesn't actually kill)
+          process.kill(pid, 0);
+          // Process still exists, force kill
+          debugLog('ChromeLauncher', `Chrome didn't exit gracefully, sending SIGKILL (PID: ${pid})`);
+          try {
+            this.chromeProcess?.kill('SIGKILL');
+            debugLog('ChromeLauncher', `Sent SIGKILL to Chrome (PID: ${pid})`);
+          } catch (killError) {
+            debugLog('ChromeLauncher', `Failed to send SIGKILL: ${killError}`);
+          }
+        } catch {
+          // Process already dead (signal 0 threw error)
+          debugLog('ChromeLauncher', `Chrome exited gracefully (PID: ${pid})`);
+        }
+        resolve();
+      }, 500);
+
+      // If process exits before timeout, clear the timeout
+      this.chromeProcess?.once('exit', () => {
+        clearTimeout(timeout);
+        debugLog('ChromeLauncher', `Chrome process exited (PID: ${pid})`);
+        resolve();
+      });
+    });
+
+    this.chromeProcess = null;
+    await debugLog('ChromeLauncher', `Chrome cleanup complete`);
   }
 
   /**
