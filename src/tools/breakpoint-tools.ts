@@ -15,21 +15,21 @@ const setBreakpointSchema = z.object({
   lineNumber: z.number().describe('The line number (1-based)'),
   columnNumber: z.number().optional().describe('The column number (optional, 0-based)'),
   condition: z.string().optional().describe('Optional condition expression - breakpoint only triggers when this evaluates to true'),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs. Only needed for browser debugging, not Node.js.'),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection. Only needed for browser debugging, not Node.js.'),
 }).strict();
 
 const removeBreakpointSchema = z.object({
   breakpointId: z.string().describe('The breakpoint ID to remove'),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs. Only needed for browser debugging, not Node.js.'),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection. Only needed for browser debugging, not Node.js.'),
 }).strict();
 
 const listBreakpointsSchema = z.object({
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs. Only needed for browser debugging, not Node.js.'),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection. Only needed for browser debugging, not Node.js.'),
 }).strict();
 
 const resetLogpointCounterSchema = z.object({
   breakpointId: z.string().describe('The logpoint breakpoint ID to reset'),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs. Only needed for browser debugging, not Node.js.'),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection. Only needed for browser debugging, not Node.js.'),
 }).strict();
 
 const setLogpointSchema = z.object({
@@ -41,7 +41,7 @@ const setLogpointSchema = z.object({
   includeCallStack: z.boolean().default(false).describe('Include call stack in log output (default: false)'),
   includeVariables: z.boolean().default(false).describe('Include local variables in log output (default: false)'),
   maxExecutions: z.number().int().min(1).default(20).describe('Maximum number of times this logpoint can execute before pausing (default: 20, minimum: 1). When the limit is reached, execution will pause and show captured logs with options to reset or remove the logpoint. Unlimited execution is not allowed.'),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs. Only needed for browser debugging, not Node.js.'),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection. Only needed for browser debugging, not Node.js.'),
 }).strict();
 
 const validateLogpointSchema = z.object({
@@ -50,7 +50,7 @@ const validateLogpointSchema = z.object({
   columnNumber: z.number().optional().describe('Optional column number (1-based). If not provided, CDP will choose the execution point.'),
   logMessage: z.string().describe('Message to log with {expression} interpolation'),
   timeout: z.number().default(2000).describe('Maximum time to wait for code execution in milliseconds (default: 2000ms)'),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs. Only needed for browser debugging, not Node.js.'),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection. Only needed for browser debugging, not Node.js.'),
 }).strict();
 
 export function createBreakpointTools(
@@ -77,7 +77,7 @@ export function createBreakpointTools(
         if (connectionReason && resolveConnectionFromReason) {
           const resolved = await resolveConnectionFromReason(connectionReason);
           if (!resolved) {
-            return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+            return createErrorResponse('CONNECTION_NOT_FOUND');
           }
           targetCdpManager = resolved.cdpManager;
         }
@@ -160,7 +160,7 @@ export function createBreakpointTools(
         if (connectionReason && resolveConnectionFromReason) {
           const resolved = await resolveConnectionFromReason(connectionReason);
           if (!resolved) {
-            return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+            return createErrorResponse('CONNECTION_NOT_FOUND');
           }
           targetCdpManager = resolved.cdpManager;
         }
@@ -187,7 +187,7 @@ export function createBreakpointTools(
         if (connectionReason && resolveConnectionFromReason) {
           const resolved = await resolveConnectionFromReason(connectionReason);
           if (!resolved) {
-            return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+            return createErrorResponse('CONNECTION_NOT_FOUND');
           }
           targetCdpManager = resolved.cdpManager;
         }
@@ -240,7 +240,7 @@ export function createBreakpointTools(
         if (connectionReason && resolveConnectionFromReason) {
           const resolved = await resolveConnectionFromReason(connectionReason);
           if (!resolved) {
-            return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+            return createErrorResponse('CONNECTION_NOT_FOUND');
           }
           targetCdpManager = resolved.cdpManager;
         }
@@ -310,7 +310,7 @@ export function createBreakpointTools(
         if (connectionReason && resolveConnectionFromReason) {
           const resolved = await resolveConnectionFromReason(connectionReason);
           if (!resolved) {
-            return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+            return createErrorResponse('CONNECTION_NOT_FOUND');
           }
           targetCdpManager = resolved.cdpManager;
         }
@@ -541,7 +541,7 @@ export function createBreakpointTools(
         if (connectionReason && resolveConnectionFromReason) {
           const resolved = await resolveConnectionFromReason(connectionReason);
           if (!resolved) {
-            return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+            return createErrorResponse('CONNECTION_NOT_FOUND');
           }
           targetCdpManager = resolved.cdpManager;
         }

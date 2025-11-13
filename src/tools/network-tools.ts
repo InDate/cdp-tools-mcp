@@ -17,13 +17,13 @@ const listNetworkRequestsSchema = z.object({
   resourceType: z.string().optional(),
   limit: z.number().default(100),
   offset: z.number().default(0),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
 }).strict();
 
 const getNetworkRequestSchema = z.object({
   id: z.string(),
   includeBody: z.boolean().default(false).describe('If true, saves the response body to disk and returns the file path instead of including it inline'),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
 }).strict();
 
 const searchNetworkRequestsSchema = z.object({
@@ -33,12 +33,12 @@ const searchNetworkRequestsSchema = z.object({
   statusCode: z.string().optional(),
   flags: z.string().default(''),
   limit: z.number().default(50),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
 }).strict();
 
 const setNetworkConditionsSchema = z.object({
   preset: z.enum(['offline', 'slow-3g', 'fast-3g', 'fast-4g', 'online']),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
 }).strict();
 
 const emptySchema = z.object({}).strict();

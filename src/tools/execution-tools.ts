@@ -9,7 +9,7 @@ import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../
 
 // Schema with optional connectionReason
 const executionSchema = z.object({
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs. Only needed for browser debugging, not Node.js.'),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection. Only needed for browser debugging, not Node.js.'),
 }).strict();
 
 export function createExecutionTools(
@@ -34,7 +34,7 @@ export function createExecutionTools(
         if (connectionReason && resolveConnectionFromReason) {
           const resolved = await resolveConnectionFromReason(connectionReason);
           if (!resolved) {
-            return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+            return createErrorResponse('CONNECTION_NOT_FOUND');
           }
           targetCdpManager = resolved.cdpManager;
         }
@@ -55,7 +55,7 @@ export function createExecutionTools(
         if (connectionReason && resolveConnectionFromReason) {
           const resolved = await resolveConnectionFromReason(connectionReason);
           if (!resolved) {
-            return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+            return createErrorResponse('CONNECTION_NOT_FOUND');
           }
           targetCdpManager = resolved.cdpManager;
         }
@@ -94,7 +94,7 @@ export function createExecutionTools(
         if (connectionReason && resolveConnectionFromReason) {
           const resolved = await resolveConnectionFromReason(connectionReason);
           if (!resolved) {
-            return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+            return createErrorResponse('CONNECTION_NOT_FOUND');
           }
           targetCdpManager = resolved.cdpManager;
         }
@@ -115,7 +115,7 @@ export function createExecutionTools(
         if (connectionReason && resolveConnectionFromReason) {
           const resolved = await resolveConnectionFromReason(connectionReason);
           if (!resolved) {
-            return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+            return createErrorResponse('CONNECTION_NOT_FOUND');
           }
           targetCdpManager = resolved.cdpManager;
         }
@@ -136,7 +136,7 @@ export function createExecutionTools(
         if (connectionReason && resolveConnectionFromReason) {
           const resolved = await resolveConnectionFromReason(connectionReason);
           if (!resolved) {
-            return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+            return createErrorResponse('CONNECTION_NOT_FOUND');
           }
           targetCdpManager = resolved.cdpManager;
         }

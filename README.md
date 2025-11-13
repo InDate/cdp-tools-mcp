@@ -239,7 +239,7 @@ Switch the active debugger connection.
 **Parameters:**
 - `reference` (string, required): 3 descriptive words of the connection to switch to
 
-**Note:** All debugging tools operate on the active connection by default. For browser automation tools, you can target a specific connection by passing a `connectionReason` parameter to automatically create or reuse tabs.
+**Note:** All debugging tools operate on the active connection by default. For browser automation tools, you can target a specific connection by passing a `connectionReason` parameter with 3 descriptive words.
 
 ### Breakpoint Management
 

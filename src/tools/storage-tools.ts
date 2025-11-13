@@ -14,7 +14,7 @@ import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../
 // Zod schemas for storage tools
 const getCookiesSchema = z.object({
   url: z.string().optional(),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
 }).strict();
 
 const setCookieSchema = z.object({
@@ -25,23 +25,23 @@ const setCookieSchema = z.object({
   expires: z.number().optional(),
   httpOnly: z.boolean().default(false),
   secure: z.boolean().default(false),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
 }).strict();
 
 const getLocalStorageSchema = z.object({
   key: z.string().optional(),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
 }).strict();
 
 const setLocalStorageSchema = z.object({
   key: z.string(),
   value: z.string(),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
 }).strict();
 
 const clearStorageSchema = z.object({
   types: z.array(z.enum(['cookies', 'localStorage', 'sessionStorage'])).optional(),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
 }).strict();
 
 export function createStorageTools(

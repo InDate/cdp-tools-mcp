@@ -36,13 +36,13 @@ Challenge 8 requires **both** Chrome AND Node.js connections:
    ```
    launchChrome({ port: 9222, url: "http://localhost:3000" })
    connectDebugger({ port: 9222 })
-   // Returns: connectionId: "conn-1", runtimeType: "chrome"
+   // Returns: reference: "debugging payment flow", runtimeType: "chrome"
    ```
 
 2. **Node.js connection** (server-side):
    ```
    connectDebugger({ port: 9229 })
-   // Returns: connectionId: "conn-2", runtimeType: "node"
+   // Returns: reference: "testing api endpoints", runtimeType: "node"
    ```
 
    Note: `npm run dev` automatically starts Node.js with `--inspect=9229` flag
@@ -50,8 +50,8 @@ Challenge 8 requires **both** Chrome AND Node.js connections:
 3. **Manage connections**:
    ```
    listConnections()           // See both connections
-   switchConnection({ connectionId: "conn-1" })  // Switch to Chrome
-   switchConnection({ connectionId: "conn-2" })  // Switch to Node.js
+   switchConnection({ reference: "debugging payment flow" })  // Switch to Chrome
+   switchConnection({ reference: "testing api endpoints" })  // Switch to Node.js
    ```
 
 4. **Important**: Breakpoints only work on the matching runtime:
@@ -246,8 +246,8 @@ Learn how to manage multiple debugger connections at once - essential for full-s
 - `connectDebugger` with port `9222` (Chrome) - REQUIRED
 - `connectDebugger` with port `9229` (Node.js) - REQUIRED
 - `listConnections()` to verify both connections - REQUIRED
-- `getDebuggerStatus()` to check current connection (includes `connectionId`)
-- `switchConnection` with connectionId to change active connection - REQUIRED
+- `getDebuggerStatus()` to check current connection (includes `reference`)
+- `switchConnection` with reference to change active connection - REQUIRED
 - Try setting a breakpoint on each runtime to see the difference
 
 **Step-by-Step Approach** (ALL STEPS REQUIRED):
@@ -255,14 +255,14 @@ Learn how to manage multiple debugger connections at once - essential for full-s
    ```
    connectDebugger({ port: 9222 })
    ```
-   - Verify response: `connectionId: "conn-1"`, `runtimeType: "chrome"`
+   - Verify response: `reference: "debugging payment flow"`, `runtimeType: "chrome"`
    - Check features includes: `["debugging", "browser-automation", "console-monitoring", "network-monitoring"]`
 
 2. **Connect to Node.js** server:
    ```
    connectDebugger({ port: 9229 })
    ```
-   - Verify response: `connectionId: "conn-2"`, `runtimeType: "node"`
+   - Verify response: `reference: "testing api endpoints"`, `runtimeType: "node"`
    - Check features: `["debugging"]` only (no browser automation)
    - Note: This becomes the active connection automatically
 
@@ -276,7 +276,7 @@ Learn how to manage multiple debugger connections at once - essential for full-s
 
 4. **Switch back to Chrome**:
    ```
-   switchConnection({ connectionId: "conn-1" })
+   switchConnection({ reference: "debugging payment flow" })
    ```
    - Verify active connection changed
 
@@ -289,7 +289,7 @@ Learn how to manage multiple debugger connections at once - essential for full-s
 
 6. **Switch to Node.js and try again**:
    ```
-   switchConnection({ connectionId: "conn-2" })
+   switchConnection({ reference: "testing api endpoints" })
    setBreakpoint({ url: "file:///path/to/test-app/dist/index.js", lineNumber: 50 })
    ```
    - Now it should work (or fail with different error if path is wrong)
@@ -303,7 +303,7 @@ Learn how to manage multiple debugger connections at once - essential for full-s
 - **Runtime Type Detection**: Chrome vs Node.js detected automatically
   - Chrome connections get: debugging + browser automation + console/network monitoring
   - Node.js connections get: debugging only (no DOM, screenshots, etc.)
-- **Active Connection**: Tools operate on active connection unless `connectionId` specified
+- **Active Connection**: Tools operate on active connection unless `reference` specified
 - **Connection Lifecycle**: Each connection has independent state (breakpoints, paused status, etc.)
 - **Graceful Degradation**: Browser-only tools return helpful errors for Node.js connections
 
@@ -317,7 +317,7 @@ Learn how to manage multiple debugger connections at once - essential for full-s
 1. How to debug frontend and backend simultaneously
 2. Understanding runtime type detection and feature availability
 3. Managing multiple debugger connections efficiently
-4. When to use `connectionId` parameter vs active connection
+4. When to use `reference` parameter vs active connection
 
 ---
 

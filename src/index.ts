@@ -44,6 +44,7 @@ import { readFile } from 'fs/promises';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { debugLog, enableDebugLogging, disableDebugLogging, isDebugEnabled } from './debug-logger.js';
+import { validateReference, UNNAMED_CONNECTION } from './reference-validator.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -456,7 +457,24 @@ URL: ${pageUrl}${consoleStats}`;
       port: z.number().optional().describe('The debugger port (optional, defaults to this session\'s auto-assigned port). Use this to connect to debuggers on different ports (e.g., Node.js on 9229, Chrome on 9222).'),
     }).strict(),
     async (args) => {
-      const reference = args.reference.toLowerCase().trim().replace(/\s+/g, '-');
+      // Validate reference
+      const validation = validateReference(args.reference);
+      if (!validation.valid) {
+        return createErrorResponse('INVALID_REFERENCE', {
+          error: validation.error!
+        });
+      }
+
+      // Use the sanitized reference from validation
+      const reference = validation.sanitized!;
+
+      // Check for duplicate reference
+      if (connectionManager.findConnectionByReference(reference)) {
+        return createErrorResponse('REFERENCE_IN_USE', {
+          reference
+        });
+      }
+
       const host = args.host || 'localhost';
       const port = args.port || getConfiguredDebugPort();
       const defaultPort = getConfiguredDebugPort();
@@ -669,7 +687,7 @@ URL: ${pageUrl}${consoleStats}`;
       const puppeteerConnected = puppeteerManager?.isConnected() || false;
 
       const statusData = {
-        reference: connection.reference || 'No reference',
+        reference: connection.reference || UNNAMED_CONNECTION,
         connected,
         runtimeType,
         puppeteerConnected,
@@ -694,10 +712,10 @@ URL: ${pageUrl}${consoleStats}`;
       const connections = connectionManager.listConnections();
       const activeId = connectionManager.getActiveConnectionId();
       const activeConnection = activeId ? connectionManager.getConnection(activeId) : null;
-      const activeReference = activeConnection?.reference || 'None';
+      const activeReference = activeConnection?.reference || UNNAMED_CONNECTION;
 
       const connectionList = connections.map(conn => ({
-        reference: conn.reference || 'No reference',
+        reference: conn.reference || UNNAMED_CONNECTION,
         type: conn.type,
         host: conn.host,
         port: conn.port,

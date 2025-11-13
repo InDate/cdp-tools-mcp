@@ -223,6 +223,32 @@ No active connection found
 
 ---
 
+## INVALID_REFERENCE
+
+**Type:** error
+**Code:** INVALID_REFERENCE
+
+Invalid reference: {{error}}
+
+**Requirements:**
+- Reference must be exactly 3 words
+- Words are separated by spaces
+- Reserved words cannot be used: "no reference set", "none none none", "unknown connection type", "unnamed connection default"
+- References are automatically converted to lowercase with hyphens (e.g., "Test Payment Flow" becomes "test-payment-flow")
+
+---
+
+## REFERENCE_IN_USE
+
+**Type:** error
+**Code:** REFERENCE_IN_USE
+
+Reference "{{reference}}" is already in use by another connection
+
+**Suggestion:** Choose a different 3-word reference that describes this specific debugging activity.
+
+---
+
 ## SOURCE_MAPS_LOADED
 
 **Type:** success

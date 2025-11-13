@@ -13,7 +13,7 @@ const getSourceCodeSchema = z.object({
   url: z.string().describe('The file URL or path (e.g., file:///path/to/file.js or http://localhost:3000/app.js)'),
   startLine: z.number().optional().describe('Starting line number (1-based, optional - if not provided, returns entire file)'),
   endLine: z.number().optional().describe('Ending line number (1-based, optional - if not provided with startLine, returns 10 lines)'),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs. Only needed for browser debugging, not Node.js.'),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection. Only needed for browser debugging, not Node.js.'),
 }).strict();
 
 export function createSourceTools(
@@ -39,7 +39,7 @@ export function createSourceTools(
         if (connectionReason && resolveConnectionFromReason) {
           const resolved = await resolveConnectionFromReason(connectionReason);
           if (!resolved) {
-            return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+            return createErrorResponse('CONNECTION_NOT_FOUND');
           }
           targetCdpManager = resolved.cdpManager;
         }

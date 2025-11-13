@@ -10,7 +10,7 @@ import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../
 
 // Schema for getCallStack
 const getCallStackSchema = z.object({
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs. Only needed for browser debugging, not Node.js.'),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection. Only needed for browser debugging, not Node.js.'),
 }).strict();
 
 // Schema for getVariables
@@ -20,7 +20,7 @@ const getVariablesSchema = z.object({
   filter: z.string().optional().describe('Regex pattern to filter variable names (only applies when includeGlobal is true)'),
   expandObjects: z.boolean().default(true).describe('Expand object/array contents to show actual values instead of just type descriptions (default: true)'),
   maxDepth: z.number().default(2).describe('Maximum depth for object/array expansion (default: 2, prevents infinite recursion)'),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs. Only needed for browser debugging, not Node.js.'),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection. Only needed for browser debugging, not Node.js.'),
 }).strict();
 
 // Schema for evaluateExpression
@@ -29,7 +29,7 @@ const evaluateExpressionSchema = z.object({
   callFrameId: z.string().optional().describe('Optional call frame ID to evaluate in a specific frame context'),
   expandObjects: z.boolean().default(true).describe('Expand object/array contents in the result (default: true)'),
   maxDepth: z.number().default(2).describe('Maximum depth for object/array expansion (default: 2)'),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs. Only needed for browser debugging, not Node.js.'),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection. Only needed for browser debugging, not Node.js.'),
 }).strict();
 
 // Schema for searchCode
@@ -72,7 +72,7 @@ export function createInspectionTools(
         if (connectionReason && resolveConnectionFromReason) {
           const resolved = await resolveConnectionFromReason(connectionReason);
           if (!resolved) {
-            return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+            return createErrorResponse('CONNECTION_NOT_FOUND');
           }
           targetCdpManager = resolved.cdpManager;
         }
@@ -127,7 +127,7 @@ export function createInspectionTools(
         if (connectionReason && resolveConnectionFromReason) {
           const resolved = await resolveConnectionFromReason(connectionReason);
           if (!resolved) {
-            return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+            return createErrorResponse('CONNECTION_NOT_FOUND');
           }
           targetCdpManager = resolved.cdpManager;
         }
@@ -174,7 +174,7 @@ export function createInspectionTools(
         if (connectionReason && resolveConnectionFromReason) {
           const resolved = await resolveConnectionFromReason(connectionReason);
           if (!resolved) {
-            return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+            return createErrorResponse('CONNECTION_NOT_FOUND');
           }
           targetCdpManager = resolved.cdpManager;
         }

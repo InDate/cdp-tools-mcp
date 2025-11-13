@@ -13,12 +13,12 @@ const listConsoleLogsSchema = z.object({
   type: z.string().optional(),
   limit: z.number().default(100),
   offset: z.number().default(0),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
 }).strict();
 
 const getConsoleLogSchema = z.object({
   id: z.string(),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
+  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
 }).strict();
 
 const searchConsoleLogsSchema = z.object({
@@ -26,13 +26,13 @@ const searchConsoleLogsSchema = z.object({
   type: z.string().optional(),
   flags: z.string().default(''),
   limit: z.number().default(50),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
 }).strict();
 
 const getRecentConsoleLogsSchema = z.object({
   count: z.number().default(50).describe('Number of recent messages to retrieve'),
   type: z.string().optional().describe('Optional message type filter (log, error, warn, etc.)'),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Auto-creates/reuses tabs.'),
+  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
 }).strict();
 
 const emptySchema = z.object({}).strict();

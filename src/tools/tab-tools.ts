@@ -11,6 +11,7 @@ import { NetworkMonitor } from '../network-monitor.js';
 import { SourceMapHandler } from '../sourcemap-handler.js';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
+import { validateReference, UNNAMED_CONNECTION } from '../reference-validator.js';
 
 export function createTabTools(
   connectionManager: ConnectionManager,
@@ -82,6 +83,24 @@ export function createTabTools(
         url: z.string().optional().describe('Optional URL to navigate to in the new tab'),
       }).strict(),
       async (args) => {
+        // Validate reference
+        const validation = validateReference(args.reference);
+        if (!validation.valid) {
+          return createErrorResponse('INVALID_REFERENCE', {
+            error: validation.error!
+          });
+        }
+
+        // Use the sanitized reference from validation
+        const sanitizedReference = validation.sanitized!;
+
+        // Check for duplicate reference
+        if (connectionManager.findConnectionByReference(sanitizedReference)) {
+          return createErrorResponse('REFERENCE_IN_USE', {
+            reference: sanitizedReference
+          });
+        }
+
         // Find an existing Chrome connection to get the browser
         const connections = connectionManager.listConnections();
         const chromeConnection = connections.find(conn => conn.type === 'chrome' && conn.puppeteerManager?.isConnected());
@@ -149,9 +168,7 @@ export function createTabTools(
           const markdown = `New tab created and connected - Reference: ${args.reference}
 Title: ${title}
 URL: ${url}
-Console: ${allMessages.length} logs (${errorCount} errors, ${warnCount} warnings)
-
-**TIP:** Browser tools now use \`connectionReason\` instead of connectionId. Use 3 descriptive words like "search wikipedia results" or "${args.reference}" to automatically create/reuse this tab.`;
+Console: ${allMessages.length} logs (${errorCount} errors, ${warnCount} warnings)`;
 
           return {
             content: [{ type: 'text', text: markdown }],
@@ -171,6 +188,24 @@ Console: ${allMessages.length} logs (${errorCount} errors, ${warnCount} warnings
         newReference: z.string().describe('3 new descriptive words for the tab'),
       }).strict(),
       async (args) => {
+        // Validate new reference
+        const validation = validateReference(args.newReference);
+        if (!validation.valid) {
+          return createErrorResponse('INVALID_REFERENCE', {
+            error: validation.error!
+          });
+        }
+
+        // Use the sanitized reference from validation
+        const newSanitized = validation.sanitized!;
+
+        // Check if new reference is already in use
+        if (connectionManager.findConnectionByReference(newSanitized)) {
+          return createErrorResponse('REFERENCE_IN_USE', {
+            reference: newSanitized
+          });
+        }
+
         // Find connection by reference
         const connection = connectionManager.findConnectionByReference(args.reference);
 
@@ -180,7 +215,7 @@ Console: ${allMessages.length} logs (${errorCount} errors, ${warnCount} warnings
           });
         }
 
-        const success = connectionManager.updateReference(connection.id, args.newReference);
+        const success = connectionManager.updateReference(connection.id, newSanitized);
 
         if (success) {
           return createSuccessResponse('TAB_RENAME_SUCCESS', {
@@ -227,7 +262,7 @@ Console: ${allMessages.length} logs (${errorCount} errors, ${warnCount} warnings
           // Get current page info
           let url = 'Unknown';
           let title = 'Unknown';
-          const reference = connection?.reference || 'No reference';
+          const reference = connection?.reference || UNNAMED_CONNECTION;
 
           if (connection?.puppeteerManager?.isConnected()) {
             try {
@@ -267,14 +302,14 @@ Console: ${allMessages.length} logs (${errorCount} errors, ${warnCount} warnings
           });
         }
 
-        const reference = connection.reference || 'Unknown';
+        const reference = connection.reference || UNNAMED_CONNECTION;
         const success = await connectionManager.closeConnection(connection.id);
 
         if (success) {
           // Get info about new active tab
           const newActiveId = connectionManager.getActiveConnectionId();
           const newActive = newActiveId ? connectionManager.getConnection(newActiveId) : null;
-          const newActiveReference = newActive?.reference || 'None';
+          const newActiveReference = newActive?.reference || UNNAMED_CONNECTION;
 
           return createSuccessResponse('TAB_CLOSE_SUCCESS', {
             closedReference: reference,
