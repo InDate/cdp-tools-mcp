@@ -2,7 +2,7 @@
 
 ## Overview
 
-The llm-cdp debugger uses a centralized message system to provide consistent, markdown-formatted responses to all tool calls. This guide explains how to use the system and when to use different patterns.
+The cdp-tools debugger uses a centralized message system to provide consistent, markdown-formatted responses to all tool calls. This guide explains how to use the system and when to use different patterns.
 
 ## Architecture
 

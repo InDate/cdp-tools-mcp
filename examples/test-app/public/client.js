@@ -214,7 +214,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setupEventListeners();
 
   // Trigger some initial console messages
-  console.log('Testing LLM-CDP Debugger');
+  console.log('Testing cdp-tools Debugger');
   console.warn('This is a warning message');
   console.error('This is an error message for testing');
 });

@@ -1,6 +1,6 @@
-# LLM-CDP Debugger Test Application
+# cdp-tools-mcp Test Application
 
-This is a test application with intentional bugs designed to validate the LLM-CDP debugger's capabilities.
+This is a test application with intentional bugs designed to validate cdp-tools-mcp's debugging capabilities.
 
 ## Setup
 

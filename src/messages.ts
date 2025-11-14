@@ -1,5 +1,5 @@
 /**
- * Message template system for llm-cdp
+ * Message template system for cdp-tools
  *
  * Loads and formats user-facing messages from docs/messages.md
  */
@@ -38,7 +38,7 @@ class MessageManager {
       this.parseMessages(content);
       this.loaded = true;
     } catch (error) {
-      console.error('[llm-cdp] Warning: Failed to load messages.md, using fallback messages:', error);
+      console.error('[cdp-tools] Warning: Failed to load messages.md, using fallback messages:', error);
       this.loadFallbackMessages();
     }
   }
@@ -180,7 +180,7 @@ class MessageManager {
 
     const template = this.messages.get(id);
     if (!template) {
-      console.error(`[llm-cdp] Warning: Message template '${id}' not found`);
+      console.error(`[cdp-tools] Warning: Message template '${id}' not found`);
       return `Message not found: ${id}`;
     }
 

@@ -1,7 +1,7 @@
 {
-  "name": "llm-cdp-test-app",
+  "name": "cdp-tools-test-app",
   "version": "1.0.0",
-  "description": "Test application for debugging with LLM-CDP debugger",
+  "description": "Test application for debugging with cdp-tools debugger",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {

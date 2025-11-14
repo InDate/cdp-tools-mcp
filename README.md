@@ -1,6 +1,135 @@
-# LLM CDP Debugger
+# cdp-tools-mcp
 
-An MCP (Model Context Protocol) server that enables LLMs to debug applications using the Chrome DevTools Protocol (CDP). This allows LLMs to set breakpoints, inspect variables, step through code, and more - providing runtime debugging capabilities instead of just static analysis.
+[![npm version](https://img.shields.io/npm/v/cdp-tools-mcp.svg)](https://www.npmjs.com/package/cdp-tools-mcp)
+[![license](https://img.shields.io/npm/l/cdp-tools-mcp.svg)](https://github.com/InDate/cdp-tools-mcp/blob/main/LICENSE)
+
+> Enable AI assistants like Claude to debug your JavaScript/TypeScript applications in real-time using Chrome DevTools Protocol
+
+## What is this?
+
+An MCP (Model Context Protocol) server that gives AI assistants the ability to:
+- 🐛 **Set breakpoints** and step through your code
+- 🔍 **Inspect variables** and call stacks at runtime
+- 📊 **Monitor console logs** and network requests
+- 🌐 **Automate browser interactions** for testing
+- 🔄 **Debug both Chrome and Node.js** applications simultaneously
+- 🤖 **Multi-agent support**: Nested Claude agents can each open their own tabs within the same browser
+
+**Perfect for:** Debugging complex issues with AI assistance, automated testing, runtime code analysis, and understanding unfamiliar codebases.
+
+## Why use this?
+
+Instead of just analyzing static code, AI assistants can now:
+- Debug running applications in real-time
+- Observe actual runtime behavior and state
+- Test and validate fixes immediately
+- Automate browser interactions for testing
+- Provide insights based on live execution data
+
+## How is this different from Chrome DevTools MCP?
+
+There are multiple MCP servers that work with Chrome DevTools Protocol. Here's how `cdp-tools-mcp` differs from the official [Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp):
+
+### cdp-tools-mcp (This Project)
+**Focus:** Runtime debugging and multi-runtime support
+
+**Key Strengths:**
+- ✅ **Breakpoint debugging**: Set breakpoints, step through code, inspect variables at runtime
+- ✅ **Node.js debugging**: Debug backend Node.js applications, not just browsers
+- ✅ **Multi-connection support**: Debug Chrome and Node.js simultaneously
+- ✅ **Logpoints**: Add logging without modifying source code
+- ✅ **Source map support**: Debug TypeScript with automatic mapping
+- ✅ **Multi-agent tab management**: Nested agents can each manage their own browser tabs
+- ✅ **Conditional breakpoints**: Pause only when specific conditions are met
+
+**Best for:** Backend debugging, full-stack debugging, understanding code execution flow, debugging TypeScript applications
+
+### Chrome DevTools MCP (Official)
+**Focus:** Browser automation and performance analysis
+
+**Key Strengths:**
+- ✅ **Performance tracing**: Record and analyze performance traces with DevTools insights
+- ✅ **Advanced automation**: Built on Puppeteer with automatic waiting
+- ✅ **Form handling**: Dedicated tools for filling forms and handling dialogs
+- ✅ **Device emulation**: Emulate different devices and screen sizes
+- ✅ **Comprehensive browser testing**: Full suite of browser automation tools
+
+**Best for:** Performance optimization, browser testing, UI automation, web development workflows
+
+### Which Should You Use?
+
+- **Use cdp-tools-mcp** if you need to debug running code with breakpoints, inspect variables, or debug Node.js applications
+- **Use Chrome DevTools MCP** if you need performance analysis, advanced browser automation, or device emulation
+- **Use both together** for comprehensive debugging and testing workflows (they can coexist in your MCP configuration)
+
+## Installation
+
+### For Claude Desktop Users
+
+**1. Install the package:**
+
+```bash
+npm install -g cdp-tools-mcp
+```
+
+**2. Configure Claude Desktop:**
+
+Add to your Claude Desktop config file:
+
+- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+- **Linux**: `~/.config/Claude/claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "cdp-tools": {
+      "command": "npx",
+      "args": ["-y", "cdp-tools-mcp"]
+    }
+  }
+}
+```
+
+**3. Restart Claude Desktop**
+
+**4. Start debugging!** Ask Claude to help debug your application.
+
+### For Other MCP Clients
+
+```bash
+npx cdp-tools-mcp
+```
+
+The server uses stdio transport and can be connected to by any MCP-compatible client.
+
+### Installation from Source
+
+```bash
+git clone https://github.com/InDate/cdp-tools-mcp.git
+cd cdp-tools-mcp
+npm install
+npm run build
+npm start
+```
+
+## Try It Out
+
+Want to test drive cdp-tools-mcp? We've included example applications to help you get started:
+
+### 🎯 Test Application (8 Debug Challenges)
+A full-stack TypeScript application with intentional bugs designed to showcase some debugging features. Includes 8 challenges covering:
+- DOM manipulation bugs
+- Network request issues
+- Variable inspection and breakpoints
+- Console error tracking
+- localStorage debugging
+- Performance analysis
+- Logpoints demonstration
+- Multi-connection debugging (Chrome + Node.js)
+
+**[View Test App →](./examples/test-app/README.md)**
+
 
 ## Features
 
@@ -19,17 +148,7 @@ An MCP (Model Context Protocol) server that enables LLMs to debug applications u
 - **Console Monitoring**: Track console messages with deep object serialization
 - **Network Monitoring**: Capture and inspect HTTP requests/responses
 - **Storage Access**: Inspect and modify localStorage, sessionStorage, cookies
-
-## Installation
-
-```bash
-claude mcp add --transport stdio node /Volumes/Application Data/Code/llm-cdp/build/index.js
-```
-
-```bash
-npm install
-npm run build
-```
+- **Multi-Agent Tab Management**: Nested Claude agents can each create and manage their own browser tabs within the same Chrome instance, enabling parallel testing and debugging workflows
 
 ## Usage
 
@@ -55,16 +174,16 @@ Each MCP server instance automatically uses a unique debugging port to prevent c
 ```json
 {
   "mcpServers": {
-    "llm-cdp-session-1": {
+    "cdp-tools-session-1": {
       "command": "node",
-      "args": ["/path/to/llm-cdp/build/index.js"],
+      "args": ["/path/to/cdp-tools/build/index.js"],
       "env": {
         "MCP_DEBUG_PORT": "9222"
       }
     },
-    "llm-cdp-session-2": {
+    "cdp-tools-session-2": {
       "command": "node",
-      "args": ["/path/to/llm-cdp/build/index.js"],
+      "args": ["/path/to/cdp-tools/build/index.js"],
       "env": {
         "MCP_DEBUG_PORT": "9223"
       }
@@ -80,7 +199,7 @@ Each MCP server instance automatically uses a unique debugging port to prevent c
 3. Chrome instances launched via `launchChrome()` use the session's assigned port
 4. Sessions remain isolated - no shared console logs, network requests, or breakpoints
 
-**Note:** The server logs its assigned port to stderr on startup: `[llm-cdp] Using debug port: 9222`
+**Note:** The server logs its assigned port to stderr on startup: `[cdp-tools] Using debug port: 9222`
 
 ### Launching a Debuggable Target
 

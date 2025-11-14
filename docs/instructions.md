@@ -1,4 +1,4 @@
-# LLM-CDP Debugger Usage Guidelines
+# cdp-tools Debugger Usage Guidelines
 
 This MCP server provides Chrome DevTools Protocol (CDP) debugging capabilities for JavaScript/TypeScript applications running in Chrome, Node.js, or other CDP-compatible environments.
 

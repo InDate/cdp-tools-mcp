@@ -1,5 +1,5 @@
 /**
- * Test Application for LLM-CDP Debugger
+ * Test Application for cdp-tools Debugger
  * This application contains intentional bugs for debugging challenges
  */
 import express from 'express';

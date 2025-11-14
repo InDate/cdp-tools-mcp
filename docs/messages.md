@@ -1,6 +1,6 @@
-# LLM-CDP Message Templates
+# cdp-tools Message Templates
 
-This file contains all user-facing messages for the llm-cdp debugger. Messages use markdown formatting and support variable interpolation using `{{variable}}` syntax.
+This file contains all user-facing messages for the cdp-tools debugger. Messages use markdown formatting and support variable interpolation using `{{variable}}` syntax.
 
 ## Template Usage Status
 

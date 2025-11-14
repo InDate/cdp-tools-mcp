@@ -59,14 +59,14 @@ async function findAvailablePort(startPort: number): Promise<number> {
     // Explicitly bind to IPv4 localhost to match Chrome's behavior
     server.listen(startPort, '127.0.0.1', () => {
       const port = (server.address() as any).port;
-      console.error(`[llm-cdp] findAvailablePort: Port ${port} is available`);
+      console.error(`[cdp-tools] findAvailablePort: Port ${port} is available`);
       server.close(() => resolve(port));
     });
 
     server.on('error', (err: any) => {
       if (err.code === 'EADDRINUSE') {
         // Port in use, try next one
-        console.error(`[llm-cdp] findAvailablePort: Port ${startPort} is in use, trying ${startPort + 1}`);
+        console.error(`[cdp-tools] findAvailablePort: Port ${startPort} is in use, trying ${startPort + 1}`);
         resolve(findAvailablePort(startPort + 1));
       } else {
         reject(err);
@@ -120,7 +120,7 @@ async function loadInstructions(): Promise<string | undefined> {
     const instructionsPath = join(__dirname, '..', 'docs', 'instructions.md');
     return await readFile(instructionsPath, 'utf-8');
   } catch (error) {
-    console.error('[llm-cdp] Failed to load instructions file:', error instanceof Error ? error.message : error);
+    console.error('[cdp-tools] Failed to load instructions file:', error instanceof Error ? error.message : error);
     return undefined;
   }
 }
@@ -140,7 +140,7 @@ async function createMCPServer(): Promise<Server> {
 
   return new Server(
     {
-      name: 'llm-cdp-debugger',
+      name: 'cdp-tools-debugger',
       version: '0.1.0',
     },
     {
@@ -289,7 +289,7 @@ const connectionTools = {
                   await page.reload({ waitUntil: 'load', timeout: 5000 });
                   await new Promise(resolve => setTimeout(resolve, 500));
                 } catch (reloadError: any) {
-                  console.error(`[llm-cdp] Warning: Page reload failed: ${reloadError.message}`);
+                  console.error(`[cdp-tools] Warning: Page reload failed: ${reloadError.message}`);
                 }
               }
             }
@@ -374,15 +374,15 @@ URL: ${pageUrl}${consoleStats}`;
         const connectionsToClose = connectionManager.getConnectionsForBrowser('localhost', port);
         for (const conn of connectionsToClose) {
           await connectionManager.closeConnection(conn.id);
-          console.error(`[llm-cdp] Closed connection ${conn.id} after killing Chrome`);
+          console.error(`[cdp-tools] Closed connection ${conn.id} after killing Chrome`);
         }
 
         // Re-reserve the port immediately after killing Chrome
         try {
           await portReserver.reserve(port);
-          console.error(`[llm-cdp] Re-reserved port ${port} after killing Chrome`);
+          console.error(`[cdp-tools] Re-reserved port ${port} after killing Chrome`);
         } catch (reserveError) {
-          console.error(`[llm-cdp] Warning: Failed to re-reserve port ${port}: ${reserveError}`);
+          console.error(`[cdp-tools] Warning: Failed to re-reserve port ${port}: ${reserveError}`);
         }
 
         return createSuccessResponse('CHROME_KILLED');
@@ -547,7 +547,7 @@ URL: ${pageUrl}${consoleStats}`;
               await new Promise(resolve => setTimeout(resolve, 500));
             } catch (reloadError: any) {
               // Log warning but don't fail - page might already be loaded
-              console.error(`[llm-cdp] Warning: Page reload failed: ${reloadError.message}`);
+              console.error(`[cdp-tools] Warning: Page reload failed: ${reloadError.message}`);
             }
           }
 
@@ -972,9 +972,9 @@ async function main() {
   // Reserve the port by binding a socket to it
   try {
     await portReserver.reserve(RESERVED_PORT);
-    console.error(`[llm-cdp] Reserved debug port: ${RESERVED_PORT}`);
+    console.error(`[cdp-tools] Reserved debug port: ${RESERVED_PORT}`);
   } catch (error) {
-    console.error(`[llm-cdp] Failed to reserve port ${RESERVED_PORT}: ${error}`);
+    console.error(`[cdp-tools] Failed to reserve port ${RESERVED_PORT}: ${error}`);
     process.exit(1);
   }
 
@@ -995,16 +995,16 @@ async function main() {
     try {
       const closedCount = await connectionManager.closeInactiveConnections(INACTIVITY_THRESHOLD);
       if (closedCount > 0) {
-        console.error(`[llm-cdp] Closed ${closedCount} inactive connection(s)`);
+        console.error(`[cdp-tools] Closed ${closedCount} inactive connection(s)`);
 
         // If no connections remain and Chrome is running, kill Chrome
         if (!connectionManager.hasConnections() && chromeLauncher.isRunning()) {
-          console.error('[llm-cdp] No active connections, killing Chrome...');
+          console.error('[cdp-tools] No active connections, killing Chrome...');
           await chromeLauncher.kill();
         }
       }
     } catch (error) {
-      console.error(`[llm-cdp] Error during cleanup: ${error}`);
+      console.error(`[cdp-tools] Error during cleanup: ${error}`);
     }
   }, CLEANUP_INTERVAL);
 
@@ -1016,7 +1016,7 @@ async function main() {
     }
     isCleaningUp = true;
 
-    console.error(`[llm-cdp] Received ${signal}, cleaning up...`);
+    console.error(`[cdp-tools] Received ${signal}, cleaning up...`);
 
     try {
       clearInterval(cleanupInterval); // Stop periodic cleanup
@@ -1024,9 +1024,9 @@ async function main() {
       sourceMapHandler.clear();
       await chromeLauncher.kill();
       await portReserver.release();
-      console.error('[llm-cdp] Cleanup complete');
+      console.error('[cdp-tools] Cleanup complete');
     } catch (error) {
-      console.error(`[llm-cdp] Cleanup error: ${error}`);
+      console.error(`[cdp-tools] Cleanup error: ${error}`);
     }
 
     process.exit(0);
@@ -1040,7 +1040,7 @@ async function main() {
   // Handle normal exit (catch-all)
   process.on('exit', () => {
     if (!isCleaningUp) {
-      console.error('[llm-cdp] Process exiting');
+      console.error('[cdp-tools] Process exiting');
     }
   });
 }
