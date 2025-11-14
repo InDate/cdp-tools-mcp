@@ -5,6 +5,8 @@
 
 > Enable AI assistants like Claude to debug your JavaScript/TypeScript applications in real-time using Chrome DevTools Protocol
 
+```claude mcp add --transport stdio cdp-tools npx cdp-tools-mcp ```
+
 ## What is this?
 
 An MCP (Model Context Protocol) server that gives AI assistants the ability to:
@@ -62,17 +64,13 @@ There are multiple MCP servers that work with Chrome DevTools Protocol. Here's h
 - **Use Chrome DevTools MCP** if you need performance analysis, advanced browser automation, or device emulation
 - **Use both together** for comprehensive debugging and testing workflows (they can coexist in your MCP configuration)
 
-## Installation
+## To Get Started
 
-### For Claude Desktop Users
+### Claude Code CLI 
 
-**1. Install the package:**
+```claude mcp add --transport stdio cdp-tools npx cdp-tools-mcp ```
 
-```bash
-npm install -g cdp-tools-mcp
-```
-
-**2. Configure Claude Desktop:**
+### Claude Desktop
 
 Add to your Claude Desktop config file:
 
@@ -91,15 +89,7 @@ Add to your Claude Desktop config file:
 }
 ```
 
-**3. Restart Claude Desktop**
-
-**4. Start debugging!** Ask Claude to help debug your application.
-
-### For Other MCP Clients
-
-```bash
-npx cdp-tools-mcp
-```
+Restart the program and start debugging! Ask Claude to help debug your application.
 
 The server uses stdio transport and can be connected to by any MCP-compatible client.
 
@@ -152,14 +142,6 @@ A full-stack TypeScript application with intentional bugs designed to showcase s
 
 ## Usage
 
-### Starting the MCP Server
-
-```bash
-npm start
-```
-
-The server uses stdio transport and can be connected to by any MCP-compatible client.
-
 ### Multi-Session Support
 
 Each MCP server instance automatically uses a unique debugging port to prevent conflicts when running multiple LLM sessions simultaneously.
@@ -167,37 +149,13 @@ Each MCP server instance automatically uses a unique debugging port to prevent c
 **Port Configuration:**
 
 - **Auto-Assignment (Default)**: The server automatically finds an available port starting from 9222
-- **Manual Configuration**: Set the `MCP_DEBUG_PORT` environment variable to specify a port
-
-**Example with Claude Code MCP configuration:**
-
-```json
-{
-  "mcpServers": {
-    "cdp-tools-session-1": {
-      "command": "node",
-      "args": ["/path/to/cdp-tools/build/index.js"],
-      "env": {
-        "MCP_DEBUG_PORT": "9222"
-      }
-    },
-    "cdp-tools-session-2": {
-      "command": "node",
-      "args": ["/path/to/cdp-tools/build/index.js"],
-      "env": {
-        "MCP_DEBUG_PORT": "9223"
-      }
-    }
-  }
-}
-```
 
 **How it works:**
 
 1. Each LLM session spawns its own MCP server process
-2. Each server instance gets a unique debugging port (via `MCP_DEBUG_PORT` or auto-assignment)
+2. Each server instance gets a unique debugging port
 3. Chrome instances launched via `launchChrome()` use the session's assigned port
-4. Sessions remain isolated - no shared console logs, network requests, or breakpoints
+4. Sessions remain isolated - no shared console logs, network requests, or breakpoints (unless you want it too)
 
 **Note:** The server logs its assigned port to stderr on startup: `[cdp-tools] Using debug port: 9222`
 
@@ -648,7 +606,7 @@ Only log when a condition is met:
 }
 ```
 
-#### `validateLogpoint` **NEW!**
+#### `validateLogpoint`
 Validate a logpoint expression before setting it. Tests if the expressions in the log message can be evaluated and provides comprehensive feedback including actual location, code context, and alternative suggestions.
 
 **Parameters:**
