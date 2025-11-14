@@ -7,3 +7,4 @@ build/
 .claude/transcripts/*
 .claude/screenshots/*
 */__pycache__/*
+dev-notes/*

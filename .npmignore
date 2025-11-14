@@ -1,0 +1,55 @@
+# Source files (only ship built files)
+src/
+tsconfig.json
+vitest.config.ts
+
+# Development files
+dev-notes/
+examples/
+scripts/
+test-app/
+docs/
+
+# Test files
+*.test.ts
+*.spec.ts
+__tests__/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Git files
+.git/
+.gitignore
+.gitattributes
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# Documentation (keep README.md)
+CONTRIBUTING.md
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Build artifacts
+*.tsbuildinfo
+coverage/
+
+# Claude/AI artifacts
+.claude/

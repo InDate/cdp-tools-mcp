@@ -1,26 +1,56 @@
 {
-  "name": "llm-cdp-debugger",
+  "name": "cdp-tools-mcp",
   "version": "0.1.0",
-  "description": "MCP server for Chrome DevTools Protocol debugging with LLMs",
+  "description": "MCP server that connects AI assistants to Chrome DevTools Protocol for runtime debugging - set breakpoints, inspect variables, monitor network traffic, and automate browser interactions",
   "type": "module",
   "main": "build/index.js",
+  "bin": {
+    "cdp-tools-mcp": "build/index.js"
+  },
   "scripts": {
     "build": "tsc",
+    "build:verify": "npm run build && node scripts/verify-mcp.js",
     "dev": "tsc --watch",
     "start": "node build/index.js",
     "test": "vitest",
     "test:ui": "vitest --ui",
     "test:run": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "prepublishOnly": "npm run build:verify"
   },
   "keywords": [
     "mcp",
+    "model-context-protocol",
     "chrome-devtools-protocol",
+    "cdp",
     "debugging",
-    "llm"
+    "debugger",
+    "llm",
+    "ai",
+    "breakpoints",
+    "browser-automation",
+    "chrome",
+    "node-debugging",
+    "typescript"
   ],
-  "author": "",
+  "author": "CDP Tools MCP Contributors",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/InDate/cdp-tools-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/InDate/cdp-tools-mcp/issues"
+  },
+  "homepage": "https://github.com/InDate/cdp-tools-mcp#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "build/",
+    "README.md",
+    "LICENSE"
+  ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",
     "chrome-remote-interface": "^0.33.2",
