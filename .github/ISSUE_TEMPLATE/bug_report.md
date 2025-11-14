@@ -24,7 +24,7 @@ What actually happened.
 - Node.js version: [e.g., 18.0.0]
 - OS: [e.g., macOS 14.0]
 - Chrome version (if applicable): [e.g., 120.0.0]
-- LLM CDP Debugger version: [e.g., 0.1.0]
+- cdp-tools-mcp version: [e.g., 0.1.0]
 
 ## Error Messages/Logs
 ```

@@ -1,6 +1,6 @@
 # Examples
 
-This directory contains example files for testing and demonstrating the LLM CDP Debugger.
+This directory contains an example file for testing and demonstrating cdp-tools-mcp.
 
 ## Files
 

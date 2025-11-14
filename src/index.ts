@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 /**
- * LLM CDP Debugger MCP Server
- * Provides Chrome DevTools Protocol debugging capabilities to LLMs
+ * cdp-tools-mcp
+ * MCP server providing Chrome DevTools Protocol debugging capabilities to AI assistants
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
