@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/indate-cdp-tools-mcp-badge.png)](https://mseep.ai/app/indate-cdp-tools-mcp)
+
 # cdp-tools-mcp
 
 [![npm version](https://img.shields.io/npm/v/cdp-tools-mcp.svg)](https://www.npmjs.com/package/cdp-tools-mcp)
