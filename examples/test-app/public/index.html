@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LLM-CDP Debugger Test App</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      max-width: 800px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    h1 {
+      color: #333;
+      border-bottom: 3px solid #007acc;
+      padding-bottom: 10px;
+    }
+    .section {
+      background: white;
+      padding: 20px;
+      margin: 20px 0;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    button {
+      background: #007acc;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      margin: 5px;
+      font-size: 14px;
+    }
+    button:hover {
+      background: #005a9e;
+    }
+    input {
+      padding: 8px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      margin: 5px;
+    }
+    #result {
+      background: #f9f9f9;
+      padding: 15px;
+      margin-top: 15px;
+      border-left: 4px solid #007acc;
+      font-family: 'Courier New', monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .hint {
+      color: #666;
+      font-size: 12px;
+      font-style: italic;
+      margin-top: 5px;
+    }
+    .challenge {
+      background: #fff3cd;
+      padding: 10px;
+      margin: 10px 0;
+      border-left: 4px solid #ffc107;
+    }
+  </style>
+</head>
+<body>
+  <h1>🐛 LLM-CDP Debugger Test Application</h1>
+
+  <div class="challenge">
+    <strong>Welcome!</strong> This application contains 8 debugging challenges (7 bugs + 1 feature demo).
+    Use the LLM-CDP debugger to solve them all!
+  </div>
+
+  <div class="section">
+    <h2>Challenge 1: DOM Manipulation Bug</h2>
+    <p>The "Fetch User" button in challenge 2 below doesn't work - why?</p>
+    <div class="hint">Hint: Inspect the DOM and check the button's class name</div>
+  </div>
+
+  <div class="section">
+    <h2>Challenge 2: Network Request Bug</h2>
+    <p>Fetch user data - but something's wrong with the response!</p>
+    <input type="number" id="user-id" value="1" min="1" max="10">
+    <button class="fetch-button">Fetch User</button>
+    <div class="hint">Hint: Check the network requests and response status codes</div>
+  </div>
+
+  <div class="section">
+    <h2>Challenge 3 & 4: Console Errors & Variable Inspection</h2>
+    <p>Process some data - watch for console errors and off-by-one bugs!</p>
+    <button class="process-button">Process Data</button>
+    <div class="hint">Hint: Search console logs for "ERROR" and set breakpoints in processItems()</div>
+  </div>
+
+  <div class="section">
+    <h2>Challenge 5: localStorage Bug</h2>
+    <p>Store and retrieve data from localStorage - but it's not working correctly!</p>
+    <button class="storage-button">Test Storage</button>
+    <div class="hint">Hint: Use getLocalStorage to inspect what was actually stored</div>
+  </div>
+
+  <div class="section">
+    <h2>Challenge 6: Performance Issue</h2>
+    <p>This request is really slow - can you find it in the network requests?</p>
+    <button class="slow-button">Slow Request</button>
+    <div class="hint">Hint: Use searchNetworkRequests to find requests over 2000ms</div>
+  </div>
+
+  <div class="section">
+    <h2>Challenge 7: Secret Vault Password (Logpoints Required) 🔐</h2>
+    <p>Find the password that unlocks the vault - but it's never logged completely!</p>
+    <label>User ID: <input type="number" id="vault-user-id" value="1" min="1" max="100"></label>
+    <label>Access Level: <input type="number" id="vault-access-level" value="3" min="1" max="10"></label>
+    <button class="vault-button">Unlock Vault</button>
+    <div class="hint">Hint: The password is built piece by piece. Use setLogpoint (not setBreakpoint!) to observe construction without pausing execution. Try logging 'password' or 'char' in constructVaultPassword()</div>
+  </div>
+
+  <div class="section">
+    <h2>Challenge 8: Multi-Connection Debugging 🔌</h2>
+    <p>Learn to manage multiple debugger connections simultaneously!</p>
+    <div class="hint">
+      <strong>Steps:</strong><br>
+      1. connectDebugger({ port: 9222 }) - Connect to this Chrome browser<br>
+      2. (Optional) connectDebugger({ port: 9229 }) - Connect to a Node.js app if available<br>
+      3. listConnections() - See all active connections<br>
+      4. switchConnection({ connectionId: "conn-1" }) - Switch between connections<br>
+      5. getDebuggerStatus() - Check which connection is active<br>
+      <br>
+      <strong>Note:</strong> This demonstrates runtime type detection (Chrome vs Node.js) and connection management.
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Result</h2>
+    <div id="result">Click a button to see results...</div>
+  </div>
+
+  <script src="/client.js"></script>
+</body>
+</html>

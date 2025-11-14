@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Modal Test Page</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+        }
+
+        .cookie-banner {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+        }
+
+        .cookie-banner-content {
+            background: #2c3e50;
+            padding: 30px;
+            border-radius: 8px;
+            max-width: 500px;
+            text-align: center;
+        }
+
+        .cookie-banner p {
+            margin: 0 0 15px 0;
+        }
+
+        .cookie-banner button {
+            margin-right: 10px;
+            padding: 10px 20px;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+            border-radius: 4px;
+        }
+
+        .btn-accept {
+            background: #27ae60;
+            color: white;
+        }
+
+        .btn-reject {
+            background: #e74c3c;
+            color: white;
+        }
+
+        .btn-close {
+            background: #95a5a6;
+            color: white;
+        }
+
+        .target-button {
+            padding: 15px 30px;
+            font-size: 18px;
+            background: #3498db;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        .target-button:hover {
+            background: #2980b9;
+        }
+
+        #result {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 4px;
+            display: none;
+        }
+
+        #result.success {
+            background: #d4edda;
+            color: #155724;
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <h1>Modal Handling Test Page</h1>
+    <p>This page has a cookie consent banner at the bottom that blocks interaction.</p>
+
+    <button class="target-button" id="testButton">Click Me!</button>
+
+    <div id="result"></div>
+
+    <!-- Cookie Consent Banner (Full Screen Overlay) -->
+    <div class="cookie-banner" id="cookieBanner">
+        <div class="cookie-banner-content">
+            <p>We use cookies to improve your experience. By continuing to use this site, you accept our use of cookies.</p>
+            <button class="btn-accept" onclick="acceptCookies()">Accept All Cookies</button>
+            <button class="btn-reject" onclick="rejectCookies()">Reject</button>
+            <button class="btn-close" onclick="closeBanner()">×</button>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('testButton').addEventListener('click', function() {
+            const result = document.getElementById('result');
+            result.className = 'success';
+            result.textContent = 'Button clicked successfully! Modal handling worked.';
+        });
+
+        function acceptCookies() {
+            console.log('Cookies accepted');
+            document.getElementById('cookieBanner').style.display = 'none';
+        }
+
+        function rejectCookies() {
+            console.log('Cookies rejected');
+            document.getElementById('cookieBanner').style.display = 'none';
+        }
+
+        function closeBanner() {
+            console.log('Banner closed');
+            document.getElementById('cookieBanner').style.display = 'none';
+        }
+    </script>
+</body>
+</html>
