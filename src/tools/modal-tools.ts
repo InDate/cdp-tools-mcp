@@ -16,18 +16,18 @@ import { createTool } from '../validation-helpers.js';
 
 // Zod schemas for input validation
 const detectModalsSchema = z.object({
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
-  minZIndex: z.number().optional().describe('Minimum z-index to consider (default: 100)'),
-  minViewportCoverage: z.number().optional().describe('Minimum viewport coverage (0-1, default: 0.25)'),
-  includeBackdrops: z.boolean().optional().describe('Include backdrop/overlay elements (default: true)'),
+  connectionReason: z.string().describe('Connection reference'),
+  minZIndex: z.number().optional().describe('Min z-index to consider'),
+  minViewportCoverage: z.number().optional().describe('Min viewport coverage (0-1, default: 0.25)'),
+  includeBackdrops: z.boolean().optional().describe('Include backdrop/overlay elements'),
 }).strict();
 
 const dismissModalSchema = z.object({
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
+  connectionReason: z.string().describe('Connection reference'),
   selector: z.string().optional().describe('CSS selector of the modal to dismiss'),
   index: z.number().optional().describe('Index of the modal to dismiss (1-based, from detectModals results)'),
   strategy: z.enum(['accept', 'reject', 'close', 'remove', 'auto']).default('auto').describe('Dismissal strategy: accept (click accept/agree), reject (click reject/decline), close (click close/X), remove (remove from DOM), auto (smart selection based on modal type)'),
-  retryAttempts: z.number().default(3).describe('Number of retry attempts when clicking buttons (default: 3)'),
+  retryAttempts: z.number().default(3).describe('Number of retry attempts when clicking buttons'),
 }).strict();
 
 /**
@@ -36,12 +36,12 @@ const dismissModalSchema = z.object({
 export function createModalTools(resolveConnectionFromReason: (connectionReason: string) => Promise<any>) {
   return {
     detectModals: createTool(
-      'Detects modals and blocking overlays on the current page',
+      'Detect modals',
       detectModalsSchema,
       async (args) => await detectModalsImpl(args, resolveConnectionFromReason)
     ),
     dismissModal: createTool(
-      'Dismisses a modal using various strategies',
+      'Dismiss modal',
       dismissModalSchema,
       async (args) => await dismissModalImpl(args, resolveConnectionFromReason)
     ),

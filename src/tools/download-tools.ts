@@ -142,7 +142,7 @@ export function clearQuarantineRegistry(): void {
 export function createDownloadTools() {
   return {
     saveToDisk: createTool(
-      'Download a file from a URL and save it to disk with a descriptive filename',
+      'Download file to disk',
       z.object({
         url: z.string().url().describe('URL to download'),
         filename: z.string().describe('Descriptive filename to save as (e.g., "google-logo.svg", "api-response.json")'),

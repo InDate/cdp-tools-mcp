@@ -11,46 +11,46 @@ import { createSuccessResponse, createErrorResponse, getErrorMessage } from '../
 
 // Schema definitions
 const setBreakpointSchema = z.object({
-  url: z.string().describe('The file URL or path (e.g., file:///path/to/file.js or http://localhost:3000/app.js)'),
-  lineNumber: z.number().describe('The line number (1-based)'),
-  columnNumber: z.number().optional().describe('The column number (optional, 0-based)'),
-  condition: z.string().optional().describe('Optional condition expression - breakpoint only triggers when this evaluates to true'),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection. Only needed for browser debugging, not Node.js.'),
+  url: z.string().describe('File URL or path'),
+  lineNumber: z.number().describe('Line number'),
+  columnNumber: z.number().optional().describe('Column number'),
+  condition: z.string().optional().describe('Condition expression'),
+  connectionReason: z.string().optional().describe('Connection reference'),
 }).strict();
 
 const removeBreakpointSchema = z.object({
-  breakpointId: z.string().describe('The breakpoint ID to remove'),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection. Only needed for browser debugging, not Node.js.'),
+  breakpointId: z.string().describe('Breakpoint ID'),
+  connectionReason: z.string().optional().describe('Connection reference'),
 }).strict();
 
 const listBreakpointsSchema = z.object({
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection. Only needed for browser debugging, not Node.js.'),
+  connectionReason: z.string().optional().describe('Connection reference'),
 }).strict();
 
 const resetLogpointCounterSchema = z.object({
-  breakpointId: z.string().describe('The logpoint breakpoint ID to reset'),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection. Only needed for browser debugging, not Node.js.'),
+  breakpointId: z.string().describe('Logpoint breakpoint ID'),
+  connectionReason: z.string().optional().describe('Connection reference'),
 }).strict();
 
 const setLogpointSchema = z.object({
-  url: z.string().describe('The file URL or path'),
-  lineNumber: z.number().describe('The line number (1-based)'),
-  columnNumber: z.number().optional().describe('Optional column number (1-based). If not provided, CDP will choose the best execution point on the line.'),
-  logMessage: z.string().describe('Message to log. Use {expression} for variable interpolation, e.g., "User: {user.name} ID: {user.id}"'),
-  condition: z.string().optional().describe('Optional condition - only log when this evaluates to true'),
-  includeCallStack: z.boolean().default(false).describe('Include call stack in log output (default: false)'),
-  includeVariables: z.boolean().default(false).describe('Include local variables in log output (default: false)'),
-  maxExecutions: z.number().int().min(1).default(20).describe('Maximum number of times this logpoint can execute before pausing (default: 20, minimum: 1). When the limit is reached, execution will pause and show captured logs with options to reset or remove the logpoint. Unlimited execution is not allowed.'),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection. Only needed for browser debugging, not Node.js.'),
+  url: z.string().describe('File URL or path'),
+  lineNumber: z.number().describe('Line number'),
+  columnNumber: z.number().optional().describe('Column number'),
+  logMessage: z.string().describe('Message with {expression} interpolation'),
+  condition: z.string().optional().describe('Condition expression'),
+  includeCallStack: z.boolean().default(false).describe('Include call stack'),
+  includeVariables: z.boolean().default(false).describe('Include local variables'),
+  maxExecutions: z.number().int().min(1).default(20).describe('Max executions before pause'),
+  connectionReason: z.string().optional().describe('Connection reference'),
 }).strict();
 
 const validateLogpointSchema = z.object({
-  url: z.string().describe('The file URL or path'),
-  lineNumber: z.number().describe('The line number (1-based)'),
-  columnNumber: z.number().optional().describe('Optional column number (1-based). If not provided, CDP will choose the execution point.'),
-  logMessage: z.string().describe('Message to log with {expression} interpolation'),
-  timeout: z.number().default(2000).describe('Maximum time to wait for code execution in milliseconds (default: 2000ms)'),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection. Only needed for browser debugging, not Node.js.'),
+  url: z.string().describe('File URL or path'),
+  lineNumber: z.number().describe('Line number'),
+  columnNumber: z.number().optional().describe('Column number'),
+  logMessage: z.string().describe('Message with {expression} interpolation'),
+  timeout: z.number().default(2000).describe('Timeout (ms)'),
+  connectionReason: z.string().optional().describe('Connection reference'),
 }).strict();
 
 export function createBreakpointTools(
@@ -67,7 +67,7 @@ export function createBreakpointTools(
 ) {
   return {
     setBreakpoint: createTool(
-      'Set a breakpoint at a specific file and line number. Supports conditional breakpoints that only pause when a condition is true.',
+      'Set breakpoint at line',
       setBreakpointSchema,
       async (args) => {
         const { url, lineNumber, columnNumber, connectionReason } = args;
@@ -150,7 +150,7 @@ export function createBreakpointTools(
     ),
 
     removeBreakpoint: createTool(
-      'Remove a specific breakpoint by its ID',
+      'Remove breakpoint by ID',
       removeBreakpointSchema,
       async (args) => {
         const { breakpointId, connectionReason } = args;
@@ -177,7 +177,7 @@ export function createBreakpointTools(
     ),
 
     listBreakpoints: createTool(
-      'List all active breakpoints',
+      'List active breakpoints',
       listBreakpointsSchema,
       async (args) => {
         const { connectionReason } = args;
@@ -230,7 +230,7 @@ export function createBreakpointTools(
     ),
 
     resetLogpointCounter: createTool(
-      'Reset the execution counter for a logpoint, allowing it to execute another maxExecutions times. Use this after a logpoint has reached its limit and you want to continue collecting more logs.',
+      'Reset logpoint execution counter',
       resetLogpointCounterSchema,
       async (args) => {
         const { breakpointId, connectionReason } = args;
@@ -300,7 +300,7 @@ export function createBreakpointTools(
     ),
 
     validateLogpoint: createTool(
-      'Validate a logpoint expression before setting it. Tests if the expressions in the log message can be evaluated and provides helpful feedback.',
+      'Validate logpoint expressions',
       validateLogpointSchema,
       async (args) => {
         const { url, lineNumber, columnNumber, logMessage, timeout, connectionReason } = args;
@@ -531,7 +531,7 @@ export function createBreakpointTools(
     ),
 
     setLogpoint: createTool(
-      'Set a logpoint that logs without pausing execution (like Chrome DevTools Logpoints). By default, logpoints are limited to 20 executions to prevent flooding logs. When a logpoint reaches its limit, execution pauses and you must either reset the counter or remove the logpoint. Use maxExecutions parameter to adjust the limit (minimum 1, no unlimited option).',
+      'Set logpoint with message interpolation',
       setLogpointSchema,
       async (args) => {
         const { url, lineNumber, columnNumber, logMessage, condition, includeCallStack, includeVariables, maxExecutions, connectionReason } = args;

@@ -18,26 +18,26 @@ import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../
 const navigateToSchema = z.object({
   url: z.string(),
   waitUntil: z.enum(['load', 'domcontentloaded', 'networkidle0', 'networkidle2']).default('load'),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
+  connectionReason: z.string().describe('Connection reference'),
 }).strict();
 
 const reloadPageSchema = z.object({
-  ignoreCache: z.boolean().default(false).describe('Clear browser cache before reloading (default: false)'),
+  ignoreCache: z.boolean().default(false).describe('Clear browser cache before reloading'),
   waitUntil: z.enum(['load', 'domcontentloaded', 'networkidle0', 'networkidle2']).default('load').describe('When to consider navigation complete: load (default), domcontentloaded, networkidle0, or networkidle2'),
-  timeout: z.number().default(30000).describe('Maximum time to wait for reload in milliseconds (default: 30000ms / 30s)'),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
+  timeout: z.number().default(30000).describe('Maximum time to wait for reload in ms (default: 30000ms / 30s)'),
+  connectionReason: z.string().describe('Connection reference'),
 }).strict();
 
 const goBackSchema = z.object({
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
+  connectionReason: z.string().describe('Connection reference'),
 }).strict();
 
 const goForwardSchema = z.object({
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
+  connectionReason: z.string().describe('Connection reference'),
 }).strict();
 
 const getPageInfoSchema = z.object({
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
+  connectionReason: z.string().describe('Connection reference'),
 }).strict();
 
 const emptySchema = z.object({}).strict();
@@ -64,7 +64,7 @@ export function createPageTools(
 
   return {
     navigateTo: createTool(
-      'Navigate to a URL. Automatically handles breakpoints.',
+      'Navigate to URL',
       navigateToSchema,
       async (args) => {
         // Resolve connection from reason
@@ -116,7 +116,7 @@ export function createPageTools(
     ),
 
     reloadPage: createTool(
-      'Reload the current page. Automatically handles breakpoints.',
+      'Reload page',
       reloadPageSchema,
       async (args) => {
         // Resolve connection from reason
@@ -164,7 +164,7 @@ export function createPageTools(
     ),
 
     goBack: createTool(
-      'Navigate backward in browser history. Automatically handles breakpoints.',
+      'Navigate back',
       goBackSchema,
       async (args) => {
         // Resolve connection from reason
@@ -211,7 +211,7 @@ export function createPageTools(
     ),
 
     goForward: createTool(
-      'Navigate forward in browser history. Automatically handles breakpoints.',
+      'Navigate forward',
       goForwardSchema,
       async (args) => {
         // Resolve connection from reason
@@ -258,7 +258,7 @@ export function createPageTools(
     ),
 
     getPageInfo: createTool(
-      'Get information about the current page. Automatically handles breakpoints.',
+      'Get page info',
       getPageInfoSchema,
       async (args) => {
         // Resolve connection from reason

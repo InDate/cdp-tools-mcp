@@ -432,7 +432,7 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
     clip: clipSchema.optional(),
     saveToDisk: z.string().optional(),
     autoSaveThreshold: z.number().default(1).describe('Auto-save to disk if size >= this (bytes). Default: 1 byte (always saves)'),
-    connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
+    connectionReason: z.string().describe('Connection reference'),
   }).strict();
 
   const takeViewportScreenshotSchema = z.object({
@@ -441,7 +441,7 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
     clip: clipSchema.optional(),
     saveToDisk: z.string().optional(),
     autoSaveThreshold: z.number().default(1).describe('Auto-save to disk if size >= this (bytes). Default: 1 byte (always saves)'),
-    connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
+    connectionReason: z.string().describe('Connection reference'),
   }).strict();
 
   const takeElementScreenshotSchema = z.object({
@@ -450,12 +450,12 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
     quality: z.number().min(0).max(100).optional(),
     saveToDisk: z.string().optional(),
     autoSaveThreshold: z.number().default(1).describe('Auto-save to disk if size >= this (bytes). Default: 1 byte (always saves)'),
-    connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
+    connectionReason: z.string().describe('Connection reference'),
   }).strict();
 
   return {
     takeScreenshot: createTool(
-      'Take a screenshot of the full page. Automatically saves to disk (default behavior) to avoid token limits. Returns file path. Default quality is 30 for JPEG.',
+      'Take full page screenshot',
       takeScreenshotSchema,
       async (args) => {
         // Resolve connection from reason
@@ -515,7 +515,7 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
     ),
 
     takeViewportScreenshot: createTool(
-      'Take a screenshot of the current viewport. Automatically saves to disk (default behavior) to avoid token limits. Returns file path. Default quality is 30 for JPEG.',
+      'Take viewport screenshot',
       takeViewportScreenshotSchema,
       async (args) => {
         // Resolve connection from reason
@@ -574,7 +574,7 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
     ),
 
     takeElementScreenshot: createTool(
-      'Take a screenshot of a specific element. Automatically saves to disk (default behavior) to avoid token limits. Returns file path. Default quality is 50 for JPEG. Automatically handles breakpoints.',
+      'Take element screenshot',
       takeElementScreenshotSchema,
       async (args) => {
         // Resolve connection from reason
@@ -666,23 +666,23 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
     ),
 
     printToPDF: createTool(
-      'Print the current page to PDF using Chrome (default) or WeasyPrint engine',
+      'Print page to PDF',
       z.object({
-        connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
-        saveToDisk: z.string().optional().describe('Optional path to save PDF file. If not provided, PDF data is returned as base64 (Chrome engine only).'),
+        connectionReason: z.string().describe('Connection reference'),
+        saveToDisk: z.string().optional().describe('path to save PDF file. If not provided, PDF data is returned as base64 (Chrome engine only).'),
         engine: z.enum(['chrome', 'weasyprint']).optional().default('chrome').describe('PDF rendering engine. Chrome: fast, basic CSS. WeasyPrint: superior CSS Paged Media support (page-break-*, orphans, widows) for professional documents. Default: chrome'),
         // Chrome-specific options
         landscape: z.boolean().optional().default(false).describe('Print in landscape orientation (default: false, Chrome only)'),
         printBackground: z.boolean().optional().default(true).describe('Print background graphics (default: true, Chrome only)'),
         scale: z.number().optional().default(1).describe('Scale of the webpage rendering (default: 1, range: 0.1 to 2, Chrome only)'),
-        paperWidthCm: z.number().optional().describe('Paper width in centimeters (default: 21.0 for A4, Chrome only)'),
-        paperHeightCm: z.number().optional().describe('Paper height in centimeters (default: 29.7 for A4, Chrome only)'),
+        paperWidthCm: z.number().optional().describe('Paper width in cm (default: 21.0 for A4, Chrome only)'),
+        paperHeightCm: z.number().optional().describe('Paper height in cm (default: 29.7 for A4, Chrome only)'),
         // WeasyPrint-specific options
         mediaType: z.enum(['print', 'screen']).optional().default('print').describe('CSS media type (default: print, WeasyPrint only)'),
         baseUrl: z.string().optional().describe('Base URL for resolving relative URLs in the HTML (WeasyPrint only)'),
         stylesheets: z.array(z.string()).optional().describe('Additional CSS stylesheet paths to include (WeasyPrint only)'),
         optimizeImages: z.boolean().optional().default(true).describe('Optimize embedded images (default: true, WeasyPrint only)'),
-        timeout: z.number().optional().describe('Timeout in milliseconds for WeasyPrint (default: 30000, max: 120000, WeasyPrint only)').refine(val => val === undefined || (val >= 1000 && val <= 120000), {
+        timeout: z.number().optional().describe('Timeout in ms for WeasyPrint (default: 30000, max: 120000, WeasyPrint only)').refine(val => val === undefined || (val >= 1000 && val <= 120000), {
           message: 'Timeout must be between 1000ms and 120000ms'
         }),
       }).strict(),

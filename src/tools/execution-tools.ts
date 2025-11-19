@@ -9,7 +9,7 @@ import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../
 
 // Schema with optional connectionReason
 const executionSchema = z.object({
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection. Only needed for browser debugging, not Node.js.'),
+  connectionReason: z.string().optional().describe('Connection reference'),
 }).strict();
 
 export function createExecutionTools(
@@ -24,7 +24,7 @@ export function createExecutionTools(
 ) {
   return {
     pause: createTool(
-      'Pause execution of the debugged program',
+      'Pause execution',
       executionSchema,
       async (args) => {
         const { connectionReason } = args;
@@ -45,7 +45,7 @@ export function createExecutionTools(
     ),
 
     resume: createTool(
-      'Resume execution of the debugged program',
+      'Resume execution',
       executionSchema,
       async (args) => {
         const { connectionReason } = args;
@@ -84,7 +84,7 @@ export function createExecutionTools(
     ),
 
     stepOver: createTool(
-      'Step over to the next line (does not enter function calls)',
+      'Step over to next line',
       executionSchema,
       async (args) => {
         const { connectionReason } = args;
@@ -105,7 +105,7 @@ export function createExecutionTools(
     ),
 
     stepInto: createTool(
-      'Step into the next function call',
+      'Step into function call',
       executionSchema,
       async (args) => {
         const { connectionReason } = args;
@@ -126,7 +126,7 @@ export function createExecutionTools(
     ),
 
     stepOut: createTool(
-      'Step out of the current function',
+      'Step out of function',
       executionSchema,
       async (args) => {
         const { connectionReason } = args;

@@ -10,10 +10,10 @@ import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../
 
 // Schema for getSourceCode
 const getSourceCodeSchema = z.object({
-  url: z.string().describe('The file URL or path (e.g., file:///path/to/file.js or http://localhost:3000/app.js)'),
-  startLine: z.number().optional().describe('Starting line number (1-based, optional - if not provided, returns entire file)'),
-  endLine: z.number().optional().describe('Ending line number (1-based, optional - if not provided with startLine, returns 10 lines)'),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection. Only needed for browser debugging, not Node.js.'),
+  url: z.string().describe('File URL or path'),
+  startLine: z.number().optional().describe('Start line number'),
+  endLine: z.number().optional().describe('End line number'),
+  connectionReason: z.string().optional().describe('Connection reference'),
 }).strict();
 
 export function createSourceTools(
@@ -29,7 +29,7 @@ export function createSourceTools(
 ) {
   return {
     getSourceCode: createTool(
-      'Get source code from a file at a specific line range. Useful for viewing code at breakpoint locations without reading files separately.',
+      'Get source code at line range',
       getSourceCodeSchema,
       async (args) => {
         const { url, startLine, endLine, connectionReason } = args;

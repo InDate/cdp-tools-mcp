@@ -18,7 +18,7 @@ import { dismissModalByStrategy, selectDismissalStrategy } from '../utils/modal-
 const clickElementSchema = z.object({
   selector: z.string(),
   clickCount: z.number().default(1),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
+  connectionReason: z.string().describe('Connection reference'),
   handleModals: z.boolean().default(false).describe('Automatically detect and dismiss blocking modals before clicking. Default: false'),
   dismissStrategy: z.enum(['accept', 'reject', 'close', 'remove', 'auto']).default('auto').describe('Strategy to use when dismissing modals if handleModals is true. Default: auto'),
 }).strict();
@@ -27,19 +27,19 @@ const typeTextSchema = z.object({
   selector: z.string(),
   text: z.string(),
   delay: z.number().default(0),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
+  connectionReason: z.string().describe('Connection reference'),
   handleModals: z.boolean().default(false).describe('Automatically detect and dismiss blocking modals before typing. Default: false'),
   dismissStrategy: z.enum(['accept', 'reject', 'close', 'remove', 'auto']).default('auto').describe('Strategy to use when dismissing modals if handleModals is true. Default: auto'),
 }).strict();
 
 const pressKeySchema = z.object({
   key: z.string(),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
+  connectionReason: z.string().describe('Connection reference'),
 }).strict();
 
 const hoverElementSchema = z.object({
   selector: z.string(),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
+  connectionReason: z.string().describe('Connection reference'),
   handleModals: z.boolean().default(false).describe('Automatically detect and dismiss blocking modals before hovering. Default: false'),
   dismissStrategy: z.enum(['accept', 'reject', 'close', 'remove', 'auto']).default('auto').describe('Strategy to use when dismissing modals if handleModals is true. Default: auto'),
 }).strict();
@@ -52,7 +52,7 @@ export function createInputTools(
 ) {
   return {
     clickElement: createTool(
-      'Click an element by CSS selector. Automatically handles breakpoints.',
+      'Click element',
       clickElementSchema,
       async (args) => {
         // Resolve connection from reason
@@ -191,7 +191,7 @@ export function createInputTools(
     ),
 
     typeText: createTool(
-      'Type text into an element. Automatically handles breakpoints.',
+      'Type text into element',
       typeTextSchema,
       async (args) => {
         // Resolve connection from reason
@@ -294,7 +294,7 @@ export function createInputTools(
     ),
 
     pressKey: createTool(
-      'Press a keyboard key or key combination. Automatically handles breakpoints.',
+      'Press keyboard key',
       pressKeySchema,
       async (args) => {
         // Resolve connection from reason
@@ -328,7 +328,7 @@ export function createInputTools(
     ),
 
     hoverElement: createTool(
-      'Hover over an element. Automatically handles breakpoints.',
+      'Hover over element',
       hoverElementSchema,
       async (args) => {
         // Resolve connection from reason

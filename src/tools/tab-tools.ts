@@ -11,7 +11,7 @@ import { NetworkMonitor } from '../network-monitor.js';
 import { SourceMapHandler } from '../sourcemap-handler.js';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
-import { validateReference, UNNAMED_CONNECTION } from '../reference-validator.js';
+import { validateReference, sanitizeReference, UNNAMED_CONNECTION } from '../reference-validator.js';
 
 export function createTabTools(
   connectionManager: ConnectionManager,
@@ -20,7 +20,7 @@ export function createTabTools(
 ) {
   return {
     listTabs: createTool(
-      'List all open tabs with their references, URLs, and connection details',
+      'List open tabs',
       z.object({}).strict(),
       async () => {
         const connections = connectionManager.listConnections();
@@ -77,10 +77,10 @@ export function createTabTools(
     ),
 
     createTab: createTool(
-      'Create a new tab in the browser with a required reference name',
+      'Create new tab',
       z.object({
         reference: z.string().describe('3 descriptive words for this tab activity'),
-        url: z.string().optional().describe('Optional URL to navigate to in the new tab'),
+        url: z.string().optional().describe('URL to navigate to in the new tab'),
       }).strict(),
       async (args) => {
         // Validate reference
@@ -149,7 +149,7 @@ export function createTabTools(
             networkMonitor,
             host,
             port,
-            args.reference,
+            sanitizedReference,
             pageIndex
           );
 
@@ -182,7 +182,7 @@ Console: ${allMessages.length} logs (${errorCount} errors, ${warnCount} warnings
     ),
 
     renameTab: createTool(
-      'Rename/update the reference for a tab',
+      'Rename tab',
       z.object({
         reference: z.string().describe('3 descriptive words of the tab to rename'),
         newReference: z.string().describe('3 new descriptive words for the tab'),
@@ -206,8 +206,9 @@ Console: ${allMessages.length} logs (${errorCount} errors, ${warnCount} warnings
           });
         }
 
-        // Find connection by reference
-        const connection = connectionManager.findConnectionByReference(args.reference);
+        // Find connection by reference (sanitize input)
+        const sanitizedOldRef = sanitizeReference(args.reference);
+        const connection = connectionManager.findConnectionByReference(sanitizedOldRef);
 
         if (!connection) {
           return createErrorResponse('CONNECTION_NOT_FOUND', {
@@ -231,13 +232,14 @@ Console: ${allMessages.length} logs (${errorCount} errors, ${warnCount} warnings
     ),
 
     switchTab: createTool(
-      'Switch the active tab to a different connection',
+      'Switch tab',
       z.object({
         reference: z.string().describe('3 descriptive words of the tab to switch to'),
       }).strict(),
       async (args) => {
-        // Find connection by reference
-        const connection = connectionManager.findConnectionByReference(args.reference);
+        // Find connection by reference (sanitize input)
+        const sanitizedRef = sanitizeReference(args.reference);
+        const connection = connectionManager.findConnectionByReference(sanitizedRef);
 
         if (!connection) {
           return createErrorResponse('CONNECTION_NOT_FOUND', {
@@ -288,13 +290,14 @@ Console: ${allMessages.length} logs (${errorCount} errors, ${warnCount} warnings
     ),
 
     closeTab: createTool(
-      'Close a specific tab',
+      'Close tab',
       z.object({
         reference: z.string().describe('3 descriptive words of the tab to close'),
       }).strict(),
       async (args) => {
-        // Find connection by reference
-        const connection = connectionManager.findConnectionByReference(args.reference);
+        // Find connection by reference (sanitize input)
+        const sanitizedRef = sanitizeReference(args.reference);
+        const connection = connectionManager.findConnectionByReference(sanitizedRef);
 
         if (!connection) {
           return createErrorResponse('CONNECTION_NOT_FOUND', {

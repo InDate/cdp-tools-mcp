@@ -13,12 +13,12 @@ const listConsoleLogsSchema = z.object({
   type: z.string().optional(),
   limit: z.number().default(100),
   offset: z.number().default(0),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
+  connectionReason: z.string().describe('Connection reference'),
 }).strict();
 
 const getConsoleLogSchema = z.object({
   id: z.string(),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
+  connectionReason: z.string().optional().describe('Connection reference'),
 }).strict();
 
 const searchConsoleLogsSchema = z.object({
@@ -26,13 +26,13 @@ const searchConsoleLogsSchema = z.object({
   type: z.string().optional(),
   flags: z.string().default(''),
   limit: z.number().default(50),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
+  connectionReason: z.string().describe('Connection reference'),
 }).strict();
 
 const getRecentConsoleLogsSchema = z.object({
   count: z.number().default(50).describe('Number of recent messages to retrieve'),
-  type: z.string().optional().describe('Optional message type filter (log, error, warn, etc.)'),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
+  type: z.string().optional().describe('message type filter (log, error, warn, etc.)'),
+  connectionReason: z.string().describe('Connection reference'),
 }).strict();
 
 const emptySchema = z.object({}).strict();
@@ -44,7 +44,7 @@ export function createConsoleTools(
 ) {
   return {
     listConsoleLogs: createTool(
-      'List console messages with optional type filtering. For searching specific text, use searchConsoleLogs instead.',
+      'List console messages',
       listConsoleLogsSchema,
       async (args) => {
         // Resolve connection from reason
@@ -88,7 +88,7 @@ export function createConsoleTools(
     ),
 
     getConsoleLog: createTool(
-      'Get a specific console message by ID',
+      'Get console message by ID',
       getConsoleLogSchema,
       async (args) => {
         // If connectionReason is provided, resolve connection
@@ -137,7 +137,7 @@ export function createConsoleTools(
     ),
 
     getRecentConsoleLogs: createTool(
-      'Get the most recent N console messages (default: 50). More convenient than listConsoleLogs for viewing recent activity.',
+      'Get recent console messages',
       getRecentConsoleLogsSchema,
       async (args) => {
         // Resolve connection from reason
@@ -178,7 +178,7 @@ export function createConsoleTools(
     ),
 
     searchConsoleLogs: createTool(
-      'Search console messages using regex pattern (more efficient than listConsoleLogs for finding specific messages)',
+      'Search console messages',
       searchConsoleLogsSchema,
       async (args) => {
         // Resolve connection from reason
@@ -239,7 +239,7 @@ export function createConsoleTools(
     ),
 
     clearConsole: createTool(
-      'Clear console message history',
+      'Clear console',
       emptySchema,
       async () => {
         const count = consoleMonitor.getCount();

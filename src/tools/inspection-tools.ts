@@ -10,43 +10,43 @@ import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../
 
 // Schema for getCallStack
 const getCallStackSchema = z.object({
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection. Only needed for browser debugging, not Node.js.'),
+  connectionReason: z.string().optional().describe('Connection reference'),
 }).strict();
 
 // Schema for getVariables
 const getVariablesSchema = z.object({
-  callFrameId: z.string().describe('The call frame ID (get this from getCallStack)'),
-  includeGlobal: z.boolean().default(false).describe('Include global scope variables (default: false, set true to enable filtering global)'),
-  filter: z.string().optional().describe('Regex pattern to filter variable names (only applies when includeGlobal is true)'),
-  expandObjects: z.boolean().default(true).describe('Expand object/array contents to show actual values instead of just type descriptions (default: true)'),
-  maxDepth: z.number().default(2).describe('Maximum depth for object/array expansion (default: 2, prevents infinite recursion)'),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection. Only needed for browser debugging, not Node.js.'),
+  callFrameId: z.string().describe('Call frame ID'),
+  includeGlobal: z.boolean().default(false).describe('Include global scope'),
+  filter: z.string().optional().describe('Regex filter for variable names'),
+  expandObjects: z.boolean().default(true).describe('Expand objects/arrays'),
+  maxDepth: z.number().default(2).describe('Max expansion depth'),
+  connectionReason: z.string().optional().describe('Connection reference'),
 }).strict();
 
 // Schema for evaluateExpression
 const evaluateExpressionSchema = z.object({
-  expression: z.string().describe('The JavaScript expression to evaluate'),
-  callFrameId: z.string().optional().describe('Optional call frame ID to evaluate in a specific frame context'),
-  expandObjects: z.boolean().default(true).describe('Expand object/array contents in the result (default: true)'),
-  maxDepth: z.number().default(2).describe('Maximum depth for object/array expansion (default: 2)'),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection. Only needed for browser debugging, not Node.js.'),
+  expression: z.string().describe('JavaScript expression'),
+  callFrameId: z.string().optional().describe('Call frame ID'),
+  expandObjects: z.boolean().default(true).describe('Expand objects/arrays'),
+  maxDepth: z.number().default(2).describe('Max expansion depth'),
+  connectionReason: z.string().optional().describe('Connection reference'),
 }).strict();
 
 // Schema for searchCode
 const searchCodeSchema = z.object({
-  pattern: z.string().describe('Regex pattern to search for in code'),
-  caseSensitive: z.boolean().default(false).describe('Case sensitive search (default: false)'),
-  isRegex: z.boolean().default(true).describe('Treat pattern as regex (default: true)'),
-  urlFilter: z.string().optional().describe('Optional regex to filter scripts by URL'),
-  limit: z.number().default(100).describe('Maximum number of results to return (default: 100)'),
+  pattern: z.string().describe('Regex pattern'),
+  caseSensitive: z.boolean().default(false).describe('Case sensitive'),
+  isRegex: z.boolean().default(true).describe('Treat as regex'),
+  urlFilter: z.string().optional().describe('URL filter regex'),
+  limit: z.number().default(100).describe('Max results'),
 }).strict();
 
 // Schema for searchFunctions
 const searchFunctionsSchema = z.object({
-  functionName: z.string().describe('Function name to search for'),
-  caseSensitive: z.boolean().default(false).describe('Case sensitive search (default: false)'),
-  urlFilter: z.string().optional().describe('Optional regex to filter scripts by URL'),
-  limit: z.number().default(50).describe('Maximum number of results to return (default: 50)'),
+  functionName: z.string().describe('Function name'),
+  caseSensitive: z.boolean().default(false).describe('Case sensitive'),
+  urlFilter: z.string().optional().describe('URL filter regex'),
+  limit: z.number().default(50).describe('Max results'),
 }).strict();
 
 export function createInspectionTools(
@@ -62,7 +62,7 @@ export function createInspectionTools(
 ) {
   return {
     getCallStack: createTool(
-      'Get the current call stack when paused at a breakpoint',
+      'Get call stack when paused',
       getCallStackSchema,
       async (args) => {
         const { connectionReason } = args;
@@ -117,7 +117,7 @@ export function createInspectionTools(
     ),
 
     getVariables: createTool(
-      'Get all variables in scope for a specific call frame',
+      'Get variables in call frame scope',
       getVariablesSchema,
       async (args) => {
         const { callFrameId, includeGlobal, filter, expandObjects, maxDepth, connectionReason } = args;
@@ -164,7 +164,7 @@ export function createInspectionTools(
     ),
 
     evaluateExpression: createTool(
-      'Evaluate a JavaScript expression in the current context',
+      'Evaluate JavaScript expression',
       evaluateExpressionSchema,
       async (args) => {
         const { expression, callFrameId, expandObjects, maxDepth, connectionReason } = args;
@@ -221,7 +221,7 @@ export function createInspectionTools(
     ),
 
     searchCode: createTool(
-      'Search for a pattern across all loaded scripts using regex. Useful for finding code, functions, or specific patterns in the runtime.',
+      'Search code by regex pattern',
       searchCodeSchema,
       async (args) => {
         if (!cdpManager.isConnected()) {
@@ -282,7 +282,7 @@ export function createInspectionTools(
     ),
 
     searchFunctions: createTool(
-      'Find function definitions across all loaded scripts. Searches for function declarations, arrow functions, and const/let function assignments.',
+      'Find function definitions',
       searchFunctionsSchema,
       async (args) => {
         if (!cdpManager.isConnected()) {

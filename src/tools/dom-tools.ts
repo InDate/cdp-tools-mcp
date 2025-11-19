@@ -15,17 +15,17 @@ import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../
 // Zod schemas for DOM tools
 const querySelectorSchema = z.object({
   selector: z.string(),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
+  connectionReason: z.string().describe('Connection reference'),
 }).strict();
 
 const getElementPropertiesSchema = z.object({
   selector: z.string(),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
+  connectionReason: z.string().describe('Connection reference'),
 }).strict();
 
 const getDOMSnapshotSchema = z.object({
   maxDepth: z.number().optional().default(5),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
+  connectionReason: z.string().describe('Connection reference'),
 }).strict();
 
 export function createDOMTools(
@@ -36,7 +36,7 @@ export function createDOMTools(
 ) {
   return {
     querySelector: createTool(
-      'Find an element by CSS selector. Automatically handles breakpoints.',
+      'Find element by selector',
       querySelectorSchema,
       async (args) => {
         // Resolve connection from reason
@@ -99,7 +99,7 @@ export function createDOMTools(
     ),
 
     getElementProperties: createTool(
-      'Get detailed properties of an element. Automatically handles breakpoints.',
+      'Get element properties',
       getElementPropertiesSchema,
       async (args) => {
         // Resolve connection from reason
@@ -188,7 +188,7 @@ export function createDOMTools(
     ),
 
     getDOMSnapshot: createTool(
-      'Get a text-based snapshot of the DOM structure. Automatically handles breakpoints.',
+      'Get DOM snapshot',
       getDOMSnapshotSchema,
       async (args) => {
         // Resolve connection from reason

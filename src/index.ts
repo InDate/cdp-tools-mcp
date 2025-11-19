@@ -215,10 +215,10 @@ async function isChromeRunning(port: number): Promise<boolean> {
 // Connection management tools
 const connectionTools = {
   launchChrome: createTool(
-    'Launch Chrome with debugging enabled and optionally auto-connect',
+    'Launch Chrome with debugging',
     z.object({
-      url: z.string().optional().describe('Optional URL to open (default: blank page)'),
-      autoConnect: z.boolean().optional().default(true).describe('Automatically connect debugger after launch (default: true)'),
+      url: z.string().optional().describe('URL to open (default: blank page)'),
+      autoConnect: z.boolean().optional().default(true).describe('Automatically connect debugger after launch'),
       port: z.number().optional().describe('The debugging port (optional, defaults to this session\'s reserved port). Use this to launch multiple Chrome instances on different ports.'),
       headless: z.boolean().optional().default(false).describe('Launch in headless mode (no visible window, prevents focus stealing). Default: false'),
     }).strict(),
@@ -363,7 +363,7 @@ URL: ${pageUrl}${consoleStats}`;
   ),
 
   killChrome: createTool(
-    'Kill the Chrome process launched by this server',
+    'Kill Chrome process',
     z.object({}).strict(),
     async () => {
       try {
@@ -393,7 +393,7 @@ URL: ${pageUrl}${consoleStats}`;
   ),
 
   resetChromeLauncher: createTool(
-    'Reset Chrome launcher state (use if Chrome was closed externally)',
+    'Reset Chrome launcher',
     z.object({}).strict(),
     async () => {
       chromeLauncher.reset();
@@ -402,7 +402,7 @@ URL: ${pageUrl}${consoleStats}`;
   ),
 
   getChromeStatus: createTool(
-    'Get Chrome launcher status',
+    'Get Chrome status',
     z.object({}).strict(),
     async () => {
       const status = chromeLauncher.getStatus();
@@ -411,7 +411,7 @@ URL: ${pageUrl}${consoleStats}`;
   ),
 
   setDebugLogging: createTool(
-    'Enable or disable debug logging for troubleshooting',
+    'Toggle debug logging',
     z.object({
       enabled: z.boolean().describe('Set to true to enable debug logging, false to disable'),
     }).strict(),
@@ -437,7 +437,7 @@ URL: ${pageUrl}${consoleStats}`;
   ),
 
   getDebugLoggingStatus: createTool(
-    'Check if debug logging is currently enabled',
+    'Check debug logging status',
     z.object({}).strict(),
     async () => {
       const enabled = isDebugEnabled();
@@ -453,7 +453,7 @@ URL: ${pageUrl}${consoleStats}`;
   ),
 
   connectDebugger: createTool(
-    'Connect to a Chrome or Node.js debugger instance',
+    'Connect to debugger',
     z.object({
       reference: z.string().describe('3 descriptive words describing this debugging activity'),
       host: z.string().optional().default('localhost').describe('The debugger host (default: localhost)'),
@@ -617,7 +617,7 @@ URL: ${pageUrl}${consoleStats}`;
   ),
 
   disconnectDebugger: createTool(
-    'Disconnect from the debugger',
+    'Disconnect debugger',
     z.object({
       reference: z.string().describe('3 descriptive words of the connection to disconnect'),
     }).strict(),
@@ -642,7 +642,7 @@ URL: ${pageUrl}${consoleStats}`;
   ),
 
   loadSourceMaps: createTool(
-    'Load source maps from a directory (for TypeScript debugging)',
+    'Load source maps',
     z.object({
       directory: z.string().describe('The directory containing .js.map files'),
     }).strict(),
@@ -664,7 +664,7 @@ URL: ${pageUrl}${consoleStats}`;
   ),
 
   getDebuggerStatus: createTool(
-    'Get the current status of the debugger connection',
+    'Get debugger status',
     z.object({
       reference: z.string().describe('3 descriptive words of the connection to check'),
     }).strict(),
@@ -709,7 +709,7 @@ URL: ${pageUrl}${consoleStats}`;
   ),
 
   listConnections: createTool(
-    'List all active debugger connections',
+    'List debugger connections',
     z.object({}).strict(),
     async () => {
       const connections = connectionManager.listConnections();
@@ -738,7 +738,7 @@ URL: ${pageUrl}${consoleStats}`;
   ),
 
   switchConnection: createTool(
-    'Switch the active debugger connection',
+    'Switch debugger connection',
     z.object({
       reference: z.string().describe('3 descriptive words of the connection to switch to'),
     }).strict(),

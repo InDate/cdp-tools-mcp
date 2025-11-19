@@ -17,13 +17,13 @@ const listNetworkRequestsSchema = z.object({
   resourceType: z.string().optional(),
   limit: z.number().default(100),
   offset: z.number().default(0),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
+  connectionReason: z.string().describe('Connection reference'),
 }).strict();
 
 const getNetworkRequestSchema = z.object({
   id: z.string(),
   includeBody: z.boolean().default(false).describe('If true, saves the response body to disk and returns the file path instead of including it inline'),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
+  connectionReason: z.string().optional().describe('Connection reference'),
 }).strict();
 
 const searchNetworkRequestsSchema = z.object({
@@ -33,12 +33,12 @@ const searchNetworkRequestsSchema = z.object({
   statusCode: z.string().optional(),
   flags: z.string().default(''),
   limit: z.number().default(50),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
+  connectionReason: z.string().describe('Connection reference'),
 }).strict();
 
 const setNetworkConditionsSchema = z.object({
   preset: z.enum(['offline', 'slow-3g', 'fast-3g', 'fast-4g', 'online']),
-  connectionReason: z.string().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
+  connectionReason: z.string().describe('Connection reference'),
 }).strict();
 
 const emptySchema = z.object({}).strict();
@@ -50,7 +50,7 @@ export function createNetworkTools(
 ) {
   return {
     listNetworkRequests: createTool(
-      'List network requests with optional resource type filtering. For searching specific URLs, use searchNetworkRequests instead.',
+      'List network requests',
       listNetworkRequestsSchema,
       async (args) => {
         // Resolve connection from reason
@@ -97,7 +97,7 @@ export function createNetworkTools(
     ),
 
     getNetworkRequest: createTool(
-      'Get detailed information about a specific network request. By default, returns metadata including bodySize and bodyTokens WITHOUT the response body to avoid token overflow. Set includeBody=true to save the body to disk and get a file path.',
+      'Get network request details',
       getNetworkRequestSchema,
       async (args) => {
         // If connectionReason is provided, resolve connection
@@ -193,7 +193,7 @@ export function createNetworkTools(
     ),
 
     enableNetworkMonitoring: createTool(
-      'Start capturing network traffic',
+      'Enable network monitoring',
       emptySchema,
       async () => {
         if (!puppeteerManager.isConnected()) {
@@ -208,7 +208,7 @@ export function createNetworkTools(
     ),
 
     disableNetworkMonitoring: createTool(
-      'Stop capturing network traffic',
+      'Disable network monitoring',
       emptySchema,
       async () => {
         if (!puppeteerManager.isConnected()) {
@@ -223,7 +223,7 @@ export function createNetworkTools(
     ),
 
     searchNetworkRequests: createTool(
-      'Search network requests using regex pattern (more efficient than listNetworkRequests for finding specific requests)',
+      'Search network requests',
       searchNetworkRequestsSchema,
       async (args) => {
         // Resolve connection from reason
@@ -312,7 +312,7 @@ export function createNetworkTools(
     ),
 
     setNetworkConditions: createTool(
-      'Emulate network conditions (throttling)',
+      'Set network conditions',
       setNetworkConditionsSchema,
       async (args) => {
         // Resolve connection from reason

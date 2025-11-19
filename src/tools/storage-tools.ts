@@ -14,7 +14,7 @@ import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../
 // Zod schemas for storage tools
 const getCookiesSchema = z.object({
   url: z.string().optional(),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
+  connectionReason: z.string().optional().describe('Connection reference'),
 }).strict();
 
 const setCookieSchema = z.object({
@@ -25,23 +25,23 @@ const setCookieSchema = z.object({
   expires: z.number().optional(),
   httpOnly: z.boolean().default(false),
   secure: z.boolean().default(false),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
+  connectionReason: z.string().optional().describe('Connection reference'),
 }).strict();
 
 const getLocalStorageSchema = z.object({
   key: z.string().optional(),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
+  connectionReason: z.string().optional().describe('Connection reference'),
 }).strict();
 
 const setLocalStorageSchema = z.object({
   key: z.string(),
   value: z.string(),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
+  connectionReason: z.string().optional().describe('Connection reference'),
 }).strict();
 
 const clearStorageSchema = z.object({
   types: z.array(z.enum(['cookies', 'localStorage', 'sessionStorage'])).optional(),
-  connectionReason: z.string().optional().describe('Brief reason for needing this browser connection (3 descriptive words recommended). Requires existing tab or connection.'),
+  connectionReason: z.string().optional().describe('Connection reference'),
 }).strict();
 
 export function createStorageTools(
@@ -57,7 +57,7 @@ export function createStorageTools(
 ) {
   return {
     getCookies: createTool(
-      'Get browser cookies',
+      'Get cookies',
       getCookiesSchema,
       async (args) => {
         const { connectionReason } = args;
@@ -92,7 +92,7 @@ export function createStorageTools(
     ),
 
     setCookie: createTool(
-      'Set a browser cookie',
+      'Set cookie',
       setCookieSchema,
       async (args) => {
         const { connectionReason } = args;
@@ -132,7 +132,7 @@ export function createStorageTools(
     ),
 
     getLocalStorage: createTool(
-      'Get localStorage items. Automatically handles breakpoints.',
+      'Get localStorage',
       getLocalStorageSchema,
       async (args) => {
         const { connectionReason } = args;
@@ -187,7 +187,7 @@ export function createStorageTools(
     ),
 
     setLocalStorage: createTool(
-      'Set a localStorage item. Automatically handles breakpoints.',
+      'Set localStorage',
       setLocalStorageSchema,
       async (args) => {
         const { connectionReason } = args;
@@ -226,7 +226,7 @@ export function createStorageTools(
     ),
 
     clearStorage: createTool(
-      'Clear cookies and storage. Automatically handles breakpoints.',
+      'Clear storage',
       clearStorageSchema,
       async (args) => {
         const { connectionReason } = args;
