@@ -6,12 +6,13 @@
 import { spawn, ChildProcess } from 'child_process';
 import * as os from 'os';
 import * as path from 'path';
+import * as net from 'net';
 import { getErrorMessage } from './messages.js';
 import type { PortReserver } from './port-reserver.js';
 import { debugLog } from './debug-logger.js';
 
 export class ChromeLauncher {
-  private chromeProcess: ChildProcess | null = null;
+  private chromeProcesses: Map<number, ChildProcess> = new Map();
   private debugPort: number = 9222;
 
   /**
@@ -34,6 +35,46 @@ export class ChromeLauncher {
   }
 
   /**
+   * Check if a port is already in use using TCP connection
+   */
+  private async isPortInUse(port: number): Promise<boolean> {
+    await debugLog('ChromeLauncher', `isPortInUse() checking port ${port}`);
+
+    return new Promise((resolve) => {
+      const socket = new net.Socket();
+
+      socket.setTimeout(500);
+
+      socket.on('connect', () => {
+        socket.destroy();
+        debugLog('ChromeLauncher', `isPortInUse() port ${port} is in use`);
+        resolve(true);
+      });
+
+      socket.on('timeout', () => {
+        socket.destroy();
+        debugLog('ChromeLauncher', `isPortInUse() timeout checking port ${port}, assuming free`);
+        resolve(false);
+      });
+
+      socket.on('error', (err: any) => {
+        socket.destroy();
+        if (err.code === 'ECONNREFUSED') {
+          // Port is not in use
+          debugLog('ChromeLauncher', `isPortInUse() port ${port} is free (ECONNREFUSED)`);
+          resolve(false);
+        } else {
+          // Other error, assume port is in use to be safe
+          debugLog('ChromeLauncher', `isPortInUse() error checking port ${port}: ${err.code}, assuming in use`);
+          resolve(true);
+        }
+      });
+
+      socket.connect(port, 'localhost');
+    });
+  }
+
+  /**
    * Wait for Chrome debugging port to become ready
    * Polls the /json/version endpoint until Chrome is inspectable
    */
@@ -49,11 +90,23 @@ export class ChromeLauncher {
         const response = await Promise.race([fetchPromise, timeoutPromise]) as Response;
 
         if (response.ok) {
-          // Chrome is ready and inspectable
+          // Validate it's actually Chrome responding, not the port reserver
+          const text = await response.text();
+          if (text.trim() === 'chrome-not-running') {
+            await debugLog('ChromeLauncher', `Port ${port} is reserved by PortReserver, Chrome failed to bind`);
+            throw new Error(`Port ${port} is reserved by another MCP instance. Chrome cannot bind to this port.`);
+          }
+
+          // Valid Chrome response
           await debugLog('ChromeLauncher', `Chrome ready on port ${port} after ${i + 1} attempts`);
           return;
         }
       } catch (error) {
+        // Re-throw port reservation errors immediately
+        if (error instanceof Error && error.message.includes('reserved by another MCP instance')) {
+          throw error;
+        }
+
         // Chrome not ready yet, continue polling
         // Only log every 5 attempts to reduce noise
         if (i % 5 === 0) {
@@ -76,8 +129,14 @@ export class ChromeLauncher {
   async launch(port: number = 9222, url?: string, portReserver?: PortReserver, headless: boolean = false): Promise<{ port: number; pid: number }> {
     await debugLog('ChromeLauncher', `launch() called with port ${port}, portReserver=${!!portReserver}, isReserved=${portReserver?.isReserved()}`);
 
-    if (this.chromeProcess) {
-      throw new Error(getErrorMessage('CHROME_ALREADY_RUNNING'));
+    if (this.chromeProcesses.has(port)) {
+      throw new Error(`Chrome is already running on port ${port}. Use killChrome() to stop it first, or specify a different port.`);
+    }
+
+    // Check if port is available before attempting to launch
+    const isPortInUse = await this.isPortInUse(port);
+    if (isPortInUse) {
+      throw new Error(`Port ${port} is already in use by another process or MCP instance. Please choose a different port.`);
     }
 
     // Release port reservation if provided, so Chrome can bind to it
@@ -118,11 +177,11 @@ export class ChromeLauncher {
 
     try {
       await debugLog('ChromeLauncher', `Spawning Chrome process on port ${port}...`);
-      this.chromeProcess = spawn(chromePath, args, {
+      const chromeProcess = spawn(chromePath, args, {
         stdio: 'ignore',
       });
 
-      const pid = this.chromeProcess.pid;
+      const pid = chromeProcess.pid;
       await debugLog('ChromeLauncher', `Chrome process spawned with PID ${pid}`);
 
       // Handle process errors and unexpected exits
@@ -131,8 +190,8 @@ export class ChromeLauncher {
         processExited = true;
       };
 
-      this.chromeProcess.once('exit', exitHandler);
-      this.chromeProcess.once('error', exitHandler);
+      chromeProcess.once('exit', exitHandler);
+      chromeProcess.once('error', exitHandler);
 
       // Wait for Chrome to actually start and bind to the port
       await debugLog('ChromeLauncher', `Waiting for Chrome to become ready on port ${port}...`);
@@ -140,23 +199,37 @@ export class ChromeLauncher {
         await this.waitForChromeReady(port);
       } catch (waitError) {
         await debugLog('ChromeLauncher', `waitForChromeReady failed: ${waitError}`);
-        // Clean up if Chrome failed to start
-        if (this.chromeProcess && !this.chromeProcess.killed) {
-          this.chromeProcess.kill();
+        // Clean up if Chrome failed to start - use SIGKILL for immediate termination
+        if (chromeProcess && !chromeProcess.killed && pid) {
+          await debugLog('ChromeLauncher', `Force killing orphaned Chrome process (PID: ${pid})`);
+          try {
+            chromeProcess.kill('SIGKILL');
+            // Wait a moment to ensure kill completes
+            await new Promise(resolve => setTimeout(resolve, 100));
+          } catch (killError) {
+            await debugLog('ChromeLauncher', `Failed to kill orphaned process: ${killError}`);
+          }
         }
-        this.chromeProcess = null;
         throw waitError;
       }
 
       // Check if process exited during startup
       if (processExited) {
-        this.chromeProcess = null;
         throw new Error('Chrome process exited unexpectedly during startup');
       }
 
       // Remove exit handler now that Chrome is confirmed running
-      this.chromeProcess.removeListener('exit', exitHandler);
-      this.chromeProcess.removeListener('error', exitHandler);
+      chromeProcess.removeListener('exit', exitHandler);
+      chromeProcess.removeListener('error', exitHandler);
+
+      // Store the process in our map
+      this.chromeProcesses.set(port, chromeProcess);
+
+      // Set up auto-cleanup when process exits
+      chromeProcess.once('exit', () => {
+        debugLog('ChromeLauncher', `Chrome process on port ${port} exited, removing from tracking`);
+        this.chromeProcesses.delete(port);
+      });
 
       await debugLog('ChromeLauncher', `Chrome successfully started on port ${port} with PID ${pid}`);
       return { port, pid: pid || -1 };
@@ -167,40 +240,71 @@ export class ChromeLauncher {
   }
 
   /**
-   * Check if Chrome is running
+   * Check if Chrome is running on a specific port, or if any Chrome instance is running
    */
-  isRunning(): boolean {
-    return this.chromeProcess !== null && !this.chromeProcess.killed;
+  isRunning(port?: number): boolean {
+    if (port !== undefined) {
+      const process = this.chromeProcesses.get(port);
+      return process !== undefined && !process.killed;
+    }
+    // Check if any Chrome instance is running
+    return this.chromeProcesses.size > 0;
   }
 
   /**
-   * Get the debug port
+   * Get the debug port (returns the last launched port for backwards compatibility)
    */
   getDebugPort(): number {
     return this.debugPort;
   }
 
   /**
-   * Kill the Chrome process
+   * Get all running Chrome ports
+   */
+  getRunningPorts(): number[] {
+    return Array.from(this.chromeProcesses.keys());
+  }
+
+  /**
+   * Kill Chrome process(es)
+   * If port is specified, kills only that instance. Otherwise kills all instances.
    * First attempts graceful shutdown with SIGTERM, then force kills with SIGKILL if needed
    */
-  async kill(): Promise<void> {
-    if (!this.chromeProcess || this.chromeProcess.killed) {
+  async kill(port?: number): Promise<void> {
+    if (port !== undefined) {
+      // Kill specific instance
+      await this.killInstance(port);
+    } else {
+      // Kill all instances
+      const ports = Array.from(this.chromeProcesses.keys());
+      await debugLog('ChromeLauncher', `Killing all Chrome instances (${ports.length} total)`);
+      for (const p of ports) {
+        await this.killInstance(p);
+      }
+    }
+  }
+
+  /**
+   * Kill a specific Chrome instance by port
+   */
+  private async killInstance(port: number): Promise<void> {
+    const chromeProcess = this.chromeProcesses.get(port);
+    if (!chromeProcess || chromeProcess.killed) {
       return;
     }
 
-    const pid = this.chromeProcess.pid;
+    const pid = chromeProcess.pid;
     if (!pid) {
-      this.chromeProcess = null;
+      this.chromeProcesses.delete(port);
       return;
     }
 
-    await debugLog('ChromeLauncher', `Killing Chrome process (PID: ${pid})`);
+    await debugLog('ChromeLauncher', `Killing Chrome process on port ${port} (PID: ${pid})`);
 
     // Try graceful shutdown first (SIGTERM)
     try {
-      this.chromeProcess.kill('SIGTERM');
-      await debugLog('ChromeLauncher', `Sent SIGTERM to Chrome (PID: ${pid})`);
+      chromeProcess.kill('SIGTERM');
+      await debugLog('ChromeLauncher', `Sent SIGTERM to Chrome on port ${port} (PID: ${pid})`);
     } catch (error) {
       await debugLog('ChromeLauncher', `Failed to send SIGTERM: ${error}`);
     }
@@ -212,47 +316,53 @@ export class ChromeLauncher {
           // Check if process still exists using signal 0 (doesn't actually kill)
           process.kill(pid, 0);
           // Process still exists, force kill
-          debugLog('ChromeLauncher', `Chrome didn't exit gracefully, sending SIGKILL (PID: ${pid})`);
+          debugLog('ChromeLauncher', `Chrome on port ${port} didn't exit gracefully, sending SIGKILL (PID: ${pid})`);
           try {
-            this.chromeProcess?.kill('SIGKILL');
-            debugLog('ChromeLauncher', `Sent SIGKILL to Chrome (PID: ${pid})`);
+            chromeProcess.kill('SIGKILL');
+            debugLog('ChromeLauncher', `Sent SIGKILL to Chrome on port ${port} (PID: ${pid})`);
           } catch (killError) {
             debugLog('ChromeLauncher', `Failed to send SIGKILL: ${killError}`);
           }
         } catch {
           // Process already dead (signal 0 threw error)
-          debugLog('ChromeLauncher', `Chrome exited gracefully (PID: ${pid})`);
+          debugLog('ChromeLauncher', `Chrome on port ${port} exited gracefully (PID: ${pid})`);
         }
         resolve();
       }, 500);
 
       // If process exits before timeout, clear the timeout
-      this.chromeProcess?.once('exit', () => {
+      chromeProcess.once('exit', () => {
         clearTimeout(timeout);
-        debugLog('ChromeLauncher', `Chrome process exited (PID: ${pid})`);
+        debugLog('ChromeLauncher', `Chrome process on port ${port} exited (PID: ${pid})`);
         resolve();
       });
     });
 
-    this.chromeProcess = null;
-    await debugLog('ChromeLauncher', `Chrome cleanup complete`);
+    this.chromeProcesses.delete(port);
+    await debugLog('ChromeLauncher', `Chrome cleanup complete for port ${port}`);
   }
 
   /**
    * Reset the launcher state (useful if Chrome was closed externally)
    */
-  reset(): void {
-    this.chromeProcess = null;
+  reset(port?: number): void {
+    if (port !== undefined) {
+      this.chromeProcesses.delete(port);
+    } else {
+      this.chromeProcesses.clear();
+    }
   }
 
   /**
-   * Get Chrome launcher status
+   * Get Chrome launcher status for all instances
    */
-  getStatus(): { running: boolean; port: number; pid?: number } {
-    return {
-      running: this.isRunning(),
-      port: this.debugPort,
-      pid: this.chromeProcess?.pid,
-    };
+  getStatus(): { instances: Array<{ port: number; pid: number; running: boolean }> } {
+    const instances = Array.from(this.chromeProcesses.entries()).map(([port, process]) => ({
+      port,
+      pid: process.pid || -1,
+      running: !process.killed,
+    }));
+
+    return { instances };
   }
 }
