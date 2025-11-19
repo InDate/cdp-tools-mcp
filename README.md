@@ -5,7 +5,7 @@
 
 > Enable AI assistants like Claude to debug your JavaScript/TypeScript applications in real-time using Chrome DevTools Protocol
 
-```claude mcp add --transport stdio cdp-tools npx cdp-tools-mcp ```
+```claude mcp add --transport stdio cdp-tools npx cdp-tools-mcp@latest ```
 
 ## What is this?
 

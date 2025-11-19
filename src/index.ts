@@ -132,6 +132,9 @@ const connectionManager = new ConnectionManager();
 const logpointTracker = new LogpointExecutionTracker();
 const portReserver = new PortReserver();
 
+// Configure connection manager to kill Chrome when last connection closes
+connectionManager.setChromeLauncher(chromeLauncher);
+
 /**
  * Create and configure the MCP server with instructions
  */
@@ -307,7 +310,7 @@ const connectionTools = {
               networkMonitor,
               'localhost',
               port,
-              undefined, // reference will be set later
+              UNNAMED_CONNECTION, // Set default reference instead of undefined
               pageIndex
             );
 
@@ -364,28 +367,54 @@ URL: ${pageUrl}${consoleStats}`;
 
   killChrome: createTool(
     'Kill Chrome process',
-    z.object({}).strict(),
-    async () => {
+    z.object({
+      port: z.number().optional().describe('Port of specific Chrome instance to kill. If not provided, kills all Chrome instances.'),
+    }).strict(),
+    async (args) => {
       try {
-        chromeLauncher.kill();
+        const port = args.port;
 
-        // Clean up all connections for the browser that was killed
-        const port = getReservedPort();
-        const connectionsToClose = connectionManager.getConnectionsForBrowser('localhost', port);
-        for (const conn of connectionsToClose) {
-          await connectionManager.closeConnection(conn.id);
-          console.error(`[cdp-tools] Closed connection ${conn.id} after killing Chrome`);
+        // Kill the Chrome instance(s)
+        await chromeLauncher.kill(port);
+
+        // Clean up connections
+        if (port !== undefined) {
+          // Kill specific instance - close connections for that port
+          const connectionsToClose = connectionManager.getConnectionsForBrowser('localhost', port);
+          for (const conn of connectionsToClose) {
+            await connectionManager.closeConnection(conn.id);
+            console.error(`[cdp-tools] Closed connection ${conn.id} after killing Chrome on port ${port}`);
+          }
+
+          // Re-reserve if it was the reserved port
+          if (port === getReservedPort()) {
+            try {
+              await portReserver.reserve(port);
+              console.error(`[cdp-tools] Re-reserved port ${port} after killing Chrome`);
+            } catch (reserveError) {
+              console.error(`[cdp-tools] Warning: Failed to re-reserve port ${port}: ${reserveError}`);
+            }
+          }
+
+          return createSuccessResponse('CHROME_KILLED', { message: `Chrome instance on port ${port} killed` });
+        } else {
+          // Kill all instances - close all connections
+          const allConnections = connectionManager.listConnections();
+          for (const conn of allConnections) {
+            await connectionManager.closeConnection(conn.id);
+            console.error(`[cdp-tools] Closed connection ${conn.id} after killing all Chrome instances`);
+          }
+
+          // Re-reserve the reserved port
+          try {
+            await portReserver.reserve(getReservedPort());
+            console.error(`[cdp-tools] Re-reserved port ${getReservedPort()} after killing all Chrome instances`);
+          } catch (reserveError) {
+            console.error(`[cdp-tools] Warning: Failed to re-reserve port ${getReservedPort()}: ${reserveError}`);
+          }
+
+          return createSuccessResponse('CHROME_KILLED', { message: 'All Chrome instances killed' });
         }
-
-        // Re-reserve the port immediately after killing Chrome
-        try {
-          await portReserver.reserve(port);
-          console.error(`[cdp-tools] Re-reserved port ${port} after killing Chrome`);
-        } catch (reserveError) {
-          console.error(`[cdp-tools] Warning: Failed to re-reserve port ${port}: ${reserveError}`);
-        }
-
-        return createSuccessResponse('CHROME_KILLED');
       } catch (error) {
         return createErrorResponse('CHROME_SPAWN_FAILED', { error: `${error}` });
       }
