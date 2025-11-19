@@ -48,6 +48,7 @@
   },
   "files": [
     "build/",
+    "docs/",
     "README.md",
     "LICENSE"
   ],

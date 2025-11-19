@@ -8,7 +8,6 @@ dev-notes/
 examples/
 scripts/
 test-app/
-docs/
 
 # Test files
 *.test.ts
