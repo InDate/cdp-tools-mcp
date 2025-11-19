@@ -19,21 +19,21 @@ const extractTextSchema = z.object({
   section: z.string().optional().describe('Section heading'),
   search: z.string().optional().describe('Search term to filter sections'),
   save: z.boolean().optional().default(false).describe('Save extracted text to disk (.claude/extracts/)'),
-  connectionReason: z.string().describe('Connection reference'),
+  connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
 const findClickableElementsSchema = z.object({
   search: z.string().optional().describe('Search filter'),
   limit: z.number().optional().default(50).describe('Max results to return'),
   types: z.array(z.enum(['link', 'button', 'input'])).optional().describe('Filter by element types'),
-  connectionReason: z.string().describe('Connection reference'),
+  connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
 const findInputElementsSchema = z.object({
   search: z.string().optional().describe('Search filter'),
   limit: z.number().optional().default(50).describe('Max results to return'),
   types: z.array(z.enum(['text', 'email', 'password', 'number', 'tel', 'url', 'search', 'textarea', 'select', 'checkbox', 'radio', 'file', 'date', 'other'])).optional().describe('Filter by input types'),
-  connectionReason: z.string().describe('Connection reference'),
+  connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
 export function createContentTools(puppeteerManager: PuppeteerManager, cdpManager: CDPManager, connectionManager: ConnectionManager, resolveConnectionFromReason: (connectionReason: string) => Promise<any>) {

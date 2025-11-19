@@ -15,21 +15,21 @@ const setBreakpointSchema = z.object({
   lineNumber: z.number().describe('Line number'),
   columnNumber: z.number().optional().describe('Column number'),
   condition: z.string().optional().describe('Condition expression'),
-  connectionReason: z.string().optional().describe('Connection reference'),
+  connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
 const removeBreakpointSchema = z.object({
   breakpointId: z.string().describe('Breakpoint ID'),
-  connectionReason: z.string().optional().describe('Connection reference'),
+  connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
 const listBreakpointsSchema = z.object({
-  connectionReason: z.string().optional().describe('Connection reference'),
+  connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
 const resetLogpointCounterSchema = z.object({
   breakpointId: z.string().describe('Logpoint breakpoint ID'),
-  connectionReason: z.string().optional().describe('Connection reference'),
+  connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
 const setLogpointSchema = z.object({
@@ -41,7 +41,7 @@ const setLogpointSchema = z.object({
   includeCallStack: z.boolean().default(false).describe('Include call stack'),
   includeVariables: z.boolean().default(false).describe('Include local variables'),
   maxExecutions: z.number().int().min(1).default(20).describe('Max executions before pause'),
-  connectionReason: z.string().optional().describe('Connection reference'),
+  connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
 const validateLogpointSchema = z.object({
@@ -50,7 +50,7 @@ const validateLogpointSchema = z.object({
   columnNumber: z.number().optional().describe('Column number'),
   logMessage: z.string().describe('Message with {expression} interpolation'),
   timeout: z.number().default(2000).describe('Timeout (ms)'),
-  connectionReason: z.string().optional().describe('Connection reference'),
+  connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
 export function createBreakpointTools(

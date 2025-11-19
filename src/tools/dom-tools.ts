@@ -15,17 +15,17 @@ import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../
 // Zod schemas for DOM tools
 const querySelectorSchema = z.object({
   selector: z.string(),
-  connectionReason: z.string().describe('Connection reference'),
+  connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
 const getElementPropertiesSchema = z.object({
   selector: z.string(),
-  connectionReason: z.string().describe('Connection reference'),
+  connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
 const getDOMSnapshotSchema = z.object({
   maxDepth: z.number().optional().default(5),
-  connectionReason: z.string().describe('Connection reference'),
+  connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
 export function createDOMTools(

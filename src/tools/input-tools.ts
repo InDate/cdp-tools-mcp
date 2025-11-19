@@ -18,7 +18,7 @@ import { dismissModalByStrategy, selectDismissalStrategy } from '../utils/modal-
 const clickElementSchema = z.object({
   selector: z.string(),
   clickCount: z.number().default(1),
-  connectionReason: z.string().describe('Connection reference'),
+  connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
   handleModals: z.boolean().default(false).describe('Auto-dismiss modals before clicking'),
   dismissStrategy: z.enum(['accept', 'reject', 'close', 'remove', 'auto']).default('auto').describe('Strategy to use when dismissing modals if handleModals is true. Default: auto'),
 }).strict();
@@ -27,19 +27,19 @@ const typeTextSchema = z.object({
   selector: z.string(),
   text: z.string(),
   delay: z.number().default(0),
-  connectionReason: z.string().describe('Connection reference'),
+  connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
   handleModals: z.boolean().default(false).describe('Auto-dismiss modals before typing'),
   dismissStrategy: z.enum(['accept', 'reject', 'close', 'remove', 'auto']).default('auto').describe('Strategy to use when dismissing modals if handleModals is true. Default: auto'),
 }).strict();
 
 const pressKeySchema = z.object({
   key: z.string(),
-  connectionReason: z.string().describe('Connection reference'),
+  connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
 const hoverElementSchema = z.object({
   selector: z.string(),
-  connectionReason: z.string().describe('Connection reference'),
+  connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
   handleModals: z.boolean().default(false).describe('Auto-dismiss modals before hovering'),
   dismissStrategy: z.enum(['accept', 'reject', 'close', 'remove', 'auto']).default('auto').describe('Strategy to use when dismissing modals if handleModals is true. Default: auto'),
 }).strict();

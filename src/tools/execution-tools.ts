@@ -9,7 +9,7 @@ import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../
 
 // Schema with optional connectionReason
 const executionSchema = z.object({
-  connectionReason: z.string().optional().describe('Connection reference'),
+  connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
 export function createExecutionTools(

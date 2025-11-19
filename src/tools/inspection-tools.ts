@@ -10,7 +10,7 @@ import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../
 
 // Schema for getCallStack
 const getCallStackSchema = z.object({
-  connectionReason: z.string().optional().describe('Connection reference'),
+  connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
 // Schema for getVariables
@@ -20,7 +20,7 @@ const getVariablesSchema = z.object({
   filter: z.string().optional().describe('Regex filter for variable names'),
   expandObjects: z.boolean().default(true).describe('Expand objects/arrays'),
   maxDepth: z.number().default(2).describe('Max expansion depth'),
-  connectionReason: z.string().optional().describe('Connection reference'),
+  connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
 // Schema for evaluateExpression
@@ -29,7 +29,7 @@ const evaluateExpressionSchema = z.object({
   callFrameId: z.string().optional().describe('Call frame ID'),
   expandObjects: z.boolean().default(true).describe('Expand objects/arrays'),
   maxDepth: z.number().default(2).describe('Max expansion depth'),
-  connectionReason: z.string().optional().describe('Connection reference'),
+  connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
 // Schema for searchCode
