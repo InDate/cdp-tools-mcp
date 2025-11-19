@@ -8,6 +8,7 @@ import { PuppeteerManager } from './puppeteer-manager.js';
 import { ConsoleMonitor } from './console-monitor.js';
 import { NetworkMonitor } from './network-monitor.js';
 import type { RuntimeType } from './types.js';
+import type { ChromeLauncher } from './chrome-launcher.js';
 
 export interface Connection {
   id: string;
@@ -36,6 +37,14 @@ export class ConnectionManager {
   private browsers: Map<string, BrowserInstance> = new Map(); // Key: "host:port"
   private activeConnectionId: string | null = null;
   private connectionCounter = 0;
+  private chromeLauncher?: ChromeLauncher;
+
+  /**
+   * Set the Chrome launcher instance for automatic cleanup
+   */
+  setChromeLauncher(launcher: ChromeLauncher): void {
+    this.chromeLauncher = launcher;
+  }
 
   /**
    * Create a new connection (tab)
@@ -209,9 +218,19 @@ export class ConnectionManager {
     const browser = this.browsers.get(browserKey);
     if (browser) {
       browser.connectionIds = browser.connectionIds.filter(connId => connId !== id);
-      // If no more connections, remove browser entry
+      // If no more connections, remove browser entry and kill Chrome
       if (browser.connectionIds.length === 0) {
         this.browsers.delete(browserKey);
+
+        // Kill Chrome instance if this was the last connection to it
+        if (this.chromeLauncher && connection.type === 'chrome') {
+          try {
+            await this.chromeLauncher.kill(connection.port);
+            console.error(`[ConnectionManager] Killed Chrome on port ${connection.port} (last connection closed)`);
+          } catch (error) {
+            console.error(`[ConnectionManager] Error killing Chrome on port ${connection.port}: ${error}`);
+          }
+        }
       }
     }
 
