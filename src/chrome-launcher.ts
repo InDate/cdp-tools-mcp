@@ -133,12 +133,6 @@ export class ChromeLauncher {
       throw new Error(`Chrome is already running on port ${port}. Use killChrome() to stop it first, or specify a different port.`);
     }
 
-    // Check if port is available before attempting to launch
-    const isPortInUse = await this.isPortInUse(port);
-    if (isPortInUse) {
-      throw new Error(`Port ${port} is already in use by another process or MCP instance. Please choose a different port.`);
-    }
-
     // Release port reservation if provided, so Chrome can bind to it
     if (portReserver && portReserver.isReserved()) {
       await debugLog('ChromeLauncher', `Releasing port ${port} for Chrome to use`);
@@ -146,6 +140,13 @@ export class ChromeLauncher {
       await debugLog('ChromeLauncher', `Port ${port} released successfully`);
     } else {
       await debugLog('ChromeLauncher', `NOT releasing port - portReserver=${!!portReserver}, isReserved=${portReserver?.isReserved()}`);
+
+      // Only check if port is in use when we're NOT releasing a reservation
+      // (If we just released the reservation, we know the port is now free)
+      const isPortInUse = await this.isPortInUse(port);
+      if (isPortInUse) {
+        throw new Error(`Port ${port} is already in use by another process or MCP instance. Please choose a different port.`);
+      }
     }
 
     this.debugPort = port;
