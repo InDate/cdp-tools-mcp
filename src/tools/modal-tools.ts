@@ -16,14 +16,14 @@ import { createTool } from '../validation-helpers.js';
 
 // Zod schemas for input validation
 const detectModalsSchema = z.object({
-  connectionReason: z.string().describe('Connection reference'),
+  connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
   minZIndex: z.number().optional().describe('Min z-index to consider'),
   minViewportCoverage: z.number().optional().describe('Min viewport coverage (0-1, default: 0.25)'),
   includeBackdrops: z.boolean().optional().describe('Include backdrop/overlay elements'),
 }).strict();
 
 const dismissModalSchema = z.object({
-  connectionReason: z.string().describe('Connection reference'),
+  connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
   selector: z.string().optional().describe('CSS selector of the modal to dismiss'),
   index: z.number().optional().describe('Modal index (1-based)'),
   strategy: z.enum(['accept', 'reject', 'close', 'remove', 'auto']).default('auto').describe('Dismissal strategy: accept (click accept/agree), reject (click reject/decline), close (click close/X), remove (remove from DOM), auto (smart selection based on modal type)'),

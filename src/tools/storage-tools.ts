@@ -14,7 +14,7 @@ import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../
 // Zod schemas for storage tools
 const getCookiesSchema = z.object({
   url: z.string().optional(),
-  connectionReason: z.string().optional().describe('Connection reference'),
+  connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
 const setCookieSchema = z.object({
@@ -25,23 +25,23 @@ const setCookieSchema = z.object({
   expires: z.number().optional(),
   httpOnly: z.boolean().default(false),
   secure: z.boolean().default(false),
-  connectionReason: z.string().optional().describe('Connection reference'),
+  connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
 const getLocalStorageSchema = z.object({
   key: z.string().optional(),
-  connectionReason: z.string().optional().describe('Connection reference'),
+  connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
 const setLocalStorageSchema = z.object({
   key: z.string(),
   value: z.string(),
-  connectionReason: z.string().optional().describe('Connection reference'),
+  connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
 const clearStorageSchema = z.object({
   types: z.array(z.enum(['cookies', 'localStorage', 'sessionStorage'])).optional(),
-  connectionReason: z.string().optional().describe('Connection reference'),
+  connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
 export function createStorageTools(

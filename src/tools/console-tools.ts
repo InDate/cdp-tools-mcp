@@ -13,12 +13,12 @@ const listConsoleLogsSchema = z.object({
   type: z.string().optional(),
   limit: z.number().default(100),
   offset: z.number().default(0),
-  connectionReason: z.string().describe('Connection reference'),
+  connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
 const getConsoleLogSchema = z.object({
   id: z.string(),
-  connectionReason: z.string().optional().describe('Connection reference'),
+  connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
 const searchConsoleLogsSchema = z.object({
@@ -26,13 +26,13 @@ const searchConsoleLogsSchema = z.object({
   type: z.string().optional(),
   flags: z.string().default(''),
   limit: z.number().default(50),
-  connectionReason: z.string().describe('Connection reference'),
+  connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
 const getRecentConsoleLogsSchema = z.object({
   count: z.number().default(50).describe('Number of recent messages to retrieve'),
   type: z.string().optional().describe('message type filter (log, error, warn, etc.)'),
-  connectionReason: z.string().describe('Connection reference'),
+  connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
 const emptySchema = z.object({}).strict();
