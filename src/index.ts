@@ -994,17 +994,32 @@ function registerToolHandlers(server: Server) {
 
 // Start the server
 async function main() {
-  // Initialize and reserve debug port
-  DEBUG_PORT = await getDebugPort();
-  RESERVED_PORT = DEBUG_PORT;
+  // Initialize and reserve debug port with retry logic
+  let reservationSucceeded = false;
+  let attempts = 0;
+  const maxAttempts = 10;
 
-  // Reserve the port by binding a socket to it
-  try {
-    await portReserver.reserve(RESERVED_PORT);
-    console.error(`[cdp-tools] Reserved debug port: ${RESERVED_PORT}`);
-  } catch (error) {
-    console.error(`[cdp-tools] Failed to reserve port ${RESERVED_PORT}: ${error}`);
-    process.exit(1);
+  while (!reservationSucceeded && attempts < maxAttempts) {
+    DEBUG_PORT = await getDebugPort();
+    RESERVED_PORT = DEBUG_PORT;
+
+    // Reserve the port by binding a socket to it
+    try {
+      await portReserver.reserve(RESERVED_PORT);
+      console.error(`[cdp-tools] Reserved debug port: ${RESERVED_PORT}`);
+      reservationSucceeded = true;
+    } catch (error) {
+      attempts++;
+      console.error(`[cdp-tools] Port ${RESERVED_PORT} reservation failed (attempt ${attempts}/${maxAttempts}), trying next port...`);
+
+      if (attempts >= maxAttempts) {
+        console.error(`[cdp-tools] Failed to reserve a port after ${maxAttempts} attempts`);
+        process.exit(1);
+      }
+
+      // Try the next port
+      process.env.MCP_DEBUG_PORT = String(RESERVED_PORT + 1);
+    }
   }
 
   // Create server with instructions
