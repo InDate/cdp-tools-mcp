@@ -25,7 +25,7 @@ const detectModalsSchema = z.object({
 const dismissModalSchema = z.object({
   connectionReason: z.string().describe('Connection reference'),
   selector: z.string().optional().describe('CSS selector of the modal to dismiss'),
-  index: z.number().optional().describe('Index of the modal to dismiss (1-based, from detectModals results)'),
+  index: z.number().optional().describe('Modal index (1-based)'),
   strategy: z.enum(['accept', 'reject', 'close', 'remove', 'auto']).default('auto').describe('Dismissal strategy: accept (click accept/agree), reject (click reject/decline), close (click close/X), remove (remove from DOM), auto (smart selection based on modal type)'),
   retryAttempts: z.number().default(3).describe('Number of retry attempts when clicking buttons'),
 }).strict();

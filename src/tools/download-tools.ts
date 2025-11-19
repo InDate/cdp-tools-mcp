@@ -145,8 +145,8 @@ export function createDownloadTools() {
       'Download file to disk',
       z.object({
         url: z.string().url().describe('URL to download'),
-        filename: z.string().describe('Descriptive filename to save as (e.g., "google-logo.svg", "api-response.json")'),
-        overwriteIfExists: z.boolean().optional().default(false).describe('Set to true to overwrite existing file. Default: false'),
+        filename: z.string().describe('Filename to save as'),
+        overwriteIfExists: z.boolean().optional().default(false).describe('Overwrite if exists'),
       }).strict(),
       async (args) => {
         try {

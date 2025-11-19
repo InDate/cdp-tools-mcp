@@ -19,7 +19,7 @@ const clickElementSchema = z.object({
   selector: z.string(),
   clickCount: z.number().default(1),
   connectionReason: z.string().describe('Connection reference'),
-  handleModals: z.boolean().default(false).describe('Automatically detect and dismiss blocking modals before clicking. Default: false'),
+  handleModals: z.boolean().default(false).describe('Auto-dismiss modals before clicking'),
   dismissStrategy: z.enum(['accept', 'reject', 'close', 'remove', 'auto']).default('auto').describe('Strategy to use when dismissing modals if handleModals is true. Default: auto'),
 }).strict();
 
@@ -28,7 +28,7 @@ const typeTextSchema = z.object({
   text: z.string(),
   delay: z.number().default(0),
   connectionReason: z.string().describe('Connection reference'),
-  handleModals: z.boolean().default(false).describe('Automatically detect and dismiss blocking modals before typing. Default: false'),
+  handleModals: z.boolean().default(false).describe('Auto-dismiss modals before typing'),
   dismissStrategy: z.enum(['accept', 'reject', 'close', 'remove', 'auto']).default('auto').describe('Strategy to use when dismissing modals if handleModals is true. Default: auto'),
 }).strict();
 
@@ -40,7 +40,7 @@ const pressKeySchema = z.object({
 const hoverElementSchema = z.object({
   selector: z.string(),
   connectionReason: z.string().describe('Connection reference'),
-  handleModals: z.boolean().default(false).describe('Automatically detect and dismiss blocking modals before hovering. Default: false'),
+  handleModals: z.boolean().default(false).describe('Auto-dismiss modals before hovering'),
   dismissStrategy: z.enum(['accept', 'reject', 'close', 'remove', 'auto']).default('auto').describe('Strategy to use when dismissing modals if handleModals is true. Default: auto'),
 }).strict();
 

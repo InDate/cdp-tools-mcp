@@ -16,21 +16,21 @@ import path from 'path';
 
 const extractTextSchema = z.object({
   mode: z.enum(['outline', 'full', 'section']).optional().default('outline').describe('Mode: outline (metadata only), full (entire page), section (specific section by heading)'),
-  section: z.string().optional().describe('Section heading to extract (only used when mode=section)'),
-  search: z.string().optional().describe('Search term to filter sections by (case-insensitive)'),
+  section: z.string().optional().describe('Section heading'),
+  search: z.string().optional().describe('Search term to filter sections'),
   save: z.boolean().optional().default(false).describe('Save extracted text to disk (.claude/extracts/)'),
   connectionReason: z.string().describe('Connection reference'),
 }).strict();
 
 const findClickableElementsSchema = z.object({
-  search: z.string().optional().describe('Search term to filter clickable elements (searches in text and href)'),
+  search: z.string().optional().describe('Search filter'),
   limit: z.number().optional().default(50).describe('Max results to return'),
   types: z.array(z.enum(['link', 'button', 'input'])).optional().describe('Filter by element types'),
   connectionReason: z.string().describe('Connection reference'),
 }).strict();
 
 const findInputElementsSchema = z.object({
-  search: z.string().optional().describe('Search term to filter input elements (searches in label, placeholder, name, id)'),
+  search: z.string().optional().describe('Search filter'),
   limit: z.number().optional().default(50).describe('Max results to return'),
   types: z.array(z.enum(['text', 'email', 'password', 'number', 'tel', 'url', 'search', 'textarea', 'select', 'checkbox', 'radio', 'file', 'date', 'other'])).optional().describe('Filter by input types'),
   connectionReason: z.string().describe('Connection reference'),
