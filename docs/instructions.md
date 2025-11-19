@@ -4,24 +4,31 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 
 ## Quick Start
 
-**Web apps:**
+**Web apps (most common):**
 ```
-launchChrome → navigateTo → setBreakpoint → interact
+1. launchChrome()          # Auto-connects by default, ready immediately
+2. renameTab()             # Give it a meaningful name (e.g., "linkedin-search")
+3. navigateTo()            # Start browsing
+4. Use other tools as needed
 ```
 
-**Node.js:**
+**Node.js debugging:**
 ```
-node --inspect=9229 app.js
-connectDebugger (port: 9229)
+1. Start app: node --inspect=9229 app.js
+2. connectDebugger({ reference: "my-app-debug", port: 9229 })
+3. setBreakpoint() / setLogpoint()
 ```
 
 ## Basic Workflow
 
-1. **Connect**: `launchChrome` (browser) or `connectDebugger` (existing instance)
-2. **Set breakpoints**: `setBreakpoint` or `setLogpoint` (non-pausing)
-3. **Inspect when paused**: `getCallStack` → `getVariables` → `evaluateExpression`
-4. **Navigate**: `stepOver`, `stepInto`, `stepOut`, `resume`
-5. **Monitor**: `listConsoleLogs`, `listNetworkRequests`, `getPageInfo`
+1. **Connect**:
+   - `launchChrome()` - Launches AND auto-connects (ready immediately, don't call connectDebugger)
+   - `connectDebugger()` - Only for existing Node.js/remote debuggers
+2. **Name your connection**: Use `renameTab()` after launching Chrome
+3. **Navigate & interact**: `navigateTo`, `clickElement`, `typeText`
+4. **Debug**: `setBreakpoint` or `setLogpoint` (non-pausing)
+5. **Inspect when paused**: `getCallStack` → `getVariables` → `evaluateExpression`
+6. **Monitor**: `listConsoleLogs`, `listNetworkRequests`, `getPageInfo`
 
 ## Key Practices
 
@@ -70,6 +77,7 @@ connectDebugger (port: 9229)
 
 ## Important Notes
 
+- **After `launchChrome()`**: You are ALREADY connected. Do NOT call `connectDebugger()`. Just use `renameTab()` then `navigateTo()`
 - **Logpoint limits**: Default 20 executions. Use `resetLogpointCounter` or adjust `maxExecutions`
 - **Expression failures**: Wrapped in try-catch, shows `[Error: message]`. Search: `searchConsoleLogs({pattern: "Logpoint Error"})`
 - **CDP line mapping**: May map to nearest valid line. Use `validateLogpoint()` first
