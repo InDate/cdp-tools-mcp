@@ -351,7 +351,7 @@ Title: ${title}
 URL: ${pageUrl}${consoleStats}`;
 
           // Add instruction to provide tab reference
-          const instruction = '\n\n**IMPORTANT:** Please provide a reference name for this tab using the `renameTab` tool (e.g., "wikipedia-search", "product-page").';
+          const instruction = `\n\n**IMPORTANT:** You are already connected and ready to use. Rename this connection with \`renameTab({ reference: "${reference}", newReference: "your-name" })\`, then use \`navigateTo()\` to browse. Do NOT call \`connectDebugger\` again.`;
 
           return {
             content: [{ type: 'text', text: message + instruction }],
