@@ -14,6 +14,7 @@ import { debugLog } from './debug-logger.js';
 export class ChromeLauncher {
   private chromeProcesses: Map<number, ChildProcess> = new Map();
   private debugPort: number = 9222;
+  private launchLocks: Map<number, Promise<{ port: number; pid: number }>> = new Map();
 
   /**
    * Get the Chrome executable path for the current platform
@@ -123,30 +124,56 @@ export class ChromeLauncher {
 
   /**
    * Launch Chrome with debugging enabled
-   * Releases port reservation before launching so Chrome can bind to it
+   * Uses atomic release-and-launch to prevent race conditions
    * Waits for Chrome to actually bind to the port before resolving
    */
   async launch(port: number = 9222, url?: string, portReserver?: PortReserver, headless: boolean = false): Promise<{ port: number; pid: number }> {
     await debugLog('ChromeLauncher', `launch() called with port ${port}, portReserver=${!!portReserver}, isReserved=${portReserver?.isReserved()}`);
 
+    // CRITICAL: Check if another launch is in progress for this port
+    // This prevents race conditions where two launch() calls happen simultaneously
+    const existingLaunch = this.launchLocks.get(port);
+    if (existingLaunch) {
+      await debugLog('ChromeLauncher', `Another launch is in progress for port ${port}, waiting for it to complete...`);
+      return existingLaunch; // Return the same promise, so both callers wait for the same launch
+    }
+
     if (this.chromeProcesses.has(port)) {
       throw new Error(`Chrome is already running on port ${port}. Use killChrome() to stop it first, or specify a different port.`);
     }
 
-    // Release port reservation if provided, so Chrome can bind to it
-    if (portReserver && portReserver.isReserved()) {
-      await debugLog('ChromeLauncher', `Releasing port ${port} for Chrome to use`);
-      await portReserver.release();
-      await debugLog('ChromeLauncher', `Port ${port} released successfully`);
-    } else {
-      await debugLog('ChromeLauncher', `NOT releasing port - portReserver=${!!portReserver}, isReserved=${portReserver?.isReserved()}`);
+    // Create a promise for this launch and store it in the lock map
+    // This prevents concurrent launches on the same port
+    const launchPromise = this.performLaunch(port, url, portReserver, headless);
+    this.launchLocks.set(port, launchPromise);
 
-      // Only check if port is in use when we're NOT releasing a reservation
-      // (If we just released the reservation, we know the port is now free)
-      const isPortInUse = await this.isPortInUse(port);
-      if (isPortInUse) {
-        throw new Error(`Port ${port} is already in use by another process or MCP instance. Please choose a different port.`);
-      }
+    try {
+      const result = await launchPromise;
+      return result;
+    } finally {
+      // Always clean up the lock when done (success or failure)
+      this.launchLocks.delete(port);
+    }
+  }
+
+  /**
+   * Internal method that performs the actual Chrome launch
+   * Separated from launch() to allow mutex/locking logic
+   */
+  private async performLaunch(port: number, url?: string, portReserver?: PortReserver, headless: boolean = false): Promise<{ port: number; pid: number }> {
+    // Check if port is in use by something OTHER than our port reserver
+    // This prevents multiple Chrome instances from being launched on the same port
+    const isPortInUse = await this.isPortInUse(port);
+    const isOurReservation = portReserver && portReserver.isReserved() && portReserver.getPort() === port;
+
+    if (isPortInUse && !isOurReservation) {
+      // Port is in use by something else (not our reservation)
+      throw new Error(`Port ${port} is already in use by another process or MCP instance. Please choose a different port.`);
+    }
+
+    if (!isPortInUse && !isOurReservation) {
+      // Port is free but not reserved by us - this is fine, we can use it
+      await debugLog('ChromeLauncher', `Port ${port} is free and not reserved, proceeding with launch`);
     }
 
     this.debugPort = port;
@@ -176,7 +203,19 @@ export class ChromeLauncher {
       args.push(url);
     }
 
+    // Track whether we released the reservation (so we can re-reserve on failure)
+    let didReleaseReservation = false;
+
     try {
+      // ATOMIC OPERATION: Release port reservation immediately before spawning Chrome
+      // This minimizes the race condition window to just a few milliseconds
+      if (isOurReservation) {
+        await debugLog('ChromeLauncher', `Releasing port reservation for ${port} immediately before spawn`);
+        await portReserver.release();
+        didReleaseReservation = true;
+        await debugLog('ChromeLauncher', `Port ${port} released, spawning Chrome immediately...`);
+      }
+
       await debugLog('ChromeLauncher', `Spawning Chrome process on port ${port}...`);
       const chromeProcess = spawn(chromePath, args, {
         stdio: 'ignore',
@@ -184,6 +223,18 @@ export class ChromeLauncher {
 
       const pid = chromeProcess.pid;
       await debugLog('ChromeLauncher', `Chrome process spawned with PID ${pid}`);
+
+      // CRITICAL FIX: Add to tracking map IMMEDIATELY after spawn to prevent orphans
+      // This ensures the process is tracked even if waitForChromeReady fails
+      this.chromeProcesses.set(port, chromeProcess);
+      await debugLog('ChromeLauncher', `Added Chrome process (PID: ${pid}) to tracking map for port ${port}`);
+
+      // Set up auto-cleanup when process exits (BEFORE waitForChromeReady)
+      // This ensures cleanup happens even if the launch fails later
+      chromeProcess.once('exit', (code, signal) => {
+        debugLog('ChromeLauncher', `Chrome process on port ${port} (PID: ${pid}) exited (code: ${code}, signal: ${signal}), removing from tracking`);
+        this.chromeProcesses.delete(port);
+      });
 
       // Handle process errors and unexpected exits
       let processExited = false;
@@ -200,6 +251,18 @@ export class ChromeLauncher {
         await this.waitForChromeReady(port);
       } catch (waitError) {
         await debugLog('ChromeLauncher', `waitForChromeReady failed: ${waitError}`);
+
+        // Re-reserve the port if we released it (cleanup after failure)
+        if (didReleaseReservation && portReserver) {
+          try {
+            await debugLog('ChromeLauncher', `Re-reserving port ${port} after Chrome launch failure`);
+            await portReserver.reserve(port);
+            await debugLog('ChromeLauncher', `Successfully re-reserved port ${port}`);
+          } catch (reserveError) {
+            await debugLog('ChromeLauncher', `Failed to re-reserve port ${port}: ${reserveError}`);
+          }
+        }
+
         // Clean up if Chrome failed to start - use SIGKILL for immediate termination
         if (chromeProcess && !chromeProcess.killed && pid) {
           await debugLog('ChromeLauncher', `Force killing orphaned Chrome process (PID: ${pid})`);
@@ -211,31 +274,40 @@ export class ChromeLauncher {
             await debugLog('ChromeLauncher', `Failed to kill orphaned process: ${killError}`);
           }
         }
+        // Remove from tracking map since we're about to throw
+        // (exit handler will also remove it when process dies, but this is defensive)
+        this.chromeProcesses.delete(port);
         throw waitError;
       }
 
       // Check if process exited during startup
       if (processExited) {
+        // Remove from tracking since process is dead
+        this.chromeProcesses.delete(port);
         throw new Error('Chrome process exited unexpectedly during startup');
       }
 
-      // Remove exit handler now that Chrome is confirmed running
+      // Remove temporary exit handler now that Chrome is confirmed running
+      // (The permanent exit handler was already set up earlier)
       chromeProcess.removeListener('exit', exitHandler);
       chromeProcess.removeListener('error', exitHandler);
-
-      // Store the process in our map
-      this.chromeProcesses.set(port, chromeProcess);
-
-      // Set up auto-cleanup when process exits
-      chromeProcess.once('exit', () => {
-        debugLog('ChromeLauncher', `Chrome process on port ${port} exited, removing from tracking`);
-        this.chromeProcesses.delete(port);
-      });
 
       await debugLog('ChromeLauncher', `Chrome successfully started on port ${port} with PID ${pid}`);
       return { port, pid: pid || -1 };
     } catch (error) {
       await debugLog('ChromeLauncher', `Failed to launch Chrome: ${error}`);
+
+      // Re-reserve the port if we released it (cleanup after any failure)
+      if (didReleaseReservation && portReserver) {
+        try {
+          await debugLog('ChromeLauncher', `Re-reserving port ${port} after outer catch block failure`);
+          await portReserver.reserve(port);
+          await debugLog('ChromeLauncher', `Successfully re-reserved port ${port}`);
+        } catch (reserveError) {
+          await debugLog('ChromeLauncher', `Failed to re-reserve port ${port}: ${reserveError}`);
+        }
+      }
+
       throw new Error(`Failed to launch Chrome: ${error}`);
     }
   }

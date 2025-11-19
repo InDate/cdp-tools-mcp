@@ -241,7 +241,10 @@ const connectionTools = {
         if (!browserAlreadyExists) {
           await debugLog('index', `Launching new Chrome instance on port ${port}...`);
           // Launch new Chrome instance (will release port reservation)
-          const result = await chromeLauncher.launch(port, url, portReserver, args.headless);
+          // Don't pass URL to launch if auto-connect is enabled - let Puppeteer handle navigation
+          // This prevents race condition where Chrome starts loading before monitors are set up
+          const launchUrl = autoConnect ? undefined : url;
+          const result = await chromeLauncher.launch(port, launchUrl, portReserver, args.headless);
           await debugLog('index', `Chrome launched successfully: ${JSON.stringify(result)}`);
           isNewBrowser = true;
         }
@@ -256,6 +259,12 @@ const connectionTools = {
         if (autoConnect) {
           try {
             // Chrome is already ready (launch() waits for port binding)
+            // Add small delay for new browser to ensure full initialization
+            if (isNewBrowser) {
+              await debugLog('index', `Waiting 500ms for new Chrome browser to stabilize...`);
+              await new Promise(resolve => setTimeout(resolve, 500));
+            }
+
             // Create connection managers for this tab
             const cdpManager = new CDPManager(sourceMapHandler);
             const puppeteerManager = new PuppeteerManager();
@@ -282,7 +291,9 @@ const connectionTools = {
 
               // Navigate to URL if provided
               if (url) {
+                await debugLog('index', `Navigating to URL: ${url}`);
                 await page.goto(url, { waitUntil: 'load', timeout: 30000 });
+                await debugLog('index', `Navigation to ${url} completed`);
               }
 
               // Auto-reload page to capture initial console logs (only if not navigating and has content)
@@ -329,10 +340,15 @@ const connectionTools = {
               consoleStats = `\nConsole: ${allMessages.length} logs (${errorCount} errors, ${warnCount} warnings)`;
             }
           } catch (connectError) {
-            // If auto-connect fails, still return success for launch
+            // Log the auto-connect failure
+            await debugLog('index', `Auto-connect failed: ${connectError}`);
+
+            // If auto-connect fails, return detailed error
+            const errorMessage = connectError instanceof Error ? connectError.message : String(connectError);
             return createSuccessResponse('CHROME_LAUNCH_AUTO_CONNECT_FAILED', {
               port: port.toString(),
-              error: `${connectError}`
+              error: errorMessage,
+              suggestion: 'Chrome launched but auto-connect failed. Try manually connecting with connectDebugger().'
             }, {
               port: port,
               isNewBrowser,

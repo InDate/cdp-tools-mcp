@@ -35,6 +35,10 @@ const getRecentConsoleLogsSchema = z.object({
   connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
+const clearConsoleSchema = z.object({
+  connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
+}).strict();
+
 const emptySchema = z.object({}).strict();
 
 export function createConsoleTools(
@@ -240,10 +244,23 @@ export function createConsoleTools(
 
     clearConsole: createTool(
       'Clear console',
-      emptySchema,
-      async () => {
-        const count = consoleMonitor.getCount();
-        consoleMonitor.clear();
+      clearConsoleSchema,
+      async (args) => {
+        let targetConsoleMonitor = consoleMonitor;
+
+        // If connectionReason is provided, resolve the connection
+        if (args.connectionReason) {
+          const resolved = await resolveConnectionFromReason(args.connectionReason);
+          if (!resolved) {
+            return createErrorResponse('CONNECTION_NOT_FOUND', {
+              message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
+            });
+          }
+          targetConsoleMonitor = resolved.consoleMonitor || consoleMonitor;
+        }
+
+        const count = targetConsoleMonitor.getCount();
+        targetConsoleMonitor.clear();
 
         return createSuccessResponse('CONSOLE_CLEARED', { count });
       }
