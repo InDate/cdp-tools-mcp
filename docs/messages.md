@@ -541,7 +541,11 @@ Timeout waiting for execution to pause
 
 Navigated to {{url}}{{#title}}
 
-Page title: {{title}}{{/title}}
+Page title: {{title}}{{/title}}{{#clickableElements}}
+
+**Clickable elements:** {{clickableElements.total}} total ({{clickableElements.inViewport}} in viewport)
+
+{{clickableElements.hint}}{{/clickableElements}}
 
 ---
 
@@ -549,7 +553,9 @@ Page title: {{title}}{{/title}}
 
 **Type:** success
 
-Navigated back{{#url}} to: {{url}}{{/url}}
+Navigated back{{#url}} to: {{url}}{{/url}}{{#clickableElements}}
+
+**Clickable elements:** {{clickableElements.total}} total ({{clickableElements.inViewport}} in viewport){{/clickableElements}}
 
 ---
 
@@ -557,7 +563,9 @@ Navigated back{{#url}} to: {{url}}{{/url}}
 
 **Type:** success
 
-Navigated forward{{#url}} to: {{url}}{{/url}}
+Navigated forward{{#url}} to: {{url}}{{/url}}{{#clickableElements}}
+
+**Clickable elements:** {{clickableElements.total}} total ({{clickableElements.inViewport}} in viewport){{/clickableElements}}
 
 ---
 
@@ -565,7 +573,9 @@ Navigated forward{{#url}} to: {{url}}{{/url}}
 
 **Type:** success
 
-Page reloaded successfully
+Page reloaded successfully{{#clickableElements}}
+
+**Clickable elements:** {{clickableElements.total}} total ({{clickableElements.inViewport}} in viewport){{/clickableElements}}
 
 ---
 

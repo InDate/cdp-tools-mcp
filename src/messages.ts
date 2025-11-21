@@ -228,7 +228,7 @@ class MessageManager {
 
   /**
    * Format a message template with variable substitution
-   * Supports {{variable}} syntax and {{#variable}}...{{/variable}} conditionals
+   * Supports {{variable}} syntax, {{object.property}} nested access, and {{#variable}}...{{/variable}} conditionals
    */
   private formatMessage(template: string, variables: Record<string, any>): string {
     // First pass: Handle conditional blocks {{#var}}...{{/var}}
@@ -241,10 +241,15 @@ class MessageManager {
       return ''; // Remove entire block if variable is falsy/undefined
     });
 
-    // Second pass: Simple variable substitution {{var}}
-    result = result.replace(/\{\{(\w+)\}\}/g, (match, key) => {
-      if (key in variables) {
-        return String(variables[key]);
+    // Second pass: Variable substitution supporting dot notation {{var}} or {{obj.prop}}
+    result = result.replace(/\{\{([\w.]+)\}\}/g, (match, key) => {
+      // Handle nested property access (e.g., "clickableElements.total")
+      const value = key.split('.').reduce((obj: any, prop: string) => {
+        return obj && obj[prop] !== undefined ? obj[prop] : undefined;
+      }, variables);
+
+      if (value !== undefined) {
+        return String(value);
       }
       return match; // Keep placeholder if variable not provided
     });
