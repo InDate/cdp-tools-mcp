@@ -24,6 +24,7 @@ import { LogpointExecutionTracker } from './logpoint-execution-tracker.js';
 import { PortReserver } from './port-reserver.js';
 import { validateParams, createTool } from './validation-helpers.js';
 import { ClickableCache } from './clickable-cache.js';
+import { CommandRecorder } from './command-recorder.js';
 import { createBreakpointTools } from './tools/breakpoint-tools.js';
 import { createExecutionTools } from './tools/execution-tools.js';
 import { createInspectionTools } from './tools/inspection-tools.js';
@@ -39,6 +40,7 @@ import { createStorageTools } from './tools/storage-tools.js';
 import { createTabTools } from './tools/tab-tools.js';
 import { createDownloadTools } from './tools/download-tools.js';
 import { createModalTools } from './tools/modal-tools.js';
+import { createReplayTools } from './tools/replay-tools.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock, getMessage } from './messages.js';
 import { createServer } from 'net';
 import { readFile } from 'fs/promises';
@@ -132,6 +134,7 @@ const chromeLauncher = new ChromeLauncher();
 const connectionManager = new ConnectionManager();
 const logpointTracker = new LogpointExecutionTracker();
 const clickableCache = new ClickableCache();
+const commandRecorder = new CommandRecorder();
 const portReserver = new PortReserver();
 
 // Configure connection manager to kill Chrome when last connection closes
@@ -945,6 +948,25 @@ logpointTracker.setLimitExceededCallback((metadata) => {
   });
 });
 
+/**
+ * Execute a tool call - used by replay system
+ */
+async function executeToolCall(toolName: string, params: Record<string, any>): Promise<any> {
+  const tool = allTools[toolName as keyof typeof allTools];
+
+  if (!tool) {
+    throw new Error(`Unknown tool: ${toolName}`);
+  }
+
+  const validation = validateParams(params, (tool as any).zodSchema, toolName);
+
+  if (!validation.success) {
+    throw new Error(`Validation failed: ${JSON.stringify(validation.error)}`);
+  }
+
+  return await tool.handler(validation.data);
+}
+
 // Combine all tools
 const allTools = {
   ...connectionTools,
@@ -967,6 +989,8 @@ const allTools = {
   ...createStorageTools(proxyPuppeteerManager, proxyCdpManager, resolveConnectionFromReason),
   // Download tools
   ...createDownloadTools(),
+  // Replay tools
+  ...createReplayTools(commandRecorder, executeToolCall),
 };
 
 /**
@@ -1021,6 +1045,11 @@ function registerToolHandlers(server: Server) {
         ],
         isError: true
       };
+    }
+
+    // Record command if recording is active (but don't record replay tool calls)
+    if (toolName !== 'replay') {
+      commandRecorder.recordCommand(toolName, validation.data);
     }
 
     // Pass validated data to handler

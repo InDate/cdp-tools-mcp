@@ -132,6 +132,7 @@ MIT
 ## What's New
 
 ### Latest Features
+- **Command Replay System**: Record command sequences and replay them for testing and automation
 - **Smart Element Caching**: Navigation automatically caches all clickable elements for instant discovery
 - **Viewport-Aware Filtering**: Shows only visible elements by default, searches all when filtering
 - **Consolidated Tool API**: Action-based tool schemas reduce tool count and improve usability

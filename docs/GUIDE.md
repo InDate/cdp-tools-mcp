@@ -10,6 +10,7 @@ This guide provides detailed information about using cdp-tools-mcp for debugging
 - [Runtime Debugging](#runtime-debugging)
 - [Browser Automation](#browser-automation)
 - [Multi-Agent Support](#multi-agent-support)
+- [Command Replay](#command-replay)
 - [Common Patterns](#common-patterns)
 - [Configuration](#configuration)
 - [Troubleshooting](#troubleshooting)
@@ -327,6 +328,106 @@ node --inspect=9229 server.js
 connectDebugger({ reference: 'backend-debug', port: 9229 })
 breakpoint({ action: 'set', url: 'file:///app/server.js', lineNumber: 50, connectionReason: 'backend-debug' })
 ```
+
+## Command Replay
+
+Record and replay command sequences for testing, automation, and debugging workflows.
+
+### Recording a Sequence
+
+```javascript
+// Start recording
+replay({ action: 'startRecording' })
+
+// Execute your commands
+launchChrome({ reference: 'test-flow' })
+navigate({ action: 'goto', url: 'https://myapp.com/login', connectionReason: 'test-flow' })
+input({ action: 'type', selector: '#username', text: 'testuser', connectionReason: 'test-flow' })
+input({ action: 'type', selector: '#password', text: 'testpass', connectionReason: 'test-flow' })
+input({ action: 'click', selector: '#submit', connectionReason: 'test-flow' })
+
+// Stop and save
+replay({ action: 'stopRecording', sequenceName: 'login-flow' })
+```
+
+### Managing Sequences
+
+```javascript
+// List all saved sequences
+replay({ action: 'listSequences' })
+
+// View sequence details
+replay({ action: 'getSequence', sequenceId: 'seq-1234567890' })
+
+// Check recording status
+replay({ action: 'status' })
+
+// Delete a sequence
+replay({ action: 'deleteSequence', sequenceId: 'seq-1234567890' })
+```
+
+### Replaying Sequences
+
+```javascript
+// Replay entire sequence
+replay({ action: 'replay', sequenceId: 'seq-1234567890' })
+
+// Preview without executing (dry run)
+replay({ action: 'replay', sequenceId: 'seq-1234567890', dryRun: true })
+
+// Replay specific commands only
+replay({
+  action: 'replay',
+  sequenceId: 'seq-1234567890',
+  commandIds: ['cmd-1', 'cmd-3', 'cmd-5']
+})
+```
+
+### Use Cases
+
+**Regression Testing:**
+```javascript
+// Record once
+replay({ action: 'startRecording' })
+// ... perform test workflow ...
+replay({ action: 'stopRecording', sequenceName: 'checkout-test' })
+
+// Replay anytime to verify
+replay({ action: 'replay', sequenceId: 'seq-checkout-test' })
+```
+
+**Debugging Workflows:**
+```javascript
+// Record problematic workflow
+replay({ action: 'startRecording' })
+// ... steps that lead to bug ...
+replay({ action: 'stopRecording', sequenceName: 'bug-reproduction' })
+
+// Replay to debug
+replay({ action: 'replay', sequenceId: 'seq-bug-reproduction' })
+// Commands execute one by one, easier to identify issue
+```
+
+**Automation:**
+```javascript
+// Save common workflows as sequences
+// Example: Daily smoke test
+replay({ action: 'startRecording' })
+// ... navigate key pages, check functionality ...
+replay({ action: 'stopRecording', sequenceName: 'daily-smoke-test' })
+
+// Run anytime
+replay({ action: 'replay', sequenceId: 'seq-daily-smoke-test' })
+```
+
+### Notes
+
+- **Recording:** Only tool calls are recorded, not responses
+- **Replay:** Commands execute sequentially in recorded order
+- **Selective Replay:** Use `commandIds` to replay specific steps
+- **Dry Run:** Preview execution without actually running commands
+- **Persistence:** Sequences are kept in memory (cleared on restart)
+- **Exclusion:** Replay tool calls are not recorded (prevents recursive recording)
 
 ## Common Patterns
 

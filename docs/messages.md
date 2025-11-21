@@ -1330,3 +1330,87 @@ Error: {{error}}
 - Try the `printToPDF` tool for basic PDF generation with Chrome instead
 
 ---
+
+## Replay Messages
+
+## RECORDING_STARTED
+
+**Type:** success
+
+Command recording started. All tool calls will be recorded until you stop.
+
+---
+
+## RECORDING_STOPPED
+
+**Type:** success
+
+Recording stopped with {{commandCount}} commands (not saved). Provide sequenceName to save.
+
+---
+
+## SEQUENCE_SAVED
+
+**Type:** success
+
+Sequence "{{name}}" saved successfully!
+
+**Sequence ID:** `{{sequenceId}}`
+**Commands:** {{commandCount}}
+
+---
+
+## SEQUENCE_DELETED
+
+**Type:** success
+
+Sequence `{{sequenceId}}` deleted successfully.
+
+---
+
+## ALREADY_RECORDING
+
+**Type:** error
+**Code:** ALREADY_RECORDING
+
+Already recording. Stop current recording first with `replay({ action: 'stopRecording' })`.
+
+---
+
+## NOT_RECORDING
+
+**Type:** error
+**Code:** NOT_RECORDING
+
+Not currently recording. Start recording first with `replay({ action: 'startRecording' })`.
+
+---
+
+## NO_COMMANDS_RECORDED
+
+**Type:** error
+**Code:** NO_COMMANDS_RECORDED
+
+No commands were recorded in this session.
+
+---
+
+## SEQUENCE_NOT_FOUND
+
+**Type:** error
+**Code:** SEQUENCE_NOT_FOUND
+
+Sequence `{{sequenceId}}` not found. Use `replay({ action: 'listSequences' })` to see available sequences.
+
+---
+
+## NO_MATCHING_COMMANDS
+
+**Type:** error
+**Code:** NO_MATCHING_COMMANDS
+
+No commands matched the provided IDs.
+
+**Provided IDs:** {{providedIds}}
+
+---
