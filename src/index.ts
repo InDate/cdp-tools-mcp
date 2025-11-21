@@ -23,6 +23,7 @@ import { ConnectionManager, type Connection } from './connection-manager.js';
 import { LogpointExecutionTracker } from './logpoint-execution-tracker.js';
 import { PortReserver } from './port-reserver.js';
 import { validateParams, createTool } from './validation-helpers.js';
+import { ClickableCache } from './clickable-cache.js';
 import { createBreakpointTools } from './tools/breakpoint-tools.js';
 import { createExecutionTools } from './tools/execution-tools.js';
 import { createInspectionTools } from './tools/inspection-tools.js';
@@ -130,6 +131,7 @@ const sourceMapHandler = new SourceMapHandler();
 const chromeLauncher = new ChromeLauncher();
 const connectionManager = new ConnectionManager();
 const logpointTracker = new LogpointExecutionTracker();
+const clickableCache = new ClickableCache();
 const portReserver = new PortReserver();
 
 // Configure connection manager to kill Chrome when last connection closes
@@ -224,13 +226,15 @@ const connectionTools = {
       autoConnect: z.boolean().optional().default(true).describe('Automatically connect debugger after launch'),
       port: z.number().optional().describe('The debugging port (optional, defaults to this session\'s reserved port). Use this to launch multiple Chrome instances on different ports.'),
       headless: z.boolean().optional().default(false).describe('Launch in headless mode (no visible window, prevents focus stealing). Default: false'),
+      reference: z.string().optional().describe('Connection reference name (3 descriptive words). If not provided, defaults to "unnamed-connection-default". Use this to identify the connection when calling other tools.'),
     }).strict(),
     async (args) => {
       // Use reserved port unless explicitly specified
       const port = args.port || getReservedPort();
-      await debugLog('index', `launchChrome called: port=${port}, requested=${args.port}, reserved=${getReservedPort()}, url=${args.url}, autoConnect=${args.autoConnect}`);
+      await debugLog('index', `launchChrome called: port=${port}, requested=${args.port}, reserved=${getReservedPort()}, url=${args.url}, autoConnect=${args.autoConnect}, reference=${args.reference}`);
       const url = args.url;
       const autoConnect = args.autoConnect ?? true;
+      const userReference = args.reference;
 
       try {
         // Check if Chrome is already running on this port (browser already exists)
@@ -313,7 +317,22 @@ const connectionTools = {
             const currentPage = puppeteerManager.getPage();
             const pageIndex = pages.findIndex(p => p === currentPage);
 
-            // Register connection
+            // Register connection with user-provided reference or default
+            let connectionReference = UNNAMED_CONNECTION;
+
+            // Validate and sanitize the reference if user provided one
+            if (userReference) {
+              const validation = validateReference(userReference);
+              if (!validation.valid) {
+                return createErrorResponse('INVALID_REFERENCE', {
+                  reference: userReference,
+                  error: validation.error
+                });
+              }
+              // Use the sanitized version (lowercase with hyphens)
+              connectionReference = validation.sanitized!;
+            }
+
             connectionId = connectionManager.createConnection(
               cdpManager,
               puppeteerManager,
@@ -321,7 +340,7 @@ const connectionTools = {
               networkMonitor,
               'localhost',
               port,
-              UNNAMED_CONNECTION, // Set default reference instead of undefined
+              connectionReference,
               pageIndex
             );
 
@@ -362,12 +381,17 @@ const connectionTools = {
           const reference = connection?.reference || UNNAMED_CONNECTION;
 
           const message = `Chrome launched and connected
-Connection Reference: ${reference}
+Connection Reference: \`${reference}\`
 Title: ${title}
 URL: ${pageUrl}${consoleStats}`;
 
-          // Add instruction to provide tab reference
-          const instruction = `\n\n**IMPORTANT:** You are already connected and ready to use. Rename this connection with \`renameTab({ reference: "${reference}", newReference: "your-name" })\`, then use \`navigateTo()\` to browse. Do NOT call \`connectDebugger\` again.`;
+          // Add instruction based on whether user provided a reference
+          let instruction: string;
+          if (userReference) {
+            instruction = `\n\n**Ready to use!** Use \`connectionReason: "${reference}"\` in tool calls. Navigate with \`navigate({ action: 'goto', connectionReason: "${reference}", url: "..." })\`.`;
+          } else {
+            instruction = `\n\n**Ready to use!** Use \`connectionReason: "${reference}"\` in tool calls, or rename with \`tab({ action: 'rename', reference: "${reference}", newReference: "your-name" })\` first.`;
+          }
 
           return {
             content: [{ type: 'text', text: message + instruction }],
@@ -934,11 +958,11 @@ const allTools = {
   // Browser Automation tools
   ...createConsoleTools(proxyPuppeteerManager, proxyConsoleMonitor, resolveConnectionFromReason),
   ...createNetworkTools(proxyPuppeteerManager, proxyNetworkMonitor, resolveConnectionFromReason),
-  ...createPageTools(proxyPuppeteerManager, proxyCdpManager, proxyConsoleMonitor, proxyNetworkMonitor, connectionManager, resolveConnectionFromReason),
+  ...createPageTools(proxyPuppeteerManager, proxyCdpManager, proxyConsoleMonitor, proxyNetworkMonitor, connectionManager, resolveConnectionFromReason, clickableCache),
   ...createDOMTools(proxyPuppeteerManager, proxyCdpManager, connectionManager, resolveConnectionFromReason),
   ...createScreenshotTools(proxyPuppeteerManager, proxyCdpManager, connectionManager, resolveConnectionFromReason),
   ...createInputTools(proxyPuppeteerManager, proxyCdpManager, connectionManager, resolveConnectionFromReason),
-  ...createContentTools(proxyPuppeteerManager, proxyCdpManager, connectionManager, resolveConnectionFromReason),
+  ...createContentTools(proxyPuppeteerManager, proxyCdpManager, connectionManager, resolveConnectionFromReason, clickableCache),
   ...createModalTools(resolveConnectionFromReason),
   ...createStorageTools(proxyPuppeteerManager, proxyCdpManager, resolveConnectionFromReason),
   // Download tools

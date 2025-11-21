@@ -6,29 +6,39 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 
 **Web apps (most common):**
 ```
-1. launchChrome()          # Auto-connects by default, ready immediately
-2. renameTab()             # Give it a meaningful name (e.g., "linkedin-search")
-3. navigateTo()            # Start browsing
-4. Use other tools as needed
+1. launchChrome({ reference: "your-descriptive-name" })  # Auto-connects, ready immediately
+2. navigate({ action: 'goto', connectionReason: "your-descriptive-name", url: "..." })
+   # Navigation automatically caches clickable elements (links, buttons, inputs) for the page
+3. content({ action: 'findClickable', connectionReason: "your-descriptive-name" })
+   # Shows viewport-visible elements from cache. Use search/types to filter
+4. Use other tools as needed with connectionReason parameter
+```
+
+**Alternative (rename later):**
+```
+1. launchChrome()                                  # Uses default "unnamed-connection-default"
+2. tab({ action: 'rename', reference: "unnamed-connection-default", newReference: "your-name" })
+3. Use other tools with connectionReason: "your-name"
 ```
 
 **Node.js debugging:**
 ```
 1. Start app: node --inspect=9229 app.js
 2. connectDebugger({ reference: "my-app-debug", port: 9229 })
-3. setBreakpoint() / setLogpoint()
+3. breakpoint({ action: 'set', connectionReason: "my-app-debug", ... })
 ```
 
 ## Basic Workflow
 
 1. **Connect**:
-   - `launchChrome()` - Launches AND auto-connects (ready immediately, don't call connectDebugger)
-   - `connectDebugger()` - Only for existing Node.js/remote debuggers
-2. **Name your connection**: Use `renameTab()` after launching Chrome
-3. **Navigate & interact**: `navigateTo`, `clickElement`, `typeText`
-4. **Debug**: `setBreakpoint` or `setLogpoint` (non-pausing)
-5. **Inspect when paused**: `getCallStack` → `getVariables` → `evaluateExpression`
-6. **Monitor**: `listConsoleLogs`, `listNetworkRequests`, `getPageInfo`
+   - `launchChrome({ reference: "name" })` - Launches AND auto-connects (ready immediately, don't call connectDebugger)
+   - `connectDebugger({ reference: "name" })` - Only for existing Node.js/remote debuggers
+2. **Navigate & interact**: Use connectionReason in all tool calls
+   - `navigate({ action: 'goto', connectionReason: "name", url: "..." })`
+   - `input({ action: 'click', connectionReason: "name", selector: "..." })`
+3. **Debug**: `breakpoint({ action: 'set', connectionReason: "name", ... })`
+4. **Inspect when paused**: `inspect({ action: 'getCallStack', ... })` → `inspect({ action: 'getVariables', ... })`
+5. **Monitor**: `console({ action: 'list', connectionReason: "name" })`, `network({ action: 'list', connectionReason: "name" })`
 
 ## Key Practices
 
@@ -77,7 +87,8 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 
 ## Important Notes
 
-- **After `launchChrome()`**: You are ALREADY connected. Do NOT call `connectDebugger()`. Just use `renameTab()` then `navigateTo()`
+- **After `launchChrome()`**: You are ALREADY connected. Do NOT call `connectDebugger()`. Use the `reference` parameter when launching, or rename later with `tab({ action: 'rename' })`
+- **Clickable elements cache**: Navigation (goto, reload, back, forward) automatically caches all clickable elements. Cache expires after 5 minutes. `findClickable` shows viewport-only by default; use `search` or `types` parameters to search all elements
 - **Logpoint limits**: Default 20 executions. Use `resetLogpointCounter` or adjust `maxExecutions`
 - **Expression failures**: Wrapped in try-catch, shows `[Error: message]`. Search: `searchConsoleLogs({pattern: "Logpoint Error"})`
 - **CDP line mapping**: May map to nearest valid line. Use `validateLogpoint()` first
