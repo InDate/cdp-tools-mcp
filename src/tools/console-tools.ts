@@ -36,6 +36,7 @@ const getRecentConsoleLogsSchema = z.object({
 }).strict();
 
 const clearConsoleSchema = z.object({
+  reason: z.string().describe('Why the console needs to be cleared'),
   connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
@@ -246,6 +247,9 @@ export function createConsoleTools(
       'Clear console',
       clearConsoleSchema,
       async (args) => {
+        // Log the reason for audit purposes
+        console.error(`[cdp-tools] clearConsole called - Reason: ${args.reason}, Connection: ${args.connectionReason || 'default'}`);
+
         let targetConsoleMonitor = consoleMonitor;
 
         // If connectionReason is provided, resolve the connection

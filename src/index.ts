@@ -384,11 +384,15 @@ URL: ${pageUrl}${consoleStats}`;
   killChrome: createTool(
     'Kill Chrome process',
     z.object({
+      reason: z.string().describe('Why Chrome needs to be killed'),
       port: z.number().optional().describe('Port of specific Chrome instance to kill. If not provided, kills all Chrome instances.'),
     }).strict(),
     async (args) => {
       try {
         const port = args.port;
+
+        // Log the reason for audit purposes
+        console.error(`[cdp-tools] killChrome called - Reason: ${args.reason}, Port: ${port || 'all'}`);
 
         // Kill the Chrome instance(s)
         await chromeLauncher.kill(port);
@@ -439,8 +443,12 @@ URL: ${pageUrl}${consoleStats}`;
 
   resetChromeLauncher: createTool(
     'Reset Chrome launcher',
-    z.object({}).strict(),
-    async () => {
+    z.object({
+      reason: z.string().describe('Why Chrome launcher needs to be reset'),
+    }).strict(),
+    async (args) => {
+      // Log the reason for audit purposes
+      console.error(`[cdp-tools] resetChromeLauncher called - Reason: ${args.reason}`);
       chromeLauncher.reset();
       return createSuccessResponse('CHROME_LAUNCHER_RESET');
     }
@@ -664,9 +672,13 @@ URL: ${pageUrl}${consoleStats}`;
   disconnectDebugger: createTool(
     'Disconnect debugger',
     z.object({
+      reason: z.string().describe('Why the connection needs to be disconnected'),
       reference: z.string().describe('3 descriptive words of the connection to disconnect'),
     }).strict(),
     async (args) => {
+      // Log the reason for audit purposes
+      console.error(`[cdp-tools] disconnectDebugger called - Reason: ${args.reason}, Reference: ${args.reference}`);
+
       // Find connection by reference
       const connection = connectionManager.findConnectionByReference(args.reference);
 
