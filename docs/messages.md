@@ -1414,3 +1414,43 @@ No commands matched the provided IDs.
 **Provided IDs:** {{providedIds}}
 
 ---
+
+## SEQUENCE_SAVED_TO_DISK
+
+**Type:** success
+
+Sequence saved to disk successfully!
+
+**Filename:** `{{filename}}`
+**Location:** `.claude/sequences/`
+
+---
+
+## LOAD_FAILED
+
+**Type:** error
+**Code:** LOAD_FAILED
+
+Failed to load sequence from disk.
+
+**Filename:** `{{filename}}`
+**Error:** {{error}}
+
+**Suggestions:**
+- Verify the filename is correct
+- Check that the file exists in `.claude/sequences/`
+- Use `replay({ action: 'listSaved' })` to see available files
+
+---
+
+## SEQUENCE_LOADED_FROM_DISK
+
+**Type:** success
+
+Sequence loaded from disk successfully!
+
+**Sequence ID:** `{{sequenceId}}`
+**Name:** {{name}}
+**Commands:** {{commandCount}}
+
+---
