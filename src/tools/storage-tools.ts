@@ -40,6 +40,7 @@ const setLocalStorageSchema = z.object({
 }).strict();
 
 const clearStorageSchema = z.object({
+  reason: z.string().describe('Why storage needs to be cleared'),
   types: z.array(z.enum(['cookies', 'localStorage', 'sessionStorage'])).optional(),
   connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
@@ -231,6 +232,10 @@ export function createStorageTools(
       async (args) => {
         const { connectionReason } = args;
 
+        // Log the reason for audit purposes
+        const types = args.types || ['cookies', 'localStorage', 'sessionStorage'];
+        console.error(`[cdp-tools] clearStorage called - Reason: ${args.reason}, Types: ${types.join(', ')}, Connection: ${connectionReason || 'default'}`);
+
         // Resolve connection if connectionReason is provided
         let targetPuppeteerManager = puppeteerManager;
         let targetCdpManager = cdpManager;
@@ -248,7 +253,6 @@ export function createStorageTools(
         }
 
         const page = targetPuppeteerManager.getPage();
-        const types = args.types || ['cookies', 'localStorage', 'sessionStorage'];
 
         const result = await executeWithPauseDetection(
           targetCdpManager,
