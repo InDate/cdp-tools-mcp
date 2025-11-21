@@ -14,34 +14,26 @@ import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import { isElementBlocked, detectModals } from '../utils/modal-detector.js';
 import { dismissModalByStrategy, selectDismissalStrategy } from '../utils/modal-dismissal.js';
 
-// Zod schemas for input validation
-const clickElementSchema = z.object({
-  selector: z.string(),
-  clickCount: z.number().default(1),
+// Consolidated input tool schema
+const inputToolSchema = z.object({
+  action: z.enum(['click', 'type', 'press', 'hover'])
+    .describe('Input action: click (click element), type (type text into element), press (press keyboard key), hover (hover over element)'),
   connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
-  handleModals: z.boolean().default(false).describe('Auto-dismiss modals before clicking'),
-  dismissStrategy: z.enum(['accept', 'reject', 'close', 'remove', 'auto']).default('auto').describe('Strategy to use when dismissing modals if handleModals is true. Default: auto'),
-}).strict();
 
-const typeTextSchema = z.object({
-  selector: z.string(),
-  text: z.string(),
-  delay: z.number().default(0),
-  connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
-  handleModals: z.boolean().default(false).describe('Auto-dismiss modals before typing'),
-  dismissStrategy: z.enum(['accept', 'reject', 'close', 'remove', 'auto']).default('auto').describe('Strategy to use when dismissing modals if handleModals is true. Default: auto'),
-}).strict();
+  // click, type, hover parameters
+  selector: z.string().optional().describe('CSS selector (required for click, type, hover actions)'),
+  handleModals: z.boolean().optional().describe('Auto-dismiss modals before action (for click, type, hover actions, default: false)'),
+  dismissStrategy: z.enum(['accept', 'reject', 'close', 'remove', 'auto']).optional().describe('Strategy to use when dismissing modals if handleModals is true (for click, type, hover actions, default: auto)'),
 
-const pressKeySchema = z.object({
-  key: z.string(),
-  connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
-}).strict();
+  // click parameters
+  clickCount: z.number().optional().describe('Number of clicks (for click action, default: 1)'),
 
-const hoverElementSchema = z.object({
-  selector: z.string(),
-  connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
-  handleModals: z.boolean().default(false).describe('Auto-dismiss modals before hovering'),
-  dismissStrategy: z.enum(['accept', 'reject', 'close', 'remove', 'auto']).default('auto').describe('Strategy to use when dismissing modals if handleModals is true. Default: auto'),
+  // type parameters
+  text: z.string().optional().describe('Text to type (required for type action)'),
+  delay: z.number().optional().describe('Delay between keystrokes in ms (for type action, default: 0)'),
+
+  // press parameters
+  key: z.string().optional().describe('Key to press (required for press action)'),
 }).strict();
 
 export function createInputTools(
@@ -51,12 +43,14 @@ export function createInputTools(
   resolveConnectionFromReason: (connectionReason: string) => Promise<any>
 ) {
   return {
-    clickElement: createTool(
-      'Click element',
-      clickElementSchema,
+    input: createTool(
+      'Perform browser input actions. Actions: click (click element), type (type text into element), press (press keyboard key), hover (hover over element)',
+      inputToolSchema,
       async (args) => {
+        const { action, connectionReason } = args;
+
         // Resolve connection from reason
-        const resolved = await resolveConnectionFromReason(args.connectionReason);
+        const resolved = await resolveConnectionFromReason(connectionReason);
         if (!resolved) {
           return createErrorResponse('CONNECTION_NOT_FOUND', {
             message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
@@ -66,361 +60,378 @@ export function createInputTools(
         const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
         const targetCdpManager = resolved.cdpManager;
 
-        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'clickElement', getConfiguredDebugPort());
+        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, action, getConfiguredDebugPort());
         if (error) {
           return error;
         }
 
         const page = targetPuppeteerManager.getPage();
 
-        const result = await executeWithPauseDetection(
-          targetCdpManager,
-          async () => {
-            // Check if element exists and is clickable
-            const element = await page.$(args.selector);
-            if (!element) {
+        switch (action) {
+          case 'click': {
+            const { selector, clickCount = 1, handleModals = false, dismissStrategy = 'auto' } = args;
+
+            if (!selector) {
               return {
-                error: `Element not found: ${args.selector}`,
+                content: [
+                  {
+                    type: 'text',
+                    text: `## Error\n\nMissing required parameter: \`selector\`\n\n**Action:** click\n\n**Suggestion:** Provide a CSS selector for the element to click.`,
+                  },
+                ],
+                isError: true,
               };
             }
 
-            // Check if element is blocked by modal
-            const blockingCheck = await isElementBlocked(page, args.selector);
-
-            if (blockingCheck.blocked && blockingCheck.blockingModal) {
-              if (args.handleModals) {
-                // Auto-dismiss modal
-                const dismissResult = await dismissModalHelper(
-                  page,
-                  blockingCheck.blockingModal.selector,
-                  args.dismissStrategy
-                );
-
-                // Check if dismissal was successful
-                if (!dismissResult.success) {
+            const result = await executeWithPauseDetection(
+              targetCdpManager,
+              async () => {
+                // Check if element exists and is clickable
+                const element = await page.$(selector);
+                if (!element) {
                   return {
-                    error: `Failed to dismiss blocking modal: ${dismissResult.error || 'Unknown error'}`,
-                    blockingModal: blockingCheck.blockingModal,
+                    error: `Element not found: ${selector}`,
                   };
                 }
 
-                // Re-check if element is still blocked
-                const recheckBlocking = await isElementBlocked(page, args.selector);
-                if (recheckBlocking.blocked) {
-                  return {
-                    error: `Element still blocked after dismissing modal`,
-                    blockingModal: recheckBlocking.blockingModal,
-                  };
+                // Check if element is blocked by modal
+                const blockingCheck = await isElementBlocked(page, selector);
+
+                if (blockingCheck.blocked && blockingCheck.blockingModal) {
+                  if (handleModals) {
+                    // Auto-dismiss modal
+                    const dismissResult = await dismissModalHelper(
+                      page,
+                      blockingCheck.blockingModal.selector,
+                      dismissStrategy
+                    );
+
+                    // Check if dismissal was successful
+                    if (!dismissResult.success) {
+                      return {
+                        error: `Failed to dismiss blocking modal: ${dismissResult.error || 'Unknown error'}`,
+                        blockingModal: blockingCheck.blockingModal,
+                      };
+                    }
+
+                    // Re-check if element is still blocked
+                    const recheckBlocking = await isElementBlocked(page, selector);
+                    if (recheckBlocking.blocked) {
+                      return {
+                        error: `Element still blocked after dismissing modal`,
+                        blockingModal: recheckBlocking.blockingModal,
+                      };
+                    }
+                  } else {
+                    // Return error with modal information
+                    return {
+                      error: `Element is blocked by modal`,
+                      blockingModal: blockingCheck.blockingModal,
+                      suggestion: `Enable handleModals parameter or call dismissModal tool first`,
+                    };
+                  }
                 }
-              } else {
-                // Return error with modal information
+
+                // Check if element has click handlers
+                const hasClickHandler = await page.evaluate((sel: string) => {
+                  const el = (globalThis as any).document.querySelector(sel);
+                  if (!el) return false;
+
+                  // Check for onclick attribute
+                  if (el.onclick) return true;
+
+                  // Check for addEventListener listeners (limited - can't detect all)
+                  // Check if element or ancestors have event listeners by testing common patterns
+                  let current = el;
+                  while (current) {
+                    // Check for common click-related attributes
+                    if (current.hasAttribute('onclick')) return true;
+                    if (current.hasAttribute('data-action')) return true;
+
+                    // Check for interactive elements that typically have handlers
+                    const tag = current.tagName.toLowerCase();
+                    if (tag === 'button' || tag === 'a' || tag === 'input') return true;
+
+                    // Check for cursor pointer (often indicates clickable)
+                    const style = (globalThis as any).window.getComputedStyle(current);
+                    if (style.cursor === 'pointer') return true;
+
+                    current = current.parentElement;
+                  }
+
+                  return false;
+                }, selector);
+
+                // Perform the click
+                await page.click(selector, { clickCount });
+
                 return {
-                  error: `Element is blocked by modal`,
-                  blockingModal: blockingCheck.blockingModal,
-                  suggestion: `Enable handleModals parameter or call dismissModal tool first`,
+                  selector,
+                  clickCount,
+                  hasClickHandler,
+                  warning: !hasClickHandler ? 'Element may not have a click handler attached. Click was performed but may not trigger any action.' : undefined,
                 };
+              },
+              'click'
+            );
+
+            // Check if element was not found
+            if (!result.result || result.result.error) {
+              // Check if error is due to blocking modal
+              if (result.result?.blockingModal) {
+                return createErrorResponse('ELEMENT_BLOCKED_BY_MODAL', {
+                  selector,
+                  modalType: result.result.blockingModal.type,
+                  modalDescription: result.result.blockingModal.description,
+                  modalSelector: result.result.blockingModal.selector,
+                  suggestion: result.result.suggestion,
+                  availableStrategies: result.result.blockingModal.dismissStrategies,
+                });
               }
+              return createErrorResponse('ELEMENT_NOT_FOUND', { selector });
             }
 
-            // Check if element has click handlers
-            const hasClickHandler = await page.evaluate((sel: string) => {
-              const el = (globalThis as any).document.querySelector(sel);
-              if (!el) return false;
+            // Return success with warning if no click handler detected
+            if (result.result.warning) {
+              return createSuccessResponse('ELEMENT_CLICK_WARNING', { selector });
+            }
 
-              // Check for onclick attribute
-              if (el.onclick) return true;
+            return createSuccessResponse('ELEMENT_CLICK_SUCCESS', { selector });
+          }
 
-              // Check for addEventListener listeners (limited - can't detect all)
-              // Check if element or ancestors have event listeners by testing common patterns
-              let current = el;
-              while (current) {
-                // Check for common click-related attributes
-                if (current.hasAttribute('onclick')) return true;
-                if (current.hasAttribute('data-action')) return true;
+          case 'type': {
+            const { selector, text, delay = 0, handleModals = false, dismissStrategy = 'auto' } = args;
 
-                // Check for interactive elements that typically have handlers
-                const tag = current.tagName.toLowerCase();
-                if (tag === 'button' || tag === 'a' || tag === 'input') return true;
+            if (!selector) {
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: `## Error\n\nMissing required parameter: \`selector\`\n\n**Action:** type\n\n**Suggestion:** Provide a CSS selector for the input element.`,
+                  },
+                ],
+                isError: true,
+              };
+            }
 
-                // Check for cursor pointer (often indicates clickable)
-                const style = (globalThis as any).window.getComputedStyle(current);
-                if (style.cursor === 'pointer') return true;
+            if (!text) {
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: `## Error\n\nMissing required parameter: \`text\`\n\n**Action:** type\n\n**Suggestion:** Provide text to type into the element.`,
+                  },
+                ],
+                isError: true,
+              };
+            }
 
-                current = current.parentElement;
+            const result = await executeWithPauseDetection(
+              targetCdpManager,
+              async () => {
+                // Check if element exists first
+                const element = await page.$(selector);
+                if (!element) {
+                  return { error: `Element not found: ${selector}` };
+                }
+
+                // Check if element is blocked by modal
+                const blockingCheck = await isElementBlocked(page, selector);
+
+                if (blockingCheck.blocked && blockingCheck.blockingModal) {
+                  if (handleModals) {
+                    // Auto-dismiss modal
+                    const dismissResult = await dismissModalHelper(
+                      page,
+                      blockingCheck.blockingModal.selector,
+                      dismissStrategy
+                    );
+
+                    // Check if dismissal was successful
+                    if (!dismissResult.success) {
+                      return {
+                        error: `Failed to dismiss blocking modal: ${dismissResult.error || 'Unknown error'}`,
+                        blockingModal: blockingCheck.blockingModal,
+                      };
+                    }
+
+                    // Re-check if element is still blocked
+                    const recheckBlocking = await isElementBlocked(page, selector);
+                    if (recheckBlocking.blocked) {
+                      return {
+                        error: `Element still blocked after dismissing modal`,
+                        blockingModal: recheckBlocking.blockingModal,
+                      };
+                    }
+                  } else {
+                    // Return error with modal information
+                    return {
+                      error: `Element is blocked by modal`,
+                      blockingModal: blockingCheck.blockingModal,
+                      suggestion: `Enable handleModals parameter or call dismissModal tool first`,
+                    };
+                  }
+                }
+
+                // Clear existing text first
+                await page.click(selector, { clickCount: 3 });
+                await page.keyboard.press('Backspace');
+                // Type new text
+                await page.type(selector, text, { delay });
+
+                return { selector, text };
+              },
+              'typeText'
+            );
+
+            // Check if element was not found
+            if (result.result?.error) {
+              // Check if error is due to blocking modal
+              if (result.result?.blockingModal) {
+                return createErrorResponse('ELEMENT_BLOCKED_BY_MODAL', {
+                  selector,
+                  modalType: result.result.blockingModal.type,
+                  modalDescription: result.result.blockingModal.description,
+                  modalSelector: result.result.blockingModal.selector,
+                  suggestion: result.result.suggestion,
+                  availableStrategies: result.result.blockingModal.dismissStrategies,
+                });
               }
+              return createErrorResponse('ELEMENT_NOT_FOUND', { selector });
+            }
 
-              return false;
-            }, args.selector);
+            return createSuccessResponse('TEXT_TYPE_SUCCESS', {
+              selector,
+              text
+            });
+          }
 
-            // Perform the click
-            await page.click(args.selector, { clickCount: args.clickCount });
+          case 'press': {
+            const { key } = args;
 
+            if (!key) {
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: `## Error\n\nMissing required parameter: \`key\`\n\n**Action:** press\n\n**Suggestion:** Provide a key name to press (e.g., "Enter", "Tab", "Escape").`,
+                  },
+                ],
+                isError: true,
+              };
+            }
+
+            await executeWithPauseDetection(
+              targetCdpManager,
+              () => page.keyboard.press(key as any),
+              'pressKey'
+            );
+
+            return createSuccessResponse('KEY_PRESS_SUCCESS', {
+              key
+            });
+          }
+
+          case 'hover': {
+            const { selector, handleModals = false, dismissStrategy = 'auto' } = args;
+
+            if (!selector) {
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: `## Error\n\nMissing required parameter: \`selector\`\n\n**Action:** hover\n\n**Suggestion:** Provide a CSS selector for the element to hover over.`,
+                  },
+                ],
+                isError: true,
+              };
+            }
+
+            const result = await executeWithPauseDetection(
+              targetCdpManager,
+              async () => {
+                // Check if element exists first
+                const element = await page.$(selector);
+                if (!element) {
+                  return { error: `Element not found: ${selector}` };
+                }
+
+                // Check if element is blocked by modal
+                const blockingCheck = await isElementBlocked(page, selector);
+
+                if (blockingCheck.blocked && blockingCheck.blockingModal) {
+                  if (handleModals) {
+                    // Auto-dismiss modal
+                    const dismissResult = await dismissModalHelper(
+                      page,
+                      blockingCheck.blockingModal.selector,
+                      dismissStrategy
+                    );
+
+                    // Check if dismissal was successful
+                    if (!dismissResult.success) {
+                      return {
+                        error: `Failed to dismiss blocking modal: ${dismissResult.error || 'Unknown error'}`,
+                        blockingModal: blockingCheck.blockingModal,
+                      };
+                    }
+
+                    // Re-check if element is still blocked
+                    const recheckBlocking = await isElementBlocked(page, selector);
+                    if (recheckBlocking.blocked) {
+                      return {
+                        error: `Element still blocked after dismissing modal`,
+                        blockingModal: recheckBlocking.blockingModal,
+                      };
+                    }
+                  } else {
+                    // Return error with modal information
+                    return {
+                      error: `Element is blocked by modal`,
+                      blockingModal: blockingCheck.blockingModal,
+                      suggestion: `Enable handleModals parameter or call dismissModal tool first`,
+                    };
+                  }
+                }
+
+                await page.hover(selector);
+                return { selector };
+              },
+              'hoverElement'
+            );
+
+            // Check if element was not found
+            if (result.result?.error) {
+              // Check if error is due to blocking modal
+              if (result.result?.blockingModal) {
+                return createErrorResponse('ELEMENT_BLOCKED_BY_MODAL', {
+                  selector,
+                  modalType: result.result.blockingModal.type,
+                  modalDescription: result.result.blockingModal.description,
+                  modalSelector: result.result.blockingModal.selector,
+                  suggestion: result.result.suggestion,
+                  availableStrategies: result.result.blockingModal.dismissStrategies,
+                });
+              }
+              return createErrorResponse('ELEMENT_NOT_FOUND', { selector });
+            }
+
+            return createSuccessResponse('ELEMENT_HOVER_SUCCESS', {
+              selector
+            });
+          }
+
+          default:
             return {
-              selector: args.selector,
-              clickCount: args.clickCount,
-              hasClickHandler,
-              warning: !hasClickHandler ? 'Element may not have a click handler attached. Click was performed but may not trigger any action.' : undefined,
+              content: [
+                {
+                  type: 'text',
+                  text: `## Error\n\nInvalid action: ${action}\n\n**Valid actions:** click, type, press, hover`,
+                },
+              ],
+              isError: true,
             };
-          },
-          'click'
-        );
-
-        // Check if element was not found
-        if (!result.result || result.result.error) {
-          // Check if error is due to blocking modal
-          if (result.result?.blockingModal) {
-            return createErrorResponse('ELEMENT_BLOCKED_BY_MODAL', {
-              selector: args.selector,
-              modalType: result.result.blockingModal.type,
-              modalDescription: result.result.blockingModal.description,
-              modalSelector: result.result.blockingModal.selector,
-              suggestion: result.result.suggestion,
-              availableStrategies: result.result.blockingModal.dismissStrategies,
-            });
-          }
-          return createErrorResponse('ELEMENT_NOT_FOUND', { selector: args.selector });
         }
-
-        // Return success with warning if no click handler detected
-        if (result.result.warning) {
-          return createSuccessResponse('ELEMENT_CLICK_WARNING', { selector: args.selector });
-        }
-
-        return createSuccessResponse('ELEMENT_CLICK_SUCCESS', { selector: args.selector });
-      }
-    ),
-
-    typeText: createTool(
-      'Type text into element',
-      typeTextSchema,
-      async (args) => {
-        // Resolve connection from reason
-        const resolved = await resolveConnectionFromReason(args.connectionReason);
-        if (!resolved) {
-          return createErrorResponse('CONNECTION_NOT_FOUND', {
-            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
-          });
-        }
-
-        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
-        const targetCdpManager = resolved.cdpManager;
-
-        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'typeText', getConfiguredDebugPort());
-        if (error) {
-          return error;
-        }
-
-        const page = targetPuppeteerManager.getPage();
-
-        const result = await executeWithPauseDetection(
-          targetCdpManager,
-          async () => {
-            // Check if element exists first
-            const element = await page.$(args.selector);
-            if (!element) {
-              return { error: `Element not found: ${args.selector}` };
-            }
-
-            // Check if element is blocked by modal
-            const blockingCheck = await isElementBlocked(page, args.selector);
-
-            if (blockingCheck.blocked && blockingCheck.blockingModal) {
-              if (args.handleModals) {
-                // Auto-dismiss modal
-                const dismissResult = await dismissModalHelper(
-                  page,
-                  blockingCheck.blockingModal.selector,
-                  args.dismissStrategy
-                );
-
-                // Check if dismissal was successful
-                if (!dismissResult.success) {
-                  return {
-                    error: `Failed to dismiss blocking modal: ${dismissResult.error || 'Unknown error'}`,
-                    blockingModal: blockingCheck.blockingModal,
-                  };
-                }
-
-                // Re-check if element is still blocked
-                const recheckBlocking = await isElementBlocked(page, args.selector);
-                if (recheckBlocking.blocked) {
-                  return {
-                    error: `Element still blocked after dismissing modal`,
-                    blockingModal: recheckBlocking.blockingModal,
-                  };
-                }
-              } else {
-                // Return error with modal information
-                return {
-                  error: `Element is blocked by modal`,
-                  blockingModal: blockingCheck.blockingModal,
-                  suggestion: `Enable handleModals parameter or call dismissModal tool first`,
-                };
-              }
-            }
-
-            // Clear existing text first
-            await page.click(args.selector, { clickCount: 3 });
-            await page.keyboard.press('Backspace');
-            // Type new text
-            await page.type(args.selector, args.text, { delay: args.delay });
-
-            return { selector: args.selector, text: args.text };
-          },
-          'typeText'
-        );
-
-        // Check if element was not found
-        if (result.result?.error) {
-          // Check if error is due to blocking modal
-          if (result.result?.blockingModal) {
-            return createErrorResponse('ELEMENT_BLOCKED_BY_MODAL', {
-              selector: args.selector,
-              modalType: result.result.blockingModal.type,
-              modalDescription: result.result.blockingModal.description,
-              modalSelector: result.result.blockingModal.selector,
-              suggestion: result.result.suggestion,
-              availableStrategies: result.result.blockingModal.dismissStrategies,
-            });
-          }
-          return createErrorResponse('ELEMENT_NOT_FOUND', { selector: args.selector });
-        }
-
-        return createSuccessResponse('TEXT_TYPE_SUCCESS', {
-          selector: args.selector,
-          text: args.text
-        });
-      }
-    ),
-
-    pressKey: createTool(
-      'Press keyboard key',
-      pressKeySchema,
-      async (args) => {
-        // Resolve connection from reason
-        const resolved = await resolveConnectionFromReason(args.connectionReason);
-        if (!resolved) {
-          return createErrorResponse('CONNECTION_NOT_FOUND', {
-            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
-          });
-        }
-
-        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
-        const targetCdpManager = resolved.cdpManager;
-
-        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'pressKey', getConfiguredDebugPort());
-        if (error) {
-          return error;
-        }
-
-        const page = targetPuppeteerManager.getPage();
-
-        await executeWithPauseDetection(
-          targetCdpManager,
-          () => page.keyboard.press(args.key as any),
-          'pressKey'
-        );
-
-        return createSuccessResponse('KEY_PRESS_SUCCESS', {
-          key: args.key
-        });
-      }
-    ),
-
-    hoverElement: createTool(
-      'Hover over element',
-      hoverElementSchema,
-      async (args) => {
-        // Resolve connection from reason
-        const resolved = await resolveConnectionFromReason(args.connectionReason);
-        if (!resolved) {
-          return createErrorResponse('CONNECTION_NOT_FOUND', {
-            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
-          });
-        }
-
-        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
-        const targetCdpManager = resolved.cdpManager;
-
-        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'hoverElement', getConfiguredDebugPort());
-        if (error) {
-          return error;
-        }
-
-        const page = targetPuppeteerManager.getPage();
-
-        const result = await executeWithPauseDetection(
-          targetCdpManager,
-          async () => {
-            // Check if element exists first
-            const element = await page.$(args.selector);
-            if (!element) {
-              return { error: `Element not found: ${args.selector}` };
-            }
-
-            // Check if element is blocked by modal
-            const blockingCheck = await isElementBlocked(page, args.selector);
-
-            if (blockingCheck.blocked && blockingCheck.blockingModal) {
-              if (args.handleModals) {
-                // Auto-dismiss modal
-                const dismissResult = await dismissModalHelper(
-                  page,
-                  blockingCheck.blockingModal.selector,
-                  args.dismissStrategy
-                );
-
-                // Check if dismissal was successful
-                if (!dismissResult.success) {
-                  return {
-                    error: `Failed to dismiss blocking modal: ${dismissResult.error || 'Unknown error'}`,
-                    blockingModal: blockingCheck.blockingModal,
-                  };
-                }
-
-                // Re-check if element is still blocked
-                const recheckBlocking = await isElementBlocked(page, args.selector);
-                if (recheckBlocking.blocked) {
-                  return {
-                    error: `Element still blocked after dismissing modal`,
-                    blockingModal: recheckBlocking.blockingModal,
-                  };
-                }
-              } else {
-                // Return error with modal information
-                return {
-                  error: `Element is blocked by modal`,
-                  blockingModal: blockingCheck.blockingModal,
-                  suggestion: `Enable handleModals parameter or call dismissModal tool first`,
-                };
-              }
-            }
-
-            await page.hover(args.selector);
-            return { selector: args.selector };
-          },
-          'hoverElement'
-        );
-
-        // Check if element was not found
-        if (result.result?.error) {
-          // Check if error is due to blocking modal
-          if (result.result?.blockingModal) {
-            return createErrorResponse('ELEMENT_BLOCKED_BY_MODAL', {
-              selector: args.selector,
-              modalType: result.result.blockingModal.type,
-              modalDescription: result.result.blockingModal.description,
-              modalSelector: result.result.blockingModal.selector,
-              suggestion: result.result.suggestion,
-              availableStrategies: result.result.blockingModal.dismissStrategies,
-            });
-          }
-          return createErrorResponse('ELEMENT_NOT_FOUND', { selector: args.selector });
-        }
-
-        return createSuccessResponse('ELEMENT_HOVER_SUCCESS', {
-          selector: args.selector
-        });
       }
     ),
   };

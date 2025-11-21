@@ -7,8 +7,9 @@ import { CDPManager } from '../cdp-manager.js';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
 
-// Schema with optional connectionReason
+// Consolidated schema with action parameter
 const executionSchema = z.object({
+  action: z.enum(['pause', 'resume', 'stepOver', 'stepInto', 'stepOut']).describe('Execution control action to perform'),
   connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
@@ -23,11 +24,11 @@ export function createExecutionTools(
   } | null>
 ) {
   return {
-    pause: createTool(
-      'Pause execution',
+    execution: createTool(
+      'Control execution flow when paused at breakpoints. Actions: pause (pause execution), resume (resume execution), stepOver (step to next line), stepInto (step into function call), stepOut (step out of current function)',
       executionSchema,
       async (args) => {
-        const { connectionReason } = args;
+        const { action, connectionReason } = args;
 
         // Resolve connection if connectionReason is provided
         let targetCdpManager = cdpManager;
@@ -39,110 +40,50 @@ export function createExecutionTools(
           targetCdpManager = resolved.cdpManager;
         }
 
-        await targetCdpManager.pause();
-        return createSuccessResponse('EXECUTION_PAUSED');
-      }
-    ),
+        // Handle each action
+        switch (action) {
+          case 'pause':
+            await targetCdpManager.pause();
+            return createSuccessResponse('EXECUTION_PAUSED');
 
-    resume: createTool(
-      'Resume execution',
-      executionSchema,
-      async (args) => {
-        const { connectionReason } = args;
+          case 'resume': {
+            // Check if execution was paused due to logpoint limit exceeded
+            const logpointLimit = targetCdpManager.getLogpointLimitExceeded();
 
-        // Resolve connection if connectionReason is provided
-        let targetCdpManager = cdpManager;
-        if (connectionReason && resolveConnectionFromReason) {
-          const resolved = await resolveConnectionFromReason(connectionReason);
-          if (!resolved) {
-            return createErrorResponse('CONNECTION_NOT_FOUND');
+            if (logpointLimit) {
+              // Format logs as a code block
+              const logsFormatted = formatCodeBlock(logpointLimit.logs);
+
+              return createErrorResponse('LOGPOINT_LIMIT_EXCEEDED', {
+                url: logpointLimit.url,
+                lineNumber: logpointLimit.lineNumber,
+                executionCount: logpointLimit.executionCount,
+                maxExecutions: logpointLimit.maxExecutions,
+                breakpointId: logpointLimit.breakpointId,
+                logs: logsFormatted,
+              });
+            }
+
+            // Normal resume
+            await targetCdpManager.resume();
+            return createSuccessResponse('EXECUTION_RESUMED');
           }
-          targetCdpManager = resolved.cdpManager;
+
+          case 'stepOver':
+            await targetCdpManager.stepOver();
+            return createSuccessResponse('EXECUTION_STEP_OVER');
+
+          case 'stepInto':
+            await targetCdpManager.stepInto();
+            return createSuccessResponse('EXECUTION_STEP_INTO');
+
+          case 'stepOut':
+            await targetCdpManager.stepOut();
+            return createSuccessResponse('EXECUTION_STEP_OUT');
+
+          default:
+            return createErrorResponse('INVALID_ACTION', { action });
         }
-
-        // Check if execution was paused due to logpoint limit exceeded
-        const logpointLimit = targetCdpManager.getLogpointLimitExceeded();
-
-        if (logpointLimit) {
-          // Format logs as a code block
-          const logsFormatted = formatCodeBlock(logpointLimit.logs);
-
-          return createErrorResponse('LOGPOINT_LIMIT_EXCEEDED', {
-            url: logpointLimit.url,
-            lineNumber: logpointLimit.lineNumber,
-            executionCount: logpointLimit.executionCount,
-            maxExecutions: logpointLimit.maxExecutions,
-            breakpointId: logpointLimit.breakpointId,
-            logs: logsFormatted,
-          });
-        }
-
-        // Normal resume
-        await targetCdpManager.resume();
-        return createSuccessResponse('EXECUTION_RESUMED');
-      }
-    ),
-
-    stepOver: createTool(
-      'Step over to next line',
-      executionSchema,
-      async (args) => {
-        const { connectionReason } = args;
-
-        // Resolve connection if connectionReason is provided
-        let targetCdpManager = cdpManager;
-        if (connectionReason && resolveConnectionFromReason) {
-          const resolved = await resolveConnectionFromReason(connectionReason);
-          if (!resolved) {
-            return createErrorResponse('CONNECTION_NOT_FOUND');
-          }
-          targetCdpManager = resolved.cdpManager;
-        }
-
-        await targetCdpManager.stepOver();
-        return createSuccessResponse('EXECUTION_STEP_OVER');
-      }
-    ),
-
-    stepInto: createTool(
-      'Step into function call',
-      executionSchema,
-      async (args) => {
-        const { connectionReason } = args;
-
-        // Resolve connection if connectionReason is provided
-        let targetCdpManager = cdpManager;
-        if (connectionReason && resolveConnectionFromReason) {
-          const resolved = await resolveConnectionFromReason(connectionReason);
-          if (!resolved) {
-            return createErrorResponse('CONNECTION_NOT_FOUND');
-          }
-          targetCdpManager = resolved.cdpManager;
-        }
-
-        await targetCdpManager.stepInto();
-        return createSuccessResponse('EXECUTION_STEP_INTO');
-      }
-    ),
-
-    stepOut: createTool(
-      'Step out of function',
-      executionSchema,
-      async (args) => {
-        const { connectionReason } = args;
-
-        // Resolve connection if connectionReason is provided
-        let targetCdpManager = cdpManager;
-        if (connectionReason && resolveConnectionFromReason) {
-          const resolved = await resolveConnectionFromReason(connectionReason);
-          if (!resolved) {
-            return createErrorResponse('CONNECTION_NOT_FOUND');
-          }
-          targetCdpManager = resolved.cdpManager;
-        }
-
-        await targetCdpManager.stepOut();
-        return createSuccessResponse('EXECUTION_STEP_OUT');
       }
     ),
   };

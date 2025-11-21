@@ -387,6 +387,44 @@ async function generatePDFWithChrome(
   }
 }
 
+const clipSchema = z.object({
+  x: z.number(),
+  y: z.number(),
+  width: z.number(),
+  height: z.number(),
+}).strict();
+
+const screenshotSchema = z.object({
+  action: z.enum(['fullPage', 'viewport', 'element', 'pdf']).describe('Screenshot action: fullPage (take full page screenshot), viewport (take viewport screenshot), element (take element screenshot), pdf (print page to PDF)'),
+  connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
+
+  // Screenshot options (fullPage, viewport, element)
+  type: z.enum(['png', 'jpeg']).optional().describe('Image format (for fullPage/viewport/element actions, default: jpeg)'),
+  quality: z.number().min(0).max(100).optional().describe('JPEG quality 0-100 (for fullPage/viewport/element actions)'),
+  clip: clipSchema.optional().describe('Specific region to capture (for fullPage/viewport actions)'),
+  saveToDisk: z.string().optional().describe('Path to save file (for all actions). For fullPage/viewport/element: optional, auto-saves large files. For pdf: optional for Chrome engine, required for weasyprint.'),
+  autoSaveThreshold: z.number().optional().describe('Auto-save to disk if size >= this (bytes) - for fullPage/viewport/element actions, default: 1 byte'),
+  fullPage: z.boolean().optional().describe('Capture full page (for fullPage action only, default: true)'),
+
+  // Element screenshot options
+  selector: z.string().optional().describe('CSS selector (required for element action)'),
+
+  // PDF options
+  engine: z.enum(['chrome', 'weasyprint']).optional().describe('PDF rendering engine (for pdf action, default: chrome)'),
+  landscape: z.boolean().optional().describe('Landscape orientation (for pdf action with Chrome engine, default: false)'),
+  printBackground: z.boolean().optional().describe('Print background graphics (for pdf action with Chrome engine, default: true)'),
+  scale: z.number().optional().describe('Scale of webpage (for pdf action with Chrome engine, default: 1, range: 0.1-2)'),
+  paperWidthCm: z.number().optional().describe('Paper width in cm (for pdf action with Chrome engine, default: 21.0 for A4)'),
+  paperHeightCm: z.number().optional().describe('Paper height in cm (for pdf action with Chrome engine, default: 29.7 for A4)'),
+  mediaType: z.enum(['print', 'screen']).optional().describe('CSS media type (for pdf action with WeasyPrint engine, default: print)'),
+  baseUrl: z.string().optional().describe('Base URL for relative URLs (for pdf action with WeasyPrint engine)'),
+  stylesheets: z.array(z.string()).optional().describe('Additional CSS stylesheets (for pdf action with WeasyPrint engine)'),
+  optimizeImages: z.boolean().optional().describe('Optimize images (for pdf action with WeasyPrint engine, default: true)'),
+  timeout: z.number().optional().describe('Timeout in ms (for pdf action with WeasyPrint engine, default: 30000, max: 120000)').refine(val => val === undefined || (val >= 1000 && val <= 120000), {
+    message: 'Timeout must be between 1000ms and 120000ms'
+  }),
+}).strict();
+
 export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpManager: CDPManager, connectionManager: ConnectionManager, resolveConnectionFromReason: (connectionReason: string) => Promise<any>) {
   /**
    * Save screenshot buffer to disk
@@ -417,47 +455,13 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
     return filepath;
   };
 
-  // Zod schemas for screenshot tools
-  const clipSchema = z.object({
-    x: z.number(),
-    y: z.number(),
-    width: z.number(),
-    height: z.number(),
-  }).strict();
-
-  const takeScreenshotSchema = z.object({
-    fullPage: z.boolean().default(true),
-    type: z.enum(['png', 'jpeg']).default('jpeg'),
-    quality: z.number().min(0).max(100).optional(),
-    clip: clipSchema.optional(),
-    saveToDisk: z.string().optional(),
-    autoSaveThreshold: z.number().default(1).describe('Auto-save to disk if size >= this (bytes). Default: 1 byte (always saves)'),
-    connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
-  }).strict();
-
-  const takeViewportScreenshotSchema = z.object({
-    type: z.enum(['png', 'jpeg']).default('jpeg'),
-    quality: z.number().min(0).max(100).optional(),
-    clip: clipSchema.optional(),
-    saveToDisk: z.string().optional(),
-    autoSaveThreshold: z.number().default(1).describe('Auto-save to disk if size >= this (bytes). Default: 1 byte (always saves)'),
-    connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
-  }).strict();
-
-  const takeElementScreenshotSchema = z.object({
-    selector: z.string(),
-    type: z.enum(['png', 'jpeg']).default('jpeg'),
-    quality: z.number().min(0).max(100).optional(),
-    saveToDisk: z.string().optional(),
-    autoSaveThreshold: z.number().default(1).describe('Auto-save to disk if size >= this (bytes). Default: 1 byte (always saves)'),
-    connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
-  }).strict();
-
   return {
-    takeScreenshot: createTool(
-      'Take full page screenshot',
-      takeScreenshotSchema,
+    screenshot: createTool(
+      'Take screenshots or generate PDFs from webpages. Actions: fullPage (full page screenshot), viewport (viewport screenshot), element (element screenshot), pdf (print to PDF with Chrome or WeasyPrint engines)',
+      screenshotSchema,
       async (args) => {
+        const { action } = args;
+
         // Resolve connection from reason
         const resolved = await resolveConnectionFromReason(args.connectionReason);
         if (!resolved) {
@@ -468,332 +472,256 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
         const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
         const targetCdpManager = resolved.cdpManager;
 
-        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'takeScreenshot', getConfiguredDebugPort(), true);
+        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, action, getConfiguredDebugPort(), true);
         if (error) {
           return error;
         }
 
         const page = targetPuppeteerManager.getPage();
-        const fullPage = args.fullPage;
-        const type = args.type;
-        const quality = args.quality ?? (args.clip ? 50 : 30);
 
-        // Get screenshot as Buffer (not base64 yet)
-        const screenshot = await page.screenshot({
-          fullPage,
-          type: type as 'png' | 'jpeg',
-          ...(type === 'jpeg' && { quality }),
-          ...(args.clip && { clip: args.clip }),
-          optimizeForSpeed: true,
-        }) as Buffer;
+        switch (action) {
+          case 'fullPage': {
+            const fullPage = args.fullPage ?? true;
+            const type = args.type || 'jpeg';
+            const quality = args.quality ?? (args.clip ? 50 : 30);
+            const autoSaveThreshold = args.autoSaveThreshold ?? 1;
 
-        // Check if we should save to disk
-        const shouldSaveToDisk = screenshot.length >= args.autoSaveThreshold || args.saveToDisk;
-
-        if (shouldSaveToDisk) {
-          const filepath = await saveScreenshotToDisk(screenshot, type, args.saveToDisk);
-          const sizeMB = (screenshot.length / 1_000_000).toFixed(2);
-          const fileSize = `${sizeMB}MB`;
-          return createSuccessResponse('SCREENSHOT_SAVED', { filepath, fileSize });
-        }
-
-        // Small screenshot: return as native image content
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `Screenshot captured (${(screenshot.length / 1000).toFixed(1)}KB)`,
-            },
-            {
-              type: 'image',
-              data: screenshot.toString('base64'),
-              mimeType: `image/${type}`,
-            },
-          ],
-        };
-      }
-    ),
-
-    takeViewportScreenshot: createTool(
-      'Take viewport screenshot',
-      takeViewportScreenshotSchema,
-      async (args) => {
-        // Resolve connection from reason
-        const resolved = await resolveConnectionFromReason(args.connectionReason);
-        if (!resolved) {
-          return createErrorResponse('CONNECTION_NOT_FOUND', {
-            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
-          });
-        }
-        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
-        const targetCdpManager = resolved.cdpManager;
-
-        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'takeViewportScreenshot', getConfiguredDebugPort(), true);
-        if (error) {
-          return error;
-        }
-
-        const page = targetPuppeteerManager.getPage();
-        const type = args.type;
-        const quality = args.quality ?? (args.clip ? 50 : 30);
-
-        // Get screenshot as Buffer (not base64 yet)
-        const screenshot = await page.screenshot({
-          fullPage: false,
-          type: type as 'png' | 'jpeg',
-          ...(type === 'jpeg' && { quality }),
-          ...(args.clip && { clip: args.clip }),
-          optimizeForSpeed: true,
-        }) as Buffer;
-
-        // Check if we should save to disk
-        const shouldSaveToDisk = screenshot.length >= args.autoSaveThreshold || args.saveToDisk;
-
-        if (shouldSaveToDisk) {
-          const filepath = await saveScreenshotToDisk(screenshot, type, args.saveToDisk);
-          const sizeMB = (screenshot.length / 1_000_000).toFixed(2);
-          const fileSize = `${sizeMB}MB`;
-          return createSuccessResponse('SCREENSHOT_SAVED', { filepath, fileSize });
-        }
-
-        // Small screenshot: return as native image content
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `Viewport screenshot captured (${(screenshot.length / 1000).toFixed(1)}KB)`,
-            },
-            {
-              type: 'image',
-              data: screenshot.toString('base64'),
-              mimeType: `image/${type}`,
-            },
-          ],
-        };
-      }
-    ),
-
-    takeElementScreenshot: createTool(
-      'Take element screenshot',
-      takeElementScreenshotSchema,
-      async (args) => {
-        // Resolve connection from reason
-        const resolved = await resolveConnectionFromReason(args.connectionReason);
-        if (!resolved) {
-          return createErrorResponse('CONNECTION_NOT_FOUND', {
-            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
-          });
-        }
-        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
-        const targetCdpManager = resolved.cdpManager;
-
-        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'takeElementScreenshot', getConfiguredDebugPort(), true);
-        if (error) {
-          return error;
-        }
-
-        const page = targetPuppeteerManager.getPage();
-        const type = args.type;
-        const quality = args.quality ?? 50;
-
-        const result = await executeWithPauseDetection(
-          targetCdpManager,
-          async () => {
-            const element = await page.$(args.selector);
-
-            if (!element) {
-              return { error: `Element not found: ${args.selector}` };
-            }
-
-            // Get screenshot as Buffer
-            const screenshot = await element.screenshot({
+            // Get screenshot as Buffer (not base64 yet)
+            const screenshot = await page.screenshot({
+              fullPage,
               type: type as 'png' | 'jpeg',
               ...(type === 'jpeg' && { quality }),
+              ...(args.clip && { clip: args.clip }),
               optimizeForSpeed: true,
             }) as Buffer;
 
             // Check if we should save to disk
-            const shouldSaveToDisk = screenshot.length >= args.autoSaveThreshold || args.saveToDisk;
+            const shouldSaveToDisk = screenshot.length >= autoSaveThreshold || args.saveToDisk;
 
             if (shouldSaveToDisk) {
               const filepath = await saveScreenshotToDisk(screenshot, type, args.saveToDisk);
               const sizeMB = (screenshot.length / 1_000_000).toFixed(2);
-              return {
-                selector: args.selector,
-                filepath,
-                size: `${sizeMB}MB`,
-              };
+              const fileSize = `${sizeMB}MB`;
+              return createSuccessResponse('SCREENSHOT_SAVED', { filepath, fileSize });
             }
 
+            // Small screenshot: return as native image content
             return {
-              selector: args.selector,
-              type,
-              buffer: screenshot,
-              size: `${(screenshot.length / 1000).toFixed(1)}KB`,
+              content: [
+                {
+                  type: 'text',
+                  text: `Screenshot captured (${(screenshot.length / 1000).toFixed(1)}KB)`,
+                },
+                {
+                  type: 'image',
+                  data: screenshot.toString('base64'),
+                  mimeType: `image/${type}`,
+                },
+              ],
             };
-          },
-          'takeElementScreenshot'
-        );
+          }
 
-        // Handle errors
-        if (result.result?.error) {
-          return createErrorResponse('ELEMENT_NOT_FOUND', { selector: args.selector });
-        }
+          case 'viewport': {
+            const type = args.type || 'jpeg';
+            const quality = args.quality ?? (args.clip ? 50 : 30);
+            const autoSaveThreshold = args.autoSaveThreshold ?? 1;
 
-        // Handle disk save
-        if (result.result?.filepath) {
-          return createSuccessResponse('SCREENSHOT_SAVED', {
-            filepath: result.result.filepath,
-            fileSize: result.result.size,
-          });
-        }
+            // Get screenshot as Buffer (not base64 yet)
+            const screenshot = await page.screenshot({
+              fullPage: false,
+              type: type as 'png' | 'jpeg',
+              ...(type === 'jpeg' && { quality }),
+              ...(args.clip && { clip: args.clip }),
+              optimizeForSpeed: true,
+            }) as Buffer;
 
-        // Handle image return - small screenshots
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `Element screenshot captured for \`${args.selector}\` (${result.result?.size})`,
-            },
-            {
-              type: 'image',
-              data: result.result?.buffer?.toString('base64') || '',
-              mimeType: `image/${type}`,
-            },
-          ],
-        };
-      }
-    ),
+            // Check if we should save to disk
+            const shouldSaveToDisk = screenshot.length >= autoSaveThreshold || args.saveToDisk;
 
-    printToPDF: createTool(
-      'Print page to PDF',
-      z.object({
-        connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
-        saveToDisk: z.string().optional().describe('path to save PDF file. If not provided, PDF data is returned as base64 (Chrome engine only).'),
-        engine: z.enum(['chrome', 'weasyprint']).optional().default('chrome').describe('PDF rendering engine. Chrome: fast, basic CSS. WeasyPrint: superior CSS Paged Media support (page-break-*, orphans, widows) for professional documents. Default: chrome'),
-        // Chrome-specific options
-        landscape: z.boolean().optional().default(false).describe('Print in landscape orientation (default: false, Chrome only)'),
-        printBackground: z.boolean().optional().default(true).describe('Print background graphics (default: true, Chrome only)'),
-        scale: z.number().optional().default(1).describe('Scale of the webpage rendering (default: 1, range: 0.1 to 2, Chrome only)'),
-        paperWidthCm: z.number().optional().describe('Paper width in cm (default: 21.0 for A4, Chrome only)'),
-        paperHeightCm: z.number().optional().describe('Paper height in cm (default: 29.7 for A4, Chrome only)'),
-        // WeasyPrint-specific options
-        mediaType: z.enum(['print', 'screen']).optional().default('print').describe('CSS media type (default: print, WeasyPrint only)'),
-        baseUrl: z.string().optional().describe('Base URL for resolving relative URLs in the HTML (WeasyPrint only)'),
-        stylesheets: z.array(z.string()).optional().describe('Additional CSS stylesheet paths to include (WeasyPrint only)'),
-        optimizeImages: z.boolean().optional().default(true).describe('Optimize embedded images (default: true, WeasyPrint only)'),
-        timeout: z.number().optional().describe('Timeout in ms for WeasyPrint (default: 30000, max: 120000, WeasyPrint only)').refine(val => val === undefined || (val >= 1000 && val <= 120000), {
-          message: 'Timeout must be between 1000ms and 120000ms'
-        }),
-      }).strict(),
-      async (args) => {
-        // Get page connection
-        const resolved = await resolveConnectionFromReason(args.connectionReason);
-        if (!resolved) {
-          return createErrorResponse('CONNECTION_NOT_FOUND', {
-            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
-          });
-        }
+            if (shouldSaveToDisk) {
+              const filepath = await saveScreenshotToDisk(screenshot, type, args.saveToDisk);
+              const sizeMB = (screenshot.length / 1_000_000).toFixed(2);
+              const fileSize = `${sizeMB}MB`;
+              return createSuccessResponse('SCREENSHOT_SAVED', { filepath, fileSize });
+            }
 
-        const targetCdpManager = resolved.cdpManager;
-        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
-        const page = targetPuppeteerManager.getPage();
+            // Small screenshot: return as native image content
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `Viewport screenshot captured (${(screenshot.length / 1000).toFixed(1)}KB)`,
+                },
+                {
+                  type: 'image',
+                  data: screenshot.toString('base64'),
+                  mimeType: `image/${type}`,
+                },
+              ],
+            };
+          }
 
-        // Branch based on engine
-        if (args.engine === 'weasyprint') {
-          // WeasyPrint engine - TypeScript needs help with union types
-          const wpArgs = args as {
-            engine: 'weasyprint';
-            connectionReason: string;
-            saveToDisk: string;
-            mediaType?: 'print' | 'screen';
-            baseUrl?: string;
-            stylesheets?: string[];
-            optimizeImages?: boolean;
-            timeout?: number;
-          };
+          case 'element': {
+            if (!args.selector) {
+              return createErrorResponse('INVALID_PARAMS', { message: 'selector is required for element action' });
+            }
 
-          const result = await generatePDFWithWeasyPrint(page, {
-            saveToDisk: wpArgs.saveToDisk,
-            mediaType: wpArgs.mediaType,
-            baseUrl: wpArgs.baseUrl,
-            stylesheets: wpArgs.stylesheets,
-            optimizeImages: wpArgs.optimizeImages,
-            timeout: wpArgs.timeout,
-          });
+            const type = args.type || 'jpeg';
+            const quality = args.quality ?? 50;
+            const autoSaveThreshold = args.autoSaveThreshold ?? 1;
 
-          if (!result.success) {
-            if (result.error?.includes('WeasyPrint not found') || result.error?.includes('not installed')) {
-              return createErrorResponse('WEASYPRINT_NOT_FOUND', {
-                error: result.error,
-                ...result.context
+            const result = await executeWithPauseDetection(
+              targetCdpManager,
+              async () => {
+                const element = await page.$(args.selector);
+
+                if (!element) {
+                  return { error: `Element not found: ${args.selector}` };
+                }
+
+                // Get screenshot as Buffer
+                const screenshot = await element.screenshot({
+                  type: type as 'png' | 'jpeg',
+                  ...(type === 'jpeg' && { quality }),
+                  optimizeForSpeed: true,
+                }) as Buffer;
+
+                // Check if we should save to disk
+                const shouldSaveToDisk = screenshot.length >= autoSaveThreshold || args.saveToDisk;
+
+                if (shouldSaveToDisk) {
+                  const filepath = await saveScreenshotToDisk(screenshot, type, args.saveToDisk);
+                  const sizeMB = (screenshot.length / 1_000_000).toFixed(2);
+                  return {
+                    selector: args.selector,
+                    filepath,
+                    size: `${sizeMB}MB`,
+                  };
+                }
+
+                return {
+                  selector: args.selector,
+                  type,
+                  buffer: screenshot,
+                  size: `${(screenshot.length / 1000).toFixed(1)}KB`,
+                };
+              },
+              'takeElementScreenshot'
+            );
+
+            // Handle errors
+            if (result.result?.error) {
+              return createErrorResponse('ELEMENT_NOT_FOUND', { selector: args.selector });
+            }
+
+            // Handle disk save
+            if (result.result?.filepath) {
+              return createSuccessResponse('SCREENSHOT_SAVED', {
+                filepath: result.result.filepath,
+                fileSize: result.result.size,
               });
             }
 
-            return createErrorResponse('WEASYPRINT_EXECUTION_FAILED', {
-              error: result.error || 'Unknown error',
-              ...result.context
+            // Handle image return - small screenshots
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `Element screenshot captured for \`${args.selector}\` (${result.result?.size})`,
+                },
+                {
+                  type: 'image',
+                  data: result.result?.buffer?.toString('base64') || '',
+                  mimeType: `image/${type}`,
+                },
+              ],
+            };
+          }
+
+          case 'pdf': {
+            const engine = args.engine || 'chrome';
+
+            // Branch based on engine
+            if (engine === 'weasyprint') {
+              if (!args.saveToDisk) {
+                return createErrorResponse('INVALID_PARAMS', { message: 'saveToDisk is required for WeasyPrint engine' });
+              }
+
+              const result = await generatePDFWithWeasyPrint(page, {
+                saveToDisk: args.saveToDisk,
+                mediaType: args.mediaType,
+                baseUrl: args.baseUrl,
+                stylesheets: args.stylesheets,
+                optimizeImages: args.optimizeImages,
+                timeout: args.timeout,
+              });
+
+              if (!result.success) {
+                if (result.error?.includes('WeasyPrint not found') || result.error?.includes('not installed')) {
+                  return createErrorResponse('WEASYPRINT_NOT_FOUND', {
+                    error: result.error,
+                    ...result.context
+                  });
+                }
+
+                return createErrorResponse('WEASYPRINT_EXECUTION_FAILED', {
+                  error: result.error || 'Unknown error',
+                  ...result.context
+                });
+              }
+
+              return createSuccessResponse('PDF_SAVED', {
+                filepath: result.filepath!,
+                fileSize: result.fileSize!,
+                engine: 'weasyprint',
+                version: result.version
+              });
+            }
+
+            // Chrome engine
+            const result = await executeWithPauseDetection(
+              targetCdpManager,
+              async () => {
+                return await generatePDFWithChrome(page, targetCdpManager, {
+                  saveToDisk: args.saveToDisk,
+                  landscape: args.landscape,
+                  printBackground: args.printBackground,
+                  scale: args.scale,
+                  paperWidthCm: args.paperWidthCm,
+                  paperHeightCm: args.paperHeightCm,
+                });
+              },
+              'printToPDF'
+            );
+
+            // Handle Chrome result
+            if (!result.success || result.result?.error) {
+              return createErrorResponse('PDF_GENERATION_FAILED', {
+                error: result.result?.error || result.error || 'Unknown error occurred',
+                ...result.result?.context
+              });
+            }
+
+            // Handle disk save
+            if (result.result?.filepath) {
+              return createSuccessResponse('PDF_SAVED', {
+                filepath: result.result.filepath,
+                fileSize: result.result.fileSize!,
+                engine: 'chrome'
+              });
+            }
+
+            // Return PDF as base64
+            return createSuccessResponse('PDF_GENERATED', {
+              size: result.result?.fileSize,
+              engine: 'chrome',
+              note: 'PDF generated successfully. Use saveToDisk parameter to save to a file.',
             });
           }
 
-          return createSuccessResponse('PDF_SAVED', {
-            filepath: result.filepath!,
-            fileSize: result.fileSize!,
-            engine: 'weasyprint',
-            version: result.version
-          });
+          default:
+            return createErrorResponse('INVALID_ACTION', { action });
         }
-
-        // Chrome engine - TypeScript needs help with union types
-        const chromeArgs = args as {
-          engine?: 'chrome';
-          connectionReason: string;
-          saveToDisk?: string;
-          landscape?: boolean;
-          printBackground?: boolean;
-          scale?: number;
-          paperWidthCm?: number;
-          paperHeightCm?: number;
-        };
-
-        const result = await executeWithPauseDetection(
-          targetCdpManager,
-          async () => {
-            return await generatePDFWithChrome(page, targetCdpManager, {
-              saveToDisk: chromeArgs.saveToDisk,
-              landscape: chromeArgs.landscape,
-              printBackground: chromeArgs.printBackground,
-              scale: chromeArgs.scale,
-              paperWidthCm: chromeArgs.paperWidthCm,
-              paperHeightCm: chromeArgs.paperHeightCm,
-            });
-          },
-          'printToPDF'
-        );
-
-        // Handle Chrome result
-        if (!result.success || result.result?.error) {
-          return createErrorResponse('PDF_GENERATION_FAILED', {
-            error: result.result?.error || result.error || 'Unknown error occurred',
-            ...result.result?.context
-          });
-        }
-
-        // Handle disk save
-        if (result.result?.filepath) {
-          return createSuccessResponse('PDF_SAVED', {
-            filepath: result.result.filepath,
-            fileSize: result.result.fileSize!,
-            engine: 'chrome'
-          });
-        }
-
-        // Return PDF as base64
-        return createSuccessResponse('PDF_GENERATED', {
-          size: result.result?.fileSize,
-          engine: 'chrome',
-          note: 'PDF generated successfully. Use saveToDisk parameter to save to a file.',
-        });
       }
     ),
   };

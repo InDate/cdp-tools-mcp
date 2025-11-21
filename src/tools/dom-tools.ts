@@ -12,20 +12,14 @@ import { createTool } from '../validation-helpers.js';
 import { getConfiguredDebugPort } from '../index.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
 
-// Zod schemas for DOM tools
-const querySelectorSchema = z.object({
-  selector: z.string(),
+// Consolidated schema for DOM tools
+const domSchema = z.object({
+  action: z.enum(['querySelector', 'getProperties', 'snapshot']).describe('DOM action: querySelector (find element by selector), getProperties (get detailed element properties), snapshot (get full DOM snapshot)'),
   connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
-}).strict();
-
-const getElementPropertiesSchema = z.object({
-  selector: z.string(),
-  connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
-}).strict();
-
-const getDOMSnapshotSchema = z.object({
-  maxDepth: z.number().optional().default(5),
-  connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
+  // Parameters for querySelector and getProperties actions
+  selector: z.string().optional().describe('CSS selector (required for querySelector and getProperties actions)'),
+  // Parameters for snapshot action
+  maxDepth: z.number().optional().describe('Maximum depth for DOM snapshot (default: 5, for snapshot action)'),
 }).strict();
 
 export function createDOMTools(
@@ -35,12 +29,23 @@ export function createDOMTools(
   resolveConnectionFromReason: (connectionReason: string) => Promise<any>
 ) {
   return {
-    querySelector: createTool(
-      'Find element by selector',
-      querySelectorSchema,
+    dom: createTool(
+      'Inspect and query the DOM. Actions: querySelector (find element by CSS selector and get basic info), getProperties (get detailed properties of an element), snapshot (get full DOM structure snapshot)',
+      domSchema,
       async (args) => {
+        const { action, connectionReason } = args;
+
+        // Validate required parameters for each action
+        if ((action === 'querySelector' || action === 'getProperties') && !args.selector) {
+          return createErrorResponse('MISSING_PARAMETER', {
+            action,
+            missing: 'selector',
+            message: `The "${action}" action requires a "selector" parameter`
+          });
+        }
+
         // Resolve connection from reason
-        const resolved = await resolveConnectionFromReason(args.connectionReason);
+        const resolved = await resolveConnectionFromReason(connectionReason);
         if (!resolved) {
           return createErrorResponse('CONNECTION_NOT_FOUND', {
             message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
@@ -50,204 +55,170 @@ export function createDOMTools(
         const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
         const targetCdpManager = resolved.cdpManager;
 
-        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'querySelector', getConfiguredDebugPort());
+        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, `dom.${action}`, getConfiguredDebugPort());
         if (error) {
           return error;
         }
 
         const page = targetPuppeteerManager.getPage();
 
-        const result = await executeWithPauseDetection(
-          targetCdpManager,
-          async () => {
-            const element = await page.$(args.selector);
+        // Handle each action
+        switch (action) {
+          case 'querySelector': {
+            const result = await executeWithPauseDetection(
+              targetCdpManager,
+              async () => {
+                const element = await page.$(args.selector!);
 
-            if (!element) {
-              return { found: false, selector: args.selector };
-            }
-
-            // Get element properties
-            const properties = await element.evaluate((el: any) => ({
-              tagName: el.tagName.toLowerCase(),
-              id: el.id,
-              className: el.className,
-              textContent: el.textContent?.substring(0, 200),
-              visible: !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length),
-            }));
-
-            return { found: true, selector: args.selector, properties };
-          },
-          'querySelector'
-        );
-
-        // Check if element was not found
-        if (!result.result || !result.result.found) {
-          return createErrorResponse('ELEMENT_NOT_FOUND', { selector: args.selector });
-        }
-
-        // Return element properties as code block - querySelector returns basic properties
-        const markdown = `Element found: \`${args.selector}\`\n\n${formatCodeBlock(result.result.properties)}`;
-        return {
-          content: [
-            {
-              type: 'text',
-              text: markdown,
-            },
-          ],
-        };
-      }
-    ),
-
-    getElementProperties: createTool(
-      'Get element properties',
-      getElementPropertiesSchema,
-      async (args) => {
-        // Resolve connection from reason
-        const resolved = await resolveConnectionFromReason(args.connectionReason);
-        if (!resolved) {
-          return createErrorResponse('CONNECTION_NOT_FOUND', {
-            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
-          });
-        }
-
-        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
-        const targetCdpManager = resolved.cdpManager;
-
-        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'getElementProperties', getConfiguredDebugPort());
-        if (error) {
-          return error;
-        }
-
-        const page = targetPuppeteerManager.getPage();
-
-        const result = await executeWithPauseDetection(
-          targetCdpManager,
-          async () => {
-            const element = await page.$(args.selector);
-
-            if (!element) {
-              return { error: `Element not found: ${args.selector}` };
-            }
-
-            // Get detailed element properties
-            const details = await element.evaluate((el: any) => {
-              const rect = el.getBoundingClientRect();
-              const win: any = (typeof (globalThis as any).window !== 'undefined') ? (globalThis as any).window : undefined;
-              const styles = win?.getComputedStyle(el);
-
-              // Get all attributes
-              const attributes: Record<string, string> = {};
-              for (const attr of el.attributes) {
-                attributes[attr.name] = attr.value;
-              }
-
-              return {
-                tagName: el.tagName.toLowerCase(),
-                attributes,
-                textContent: el.textContent,
-                innerHTML: el.innerHTML.substring(0, 500),
-                boundingBox: {
-                  x: rect.x,
-                  y: rect.y,
-                  width: rect.width,
-                  height: rect.height,
-                },
-                computedStyles: {
-                  display: styles.display,
-                  visibility: styles.visibility,
-                  position: styles.position,
-                  color: styles.color,
-                  backgroundColor: styles.backgroundColor,
-                  fontSize: styles.fontSize,
-                },
-                visible: !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length),
-              };
-            });
-
-            return { selector: args.selector, element: details };
-          },
-          'getElementProperties'
-        );
-
-        // Check if element was not found
-        if (!result.result || result.result.error) {
-          return createErrorResponse('ELEMENT_NOT_FOUND', { selector: args.selector });
-        }
-
-        // Return element properties as code block
-        const markdown = `Element properties for \`${args.selector}\`:\n\n${formatCodeBlock(result.result.element)}`;
-        return {
-          content: [
-            {
-              type: 'text',
-              text: markdown,
-            },
-          ],
-        };
-      }
-    ),
-
-    getDOMSnapshot: createTool(
-      'Get DOM snapshot',
-      getDOMSnapshotSchema,
-      async (args) => {
-        // Resolve connection from reason
-        const resolved = await resolveConnectionFromReason(args.connectionReason);
-        if (!resolved) {
-          return createErrorResponse('CONNECTION_NOT_FOUND', {
-            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
-          });
-        }
-
-        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
-        const targetCdpManager = resolved.cdpManager;
-
-        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, 'getDOMSnapshot', getConfiguredDebugPort());
-        if (error) {
-          return error;
-        }
-
-        const page = targetPuppeteerManager.getPage();
-
-        const result = await executeWithPauseDetection(
-          targetCdpManager,
-          async () => {
-            // Get DOM snapshot using accessibility tree
-            const snapshot = await page.accessibility.snapshot();
-
-            // Also get basic DOM structure
-            const domStructure = await page.evaluate((depth: number) => {
-              function getNodeInfo(node: any, currentDepth: number): any {
-                if (currentDepth > depth) return null;
-
-                const children: any[] = [];
-                for (const child of node.children) {
-                  const childInfo = getNodeInfo(child, currentDepth + 1);
-                  if (childInfo) children.push(childInfo);
+                if (!element) {
+                  return { found: false, selector: args.selector };
                 }
 
-                return {
-                  tag: node.tagName.toLowerCase(),
-                  id: node.id || undefined,
-                  class: node.className || undefined,
-                  children: children.length > 0 ? children : undefined,
-                };
-              }
+                // Get element properties
+                const properties = await element.evaluate((el: any) => ({
+                  tagName: el.tagName.toLowerCase(),
+                  id: el.id,
+                  className: el.className,
+                  textContent: el.textContent?.substring(0, 200),
+                  visible: !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length),
+                }));
 
-              const doc: any = (typeof (globalThis as any).document !== 'undefined') ? (globalThis as any).document : undefined;
-              return getNodeInfo(doc?.body, 0);
-            }, args.maxDepth);
+                return { found: true, selector: args.selector, properties };
+              },
+              'querySelector'
+            );
 
+            // Check if element was not found
+            if (!result.result || !result.result.found) {
+              return createErrorResponse('ELEMENT_NOT_FOUND', { selector: args.selector });
+            }
+
+            // Return element properties as code block
+            const markdown = `Element found: \`${args.selector}\`\n\n${formatCodeBlock(result.result.properties)}`;
             return {
-              accessibilityTree: snapshot,
-              domStructure,
+              content: [
+                {
+                  type: 'text',
+                  text: markdown,
+                },
+              ],
             };
-          },
-          'getDOMSnapshot'
-        );
+          }
 
-        // Return DOM snapshot using the message template
-        return createSuccessResponse('DOM_SNAPSHOT_SUCCESS', { depth: args.maxDepth }, result.result);
+          case 'getProperties': {
+            const result = await executeWithPauseDetection(
+              targetCdpManager,
+              async () => {
+                const element = await page.$(args.selector!);
+
+                if (!element) {
+                  return { error: `Element not found: ${args.selector}` };
+                }
+
+                // Get detailed element properties
+                const details = await element.evaluate((el: any) => {
+                  const rect = el.getBoundingClientRect();
+                  const win: any = (typeof (globalThis as any).window !== 'undefined') ? (globalThis as any).window : undefined;
+                  const styles = win?.getComputedStyle(el);
+
+                  // Get all attributes
+                  const attributes: Record<string, string> = {};
+                  for (const attr of el.attributes) {
+                    attributes[attr.name] = attr.value;
+                  }
+
+                  return {
+                    tagName: el.tagName.toLowerCase(),
+                    attributes,
+                    textContent: el.textContent,
+                    innerHTML: el.innerHTML.substring(0, 500),
+                    boundingBox: {
+                      x: rect.x,
+                      y: rect.y,
+                      width: rect.width,
+                      height: rect.height,
+                    },
+                    computedStyles: {
+                      display: styles.display,
+                      visibility: styles.visibility,
+                      position: styles.position,
+                      color: styles.color,
+                      backgroundColor: styles.backgroundColor,
+                      fontSize: styles.fontSize,
+                    },
+                    visible: !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length),
+                  };
+                });
+
+                return { selector: args.selector, element: details };
+              },
+              'getElementProperties'
+            );
+
+            // Check if element was not found
+            if (!result.result || result.result.error) {
+              return createErrorResponse('ELEMENT_NOT_FOUND', { selector: args.selector });
+            }
+
+            // Return element properties as code block
+            const markdown = `Element properties for \`${args.selector}\`:\n\n${formatCodeBlock(result.result.element)}`;
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: markdown,
+                },
+              ],
+            };
+          }
+
+          case 'snapshot': {
+            const maxDepth = args.maxDepth ?? 5;
+
+            const result = await executeWithPauseDetection(
+              targetCdpManager,
+              async () => {
+                // Get DOM snapshot using accessibility tree
+                const snapshot = await page.accessibility.snapshot();
+
+                // Also get basic DOM structure
+                const domStructure = await page.evaluate((depth: number) => {
+                  function getNodeInfo(node: any, currentDepth: number): any {
+                    if (currentDepth > depth) return null;
+
+                    const children: any[] = [];
+                    for (const child of node.children) {
+                      const childInfo = getNodeInfo(child, currentDepth + 1);
+                      if (childInfo) children.push(childInfo);
+                    }
+
+                    return {
+                      tag: node.tagName.toLowerCase(),
+                      id: node.id || undefined,
+                      class: node.className || undefined,
+                      children: children.length > 0 ? children : undefined,
+                    };
+                  }
+
+                  const doc: any = (typeof (globalThis as any).document !== 'undefined') ? (globalThis as any).document : undefined;
+                  return getNodeInfo(doc?.body, 0);
+                }, maxDepth);
+
+                return {
+                  accessibilityTree: snapshot,
+                  domStructure,
+                };
+              },
+              'getDOMSnapshot'
+            );
+
+            // Return DOM snapshot using the message template
+            return createSuccessResponse('DOM_SNAPSHOT_SUCCESS', { depth: maxDepth }, result.result);
+          }
+
+          default:
+            return createErrorResponse('INVALID_ACTION', { action });
+        }
       }
     ),
   };

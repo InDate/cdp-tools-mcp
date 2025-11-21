@@ -8,45 +8,31 @@ import { SourceMapHandler } from '../sourcemap-handler.js';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
 
-// Schema for getCallStack
-const getCallStackSchema = z.object({
+// Consolidated inspection tool schema
+const inspectionToolSchema = z.object({
+  action: z.enum(['getCallStack', 'getVariables', 'evaluateExpression', 'searchCode', 'searchFunctions'])
+    .describe('Inspection action: getCallStack (get call stack when paused), getVariables (get variables in call frame), evaluateExpression (evaluate JavaScript), searchCode (search code by pattern), searchFunctions (find function definitions)'),
   connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
-}).strict();
 
-// Schema for getVariables
-const getVariablesSchema = z.object({
-  callFrameId: z.string().describe('Call frame ID'),
-  includeGlobal: z.boolean().default(false).describe('Include global scope'),
-  filter: z.string().optional().describe('Regex filter for variable names'),
-  expandObjects: z.boolean().default(true).describe('Expand objects/arrays'),
-  maxDepth: z.number().default(2).describe('Max expansion depth'),
-  connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
-}).strict();
+  // getVariables and evaluateExpression parameters
+  callFrameId: z.string().optional().describe('Call frame ID (required for getVariables, optional for evaluateExpression)'),
+  includeGlobal: z.boolean().optional().describe('Include global scope (for getVariables action, default: false)'),
+  filter: z.string().optional().describe('Regex filter for variable names (for getVariables action)'),
+  expandObjects: z.boolean().optional().describe('Expand objects/arrays (for getVariables and evaluateExpression actions, default: true)'),
+  maxDepth: z.number().optional().describe('Max expansion depth (for getVariables and evaluateExpression actions, default: 2)'),
 
-// Schema for evaluateExpression
-const evaluateExpressionSchema = z.object({
-  expression: z.string().describe('JavaScript expression'),
-  callFrameId: z.string().optional().describe('Call frame ID'),
-  expandObjects: z.boolean().default(true).describe('Expand objects/arrays'),
-  maxDepth: z.number().default(2).describe('Max expansion depth'),
-  connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
-}).strict();
+  // evaluateExpression parameters
+  expression: z.string().optional().describe('JavaScript expression (required for evaluateExpression action)'),
 
-// Schema for searchCode
-const searchCodeSchema = z.object({
-  pattern: z.string().describe('Regex pattern'),
-  caseSensitive: z.boolean().default(false).describe('Case sensitive'),
-  isRegex: z.boolean().default(true).describe('Treat as regex'),
-  urlFilter: z.string().optional().describe('URL filter regex'),
-  limit: z.number().default(100).describe('Max results'),
-}).strict();
+  // searchCode parameters
+  pattern: z.string().optional().describe('Regex pattern (required for searchCode action)'),
+  caseSensitive: z.boolean().optional().describe('Case sensitive (for searchCode and searchFunctions actions, default: false)'),
+  isRegex: z.boolean().optional().describe('Treat as regex (for searchCode action, default: true)'),
+  urlFilter: z.string().optional().describe('URL filter regex (for searchCode and searchFunctions actions)'),
+  limit: z.number().optional().describe('Max results (for searchCode action default: 100, for searchFunctions default: 50)'),
 
-// Schema for searchFunctions
-const searchFunctionsSchema = z.object({
-  functionName: z.string().describe('Function name'),
-  caseSensitive: z.boolean().default(false).describe('Case sensitive'),
-  urlFilter: z.string().optional().describe('URL filter regex'),
-  limit: z.number().default(50).describe('Max results'),
+  // searchFunctions parameters
+  functionName: z.string().optional().describe('Function name (required for searchFunctions action)'),
 }).strict();
 
 export function createInspectionTools(
@@ -61,11 +47,11 @@ export function createInspectionTools(
   } | null>
 ) {
   return {
-    getCallStack: createTool(
-      'Get call stack when paused',
-      getCallStackSchema,
+    inspect: createTool(
+      'Inspect and debug code. Actions: getCallStack (get call stack when paused), getVariables (get variables in call frame), evaluateExpression (evaluate JavaScript), searchCode (search code by pattern), searchFunctions (find function definitions)',
+      inspectionToolSchema,
       async (args) => {
-        const { connectionReason } = args;
+        const { action, connectionReason } = args;
 
         // Resolve connection if connectionReason is provided
         let targetCdpManager = cdpManager;
@@ -77,273 +63,299 @@ export function createInspectionTools(
           targetCdpManager = resolved.cdpManager;
         }
 
-        const callStack = targetCdpManager.getCallStack();
+        switch (action) {
+          case 'getCallStack': {
+            const callStack = targetCdpManager.getCallStack();
 
-        if (!callStack) {
-          return createErrorResponse('NOT_PAUSED');
-        }
+            if (!callStack) {
+              return createErrorResponse('NOT_PAUSED');
+            }
 
-        // Try to map stack frames back to original sources
-        const mappedStack = await Promise.all(
-          callStack.map(async (frame) => {
-            const original = await sourceMapHandler.mapToOriginal(
-              frame.url,
-              frame.location.lineNumber,
-              frame.location.columnNumber
+            // Try to map stack frames back to original sources
+            const mappedStack = await Promise.all(
+              callStack.map(async (frame) => {
+                const original = await sourceMapHandler.mapToOriginal(
+                  frame.url,
+                  frame.location.lineNumber,
+                  frame.location.columnNumber
+                );
+
+                return {
+                  functionName: frame.functionName,
+                  location: original || {
+                    source: frame.url,
+                    line: frame.location.lineNumber,
+                    column: frame.location.columnNumber,
+                  },
+                  callFrameId: frame.callFrameId,
+                };
+              })
             );
 
-            return {
-              functionName: frame.functionName,
-              location: original || {
-                source: frame.url,
-                line: frame.location.lineNumber,
-                column: frame.location.columnNumber,
-              },
-              callFrameId: frame.callFrameId,
-            };
-          })
-        );
+            // Format paused location from first frame
+            const pausedLocation = mappedStack.length > 0
+              ? `${mappedStack[0].location.source}:${mappedStack[0].location.line}`
+              : undefined;
 
-        // Format paused location from first frame
-        const pausedLocation = mappedStack.length > 0
-          ? `${mappedStack[0].location.source}:${mappedStack[0].location.line}`
-          : undefined;
-
-        return createSuccessResponse('CALL_STACK_SUCCESS', {
-          pausedLocation,
-          frameCount: mappedStack.length,
-        }, mappedStack);
-      }
-    ),
-
-    getVariables: createTool(
-      'Get variables in call frame scope',
-      getVariablesSchema,
-      async (args) => {
-        const { callFrameId, includeGlobal, filter, expandObjects, maxDepth, connectionReason } = args;
-
-        // Resolve connection if connectionReason is provided
-        let targetCdpManager = cdpManager;
-        if (connectionReason && resolveConnectionFromReason) {
-          const resolved = await resolveConnectionFromReason(connectionReason);
-          if (!resolved) {
-            return createErrorResponse('CONNECTION_NOT_FOUND');
+            return createSuccessResponse('CALL_STACK_SUCCESS', {
+              pausedLocation,
+              frameCount: mappedStack.length,
+            }, mappedStack);
           }
-          targetCdpManager = resolved.cdpManager;
-        }
 
-        try {
-          const variables = await targetCdpManager.getVariables(callFrameId, includeGlobal, filter, expandObjects, maxDepth);
+          case 'getVariables': {
+            const { callFrameId, includeGlobal = false, filter, expandObjects = true, maxDepth = 2 } = args;
 
-          // Group variables by scope type
-          const groupedVariables: Record<string, any[]> = {};
-          for (const variable of variables) {
-            const scopeType = variable.scopeType || 'unknown';
-            if (!groupedVariables[scopeType]) {
-              groupedVariables[scopeType] = [];
+            if (!callFrameId) {
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: `## Error\n\nMissing required parameter: \`callFrameId\`\n\n**Action:** getVariables\n\n**Suggestion:** Provide a valid call frame ID from the call stack.`,
+                  },
+                ],
+                isError: true,
+              };
             }
-            groupedVariables[scopeType].push({
-              name: variable.name,
-              value: variable.value,
-              type: variable.type,
+
+            try {
+              const variables = await targetCdpManager.getVariables(callFrameId, includeGlobal, filter, expandObjects, maxDepth);
+
+              // Group variables by scope type
+              const groupedVariables: Record<string, any[]> = {};
+              for (const variable of variables) {
+                const scopeType = variable.scopeType || 'unknown';
+                if (!groupedVariables[scopeType]) {
+                  groupedVariables[scopeType] = [];
+                }
+                groupedVariables[scopeType].push({
+                  name: variable.name,
+                  value: variable.value,
+                  type: variable.type,
+                });
+              }
+
+              return createSuccessResponse('VARIABLES_SUCCESS', {
+                callFrameId,
+                totalCount: variables.length,
+                filter: filter || undefined,
+                includeGlobal: includeGlobal || undefined,
+              }, groupedVariables);
+            } catch (error) {
+              return createErrorResponse('CALL_FRAME_NOT_FOUND', {
+                callFrameId,
+              });
+            }
+          }
+
+          case 'evaluateExpression': {
+            const { expression, callFrameId, expandObjects = true, maxDepth = 2 } = args;
+
+            if (!expression) {
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: `## Error\n\nMissing required parameter: \`expression\`\n\n**Action:** evaluateExpression\n\n**Suggestion:** Provide a JavaScript expression to evaluate.`,
+                  },
+                ],
+                isError: true,
+              };
+            }
+
+            try {
+              const result = await targetCdpManager.evaluateExpression(expression, callFrameId, expandObjects, maxDepth);
+
+              // The manual construction in evaluateExpression was intentionally added to
+              // solve a specific problem - ensuring that expression results are always visible with proper
+              // formatting and context. This is a legitimate use case for manual construction, not a bug.
+
+              let markdown = `Expression evaluated successfully\n\n`;
+              markdown += `**Expression:** \`${expression}\`\n`;
+              markdown += `**Context:** ${callFrameId ? `Call frame ${callFrameId}` : 'Global context'}\n\n`;
+              markdown += `**Result:**\n`;
+
+              // Format result based on type
+              if (result === undefined || result === 'undefined') {
+                markdown += '```\nundefined\n```';
+              } else if (result === null || result === 'null') {
+                markdown += '```\nnull\n```';
+              } else if (typeof result === 'string') {
+                markdown += `\`\`\`\n${result}\n\`\`\``;
+              } else {
+                // For objects/arrays, use JSON formatting
+                markdown += `\`\`\`json\n${JSON.stringify(result, null, 2)}\n\`\`\``;
+              }
+
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: markdown,
+                  },
+                ],
+              };
+            } catch (error) {
+              return createErrorResponse('EVALUATE_EXPRESSION_FAILED', {
+                expression,
+                error: String(error),
+              });
+            }
+          }
+
+          case 'searchCode': {
+            const { pattern, caseSensitive = false, isRegex = true, urlFilter, limit = 100 } = args;
+
+            if (!pattern) {
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: `## Error\n\nMissing required parameter: \`pattern\`\n\n**Action:** searchCode\n\n**Suggestion:** Provide a regex pattern to search for in the code.`,
+                  },
+                ],
+                isError: true,
+              };
+            }
+
+            if (!cdpManager.isConnected()) {
+              return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+            }
+
+            try {
+              const allScripts = cdpManager.getAllScripts();
+              let scriptsToSearch = allScripts;
+
+              // Filter by URL if provided
+              if (urlFilter) {
+                try {
+                  const urlRegex = new RegExp(urlFilter);
+                  scriptsToSearch = allScripts.filter(s => urlRegex.test(s.url));
+                } catch (error) {
+                  return createErrorResponse('SOURCE_CODE_FAILED', { error: `Invalid URL filter regex: ${error}` });
+                }
+              }
+
+              const allResults: Array<{ url: string; scriptId: string; lineNumber: number; lineContent: string }> = [];
+
+              for (const script of scriptsToSearch) {
+                if (allResults.length >= limit) break;
+
+                const matches = await cdpManager.searchInScript(
+                  script.scriptId,
+                  pattern,
+                  caseSensitive,
+                  isRegex
+                );
+
+                for (const match of matches) {
+                  allResults.push({
+                    url: script.url,
+                    scriptId: script.scriptId,
+                    lineNumber: match.lineNumber + 1, // Convert to 1-based
+                    lineContent: match.lineContent,
+                  });
+
+                  if (allResults.length >= limit) break;
+                }
+              }
+
+              return createSuccessResponse('CODE_SEARCH_RESULTS', {
+                count: allResults.length.toString()
+              }, {
+                pattern,
+                caseSensitive,
+                scriptsSearched: scriptsToSearch.length,
+                totalScripts: allScripts.length,
+                results: allResults,
+              });
+            } catch (error) {
+              return createErrorResponse('SOURCE_CODE_FAILED', { error: `${error}` });
+            }
+          }
+
+          case 'searchFunctions': {
+            const { functionName, caseSensitive = false, urlFilter, limit = 50 } = args;
+
+            if (!functionName) {
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: `## Error\n\nMissing required parameter: \`functionName\`\n\n**Action:** searchFunctions\n\n**Suggestion:** Provide a function name to search for.`,
+                  },
+                ],
+                isError: true,
+              };
+            }
+
+            if (!cdpManager.isConnected()) {
+              return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+            }
+
+            try {
+              const allScripts = cdpManager.getAllScripts();
+              let scriptsToSearch = allScripts;
+
+              // Filter by URL if provided
+              if (urlFilter) {
+                try {
+                  const urlRegex = new RegExp(urlFilter);
+                  scriptsToSearch = allScripts.filter(s => urlRegex.test(s.url));
+                } catch (error) {
+                  return createErrorResponse('SOURCE_CODE_FAILED', { error: `Invalid URL filter regex: ${error}` });
+                }
+              }
+
+              // Build pattern to match: function name( or const name = or let name =
+              const escapedName = functionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+              const pattern = caseSensitive
+                ? `(function\\s+${escapedName}\\s*\\(|const\\s+${escapedName}\\s*=|let\\s+${escapedName}\\s*=|${escapedName}\\s*:\\s*function|${escapedName}\\s*:\\s*\\(|${escapedName}\\s*=\\s*\\()`
+                : `(function\\s+${escapedName}\\s*\\(|const\\s+${escapedName}\\s*=|let\\s+${escapedName}\\s*=|${escapedName}\\s*:\\s*function|${escapedName}\\s*:\\s*\\(|${escapedName}\\s*=\\s*\\()`;
+
+              const allResults: Array<{ url: string; scriptId: string; lineNumber: number; lineContent: string }> = [];
+
+              for (const script of scriptsToSearch) {
+                if (allResults.length >= limit) break;
+
+                const matches = await cdpManager.searchInScript(
+                  script.scriptId,
+                  pattern,
+                  caseSensitive,
+                  true // always use regex
+                );
+
+                for (const match of matches) {
+                  allResults.push({
+                    url: script.url,
+                    scriptId: script.scriptId,
+                    lineNumber: match.lineNumber + 1, // Convert to 1-based
+                    lineContent: match.lineContent.trim(),
+                  });
+
+                  if (allResults.length >= limit) break;
+                }
+              }
+
+              return createSuccessResponse('FUNCTION_SEARCH_RESULTS', {
+                count: allResults.length.toString(),
+                functionName
+              }, {
+                caseSensitive,
+                scriptsSearched: scriptsToSearch.length,
+                totalScripts: allScripts.length,
+                results: allResults,
+              });
+            } catch (error) {
+              return createErrorResponse('SOURCE_CODE_FAILED', { error: `${error}` });
+            }
+          }
+
+          default:
+            return createErrorResponse('INVALID_ACTION', {
+              action,
+              validActions: 'getCallStack, getVariables, evaluateExpression, searchCode, searchFunctions',
             });
-          }
-
-          return createSuccessResponse('VARIABLES_SUCCESS', {
-            callFrameId,
-            totalCount: variables.length,
-            filter: filter || undefined,
-            includeGlobal: includeGlobal || undefined,
-          }, groupedVariables);
-        } catch (error) {
-          return createErrorResponse('CALL_FRAME_NOT_FOUND', {
-            callFrameId,
-          });
-        }
-      }
-    ),
-
-    evaluateExpression: createTool(
-      'Evaluate JavaScript expression',
-      evaluateExpressionSchema,
-      async (args) => {
-        const { expression, callFrameId, expandObjects, maxDepth, connectionReason } = args;
-
-        // Resolve connection if connectionReason is provided
-        let targetCdpManager = cdpManager;
-        if (connectionReason && resolveConnectionFromReason) {
-          const resolved = await resolveConnectionFromReason(connectionReason);
-          if (!resolved) {
-            return createErrorResponse('CONNECTION_NOT_FOUND');
-          }
-          targetCdpManager = resolved.cdpManager;
-        }
-
-        try {
-          const result = await targetCdpManager.evaluateExpression(expression, callFrameId, expandObjects, maxDepth);
-
-          // The manual construction in evaluateExpression was intentionally added to
-          // solve a specific problem - ensuring that expression results are always visible with proper
-          // formatting and context. This is a legitimate use case for manual construction, not a bug.
-          
-          let markdown = `Expression evaluated successfully\n\n`;
-          markdown += `**Expression:** \`${expression}\`\n`;
-          markdown += `**Context:** ${callFrameId ? `Call frame ${callFrameId}` : 'Global context'}\n\n`;
-          markdown += `**Result:**\n`;
-
-          // Format result based on type
-          if (result === undefined || result === 'undefined') {
-            markdown += '```\nundefined\n```';
-          } else if (result === null || result === 'null') {
-            markdown += '```\nnull\n```';
-          } else if (typeof result === 'string') {
-            markdown += `\`\`\`\n${result}\n\`\`\``;
-          } else {
-            // For objects/arrays, use JSON formatting
-            markdown += `\`\`\`json\n${JSON.stringify(result, null, 2)}\n\`\`\``;
-          }
-
-          return {
-            content: [
-              {
-                type: 'text',
-                text: markdown,
-              },
-            ],
-          };
-        } catch (error) {
-          return createErrorResponse('EVALUATE_EXPRESSION_FAILED', {
-            expression,
-            error: String(error),
-          });
-        }
-      }
-    ),
-
-    searchCode: createTool(
-      'Search code by regex pattern',
-      searchCodeSchema,
-      async (args) => {
-        if (!cdpManager.isConnected()) {
-          return createErrorResponse('DEBUGGER_NOT_CONNECTED');
-        }
-
-        try {
-          const allScripts = cdpManager.getAllScripts();
-          let scriptsToSearch = allScripts;
-
-          // Filter by URL if provided
-          if (args.urlFilter) {
-            try {
-              const urlRegex = new RegExp(args.urlFilter);
-              scriptsToSearch = allScripts.filter(s => urlRegex.test(s.url));
-            } catch (error) {
-              return createErrorResponse('SOURCE_CODE_FAILED', { error: `Invalid URL filter regex: ${error}` });
-            }
-          }
-
-          const allResults: Array<{ url: string; scriptId: string; lineNumber: number; lineContent: string }> = [];
-
-          for (const script of scriptsToSearch) {
-            if (allResults.length >= args.limit) break;
-
-            const matches = await cdpManager.searchInScript(
-              script.scriptId,
-              args.pattern,
-              args.caseSensitive,
-              args.isRegex
-            );
-
-            for (const match of matches) {
-              allResults.push({
-                url: script.url,
-                scriptId: script.scriptId,
-                lineNumber: match.lineNumber + 1, // Convert to 1-based
-                lineContent: match.lineContent,
-              });
-
-              if (allResults.length >= args.limit) break;
-            }
-          }
-
-          return createSuccessResponse('CODE_SEARCH_RESULTS', {
-            count: allResults.length.toString()
-          }, {
-            pattern: args.pattern,
-            caseSensitive: args.caseSensitive,
-            scriptsSearched: scriptsToSearch.length,
-            totalScripts: allScripts.length,
-            results: allResults,
-          });
-        } catch (error) {
-          return createErrorResponse('SOURCE_CODE_FAILED', { error: `${error}` });
-        }
-      }
-    ),
-
-    searchFunctions: createTool(
-      'Find function definitions',
-      searchFunctionsSchema,
-      async (args) => {
-        if (!cdpManager.isConnected()) {
-          return createErrorResponse('DEBUGGER_NOT_CONNECTED');
-        }
-
-        try {
-          const allScripts = cdpManager.getAllScripts();
-          let scriptsToSearch = allScripts;
-
-          // Filter by URL if provided
-          if (args.urlFilter) {
-            try {
-              const urlRegex = new RegExp(args.urlFilter);
-              scriptsToSearch = allScripts.filter(s => urlRegex.test(s.url));
-            } catch (error) {
-              return createErrorResponse('SOURCE_CODE_FAILED', { error: `Invalid URL filter regex: ${error}` });
-            }
-          }
-
-          // Build pattern to match: function name( or const name = or let name =
-          const escapedName = args.functionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-          const pattern = args.caseSensitive
-            ? `(function\\s+${escapedName}\\s*\\(|const\\s+${escapedName}\\s*=|let\\s+${escapedName}\\s*=|${escapedName}\\s*:\\s*function|${escapedName}\\s*:\\s*\\(|${escapedName}\\s*=\\s*\\()`
-            : `(function\\s+${escapedName}\\s*\\(|const\\s+${escapedName}\\s*=|let\\s+${escapedName}\\s*=|${escapedName}\\s*:\\s*function|${escapedName}\\s*:\\s*\\(|${escapedName}\\s*=\\s*\\()`;
-
-          const allResults: Array<{ url: string; scriptId: string; lineNumber: number; lineContent: string }> = [];
-
-          for (const script of scriptsToSearch) {
-            if (allResults.length >= args.limit) break;
-
-            const matches = await cdpManager.searchInScript(
-              script.scriptId,
-              pattern,
-              args.caseSensitive,
-              true // always use regex
-            );
-
-            for (const match of matches) {
-              allResults.push({
-                url: script.url,
-                scriptId: script.scriptId,
-                lineNumber: match.lineNumber + 1, // Convert to 1-based
-                lineContent: match.lineContent.trim(),
-              });
-
-              if (allResults.length >= args.limit) break;
-            }
-          }
-
-          return createSuccessResponse('FUNCTION_SEARCH_RESULTS', {
-            count: allResults.length.toString(),
-            functionName: args.functionName
-          }, {
-            caseSensitive: args.caseSensitive,
-            scriptsSearched: scriptsToSearch.length,
-            totalScripts: allScripts.length,
-            results: allResults,
-          });
-        } catch (error) {
-          return createErrorResponse('SOURCE_CODE_FAILED', { error: `${error}` });
         }
       }
     ),
