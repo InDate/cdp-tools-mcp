@@ -8,6 +8,7 @@
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { debugLog } from './debug-logger.js';
+import { sanitizeReference } from './reference-validator.js';
 
 export interface RecordedCommand {
   tool: string;
@@ -30,15 +31,65 @@ interface HistoryCommand extends RecordedCommand {
   timestamp: number;
 }
 
+// Active sequence state for step-through debugging
+export interface ActiveSequenceState {
+  sequenceId: string;
+  sequenceName: string;
+  connectionReason: string;
+  currentStep: number;        // 0-indexed, next step to execute
+  totalSteps: number;
+  pausedAt: number;           // Timestamp when paused
+  historyIndexAtPause: number; // History index when we paused (to track new commands)
+}
+
 export class CommandRecorder {
   private history: HistoryCommand[] = [];
   private sequences: Map<string, CommandSequence> = new Map();
   private commandCounter = 0;
   private maxHistorySize = 1000; // Keep last 1000 commands
   private sequencesDir: string;
+  private activeSequence: ActiveSequenceState | null = null;
 
   constructor() {
     this.sequencesDir = join(process.cwd(), '.claude', 'sequences');
+  }
+
+  /**
+   * Set active sequence state (for step-through)
+   */
+  setActiveSequence(state: ActiveSequenceState | null): void {
+    this.activeSequence = state;
+  }
+
+  /**
+   * Get active sequence state
+   */
+  getActiveSequence(): ActiveSequenceState | null {
+    return this.activeSequence;
+  }
+
+  /**
+   * Update current step in active sequence
+   */
+  updateActiveSequenceStep(step: number): void {
+    if (this.activeSequence) {
+      this.activeSequence.currentStep = step;
+    }
+  }
+
+  /**
+   * Get commands recorded since sequence was paused
+   */
+  getCommandsSincePause(): HistoryCommand[] {
+    if (!this.activeSequence) return [];
+    return this.history.filter(cmd => cmd.index > this.activeSequence!.historyIndexAtPause);
+  }
+
+  /**
+   * Get current history index (for tracking pause point)
+   */
+  getCurrentHistoryIndex(): number {
+    return this.history.length > 0 ? this.history[this.history.length - 1].index : -1;
   }
 
   /**
@@ -48,6 +99,16 @@ export class CommandRecorder {
     // Clone params and remove connectionReason to make sequences reusable
     const paramsClone = JSON.parse(JSON.stringify(params));
     delete paramsClone.connectionReason;
+
+    // Sanitize 'reference' param for tools that create connections
+    // This ensures recorded sequences use the same reference format as the actual connection
+    if (paramsClone.reference && ['launchChrome', 'connectDebugger'].includes(tool)) {
+      paramsClone.reference = sanitizeReference(paramsClone.reference);
+    }
+    // Sanitize 'newReference' for tab rename operations
+    if (paramsClone.newReference && tool === 'tab' && paramsClone.action === 'rename') {
+      paramsClone.newReference = sanitizeReference(paramsClone.newReference);
+    }
 
     const command: HistoryCommand = {
       index: this.commandCounter++,
