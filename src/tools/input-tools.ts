@@ -13,6 +13,7 @@ import { getConfiguredDebugPort } from '../port-config.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import { isElementBlocked, detectModals } from '../utils/modal-detector.js';
 import { dismissModalByStrategy, selectDismissalStrategy } from '../utils/modal-dismissal.js';
+import { resolveSelector, isExtendedSelector, cleanupResolvedSelector } from '../utils/selector-resolver.js';
 
 // Consolidated input tool schema
 const inputToolSchema = z.object({
@@ -21,7 +22,7 @@ const inputToolSchema = z.object({
   connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 
   // click, type, hover parameters
-  selector: z.string().optional().describe('CSS selector (required for click, type, hover actions)'),
+  selector: z.string().optional().describe('CSS selector (required for click, type, hover actions). Supports extended selectors: :has-text("text") for partial match, :text("text") for exact match. Example: button:has-text("Submit")'),
   handleModals: z.boolean().optional().describe('Auto-dismiss modals before action (for click, type, hover actions, default: false)'),
   dismissStrategy: z.enum(['accept', 'reject', 'close', 'remove', 'auto']).optional().describe('Strategy to use when dismissing modals if handleModals is true (for click, type, hover actions, default: auto)'),
 
@@ -69,9 +70,9 @@ export function createInputTools(
 
         switch (action) {
           case 'click': {
-            const { selector, clickCount = 1, handleModals = false, dismissStrategy = 'auto' } = args;
+            const { selector: rawSelector, clickCount = 1, handleModals = false, dismissStrategy = 'auto' } = args;
 
-            if (!selector) {
+            if (!rawSelector) {
               return {
                 content: [
                   {
@@ -81,6 +82,21 @@ export function createInputTools(
                 ],
                 isError: true,
               };
+            }
+
+            // Resolve extended selectors (like :has-text())
+            let selector = rawSelector;
+            let selectorWarning: string | undefined;
+            if (isExtendedSelector(rawSelector)) {
+              const resolved = await resolveSelector(page, rawSelector);
+              if ('error' in resolved) {
+                return createErrorResponse('ELEMENT_NOT_FOUND', {
+                  selector: rawSelector,
+                  suggestion: resolved.suggestion,
+                });
+              }
+              selector = resolved.selector;
+              selectorWarning = resolved.warning;
             }
 
             const result = await executeWithPauseDetection(
@@ -175,12 +191,15 @@ export function createInputTools(
               'click'
             );
 
+            // Clean up temporary selector attribute
+            await cleanupResolvedSelector(page, selector);
+
             // Check if element was not found
             if (!result.result || result.result.error) {
               // Check if error is due to blocking modal
               if (result.result?.blockingModal) {
                 return createErrorResponse('ELEMENT_BLOCKED_BY_MODAL', {
-                  selector,
+                  selector: rawSelector,
                   modalType: result.result.blockingModal.type,
                   modalDescription: result.result.blockingModal.description,
                   modalSelector: result.result.blockingModal.selector,
@@ -188,21 +207,33 @@ export function createInputTools(
                   availableStrategies: result.result.blockingModal.dismissStrategies,
                 });
               }
-              return createErrorResponse('ELEMENT_NOT_FOUND', { selector });
+              return createErrorResponse('ELEMENT_NOT_FOUND', { selector: rawSelector });
             }
 
             // Return success with warning if no click handler detected
             if (result.result.warning) {
-              return createSuccessResponse('ELEMENT_CLICK_WARNING', { selector });
+              return createSuccessResponse('ELEMENT_CLICK_WARNING', { selector: rawSelector, warning: selectorWarning });
             }
 
-            return createSuccessResponse('ELEMENT_CLICK_SUCCESS', { selector });
+            // Include warning about multiple matches if applicable
+            if (selectorWarning) {
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: `Clicked element \`${rawSelector}\`\n\n**Warning:** ${selectorWarning}`,
+                  },
+                ],
+              };
+            }
+
+            return createSuccessResponse('ELEMENT_CLICK_SUCCESS', { selector: rawSelector });
           }
 
           case 'type': {
-            const { selector, text, delay = 0, handleModals = false, dismissStrategy = 'auto' } = args;
+            const { selector: rawSelector, text, delay = 0, handleModals = false, dismissStrategy = 'auto' } = args;
 
-            if (!selector) {
+            if (!rawSelector) {
               return {
                 content: [
                   {
@@ -224,6 +255,21 @@ export function createInputTools(
                 ],
                 isError: true,
               };
+            }
+
+            // Resolve extended selectors (like :has-text())
+            let selector = rawSelector;
+            let selectorWarning: string | undefined;
+            if (isExtendedSelector(rawSelector)) {
+              const resolved = await resolveSelector(page, rawSelector);
+              if ('error' in resolved) {
+                return createErrorResponse('ELEMENT_NOT_FOUND', {
+                  selector: rawSelector,
+                  suggestion: resolved.suggestion,
+                });
+              }
+              selector = resolved.selector;
+              selectorWarning = resolved.warning;
             }
 
             const result = await executeWithPauseDetection(
@@ -284,12 +330,15 @@ export function createInputTools(
               'typeText'
             );
 
+            // Clean up temporary selector attribute
+            await cleanupResolvedSelector(page, selector);
+
             // Check if element was not found
             if (result.result?.error) {
               // Check if error is due to blocking modal
               if (result.result?.blockingModal) {
                 return createErrorResponse('ELEMENT_BLOCKED_BY_MODAL', {
-                  selector,
+                  selector: rawSelector,
                   modalType: result.result.blockingModal.type,
                   modalDescription: result.result.blockingModal.description,
                   modalSelector: result.result.blockingModal.selector,
@@ -297,11 +346,23 @@ export function createInputTools(
                   availableStrategies: result.result.blockingModal.dismissStrategies,
                 });
               }
-              return createErrorResponse('ELEMENT_NOT_FOUND', { selector });
+              return createErrorResponse('ELEMENT_NOT_FOUND', { selector: rawSelector });
+            }
+
+            // Include warning about multiple matches if applicable
+            if (selectorWarning) {
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: `Typed into element \`${rawSelector}\`\n\n**Warning:** ${selectorWarning}`,
+                  },
+                ],
+              };
             }
 
             return createSuccessResponse('TEXT_TYPE_SUCCESS', {
-              selector,
+              selector: rawSelector,
               text
             });
           }
@@ -333,9 +394,9 @@ export function createInputTools(
           }
 
           case 'hover': {
-            const { selector, handleModals = false, dismissStrategy = 'auto' } = args;
+            const { selector: rawSelector, handleModals = false, dismissStrategy = 'auto' } = args;
 
-            if (!selector) {
+            if (!rawSelector) {
               return {
                 content: [
                   {
@@ -345,6 +406,21 @@ export function createInputTools(
                 ],
                 isError: true,
               };
+            }
+
+            // Resolve extended selectors (like :has-text())
+            let selector = rawSelector;
+            let selectorWarning: string | undefined;
+            if (isExtendedSelector(rawSelector)) {
+              const resolved = await resolveSelector(page, rawSelector);
+              if ('error' in resolved) {
+                return createErrorResponse('ELEMENT_NOT_FOUND', {
+                  selector: rawSelector,
+                  suggestion: resolved.suggestion,
+                });
+              }
+              selector = resolved.selector;
+              selectorWarning = resolved.warning;
             }
 
             const result = await executeWithPauseDetection(
@@ -400,12 +476,15 @@ export function createInputTools(
               'hoverElement'
             );
 
+            // Clean up temporary selector attribute
+            await cleanupResolvedSelector(page, selector);
+
             // Check if element was not found
             if (result.result?.error) {
               // Check if error is due to blocking modal
               if (result.result?.blockingModal) {
                 return createErrorResponse('ELEMENT_BLOCKED_BY_MODAL', {
-                  selector,
+                  selector: rawSelector,
                   modalType: result.result.blockingModal.type,
                   modalDescription: result.result.blockingModal.description,
                   modalSelector: result.result.blockingModal.selector,
@@ -413,11 +492,23 @@ export function createInputTools(
                   availableStrategies: result.result.blockingModal.dismissStrategies,
                 });
               }
-              return createErrorResponse('ELEMENT_NOT_FOUND', { selector });
+              return createErrorResponse('ELEMENT_NOT_FOUND', { selector: rawSelector });
+            }
+
+            // Include warning about multiple matches if applicable
+            if (selectorWarning) {
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: `Hovered over element \`${rawSelector}\`\n\n**Warning:** ${selectorWarning}`,
+                  },
+                ],
+              };
             }
 
             return createSuccessResponse('ELEMENT_HOVER_SUCCESS', {
-              selector
+              selector: rawSelector
             });
           }
 

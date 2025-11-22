@@ -11,13 +11,14 @@ import { checkBrowserAutomation } from '../error-helpers.js';
 import { createTool } from '../validation-helpers.js';
 import { getConfiguredDebugPort } from '../port-config.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
+import { resolveSelector, isExtendedSelector, cleanupResolvedSelector } from '../utils/selector-resolver.js';
 
 // Consolidated schema for DOM tools
 const domSchema = z.object({
   action: z.enum(['querySelector', 'getProperties', 'snapshot']).describe('DOM action: querySelector (find element by selector), getProperties (get detailed element properties), snapshot (get full DOM snapshot)'),
   connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
   // Parameters for querySelector and getProperties actions
-  selector: z.string().optional().describe('CSS selector (required for querySelector and getProperties actions)'),
+  selector: z.string().optional().describe('CSS selector (required for querySelector and getProperties actions). Supports extended selectors: :has-text("text") for partial match, :text("text") for exact match. Example: button:has-text("Submit")'),
   // Parameters for snapshot action
   maxDepth: z.number().optional().describe('Maximum depth for DOM snapshot (default: 5, for snapshot action)'),
 }).strict();
@@ -65,13 +66,30 @@ export function createDOMTools(
         // Handle each action
         switch (action) {
           case 'querySelector': {
+            const rawSelector = args.selector!;
+
+            // Resolve extended selectors (like :has-text())
+            let selector = rawSelector;
+            let selectorWarning: string | undefined;
+            if (isExtendedSelector(selector)) {
+              const resolved = await resolveSelector(page, selector);
+              if ('error' in resolved) {
+                return createErrorResponse('ELEMENT_NOT_FOUND', {
+                  selector: rawSelector,
+                  suggestion: resolved.suggestion,
+                });
+              }
+              selector = resolved.selector;
+              selectorWarning = resolved.warning;
+            }
+
             const result = await executeWithPauseDetection(
               targetCdpManager,
               async () => {
-                const element = await page.$(args.selector!);
+                const element = await page.$(selector);
 
                 if (!element) {
-                  return { found: false, selector: args.selector };
+                  return { found: false, selector };
                 }
 
                 // Get element properties
@@ -83,18 +101,24 @@ export function createDOMTools(
                   visible: !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length),
                 }));
 
-                return { found: true, selector: args.selector, properties };
+                return { found: true, selector, properties };
               },
               'querySelector'
             );
 
+            // Clean up temporary selector attribute
+            await cleanupResolvedSelector(page, selector);
+
             // Check if element was not found
             if (!result.result || !result.result.found) {
-              return createErrorResponse('ELEMENT_NOT_FOUND', { selector: args.selector });
+              return createErrorResponse('ELEMENT_NOT_FOUND', { selector: rawSelector });
             }
 
             // Return element properties as code block
-            const markdown = `Element found: \`${args.selector}\`\n\n${formatCodeBlock(result.result.properties)}`;
+            let markdown = `Element found: \`${rawSelector}\`\n\n${formatCodeBlock(result.result.properties)}`;
+            if (selectorWarning) {
+              markdown += `\n\n**Warning:** ${selectorWarning}`;
+            }
             return {
               content: [
                 {
@@ -106,13 +130,30 @@ export function createDOMTools(
           }
 
           case 'getProperties': {
+            const rawSelector = args.selector!;
+
+            // Resolve extended selectors (like :has-text())
+            let selector = rawSelector;
+            let selectorWarning: string | undefined;
+            if (isExtendedSelector(selector)) {
+              const resolved = await resolveSelector(page, selector);
+              if ('error' in resolved) {
+                return createErrorResponse('ELEMENT_NOT_FOUND', {
+                  selector: rawSelector,
+                  suggestion: resolved.suggestion,
+                });
+              }
+              selector = resolved.selector;
+              selectorWarning = resolved.warning;
+            }
+
             const result = await executeWithPauseDetection(
               targetCdpManager,
               async () => {
-                const element = await page.$(args.selector!);
+                const element = await page.$(selector);
 
                 if (!element) {
-                  return { error: `Element not found: ${args.selector}` };
+                  return { error: `Element not found: ${selector}` };
                 }
 
                 // Get detailed element properties
@@ -150,18 +191,24 @@ export function createDOMTools(
                   };
                 });
 
-                return { selector: args.selector, element: details };
+                return { selector: rawSelector, element: details };
               },
               'getElementProperties'
             );
 
+            // Clean up temporary selector attribute
+            await cleanupResolvedSelector(page, selector);
+
             // Check if element was not found
             if (!result.result || result.result.error) {
-              return createErrorResponse('ELEMENT_NOT_FOUND', { selector: args.selector });
+              return createErrorResponse('ELEMENT_NOT_FOUND', { selector: rawSelector });
             }
 
             // Return element properties as code block
-            const markdown = `Element properties for \`${args.selector}\`:\n\n${formatCodeBlock(result.result.element)}`;
+            let markdown = `Element properties for \`${rawSelector}\`:\n\n${formatCodeBlock(result.result.element)}`;
+            if (selectorWarning) {
+              markdown += `\n\n**Warning:** ${selectorWarning}`;
+            }
             return {
               content: [
                 {

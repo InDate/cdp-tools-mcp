@@ -14,6 +14,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import { spawn } from 'child_process';
+import { resolveSelector, isExtendedSelector, cleanupResolvedSelector } from '../utils/selector-resolver.js';
 import { randomBytes } from 'crypto';
 
 // WeasyPrint availability cache
@@ -407,7 +408,7 @@ const screenshotSchema = z.object({
   fullPage: z.boolean().optional().describe('Capture full page (for fullPage action only, default: true)'),
 
   // Element screenshot options
-  selector: z.string().optional().describe('CSS selector (required for element action)'),
+  selector: z.string().optional().describe('CSS selector (required for element action). Supports extended selectors: :has-text("text") for partial match, :text("text") for exact match. Example: div:has-text("Chart")'),
 
   // PDF options
   engine: z.enum(['chrome', 'weasyprint']).optional().describe('PDF rendering engine (for pdf action, default: chrome)'),
@@ -566,6 +567,23 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
               return createErrorResponse('INVALID_PARAMS', { message: 'selector is required for element action' });
             }
 
+            const rawSelector = args.selector;
+
+            // Resolve extended selectors (like :has-text())
+            let selector = rawSelector;
+            let selectorWarning: string | undefined;
+            if (isExtendedSelector(selector)) {
+              const resolved = await resolveSelector(page, selector);
+              if ('error' in resolved) {
+                return createErrorResponse('ELEMENT_NOT_FOUND', {
+                  selector: rawSelector,
+                  suggestion: resolved.suggestion,
+                });
+              }
+              selector = resolved.selector;
+              selectorWarning = resolved.warning;
+            }
+
             const type = args.type || 'jpeg';
             const quality = args.quality ?? 50;
             const autoSaveThreshold = args.autoSaveThreshold ?? 1;
@@ -573,10 +591,10 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
             const result = await executeWithPauseDetection(
               targetCdpManager,
               async () => {
-                const element = await page.$(args.selector);
+                const element = await page.$(selector);
 
                 if (!element) {
-                  return { error: `Element not found: ${args.selector}` };
+                  return { error: `Element not found: ${selector}` };
                 }
 
                 // Get screenshot as Buffer
@@ -593,14 +611,14 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
                   const filepath = await saveScreenshotToDisk(screenshot, type, args.saveToDisk);
                   const sizeMB = (screenshot.length / 1_000_000).toFixed(2);
                   return {
-                    selector: args.selector,
+                    selector: rawSelector,
                     filepath,
                     size: `${sizeMB}MB`,
                   };
                 }
 
                 return {
-                  selector: args.selector,
+                  selector: rawSelector,
                   type,
                   buffer: screenshot,
                   size: `${(screenshot.length / 1000).toFixed(1)}KB`,
@@ -609,25 +627,36 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
               'takeElementScreenshot'
             );
 
+            // Clean up temporary selector attribute
+            await cleanupResolvedSelector(page, selector);
+
             // Handle errors
             if (result.result?.error) {
-              return createErrorResponse('ELEMENT_NOT_FOUND', { selector: args.selector });
+              return createErrorResponse('ELEMENT_NOT_FOUND', { selector: rawSelector });
             }
 
             // Handle disk save
             if (result.result?.filepath) {
-              return createSuccessResponse('SCREENSHOT_SAVED', {
+              const response = createSuccessResponse('SCREENSHOT_SAVED', {
                 filepath: result.result.filepath,
                 fileSize: result.result.size,
               });
+              if (selectorWarning) {
+                response.content[0].text += `\n\n**Warning:** ${selectorWarning}`;
+              }
+              return response;
             }
 
             // Handle image return - small screenshots
+            let captureText = `Element screenshot captured for \`${rawSelector}\` (${result.result?.size})`;
+            if (selectorWarning) {
+              captureText += `\n\n**Warning:** ${selectorWarning}`;
+            }
             return {
               content: [
                 {
                   type: 'text',
-                  text: `Element screenshot captured for \`${args.selector}\` (${result.result?.size})`,
+                  text: captureText,
                 },
                 {
                   type: 'image',
