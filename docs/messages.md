@@ -1408,7 +1408,7 @@ No commands were recorded in this session.
 **Type:** error
 **Code:** SEQUENCE_NOT_FOUND
 
-Sequence `{{sequenceId}}` not found. Use `replay({ action: 'listSequences' })` to see available sequences.
+Sequence `{{sequenceId}}` not found. Use `replay({ action: 'listSequences' })` to see available sequences or `replay({ action: 'load', filename: 'filename.json' })` to load a sequence from disk.
 
 ---
 
@@ -1460,5 +1460,40 @@ Sequence loaded from disk successfully!
 **Sequence ID:** `{{sequenceId}}`
 **Name:** {{name}}
 **Commands:** {{commandCount}}
+
+---
+
+## SEQUENCE_LOADED_INTO_HISTORY
+
+**Type:** success
+
+Loaded {{commandCount}} commands from "{{name}}" into history.
+
+Use `replay({ action: 'history' })` to view commands.
+
+---
+
+## MISSING_CONNECTION
+
+**Type:** error
+**Code:** MISSING_CONNECTION
+
+{{message}}
+
+**Tools needing connection:** {{toolsNeedingConnection}}
+
+{{suggestion}}
+
+---
+
+## MISSING_PARAMETER
+
+**Type:** error
+**Code:** MISSING_PARAMETER
+
+Missing required parameter: {{missing}}
+
+**Action:** {{action}}
+**Message:** {{message}}
 
 ---

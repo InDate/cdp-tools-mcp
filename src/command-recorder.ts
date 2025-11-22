@@ -7,29 +7,28 @@
 
 import { promises as fs } from 'fs';
 import { join } from 'path';
+import { debugLog } from './debug-logger.js';
 
 export interface RecordedCommand {
-  index: number;
-  timestamp: number;
   tool: string;
   params: Record<string, any>;
-  description?: string;
 }
 
 export interface CommandSequence {
   id: string;
   name: string;
-  commandIndices: number[];
+  commands: RecordedCommand[];
   createdAt: number;
 }
 
-export interface SavedSequence {
-  sequence: CommandSequence;
-  commands: RecordedCommand[];
+// Internal history tracking (includes index and timestamp)
+interface HistoryCommand extends RecordedCommand {
+  index: number;
+  timestamp: number;
 }
 
 export class CommandRecorder {
-  private history: RecordedCommand[] = [];
+  private history: HistoryCommand[] = [];
   private sequences: Map<string, CommandSequence> = new Map();
   private commandCounter = 0;
   private maxHistorySize = 1000; // Keep last 1000 commands
@@ -42,13 +41,16 @@ export class CommandRecorder {
   /**
    * Record a command (always-on, automatic)
    */
-  recordCommand(tool: string, params: Record<string, any>, description?: string): void {
-    const command: RecordedCommand = {
+  async recordCommand(tool: string, params: Record<string, any>): Promise<void> {
+    // Clone params and remove connectionReason to make sequences reusable
+    const paramsClone = JSON.parse(JSON.stringify(params));
+    delete paramsClone.connectionReason;
+
+    const command: HistoryCommand = {
       index: this.commandCounter++,
       timestamp: Date.now(),
       tool,
-      params: JSON.parse(JSON.stringify(params)), // Deep clone
-      description,
+      params: paramsClone,
     };
 
     this.history.push(command);
@@ -58,43 +60,51 @@ export class CommandRecorder {
       this.history.shift();
     }
 
-    console.error(`[CommandRecorder] Recorded #${command.index}: ${tool}`);
+    await debugLog('command-recorder', `Recorded #${command.index}: ${tool}`);
   }
 
   /**
    * Get command history (most recent first)
    */
-  getHistory(limit: number = 50): RecordedCommand[] {
+  getHistory(limit: number = 50): HistoryCommand[] {
     return [...this.history].reverse().slice(0, limit);
   }
 
   /**
    * Get a specific command by index
    */
-  getCommand(index: number): RecordedCommand | undefined {
+  getCommand(index: number): HistoryCommand | undefined {
     return this.history.find(cmd => cmd.index === index);
   }
 
   /**
    * Create a sequence from command indices
    */
-  createSequence(name: string, commandIndices: number[]): CommandSequence | null {
-    // Validate all indices exist
-    const invalidIndices = commandIndices.filter(idx => !this.getCommand(idx));
-    if (invalidIndices.length > 0) {
-      console.error(`[CommandRecorder] Invalid command indices: ${invalidIndices.join(', ')}`);
-      return null;
+  async createSequence(name: string, commandIndices: number[]): Promise<CommandSequence | null> {
+    // Validate all indices exist and get commands
+    const commands: RecordedCommand[] = [];
+    for (const idx of commandIndices) {
+      const cmd = this.getCommand(idx);
+      if (!cmd) {
+        await debugLog('command-recorder', `Invalid command index: ${idx}`);
+        return null;
+      }
+      // Strip index and timestamp for the sequence
+      commands.push({
+        tool: cmd.tool,
+        params: cmd.params,
+      });
     }
 
     const sequence: CommandSequence = {
       id: `seq-${Date.now()}`,
       name,
-      commandIndices,
+      commands,
       createdAt: Date.now(),
     };
 
     this.sequences.set(sequence.id, sequence);
-    console.error(`[CommandRecorder] Created sequence "${name}" with ${commandIndices.length} commands`);
+    await debugLog('command-recorder', `Created sequence "${name}" with ${commands.length} commands`);
     return sequence;
   }
 
@@ -112,21 +122,6 @@ export class CommandRecorder {
     return this.sequences.get(sequenceId);
   }
 
-  /**
-   * Get sequence with full command details
-   */
-  getSequenceWithCommands(sequenceId: string): { sequence: CommandSequence; commands: RecordedCommand[] } | null {
-    const sequence = this.sequences.get(sequenceId);
-    if (!sequence) {
-      return null;
-    }
-
-    const commands = sequence.commandIndices
-      .map(idx => this.getCommand(idx))
-      .filter((cmd): cmd is RecordedCommand => cmd !== undefined);
-
-    return { sequence, commands };
-  }
 
   /**
    * Delete a sequence
@@ -138,18 +133,18 @@ export class CommandRecorder {
   /**
    * Clear all sequences
    */
-  clearAllSequences(): void {
+  async clearAllSequences(): Promise<void> {
     this.sequences.clear();
-    console.error('[CommandRecorder] All sequences cleared');
+    await debugLog('command-recorder', 'All sequences cleared');
   }
 
   /**
    * Clear command history
    */
-  clearHistory(): void {
+  async clearHistory(): Promise<void> {
     this.history = [];
     this.commandCounter = 0;
-    console.error('[CommandRecorder] Command history cleared');
+    await debugLog('command-recorder', 'Command history cleared');
   }
 
   /**
@@ -173,33 +168,32 @@ export class CommandRecorder {
    * Save a sequence to disk
    */
   async saveSequenceToDisk(sequenceId: string): Promise<string | null> {
-    const sequenceData = this.getSequenceWithCommands(sequenceId);
-    if (!sequenceData) {
-      console.error(`[CommandRecorder] Sequence ${sequenceId} not found`);
+    const sequence = this.getSequence(sequenceId);
+    if (!sequence) {
+      await debugLog('command-recorder', `Sequence ${sequenceId} not found`);
       return null;
     }
-
-    const { sequence, commands } = sequenceData;
 
     try {
       // Ensure directory exists
       await fs.mkdir(this.sequencesDir, { recursive: true });
 
-      // Sanitize filename
+      // Sanitize filename - use name + short timestamp
       const safeFilename = sequence.name.replace(/[^a-z0-9-_]/gi, '-').toLowerCase();
-      const filename = `${safeFilename}-${sequence.id}.json`;
+      const shortId = Date.now().toString().slice(-6); // Last 6 digits of timestamp
+      const filename = `${safeFilename}-${shortId}.json`;
       const filepath = join(this.sequencesDir, filename);
 
-      const savedSequence: SavedSequence = {
-        sequence,
-        commands,
+      // Add usage comment to exported file
+      const exportData = {
+        _comment: 'CDP Tools replay sequence. Load with: replay({ action: "load", filename: "<this-file>" }), then run with: replay({ action: "replay", sequenceId: "<id>" })',
+        ...sequence
       };
-
-      await fs.writeFile(filepath, JSON.stringify(savedSequence, null, 2));
-      console.error(`[CommandRecorder] Saved sequence "${sequence.name}" to ${filepath}`);
+      await fs.writeFile(filepath, JSON.stringify(exportData, null, 2));
+      await debugLog('command-recorder', `Saved sequence "${sequence.name}" to ${filepath}`);
       return filepath;
     } catch (error: any) {
-      console.error(`[CommandRecorder] Failed to save sequence:`, error);
+      await debugLog('command-recorder', `Failed to save sequence: ${error}`);
       return null;
     }
   }
@@ -207,34 +201,23 @@ export class CommandRecorder {
   /**
    * Load a sequence from disk
    */
-  async loadSequenceFromDisk(filepath: string): Promise<CommandSequence | null> {
+  async loadSequenceFromDisk(filename: string): Promise<CommandSequence | null> {
     try {
+      // Support both full paths and relative filenames
+      const filepath = filename.startsWith('/') || filename.includes(':\\')
+        ? filename  // Absolute path (Unix or Windows)
+        : join(this.sequencesDir, filename);  // Relative to sequences directory
+
       const content = await fs.readFile(filepath, 'utf-8');
-      const savedSequence: SavedSequence = JSON.parse(content);
-
-      // Add commands to history if they don't exist
-      for (const cmd of savedSequence.commands) {
-        const existing = this.getCommand(cmd.index);
-        if (!existing) {
-          // Restore command to history
-          this.history.push(cmd);
-          // Update counter if needed
-          if (cmd.index >= this.commandCounter) {
-            this.commandCounter = cmd.index + 1;
-          }
-        }
-      }
-
-      // Re-sort history by index
-      this.history.sort((a, b) => a.index - b.index);
+      const sequence: CommandSequence = JSON.parse(content);
 
       // Add sequence to memory
-      this.sequences.set(savedSequence.sequence.id, savedSequence.sequence);
+      this.sequences.set(sequence.id, sequence);
 
-      console.error(`[CommandRecorder] Loaded sequence "${savedSequence.sequence.name}" from disk`);
-      return savedSequence.sequence;
+      await debugLog('command-recorder', `Loaded sequence "${sequence.name}" from ${filepath}`);
+      return sequence;
     } catch (error: any) {
-      console.error(`[CommandRecorder] Failed to load sequence from ${filepath}:`, error);
+      await debugLog('command-recorder', `Failed to load sequence from ${filename}: ${error}`);
       return null;
     }
   }
@@ -256,20 +239,20 @@ export class CommandRecorder {
         try {
           const filepath = join(this.sequencesDir, file);
           const content = await fs.readFile(filepath, 'utf-8');
-          const savedSequence: SavedSequence = JSON.parse(content);
+          const sequence: CommandSequence = JSON.parse(content);
           sequences.push({
             filename: file,
-            name: savedSequence.sequence.name,
-            id: savedSequence.sequence.id,
+            name: sequence.name,
+            id: sequence.id,
           });
         } catch (error) {
-          console.error(`[CommandRecorder] Failed to parse ${file}:`, error);
+          await debugLog('command-recorder', `Failed to parse ${file}: ${error}`);
         }
       }
 
       return sequences;
     } catch (error: any) {
-      console.error(`[CommandRecorder] Failed to list saved sequences:`, error);
+      await debugLog('command-recorder', `Failed to list saved sequences: ${error}`);
       return [];
     }
   }
@@ -279,12 +262,16 @@ export class CommandRecorder {
    */
   async deleteSequenceFromDisk(filename: string): Promise<boolean> {
     try {
-      const filepath = join(this.sequencesDir, filename);
+      // Support both full paths and relative filenames
+      const filepath = filename.startsWith('/') || filename.includes(':\\')
+        ? filename  // Absolute path (Unix or Windows)
+        : join(this.sequencesDir, filename);  // Relative to sequences directory
+
       await fs.unlink(filepath);
-      console.error(`[CommandRecorder] Deleted sequence file: ${filename}`);
+      await debugLog('command-recorder', `Deleted sequence file: ${filepath}`);
       return true;
     } catch (error: any) {
-      console.error(`[CommandRecorder] Failed to delete ${filename}:`, error);
+      await debugLog('command-recorder', `Failed to delete ${filename}: ${error}`);
       return false;
     }
   }

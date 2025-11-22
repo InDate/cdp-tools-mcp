@@ -1047,7 +1047,7 @@ function registerToolHandlers(server: Server) {
 
     // Record command if recording is active (but don't record replay tool calls)
     if (toolName !== 'replay') {
-      commandRecorder.recordCommand(toolName, validation.data);
+      await commandRecorder.recordCommand(toolName, validation.data);
     }
 
     // Pass validated data to handler
