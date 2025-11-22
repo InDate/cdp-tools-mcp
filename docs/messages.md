@@ -1455,7 +1455,7 @@ Failed to load sequence from disk.
 
 **Type:** success
 
-Sequence loaded from disk successfully!
+Sequence loaded.
 
 **Sequence ID:** `{{sequenceId}}`
 **Name:** {{name}}
