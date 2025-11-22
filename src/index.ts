@@ -732,13 +732,12 @@ URL: ${pageUrl}${consoleStats}`;
       const { directory } = args;
 
       try {
-        await sourceMapHandler.loadSourceMapsFromDirectory(directory);
-        const loadedMaps = sourceMapHandler.getLoadedSourceMaps();
+        const registered = await sourceMapHandler.registerSourceMapsFromDirectory(directory);
 
         return createSuccessResponse('SOURCE_MAPS_LOADED', {
-          count: loadedMaps.length.toString(),
+          count: registered.toString(),
           directory
-        }, { sourceMaps: loadedMaps });
+        }, { registered, note: 'Source maps registered for lazy loading (will be loaded on demand)' });
       } catch (error) {
         return createErrorResponse('SOURCE_MAPS_FAILED', { error: `${error}` });
       }

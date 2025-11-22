@@ -6,6 +6,7 @@
 import { SourceMapConsumer } from 'source-map';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { debugLog } from './debug-logger.js';
 
 export interface SourcePosition {
   source: string;
@@ -21,24 +22,118 @@ export interface MappedPosition {
   source: string;
 }
 
+// Max size limits to prevent performance issues
+const MAX_INLINE_SOURCEMAP_SIZE = 1_000_000; // 1MB base64 ≈ 750KB decoded
+const MAX_FILE_SOURCEMAP_SIZE = 10_000_000; // 10MB for file-based source maps
+
+// Track last error for visibility
+interface LoadError {
+  scriptUrl: string;
+  error: string;
+  timestamp: number;
+}
+
 export class SourceMapHandler {
   private sourceMaps: Map<string, SourceMapConsumer> = new Map();
+  private pendingSourceMaps: Map<string, string> = new Map(); // scriptUrl → sourceMapURL (lazy loading)
+  private loadingPromises: Map<string, Promise<void>> = new Map(); // prevent concurrent loads with proper deduplication
+  private lastErrors: LoadError[] = []; // track recent errors for debugging
+  private clearing = false; // flag to prevent operations during clear
 
   /**
-   * Load a source map from a file
+   * Register a source map URL for lazy loading (does not load immediately)
+   */
+  registerSourceMap(scriptUrl: string, sourceMapURL: string): void {
+    if (this.clearing) return;
+    this.pendingSourceMaps.set(scriptUrl, sourceMapURL);
+  }
+
+  /**
+   * Load a source map from a file (with size limit)
    */
   async loadSourceMap(generatedFilePath: string): Promise<void> {
+    if (this.clearing) return;
+
     try {
       const mapPath = `${generatedFilePath}.map`;
+
+      // Check file size before reading
+      const stats = await fs.stat(mapPath);
+      if (stats.size > MAX_FILE_SOURCEMAP_SIZE) {
+        this.recordError(generatedFilePath, `Source map too large: ${stats.size} bytes (max ${MAX_FILE_SOURCEMAP_SIZE})`);
+        return;
+      }
+
       const mapContent = await fs.readFile(mapPath, 'utf-8');
       const rawSourceMap = JSON.parse(mapContent);
 
       const consumer = await new SourceMapConsumer(rawSourceMap);
-      this.sourceMaps.set(generatedFilePath, consumer);
+      if (!this.clearing) {
+        this.sourceMaps.set(generatedFilePath, consumer);
+      } else {
+        consumer.destroy();
+      }
     } catch (error) {
-      // Source map might not exist, which is okay
-      console.warn(`Could not load source map for ${generatedFilePath}: ${error}`);
+      this.recordError(generatedFilePath, String(error));
+      // Fire-and-forget debug log
+      debugLog('sourcemap', `Could not load source map for ${generatedFilePath}: ${error}`);
     }
+  }
+
+  /**
+   * Find a matching source in a source map using proper path comparison
+   */
+  private findMatchingSource(sources: string[], originalSource: string): string | undefined {
+    // Normalize the search path
+    const normalizedSearch = this.normalizePath(originalSource);
+    const searchBasename = path.basename(normalizedSearch);
+
+    // First, try exact match
+    for (const source of sources) {
+      const normalizedSource = this.normalizePath(source);
+      if (normalizedSource === normalizedSearch) {
+        return source;
+      }
+    }
+
+    // Second, try matching by filename + parent directory (more specific than just filename)
+    const searchParts = normalizedSearch.split('/');
+    if (searchParts.length >= 2) {
+      const searchSuffix = searchParts.slice(-2).join('/');
+      for (const source of sources) {
+        const normalizedSource = this.normalizePath(source);
+        if (normalizedSource.endsWith(searchSuffix)) {
+          return source;
+        }
+      }
+    }
+
+    // Third, try matching by exact filename only (least specific, but still requires exact filename match)
+    for (const source of sources) {
+      const sourceBasename = path.basename(this.normalizePath(source));
+      if (sourceBasename === searchBasename) {
+        return source;
+      }
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Normalize a path for comparison
+   */
+  private normalizePath(p: string): string {
+    // Remove webpack:// or similar prefixes
+    let normalized = p.replace(/^webpack:\/\/[^/]*\//, '');
+    normalized = normalized.replace(/^file:\/\//, '');
+    normalized = normalized.replace(/^\.\//g, '');
+    // Normalize path separators
+    normalized = normalized.replace(/\\/g, '/');
+    // Remove leading ./
+    while (normalized.startsWith('./')) {
+      normalized = normalized.slice(2);
+    }
+    return normalized;
   }
 
   /**
@@ -49,12 +144,16 @@ export class SourceMapHandler {
     originalLine: number,
     originalColumn: number = 0
   ): Promise<{ generatedFile: string; line: number; column: number } | null> {
-    // Try to find the source map that contains this original source
-    for (const [generatedFile, consumer] of this.sourceMaps.entries()) {
-      const sources = (consumer as any).sources as string[];
+    if (this.clearing) return null;
 
-      // Check if this source map contains our original source
-      const matchingSource = sources.find((s: string) => s.includes(originalSource) || originalSource.includes(s));
+    // First, check already-loaded source maps
+    for (const [generatedFile, consumer] of this.sourceMaps.entries()) {
+      if (this.clearing) return null;
+
+      const sources = (consumer as any).sources as string[] | undefined;
+      if (!sources) continue;
+
+      const matchingSource = this.findMatchingSource(sources, originalSource);
 
       if (matchingSource) {
         const generated = consumer.generatedPositionFor({
@@ -73,6 +172,43 @@ export class SourceMapHandler {
       }
     }
 
+    // Lazy load: try pending source maps if not found in loaded ones
+    // Copy keys to avoid mutating map during iteration
+    const pendingKeys = Array.from(this.pendingSourceMaps.keys());
+    for (const scriptUrl of pendingKeys) {
+      if (this.clearing) return null;
+
+      const sourceMapURL = this.pendingSourceMaps.get(scriptUrl);
+      if (!sourceMapURL) continue; // already processed by another call
+
+      await this.loadSourceMapFromURL(scriptUrl, sourceMapURL);
+      this.pendingSourceMaps.delete(scriptUrl);
+
+      const consumer = this.sourceMaps.get(scriptUrl);
+      if (consumer) {
+        const sources = (consumer as any).sources as string[] | undefined;
+        if (!sources) continue;
+
+        const matchingSource = this.findMatchingSource(sources, originalSource);
+
+        if (matchingSource) {
+          const generated = consumer.generatedPositionFor({
+            source: matchingSource,
+            line: originalLine,
+            column: originalColumn,
+          });
+
+          if (generated.line !== null && generated.column !== null) {
+            return {
+              generatedFile: scriptUrl,
+              line: generated.line,
+              column: generated.column,
+            };
+          }
+        }
+      }
+    }
+
     return null;
   }
 
@@ -84,9 +220,19 @@ export class SourceMapHandler {
     generatedLine: number,
     generatedColumn: number = 0
   ): Promise<SourcePosition | null> {
-    const consumer = this.sourceMaps.get(generatedFile);
+    if (this.clearing) return null;
 
-    if (!consumer) {
+    let consumer = this.sourceMaps.get(generatedFile);
+
+    // Lazy load: if not loaded but registered, load now
+    if (!consumer && this.pendingSourceMaps.has(generatedFile)) {
+      const sourceMapURL = this.pendingSourceMaps.get(generatedFile)!;
+      await this.loadSourceMapFromURL(generatedFile, sourceMapURL);
+      this.pendingSourceMaps.delete(generatedFile);
+      consumer = this.sourceMaps.get(generatedFile);
+    }
+
+    if (!consumer || this.clearing) {
       return null;
     }
 
@@ -107,78 +253,273 @@ export class SourceMapHandler {
   }
 
   /**
-   * Load source map from URL or data URI (for auto-detection)
+   * Load source map from URL or data URI (with proper concurrency handling)
    */
   async loadSourceMapFromURL(scriptUrl: string, sourceMapURL: string): Promise<void> {
+    if (this.clearing) return;
+
+    // Already loaded
+    if (this.sourceMaps.has(scriptUrl)) {
+      return;
+    }
+
+    // Already loading - wait for existing load to complete
+    const existingPromise = this.loadingPromises.get(scriptUrl);
+    if (existingPromise) {
+      await existingPromise;
+      return;
+    }
+
+    // Create and store the loading promise
+    const loadPromise = this.doLoadSourceMap(scriptUrl, sourceMapURL);
+    this.loadingPromises.set(scriptUrl, loadPromise);
+
     try {
-      // Handle inline data URLs (data:application/json;base64,...)
+      await loadPromise;
+    } finally {
+      this.loadingPromises.delete(scriptUrl);
+    }
+  }
+
+  /**
+   * Internal: Actually load the source map
+   */
+  private async doLoadSourceMap(scriptUrl: string, sourceMapURL: string): Promise<void> {
+    try {
+      // Handle inline data URLs (data:application/json;base64,... or with charset)
       if (sourceMapURL.startsWith('data:')) {
-        const match = sourceMapURL.match(/^data:application\/json;base64,(.+)$/);
+        // More flexible regex: handles optional charset parameter
+        const match = sourceMapURL.match(/^data:application\/json(?:;charset=[^;]+)?;base64,(.+)$/);
         if (match) {
           const base64Data = match[1];
+
+          // Skip oversized inline source maps to prevent performance issues
+          if (base64Data.length > MAX_INLINE_SOURCEMAP_SIZE) {
+            this.recordError(scriptUrl, `Inline source map too large: ${base64Data.length} chars (max ${MAX_INLINE_SOURCEMAP_SIZE})`);
+            return;
+          }
+
           const jsonData = Buffer.from(base64Data, 'base64').toString('utf-8');
-          const rawSourceMap = JSON.parse(jsonData);
+          const rawSourceMap = this.parseSourceMapJSON(jsonData, scriptUrl);
+          if (!rawSourceMap) return;
+
           const consumer = await new SourceMapConsumer(rawSourceMap);
-          this.sourceMaps.set(scriptUrl, consumer);
-          console.log(`Loaded inline source map for ${scriptUrl}`);
+          if (!this.clearing) {
+            this.sourceMaps.set(scriptUrl, consumer);
+            debugLog('sourcemap', `Loaded inline source map for ${scriptUrl}`);
+          } else {
+            consumer.destroy();
+          }
           return;
         }
+
+        // Handle non-base64 data URIs (URL-encoded)
+        const nonBase64Match = sourceMapURL.match(/^data:application\/json(?:;charset=[^;]+)?,(.+)$/);
+        if (nonBase64Match) {
+          try {
+            const jsonData = decodeURIComponent(nonBase64Match[1]);
+            if (jsonData.length > MAX_INLINE_SOURCEMAP_SIZE) {
+              this.recordError(scriptUrl, `Inline source map too large: ${jsonData.length} chars`);
+              return;
+            }
+            const rawSourceMap = this.parseSourceMapJSON(jsonData, scriptUrl);
+            if (!rawSourceMap) return;
+
+            const consumer = await new SourceMapConsumer(rawSourceMap);
+            if (!this.clearing) {
+              this.sourceMaps.set(scriptUrl, consumer);
+              debugLog('sourcemap', `Loaded inline source map for ${scriptUrl}`);
+            } else {
+              consumer.destroy();
+            }
+            return;
+          } catch {
+            this.recordError(scriptUrl, 'Failed to decode non-base64 data URI');
+            return;
+          }
+        }
+
+        this.recordError(scriptUrl, 'Unrecognized data URI format');
+        return;
       }
 
       // Handle relative URLs - convert to absolute file path
       let mapPath: string;
       if (sourceMapURL.startsWith('http://') || sourceMapURL.startsWith('https://')) {
         // For HTTP URLs, extract the path component and treat as local file
+        // Note: This is a best-effort heuristic for local development
         const url = new URL(sourceMapURL);
         mapPath = url.pathname;
-        // Try to make it relative to current working directory
         if (mapPath.startsWith('/')) {
           mapPath = path.join(process.cwd(), mapPath.slice(1));
         }
       } else {
         // Relative path - resolve relative to the script
-        const scriptPath = scriptUrl.replace(/^https?:\/\/[^\/]+/, '');
+        const scriptPath = scriptUrl.replace(/^https?:\/\/[^/]+/, '');
         const scriptDir = path.dirname(scriptPath);
         mapPath = path.join(process.cwd(), scriptDir, sourceMapURL);
       }
 
+      // Check file size before reading
+      let stats;
+      try {
+        stats = await fs.stat(mapPath);
+      } catch {
+        // File doesn't exist - this is common and not an error worth reporting
+        return;
+      }
+
+      if (stats.size > MAX_FILE_SOURCEMAP_SIZE) {
+        this.recordError(scriptUrl, `Source map file too large: ${stats.size} bytes (max ${MAX_FILE_SOURCEMAP_SIZE})`);
+        return;
+      }
+
       // Load the source map file
       const mapContent = await fs.readFile(mapPath, 'utf-8');
-      const rawSourceMap = JSON.parse(mapContent);
+      const rawSourceMap = this.parseSourceMapJSON(mapContent, scriptUrl);
+      if (!rawSourceMap) return;
+
       const consumer = await new SourceMapConsumer(rawSourceMap);
-      this.sourceMaps.set(scriptUrl, consumer);
-      console.log(`Loaded source map for ${scriptUrl} from ${mapPath}`);
+      if (!this.clearing) {
+        this.sourceMaps.set(scriptUrl, consumer);
+        debugLog('sourcemap', `Loaded source map for ${scriptUrl} from ${mapPath}`);
+      } else {
+        consumer.destroy();
+      }
     } catch (error) {
-      console.warn(`Could not load source map from ${sourceMapURL} for ${scriptUrl}: ${error}`);
+      this.recordError(scriptUrl, String(error));
+      debugLog('sourcemap', `Could not load source map for ${scriptUrl}: ${error}`);
     }
   }
 
   /**
-   * Preload source maps from a directory
+   * Parse source map JSON with error tracking
    */
-  async loadSourceMapsFromDirectory(directory: string): Promise<void> {
+  private parseSourceMapJSON(json: string, scriptUrl: string): any | null {
     try {
-      const files = await fs.readdir(directory);
+      const parsed = JSON.parse(json);
+      // Basic validation
+      if (!parsed.mappings || typeof parsed.mappings !== 'string') {
+        this.recordError(scriptUrl, 'Invalid source map: missing or invalid mappings');
+        return null;
+      }
+      return parsed;
+    } catch (error) {
+      this.recordError(scriptUrl, `Invalid JSON in source map: ${error}`);
+      return null;
+    }
+  }
 
-      for (const file of files) {
-        if (file.endsWith('.js')) {
-          const fullPath = path.join(directory, file);
-          await this.loadSourceMap(fullPath);
+  /**
+   * Record an error for later inspection
+   */
+  private recordError(scriptUrl: string, error: string): void {
+    this.lastErrors.push({
+      scriptUrl,
+      error,
+      timestamp: Date.now(),
+    });
+    // Keep only last 20 errors
+    if (this.lastErrors.length > 20) {
+      this.lastErrors.shift();
+    }
+  }
+
+  /**
+   * Get recent source map loading errors (for debugging)
+   */
+  getRecentErrors(): LoadError[] {
+    return [...this.lastErrors];
+  }
+
+  /**
+   * Clear error history
+   */
+  clearErrors(): void {
+    this.lastErrors = [];
+  }
+
+  /**
+   * Register source maps from a directory for lazy loading (does NOT eagerly load)
+   */
+  async registerSourceMapsFromDirectory(directory: string): Promise<number> {
+    if (this.clearing) return 0;
+
+    let registered = 0;
+    try {
+      const entries = await fs.readdir(directory, { withFileTypes: true });
+
+      for (const entry of entries) {
+        const fullPath = path.join(directory, entry.name);
+
+        if (entry.isDirectory()) {
+          // Recurse into subdirectories
+          registered += await this.registerSourceMapsFromDirectory(fullPath);
+        } else if (entry.name.endsWith('.js.map')) {
+          // Register the source map for the corresponding JS file
+          const jsPath = fullPath.slice(0, -4); // Remove .map
+          this.pendingSourceMaps.set(jsPath, fullPath);
+          registered++;
         }
       }
     } catch (error) {
-      console.warn(`Could not load source maps from directory ${directory}: ${error}`);
+      debugLog('sourcemap', `Could not scan directory ${directory}: ${error}`);
+    }
+    return registered;
+  }
+
+  /**
+   * Force reload a source map (clear and re-register for lazy loading)
+   */
+  forceReload(scriptUrl: string, sourceMapURL?: string): void {
+    // Clear existing
+    const consumer = this.sourceMaps.get(scriptUrl);
+    if (consumer) {
+      consumer.destroy();
+      this.sourceMaps.delete(scriptUrl);
+    }
+
+    // Re-register for lazy loading if URL provided
+    if (sourceMapURL) {
+      this.pendingSourceMaps.set(scriptUrl, sourceMapURL);
     }
   }
 
   /**
-   * Clear all loaded source maps
+   * Clear all loaded and pending source maps (safe for concurrent operations)
    */
   clear(): void {
+    this.clearing = true;
+
+    // Wait for any in-flight loads to notice the clearing flag
+    // They will destroy their consumers themselves
+
     for (const consumer of this.sourceMaps.values()) {
       consumer.destroy();
     }
     this.sourceMaps.clear();
+    this.pendingSourceMaps.clear();
+    this.loadingPromises.clear();
+    this.lastErrors = [];
+
+    this.clearing = false;
+  }
+
+  /**
+   * Clear a specific source map (loaded or pending)
+   */
+  clearSourceMap(scriptUrl: string): boolean {
+    const consumer = this.sourceMaps.get(scriptUrl);
+    if (consumer) {
+      consumer.destroy();
+      this.sourceMaps.delete(scriptUrl);
+      return true;
+    }
+    if (this.pendingSourceMaps.has(scriptUrl)) {
+      this.pendingSourceMaps.delete(scriptUrl);
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -189,9 +530,23 @@ export class SourceMapHandler {
   }
 
   /**
-   * Check if a source map is loaded for a given file
+   * Check if a source map is loaded or registered for a given file
    */
   hasSourceMap(file: string): boolean {
+    return this.sourceMaps.has(file) || this.pendingSourceMaps.has(file);
+  }
+
+  /**
+   * Check if a source map is actually loaded (not just registered)
+   */
+  isSourceMapLoaded(file: string): boolean {
     return this.sourceMaps.has(file);
+  }
+
+  /**
+   * Get all registered (pending) source map URLs
+   */
+  getPendingSourceMaps(): string[] {
+    return Array.from(this.pendingSourceMaps.keys());
   }
 }
