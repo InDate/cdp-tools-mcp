@@ -7,14 +7,6 @@ import type { CDPManager } from './cdp-manager.js';
 import type { PuppeteerManager } from './puppeteer-manager.js';
 import { createErrorResponse } from './messages.js';
 
-export interface StructuredError {
-  success: false;
-  error: string;
-  code?: string;
-  suggestions?: string[];
-  example?: string;
-}
-
 /**
  * Check if browser automation is available and return error if not
  * Returns an MCP error response or null if browser automation is available
@@ -50,37 +42,6 @@ export function checkBrowserAutomation(
   }
 
   return null;
-}
-
-/**
- * Format a structured error as MCP response
- * @deprecated Use createErrorResponse from messages.ts instead
- * This function is kept for backward compatibility during migration
- */
-export function formatErrorResponse(error: StructuredError) {
-  // Convert to markdown format
-  let markdown = error.error;
-
-  if (error.suggestions && error.suggestions.length > 0) {
-    markdown += '\n\n**Suggestions:**\n';
-    error.suggestions.forEach(suggestion => {
-      markdown += `- ${suggestion}\n`;
-    });
-  }
-
-  if (error.example) {
-    markdown += `\n**Example:**\n\`\`\`javascript\n${error.example}\n\`\`\``;
-  }
-
-  return {
-    content: [
-      {
-        type: 'text',
-        text: markdown.trim(),
-      },
-    ],
-    isError: true,
-  };
 }
 
 /**
