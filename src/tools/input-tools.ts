@@ -181,10 +181,84 @@ export function createInputTools(
                 // Perform the click
                 await page.click(selector, { clickCount });
 
+                // Wait a moment for any UI changes
+                await new Promise((resolve) => setTimeout(resolve, 100));
+
+                // Get post-click state
+                const postClickState = await page.evaluate((clickedSelector: string) => {
+                  const focused = (globalThis as any).document.activeElement;
+                  let focusInfo = null;
+                  if (focused && focused !== (globalThis as any).document.body) {
+                    const tag = focused.tagName.toLowerCase();
+                    const text = focused.textContent?.trim().substring(0, 30) || '';
+                    const ariaLabel = focused.getAttribute('aria-label') || '';
+                    const placeholder = focused.getAttribute('placeholder') || '';
+                    const type = focused.getAttribute('type') || '';
+                    focusInfo = {
+                      tag,
+                      type: type || undefined,
+                      text: text || ariaLabel || placeholder || undefined,
+                      isInput: ['input', 'textarea', 'select'].includes(tag),
+                    };
+                  }
+
+                  // Get tabbable elements
+                  const tabbable = Array.from((globalThis as any).document.querySelectorAll(
+                    'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])'
+                  )).filter((el: any) => {
+                    const style = (globalThis as any).window.getComputedStyle(el);
+                    return style.display !== 'none' && style.visibility !== 'hidden' && !el.disabled;
+                  });
+
+                  // Helper to format element for display
+                  const formatEl = (el: any) => {
+                    const tag = el.tagName.toLowerCase();
+                    const text = el.textContent?.trim().substring(0, 20) || el.getAttribute('aria-label') || el.getAttribute('placeholder') || '';
+                    const type = el.getAttribute('type');
+                    if (tag === 'input') {
+                      return `${tag}[${type || 'text'}]${text ? ` "${text}"` : ''}`;
+                    }
+                    return `${tag}${text ? ` "${text}"` : ''}`;
+                  };
+
+                  let prevTabbable: string[] = [];
+                  let nextTabbable: string[] = [];
+                  if (focused) {
+                    const currentIndex = tabbable.indexOf(focused);
+                    if (currentIndex !== -1) {
+                      // Previous 5 tabbable elements
+                      prevTabbable = tabbable.slice(Math.max(0, currentIndex - 5), currentIndex).map(formatEl);
+                      // Next 5 tabbable elements
+                      nextTabbable = tabbable.slice(currentIndex + 1, currentIndex + 6).map(formatEl);
+                    }
+                  }
+
+                  // Get child interactive elements of clicked element
+                  let childInteractive: string[] = [];
+                  try {
+                    const clickedEl = (globalThis as any).document.querySelector(clickedSelector);
+                    if (clickedEl) {
+                      const children = clickedEl.querySelectorAll('a[href], button, input, select, textarea');
+                      childInteractive = Array.from(children).slice(0, 10).map((el: any) => formatEl(el));
+                    }
+                  } catch (e) {
+                    // Selector may have been cleaned up, ignore
+                  }
+
+                  return {
+                    focusInfo,
+                    prevTabbable,
+                    nextTabbable,
+                    childInteractive,
+                    url: (globalThis as any).window.location.href,
+                  };
+                }, selector);
+
                 return {
                   selector,
                   clickCount,
                   hasClickHandler,
+                  postClickState,
                   warning: !hasClickHandler ? 'Element may not have a click handler attached. Click was performed but may not trigger any action.' : undefined,
                 };
               },
@@ -210,6 +284,27 @@ export function createInputTools(
               return createErrorResponse('ELEMENT_NOT_FOUND', { selector: rawSelector });
             }
 
+            // Build post-click info string
+            const postClick = result.result.postClickState;
+            let postClickInfo = '';
+            if (postClick?.focusInfo) {
+              const f = postClick.focusInfo;
+              if (f.isInput) {
+                postClickInfo = `\n**Focus:** ${f.tag}${f.type ? `[type="${f.type}"]` : ''} ${f.text ? `"${f.text}"` : ''}`;
+              } else if (f.tag !== 'body') {
+                postClickInfo = `\n**Focus:** ${f.tag}${f.text ? ` "${f.text}"` : ''}`;
+              }
+            }
+            if (postClick?.prevTabbable?.length > 0) {
+              postClickInfo += `\n**Prev tab:** ${postClick.prevTabbable.join(' ← ')}`;
+            }
+            if (postClick?.nextTabbable?.length > 0) {
+              postClickInfo += `\n**Next tab:** ${postClick.nextTabbable.join(' → ')}`;
+            }
+            if (postClick?.childInteractive?.length > 0) {
+              postClickInfo += `\n**Contains:** ${postClick.childInteractive.join(', ')}`;
+            }
+
             // Return success with warning if no click handler detected
             if (result.result.warning) {
               return createSuccessResponse('ELEMENT_CLICK_WARNING', { selector: rawSelector, warning: selectorWarning });
@@ -221,7 +316,19 @@ export function createInputTools(
                 content: [
                   {
                     type: 'text',
-                    text: `Clicked element \`${rawSelector}\`\n\n**Warning:** ${selectorWarning}`,
+                    text: `Clicked element \`${rawSelector}\`${postClickInfo}\n\n**Warning:** ${selectorWarning}`,
+                  },
+                ],
+              };
+            }
+
+            // Default success response with post-click info
+            if (postClickInfo) {
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: `Clicked element: \`${rawSelector}\`${postClickInfo}`,
                   },
                 ],
               };
