@@ -29,6 +29,7 @@ const contentSchema = z.object({
 
   // findInteractive parameters
   types: z.array(z.enum(elementTypes)).optional().describe('Filter by element types (for findInteractive action)'),
+  showHidden: z.boolean().optional().describe('Include hidden elements (for findInteractive action, default: false)'),
 
   // Shared parameters
   search: z.string().optional().describe('Search term to filter results (for extractText, findInteractive actions)'),
@@ -86,6 +87,43 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
         return '';
       };
 
+      // Helper to generate a unique selector for an element
+      const getUniqueSelector = (el: any, tag: string): string => {
+        // 1. ID is always unique
+        if (el.id) return `#${el.id}`;
+
+        // 2. For inputs, use name attribute
+        if (el.name && (tag === 'input' || tag === 'textarea' || tag === 'select')) {
+          return `[name="${el.name}"]`;
+        }
+
+        // 3. Try href for links
+        if (tag === 'a' && el.href) {
+          const href = el.getAttribute('href');
+          if (href && href !== '#' && !href.startsWith('javascript:')) {
+            return `a[href="${href}"]`;
+          }
+        }
+
+        // 4. Try text-based selector using :has-text() (Puppeteer extension)
+        const text = el.textContent?.trim();
+        if (text && text.length > 0 && text.length <= 30) {
+          const escapedText = text.replace(/"/g, '\\"');
+          return `${tag}:has-text("${escapedText}")`;
+        }
+
+        // 5. Fall back to class-based selector
+        if (el.className && typeof el.className === 'string') {
+          const classes = el.className.split(' ').filter((c: string) => c.length > 0);
+          if (classes.length > 0) {
+            return `${tag}.${classes.join('.')}`;
+          }
+        }
+
+        // 6. Last resort: just the tag
+        return tag;
+      };
+
       // Find all links
       // @ts-ignore
       document.querySelectorAll('a[href]').forEach((el: any) => {
@@ -99,7 +137,7 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
             type: 'link',
             text: el.textContent?.trim() || '',
             href: el.href,
-            selector: el.id ? `#${el.id}` : el.className ? `.${el.className.split(' ')[0]}` : 'a',
+            selector: getUniqueSelector(el, 'a'),
             inViewport,
             x: rect.x,
             y: rect.y,
@@ -122,7 +160,7 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
             type: 'button',
             text: el.textContent?.trim() || el.value || '',
             href: '',
-            selector: el.id ? `#${el.id}` : el.className ? `.${el.className.split(' ')[0]}` : 'button',
+            selector: getUniqueSelector(el, 'button'),
             inViewport,
             x: rect.x,
             y: rect.y,
@@ -160,7 +198,7 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
             type,
             text: label || el.placeholder || el.name || el.id || '',
             href: '',
-            selector: el.id ? `#${el.id}` : el.name ? `[name="${el.name}"]` : tag,
+            selector: getUniqueSelector(el, tag),
             inViewport,
             x: rect.x,
             y: rect.y,
@@ -445,47 +483,54 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
               elements = result.result as ClickableElement[];
             }
 
+            // Count and filter hidden elements (width/height <= 0)
+            const showHidden = args.showHidden || false;
+            const hiddenCount = elements.filter((el) => (el.width ?? 0) <= 0 || (el.height ?? 0) <= 0).length;
+            if (!showHidden) {
+              elements = elements.filter((el) => (el.width ?? 0) > 0 && (el.height ?? 0) > 0);
+            }
+
             const totalCount = elements.length;
             const hasSearch = !!args.search;
             const hasTypes = args.types && args.types.length > 0;
 
             // Summary mode: no search or types filter
             if (!hasSearch && !hasTypes) {
-              // Count by type
-              const typeCounts: Record<string, { count: number; samples: string[] }> = {};
+              // Group elements by type
+              const elementsByType: Record<string, typeof elements> = {};
               elements.forEach((el) => {
-                if (!typeCounts[el.type]) {
-                  typeCounts[el.type] = { count: 0, samples: [] };
+                if (!elementsByType[el.type]) {
+                  elementsByType[el.type] = [];
                 }
-                typeCounts[el.type].count++;
-                if (typeCounts[el.type].samples.length < 4 && el.text) {
-                  typeCounts[el.type].samples.push(el.text.substring(0, 25) + (el.text.length > 25 ? '...' : ''));
-                }
+                elementsByType[el.type].push(el);
               });
 
               let response = `# Interactive Elements: ${title}\n\n`;
               response += `URL: ${url}\n`;
               response += `Total: ${totalCount} elements`;
+              if (hiddenCount > 0 && !showHidden) {
+                response += ` (${hiddenCount} hidden)`;
+              }
               if (wasFromCache) {
                 response += ` (cached)`;
               }
               response += `\n\n`;
 
-              response += `## Summary\n`;
-              response += `| Type | Count | Samples |\n`;
-              response += `|------|-------|--------|\n`;
+              // Sort types by count descending
+              const sortedTypes = Object.entries(elementsByType).sort(([, a], [, b]) => b.length - a.length);
 
-              // Sort by count descending
-              const sortedTypes = Object.entries(typeCounts).sort(([, a], [, b]) => b.count - a.count);
-              for (const [type, data] of sortedTypes) {
-                const samples = data.samples.join(', ') || '(no text)';
-                response += `| ${type} | ${data.count} | ${samples} |\n`;
+              for (const [type, typeElements] of sortedTypes) {
+                response += `\n**${type}** (${typeElements.length})\n`;
+                typeElements.forEach((el) => {
+                  const hidden = (el.width ?? 0) <= 0 || (el.height ?? 0) <= 0 ? ' (hidden)' : '';
+                  response += `${el.text || '(no text)'} [${el.selector}]${hidden}\n`;
+                });
               }
 
-              response += `\n## Actions\n`;
-              response += `- Search: \`findInteractive({ search: 'submit' })\`\n`;
-              response += `- Filter: \`findInteractive({ types: ['button'] })\`\n`;
-              response += `- All inputs: \`findInteractive({ types: ['text','email','password','select','checkbox','radio','textarea'] })\`\n`;
+              // Find a good example selector from the page
+              const exampleElement = elements.find((el) => el.selector.startsWith('#') || el.selector.startsWith('[name='));
+              const exampleSelector = exampleElement?.selector || elements[0]?.selector || '.selector';
+              response += `\nExample: \`input({ action: 'click', selector: '${exampleSelector}' })\``;
 
               return {
                 content: [{ type: 'text', text: response }],
