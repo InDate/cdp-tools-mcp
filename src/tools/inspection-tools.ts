@@ -8,6 +8,83 @@ import { SourceMapHandler } from '../sourcemap-handler.js';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
 
+/**
+ * Check if line content appears to be a webpack eval wrapper (truncated or not)
+ */
+function isWebpackEvalLine(lineContent: string): boolean {
+  return lineContent.startsWith('eval(__webpack_require__.');
+}
+
+/**
+ * Extract the actual source line from a full webpack eval wrapper.
+ * Webpack bundles code like: eval(__webpack_require__.ts("actual\\nsource\\ncode"))
+ * This function extracts the inner content and finds the matching line.
+ */
+function extractSourceFromFullEvalLine(
+  fullLineContent: string,
+  pattern: string,
+  caseSensitive: boolean
+): { lineContent: string; innerLineNumber?: number } | null {
+  // Extract content between the first ("  and last ")
+  // Pattern: eval(__webpack_require__.XX("CONTENT"))
+  const startMatch = fullLineContent.match(/^eval\(__webpack_require__\.\w+\(["'`]/);
+  if (!startMatch) {
+    return null;
+  }
+
+  const startIdx = startMatch[0].length;
+  // Find the closing quote and parentheses - handle escaped quotes
+  let endIdx = fullLineContent.length - 3; // Assume "))" at end, quote before that
+
+  // Extract the inner content
+  let innerContent = fullLineContent.substring(startIdx, endIdx);
+
+  try {
+    // Unescape the string (handles \\n, \\t, etc.)
+    innerContent = innerContent
+      .replace(/\\n/g, '\n')
+      .replace(/\\t/g, '\t')
+      .replace(/\\r/g, '\r')
+      .replace(/\\\\/g, '\\')
+      .replace(/\\"/g, '"')
+      .replace(/\\'/g, "'");
+  } catch {
+    return null;
+  }
+
+  // Split into lines and find the one containing the pattern
+  const lines = innerContent.split('\n');
+  const flags = caseSensitive ? 'g' : 'gi';
+
+  try {
+    const regex = new RegExp(pattern, flags);
+    for (let i = 0; i < lines.length; i++) {
+      if (regex.test(lines[i])) {
+        regex.lastIndex = 0; // Reset for next test
+        return {
+          lineContent: lines[i].trim(),
+          innerLineNumber: i + 1, // 1-based line number within the eval content
+        };
+      }
+      regex.lastIndex = 0; // Reset for next test
+    }
+  } catch {
+    // If regex fails, try simple string match
+    const searchPattern = caseSensitive ? pattern : pattern.toLowerCase();
+    for (let i = 0; i < lines.length; i++) {
+      const line = caseSensitive ? lines[i] : lines[i].toLowerCase();
+      if (line.includes(searchPattern)) {
+        return {
+          lineContent: lines[i].trim(),
+          innerLineNumber: i + 1,
+        };
+      }
+    }
+  }
+
+  return null; // Pattern not found in inner content
+}
+
 // Consolidated inspection tool schema
 const inspectionToolSchema = z.object({
   action: z.enum(['getCallStack', 'getVariables', 'evaluateExpression', 'searchCode', 'searchFunctions'])
@@ -249,11 +326,40 @@ export function createInspectionTools(
                 );
 
                 for (const match of matches) {
+                  let lineContent: string;
+                  let displayLineNumber = match.lineNumber + 1; // Convert to 1-based
+
+                  // Check if this is a webpack eval line (truncated content starts with eval)
+                  if (isWebpackEvalLine(match.lineContent)) {
+                    // Fetch the full line content from the script
+                    const fullLine = await targetCdpManager.getScriptLine(script.scriptId, match.lineNumber);
+                    if (fullLine) {
+                      const extracted = extractSourceFromFullEvalLine(fullLine, pattern, caseSensitive);
+                      if (extracted) {
+                        lineContent = extracted.lineContent;
+                      } else {
+                        // Couldn't extract, use truncated original
+                        lineContent = match.lineContent;
+                      }
+                    } else {
+                      lineContent = match.lineContent;
+                    }
+                  } else {
+                    // Regular code, use as-is
+                    lineContent = match.lineContent;
+                  }
+
+                  // Truncate line content to avoid huge responses from minified code
+                  const MAX_LINE_LENGTH = 200;
+                  if (lineContent.length > MAX_LINE_LENGTH) {
+                    lineContent = lineContent.substring(0, MAX_LINE_LENGTH) + '...';
+                  }
+
                   allResults.push({
                     url: script.url,
                     scriptId: script.scriptId,
-                    lineNumber: match.lineNumber + 1, // Convert to 1-based
-                    lineContent: match.lineContent,
+                    lineNumber: displayLineNumber,
+                    lineContent,
                   });
 
                   if (allResults.length >= limit) break;
@@ -326,11 +432,40 @@ export function createInspectionTools(
                 );
 
                 for (const match of matches) {
+                  let lineContent: string;
+                  let displayLineNumber = match.lineNumber + 1; // Convert to 1-based
+
+                  // Check if this is a webpack eval line (truncated content starts with eval)
+                  if (isWebpackEvalLine(match.lineContent)) {
+                    // Fetch the full line content from the script
+                    const fullLine = await targetCdpManager.getScriptLine(script.scriptId, match.lineNumber);
+                    if (fullLine) {
+                      const extracted = extractSourceFromFullEvalLine(fullLine, pattern, caseSensitive);
+                      if (extracted) {
+                        lineContent = extracted.lineContent;
+                      } else {
+                        // Couldn't extract, use truncated original
+                        lineContent = match.lineContent.trim();
+                      }
+                    } else {
+                      lineContent = match.lineContent.trim();
+                    }
+                  } else {
+                    // Regular code, use as-is
+                    lineContent = match.lineContent.trim();
+                  }
+
+                  // Truncate line content to avoid huge responses from minified code
+                  const MAX_LINE_LENGTH = 200;
+                  if (lineContent.length > MAX_LINE_LENGTH) {
+                    lineContent = lineContent.substring(0, MAX_LINE_LENGTH) + '...';
+                  }
+
                   allResults.push({
                     url: script.url,
                     scriptId: script.scriptId,
-                    lineNumber: match.lineNumber + 1, // Convert to 1-based
-                    lineContent: match.lineContent.trim(),
+                    lineNumber: displayLineNumber,
+                    lineContent,
                   });
 
                   if (allResults.length >= limit) break;
