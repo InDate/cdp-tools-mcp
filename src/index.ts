@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+// Capture startup time immediately before any imports
+const STARTUP_TIME = performance.now();
+
 /**
  * cdp-tools-mcp
  * MCP server providing Chrome DevTools Protocol debugging capabilities to AI assistants
@@ -46,7 +49,7 @@ import { createServer } from 'net';
 import { readFile } from 'fs/promises';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { debugLog, enableDebugLogging, disableDebugLogging, isDebugEnabled } from './debug-logger.js';
+import { debugLog, enableDebugLogging, disableDebugLogging, isDebugEnabled, setStartupMetrics } from './debug-logger.js';
 import { validateReference, UNNAMED_CONNECTION } from './reference-validator.js';
 import { getConfiguredDebugPort, getReservedPort, setDebugPort, setReservedPort } from './port-config.js';
 
@@ -483,7 +486,7 @@ URL: ${pageUrl}${consoleStats}`;
     }).strict(),
     async (args) => {
       if (args.enabled) {
-        enableDebugLogging();
+        await enableDebugLogging(); // Now async to log startup metrics
         return createSuccessResponse('DEBUG_LOGGING_ENABLED', {
           message: 'Debug logging enabled. Logs will be written to .claude/logs/debug.log'
         }, {
@@ -1061,7 +1064,11 @@ function registerToolHandlers(server: Server) {
 
 // Start the server
 async function main() {
+  // Capture import time (time from script start to main() being called)
+  const importTime = performance.now() - STARTUP_TIME;
+
   // Initialize and reserve debug port with retry logic
+  const portReservationStart = performance.now();
   let reservationSucceeded = false;
   let attempts = 0;
   const maxAttempts = 10;
@@ -1090,15 +1097,36 @@ async function main() {
     }
   }
 
+  const portReservationTime = performance.now() - portReservationStart;
+
   // Create server with instructions
+  const serverCreationStart = performance.now();
   const server = await createMCPServer();
+  const serverCreationTime = performance.now() - serverCreationStart;
 
   // Register tool handlers
+  const toolRegistrationStart = performance.now();
   registerToolHandlers(server);
+  const toolRegistrationTime = performance.now() - toolRegistrationStart;
 
   // Connect to transport
+  const transportStart = performance.now();
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  const transportTime = performance.now() - transportStart;
+
+  // Calculate total startup time and store metrics for later logging
+  const totalStartupTime = performance.now() - STARTUP_TIME;
+  setStartupMetrics({
+    totalMs: Math.round(totalStartupTime),
+    importMs: Math.round(importTime),
+    portReservationMs: Math.round(portReservationTime),
+    portAttempts: attempts + 1,
+    serverCreationMs: Math.round(serverCreationTime),
+    toolRegistrationMs: Math.round(toolRegistrationTime),
+    transportMs: Math.round(transportTime),
+    capturedAt: new Date().toISOString(),
+  });
 
   // Start periodic cleanup of inactive connections (every 2 minutes)
   const CLEANUP_INTERVAL = 2 * 60 * 1000; // 2 minutes

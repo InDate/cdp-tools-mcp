@@ -9,9 +9,11 @@
   },
   "scripts": {
     "build": "tsc",
-    "build:verify": "npm run build && node scripts/verify-mcp.js",
+    "build:verify": "npm run build && node scripts/verify-mcp.js && node scripts/measure-startup.mjs",
     "dev": "tsc --watch",
     "start": "node build/index.js",
+    "startup:measure": "node scripts/measure-startup.mjs",
+    "startup:measure:verbose": "node scripts/measure-startup.mjs --verbose",
     "test": "vitest",
     "test:ui": "vitest --ui",
     "test:run": "vitest run",
