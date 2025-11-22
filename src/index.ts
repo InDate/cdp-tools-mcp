@@ -410,6 +410,15 @@ URL: ${pageUrl}${consoleStats}`;
         // Log the reason for audit purposes
         console.error(`[cdp-tools] killChrome called - Reason: ${args.reason}, Port: ${port || 'all'}`);
 
+        // Set the close reason before killing
+        if (port !== undefined) {
+          chromeLauncher.setPendingCloseReason(port, 'manual');
+        } else {
+          for (const p of chromeLauncher.getRunningPorts()) {
+            chromeLauncher.setPendingCloseReason(p, 'manual');
+          }
+        }
+
         // Kill the Chrome instance(s)
         await chromeLauncher.kill(port);
 
@@ -1133,18 +1142,37 @@ async function main() {
   const INACTIVITY_THRESHOLD = 5 * 60 * 1000; // 5 minutes
   const cleanupInterval = setInterval(async () => {
     try {
+      const inactiveConnections = connectionManager.getInactiveConnections(INACTIVITY_THRESHOLD);
+      if (inactiveConnections.length > 0) {
+        await debugLog('index', `Found ${inactiveConnections.length} inactive connection(s) to close`);
+        for (const conn of inactiveConnections) {
+          await debugLog('index', `Closing inactive connection: ${conn.id} (inactive for ${Math.round(conn.inactiveForMs / 1000)}s)`);
+        }
+      }
+
       const closedCount = await connectionManager.closeInactiveConnections(INACTIVITY_THRESHOLD);
       if (closedCount > 0) {
         console.error(`[cdp-tools] Closed ${closedCount} inactive connection(s)`);
+        await debugLog('index', `Closed ${closedCount} inactive connection(s)`);
 
-        // If no connections remain and Chrome is running, kill Chrome
+        // If no connections remain and Chrome is running, kill Chrome due to inactivity
         if (!connectionManager.hasConnections() && chromeLauncher.isRunning()) {
-          console.error('[cdp-tools] No active connections, killing Chrome...');
+          const runningPorts = chromeLauncher.getRunningPorts();
+          console.error('[cdp-tools] No active connections, killing Chrome due to inactivity...');
+          await debugLog('index', `No active connections remain, killing Chrome on ports: ${runningPorts.join(', ')} due to inactivity`);
+
+          // Set the close reason before killing
+          for (const port of runningPorts) {
+            chromeLauncher.setPendingCloseReason(port, 'inactivity');
+            await debugLog('index', `Set pending close reason 'inactivity' for port ${port}`);
+          }
           await chromeLauncher.kill();
+          await debugLog('index', `Chrome killed due to inactivity`);
         }
       }
     } catch (error) {
       console.error(`[cdp-tools] Error during cleanup: ${error}`);
+      await debugLog('index', `Error during inactivity cleanup: ${error}`);
     }
   }, CLEANUP_INTERVAL);
 
@@ -1177,11 +1205,28 @@ async function main() {
   process.on('SIGTERM', () => cleanup('SIGTERM')); // Graceful shutdown (systemd, Docker, etc.)
   process.on('SIGHUP', () => cleanup('SIGHUP'));   // Terminal hangup
 
+  // Handle stdin close - this catches when the parent process (Claude Code) terminates
+  // without sending a signal. MCP uses stdin/stdout for communication, so if stdin closes,
+  // the parent is gone and we should clean up.
+  process.stdin.on('close', () => cleanup('stdin-close'));
+  process.stdin.on('end', () => cleanup('stdin-end'));
+
   // Handle normal exit (catch-all)
   process.on('exit', () => {
     if (!isCleaningUp) {
       console.error('[cdp-tools] Process exiting');
     }
+  });
+
+  // Catch uncaught exceptions and unhandled rejections for debugging
+  process.on('uncaughtException', (error, origin) => {
+    console.error(`[cdp-tools] UNCAUGHT EXCEPTION (${origin}):`, error);
+    console.error('[cdp-tools] Stack:', error.stack);
+  });
+
+  process.on('unhandledRejection', (reason, promise) => {
+    console.error('[cdp-tools] UNHANDLED REJECTION:', reason);
+    console.error('[cdp-tools] Promise:', promise);
   });
 }
 

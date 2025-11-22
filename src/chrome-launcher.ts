@@ -7,14 +7,29 @@ import { spawn, ChildProcess } from 'child_process';
 import * as os from 'os';
 import * as path from 'path';
 import * as net from 'net';
+import * as fs from 'fs';
 import { getErrorMessage } from './messages.js';
 import type { PortReserver } from './port-reserver.js';
 import { debugLog } from './debug-logger.js';
+
+export type ChromeCloseReason = 'inactivity' | 'manual' | 'crash' | 'external' | 'signal' | 'unknown';
+
+export interface ChromeCloseEvent {
+  port: number;
+  pid: number;
+  reason: ChromeCloseReason;
+  timestamp: Date;
+  exitCode?: number | null;
+  signal?: string | null;
+}
 
 export class ChromeLauncher {
   private chromeProcesses: Map<number, ChildProcess> = new Map();
   private debugPort: number = 9222;
   private launchLocks: Map<number, Promise<{ port: number; pid: number }>> = new Map();
+  private lastCloseEvents: ChromeCloseEvent[] = [];
+  private maxCloseEvents: number = 10; // Keep last 10 close events
+  private pendingCloseReason: Map<number, ChromeCloseReason> = new Map(); // Track reason before kill
 
   /**
    * Get the Chrome executable path for the current platform
@@ -36,42 +51,88 @@ export class ChromeLauncher {
   }
 
   /**
+   * Create Chrome preferences file that disables password manager popups
+   * This is required because command-line flags alone don't reliably disable
+   * the "Change your password" leak detection popup
+   */
+  private createChromePreferences(userDataDir: string): void {
+    const defaultDir = path.join(userDataDir, 'Default');
+    const prefsPath = path.join(defaultDir, 'Preferences');
+
+    // Create Default directory if it doesn't exist
+    if (!fs.existsSync(defaultDir)) {
+      fs.mkdirSync(defaultDir, { recursive: true });
+    }
+
+    // Chrome preferences to disable password-related popups
+    const preferences = {
+      credentials_enable_service: false,
+      profile: {
+        password_manager_enabled: false,
+        password_manager_leak_detection: false,
+      },
+      safebrowsing: {
+        enabled: false,
+        enhanced: false,
+      },
+      autofill: {
+        profile_enabled: false,
+        credit_card_enabled: false,
+      },
+    };
+
+    fs.writeFileSync(prefsPath, JSON.stringify(preferences, null, 2));
+    debugLog('ChromeLauncher', `Created Chrome preferences at ${prefsPath} with password manager disabled`);
+  }
+
+  /**
    * Check if a port is already in use using TCP connection
    */
   private async isPortInUse(port: number): Promise<boolean> {
     await debugLog('ChromeLauncher', `isPortInUse() checking port ${port}`);
 
     return new Promise((resolve) => {
-      const socket = new net.Socket();
+      try {
+        const socket = new net.Socket();
 
-      socket.setTimeout(500);
+        socket.setTimeout(500);
 
-      socket.on('connect', () => {
-        socket.destroy();
-        debugLog('ChromeLauncher', `isPortInUse() port ${port} is in use`);
-        resolve(true);
-      });
-
-      socket.on('timeout', () => {
-        socket.destroy();
-        debugLog('ChromeLauncher', `isPortInUse() timeout checking port ${port}, assuming free`);
-        resolve(false);
-      });
-
-      socket.on('error', (err: any) => {
-        socket.destroy();
-        if (err.code === 'ECONNREFUSED') {
-          // Port is not in use
-          debugLog('ChromeLauncher', `isPortInUse() port ${port} is free (ECONNREFUSED)`);
-          resolve(false);
-        } else {
-          // Other error, assume port is in use to be safe
-          debugLog('ChromeLauncher', `isPortInUse() error checking port ${port}: ${err.code}, assuming in use`);
+        socket.on('connect', () => {
+          socket.destroy();
+          debugLog('ChromeLauncher', `isPortInUse() port ${port} is in use`).catch(() => {});
           resolve(true);
-        }
-      });
+        });
 
-      socket.connect(port, 'localhost');
+        socket.on('timeout', () => {
+          socket.destroy();
+          debugLog('ChromeLauncher', `isPortInUse() timeout checking port ${port}, assuming free`).catch(() => {});
+          resolve(false);
+        });
+
+        socket.on('error', (err: any) => {
+          socket.destroy();
+          if (err.code === 'ECONNREFUSED') {
+            // Port is not in use
+            debugLog('ChromeLauncher', `isPortInUse() port ${port} is free (ECONNREFUSED)`).catch(() => {});
+            resolve(false);
+          } else {
+            // Other error, assume port is in use to be safe
+            debugLog('ChromeLauncher', `isPortInUse() error checking port ${port}: ${err.code}, assuming in use`).catch(() => {});
+            resolve(true);
+          }
+        });
+
+        try {
+          socket.connect(port, 'localhost');
+        } catch (connectError) {
+          debugLog('ChromeLauncher', `isPortInUse() socket.connect() threw for port ${port}: ${connectError}`).catch(() => {});
+          socket.destroy();
+          resolve(true); // Assume in use to be safe
+        }
+      } catch (error) {
+        debugLog('ChromeLauncher', `isPortInUse() unexpected error for port ${port}: ${error}`).catch(() => {});
+        resolve(true); // Assume in use to be safe
+      }
     });
   }
 
@@ -161,9 +222,18 @@ export class ChromeLauncher {
    * Separated from launch() to allow mutex/locking logic
    */
   private async performLaunch(port: number, url?: string, portReserver?: PortReserver, headless: boolean = false): Promise<{ port: number; pid: number }> {
+    await debugLog('ChromeLauncher', `performLaunch() starting for port ${port}`);
+
     // Check if port is in use by something OTHER than our port reserver
     // This prevents multiple Chrome instances from being launched on the same port
-    const isPortInUse = await this.isPortInUse(port);
+    let isPortInUse: boolean;
+    try {
+      isPortInUse = await this.isPortInUse(port);
+      await debugLog('ChromeLauncher', `performLaunch() isPortInUse check completed: ${isPortInUse}`);
+    } catch (portCheckError) {
+      await debugLog('ChromeLauncher', `performLaunch() isPortInUse check failed: ${portCheckError}`);
+      throw new Error(`Failed to check port availability: ${portCheckError}`);
+    }
     const isOurReservation = portReserver && portReserver.isReserved() && portReserver.getPort() === port;
 
     if (isPortInUse && !isOurReservation) {
@@ -180,6 +250,10 @@ export class ChromeLauncher {
     const chromePath = this.getChromePath();
     const userDataDir = path.join(os.tmpdir(), `chrome-debug-profile-${Date.now()}`);
 
+    // Create Chrome preferences file to disable password manager popups
+    // This is more reliable than command-line flags alone
+    this.createChromePreferences(userDataDir);
+
     const args = [
       `--remote-debugging-port=${port}`,
       `--user-data-dir=${userDataDir}`,
@@ -190,6 +264,11 @@ export class ChromeLauncher {
       '--disable-background-timer-throttling',
       '--disable-backgrounding-occluded-windows',
       '--disable-renderer-backgrounding',
+      // Disable password manager and related popups that can block automation
+      '--password-store=basic',
+      '--use-mock-keychain',
+      '--disable-save-password-bubble',
+      '--disable-features=PasswordLeakDetection,PasswordCheck,PasswordImport,PasswordManagerOnboarding',
     ];
 
     // Add headless mode if requested (prevents focus stealing)
@@ -234,6 +313,23 @@ export class ChromeLauncher {
       chromeProcess.once('exit', (code, signal) => {
         debugLog('ChromeLauncher', `Chrome process on port ${port} (PID: ${pid}) exited (code: ${code}, signal: ${signal}), removing from tracking`);
         this.chromeProcesses.delete(port);
+
+        // Record the close event with reason
+        const pendingReason = this.pendingCloseReason.get(port);
+        this.pendingCloseReason.delete(port);
+
+        let reason: ChromeCloseReason;
+        if (pendingReason) {
+          reason = pendingReason;
+        } else if (signal) {
+          reason = 'signal';
+        } else if (code !== 0 && code !== null) {
+          reason = 'crash';
+        } else {
+          reason = 'external'; // Closed externally (user closed browser, etc.)
+        }
+
+        this.recordCloseEvent(port, pid || -1, reason, code, signal);
       });
 
       // Handle process errors and unexpected exits
@@ -427,15 +523,52 @@ export class ChromeLauncher {
   }
 
   /**
+   * Record a Chrome close event
+   */
+  private recordCloseEvent(port: number, pid: number, reason: ChromeCloseReason, exitCode?: number | null, signal?: string | null): void {
+    const event: ChromeCloseEvent = {
+      port,
+      pid,
+      reason,
+      timestamp: new Date(),
+      exitCode,
+      signal,
+    };
+
+    this.lastCloseEvents.push(event);
+
+    // Keep only the last N events
+    if (this.lastCloseEvents.length > this.maxCloseEvents) {
+      this.lastCloseEvents.shift();
+    }
+
+    debugLog('ChromeLauncher', `Recorded close event: port=${port}, pid=${pid}, reason=${reason}, exitCode=${exitCode}, signal=${signal}`);
+  }
+
+  /**
+   * Get the last close events
+   */
+  getLastCloseEvents(): ChromeCloseEvent[] {
+    return [...this.lastCloseEvents];
+  }
+
+  /**
    * Get Chrome launcher status for all instances
    */
-  getStatus(): { instances: Array<{ port: number; pid: number; running: boolean }> } {
+  getStatus(): { instances: Array<{ port: number; pid: number; running: boolean }>; lastCloseEvents: ChromeCloseEvent[] } {
     const instances = Array.from(this.chromeProcesses.entries()).map(([port, process]) => ({
       port,
       pid: process.pid || -1,
       running: !process.killed,
     }));
 
-    return { instances };
+    return { instances, lastCloseEvents: this.lastCloseEvents };
+  }
+
+  /**
+   * Set the pending close reason for a port (call before killing)
+   */
+  setPendingCloseReason(port: number, reason: ChromeCloseReason): void {
+    this.pendingCloseReason.set(port, reason);
   }
 }

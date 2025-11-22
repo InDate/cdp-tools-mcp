@@ -165,6 +165,14 @@ Chrome process killed successfully
 
 Chrome launcher status
 
+{{#if lastCloseEvents.length}}
+### Recent Close Events
+
+{{#each lastCloseEvents}}
+- **{{reason}}** (port {{port}}, PID {{pid}}) at {{timestamp}}{{#if exitCode}} - exit code: {{exitCode}}{{/if}}{{#if signal}} - signal: {{signal}}{{/if}}
+{{/each}}
+{{/if}}
+
 ---
 
 ## CHROME_LAUNCHER_RESET
