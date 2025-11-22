@@ -33,6 +33,39 @@ export class CDPManager {
   }
 
   /**
+   * Find script IDs by URL, with fallback to base URL matching (strips query params)
+   * This allows breakpoints to work across page reloads when cache-busting params change
+   * Returns the most recently loaded script (highest scriptId) when multiple matches exist
+   */
+  private findScriptIds(url: string): { scriptIds: string[]; matchedUrl: string } | null {
+    // First, try exact match
+    const exactMatch = this.urlToScriptId.get(url);
+    if (exactMatch && exactMatch.length > 0) {
+      return { scriptIds: exactMatch, matchedUrl: url };
+    }
+
+    // Second, try matching by base URL (strip query params)
+    // If multiple matches, prefer the one with the highest scriptId (most recent)
+    const baseUrl = url.split('?')[0];
+    let bestMatch: { scriptIds: string[]; matchedUrl: string } | null = null;
+    let highestScriptId = -1;
+
+    for (const [loadedUrl, scriptIds] of this.urlToScriptId.entries()) {
+      const loadedBaseUrl = loadedUrl.split('?')[0];
+      if (loadedBaseUrl === baseUrl && scriptIds.length > 0) {
+        // Get the highest numeric scriptId from this entry
+        const maxId = Math.max(...scriptIds.map(id => parseInt(id, 10) || 0));
+        if (maxId > highestScriptId) {
+          highestScriptId = maxId;
+          bestMatch = { scriptIds, matchedUrl: loadedUrl };
+        }
+      }
+    }
+
+    return bestMatch;
+  }
+
+  /**
    * Connect to a Chrome or Node.js debugger instance
    */
   async connect(host: string = 'localhost', port: number = 9222): Promise<void> {
@@ -56,11 +89,9 @@ export class CDPManager {
         const existingScripts = this.urlToScriptId.get(params.url) || [];
         this.urlToScriptId.set(params.url, [...existingScripts, params.scriptId]);
 
-        // Auto-load source map if available
+        // Register source map for lazy loading (loaded on-demand when needed)
         if (params.sourceMapURL && this.sourceMapHandler) {
-          this.sourceMapHandler.loadSourceMapFromURL(params.url, params.sourceMapURL).catch((err) => {
-            // Silently fail - source maps are optional
-          });
+          this.sourceMapHandler.registerSourceMap(params.url, params.sourceMapURL);
         }
       });
 
@@ -188,9 +219,17 @@ export class CDPManager {
     const cdpLineNumber = lineNumber - 1;  // Convert 1-based → 0-based
     const cdpColumnNumber = columnNumber !== undefined ? columnNumber - 1 : undefined;  // Convert 1-based → 0-based
 
+    // Try to find actual URL if the provided one has query params that may differ
+    // This handles cache-busting params like ?v=123 that change on rebuild
+    let actualUrl = url;
+    const match = this.findScriptIds(url);
+    if (match && match.matchedUrl !== url) {
+      actualUrl = match.matchedUrl;
+    }
+
     // Set breakpoint using 0-based CDP numbers
     const result = await Debugger.setBreakpointByUrl({
-      url,
+      url: actualUrl,
       lineNumber: cdpLineNumber,
       columnNumber: cdpColumnNumber,
       condition,
@@ -291,10 +330,10 @@ export class CDPManager {
     totalLines?: number;
     suggestion: string;
   }> {
-    // Check if we have this script loaded (may be multiple scripts for inline HTML)
-    const scriptIds = this.urlToScriptId.get(url);
+    // Check if we have this script loaded (with fallback to base URL matching)
+    const match = this.findScriptIds(url);
 
-    if (!scriptIds || scriptIds.length === 0) {
+    if (!match) {
       return {
         cause: 'script_not_found',
         message: `Script not loaded: ${url}`,
@@ -303,6 +342,8 @@ export class CDPManager {
         suggestion: 'The script has not been loaded by Chrome yet. Use reloadPage() or navigateTo() to ensure the script loads.'
       };
     }
+
+    const { scriptIds } = match;
 
     // Script exists - check each scriptId to find which contains the requested line
     try {
@@ -1182,6 +1223,30 @@ export class CDPManager {
     } catch (error) {
       // Script might not support search or other error
       return [];
+    }
+  }
+
+  /**
+   * Get a specific line from a script by scriptId and line number
+   * Returns the full line content (useful for getting full webpack eval lines)
+   */
+  async getScriptLine(scriptId: string, lineNumber: number): Promise<string | null> {
+    if (!this.state.connected) {
+      return null;
+    }
+
+    const { Debugger } = this.client;
+
+    try {
+      const result = await Debugger.getScriptSource({ scriptId });
+      const lines = result.scriptSource.split('\n');
+      // lineNumber is 0-indexed from searchInContent
+      if (lineNumber >= 0 && lineNumber < lines.length) {
+        return lines[lineNumber];
+      }
+      return null;
+    } catch (error) {
+      return null;
     }
   }
 }
