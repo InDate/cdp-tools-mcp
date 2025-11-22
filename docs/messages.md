@@ -316,7 +316,9 @@ Function search completed - found {{count}} matches for '{{functionName}}'
 
 **Type:** success
 
-Breakpoint set at {{url}}:{{lineNumber}} (ID: {{breakpointId}}){{#condition}}
+Breakpoint set at {{url}}:{{resolvedLine}} (ID: {{breakpointId}}){{#wasAdjusted}}
+
+⚠️ CDP resolved to {{resolvedLocation}} (requested {{requestedLocation}}) due to source mapping{{/wasAdjusted}}{{#condition}}
 Condition: {{condition}}{{/condition}}
 
 ---

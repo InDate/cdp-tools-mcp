@@ -116,15 +116,38 @@ export function createBreakpointTools(
                 };
               }
 
-              // Inject clickable console link (only for resolved breakpoints)
+              // Get actual resolved location (CDP returns 0-based, convert to 1-based)
+              const resolvedLine = breakpoint.location.lineNumber + 1;
+              const resolvedColumn = breakpoint.location.columnNumber !== undefined
+                ? breakpoint.location.columnNumber + 1
+                : undefined;
+
+              // Check if location was adjusted (line or column)
+              // targetColumn was set earlier (line 82) and may have been modified by source mapping
+              const lineAdjusted = resolvedLine !== targetLine;
+              const columnAdjusted = targetColumn !== undefined && resolvedColumn !== undefined && resolvedColumn !== targetColumn;
+              const wasAdjusted = lineAdjusted || columnAdjusted;
+
+              // Inject clickable console link at resolved location
               const icon = args.condition ? '🔶' : '🔴';
               const label = args.condition ? 'Conditional breakpoint set at' : 'Breakpoint set at';
-              await targetCdpManager.injectConsoleLink(targetUrl, targetLine, `${icon} ${label}`);
+              await targetCdpManager.injectConsoleLink(targetUrl, resolvedLine, `${icon} ${label}`);
 
-              // Return markdown-only success response
+              // Build location strings for message
+              const resolvedLocation = resolvedColumn !== undefined
+                ? `line ${resolvedLine}:${resolvedColumn}`
+                : `line ${resolvedLine}`;
+              const requestedLocation = targetColumn !== undefined
+                ? `line ${targetLine}:${targetColumn}`
+                : `line ${targetLine}`;
+
+              // Return markdown-only success response with resolved location info
               return createSuccessResponse('BREAKPOINT_SET_SUCCESS', {
                 url: targetUrl,
-                lineNumber: targetLine,
+                resolvedLine: resolvedLine,
+                resolvedLocation: resolvedLocation,
+                requestedLocation: requestedLocation,
+                wasAdjusted: wasAdjusted,
                 breakpointId: breakpoint.breakpointId,
                 condition: args.condition,
               });
@@ -810,8 +833,8 @@ export function createBreakpointTools(
               );
             }
 
-            // Inject console notification
-            await targetCdpManager.injectConsoleLink(targetUrl, targetLine, '📝 Logpoint set at');
+            // Inject console notification at resolved location
+            await targetCdpManager.injectConsoleLink(targetUrl, actualLineUser, '📝 Logpoint set at');
 
             // Parse expressions to include in the response
             const expressionMatchesForResponse = args.logMessage.matchAll(/\{([^}]+)\}/g);
