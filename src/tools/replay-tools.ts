@@ -18,6 +18,8 @@ const replaySchema = z.object({
 
   // create parameters
   name: z.string().optional().describe('Name for the sequence (for create action)'),
+  description: z.string().optional().describe('Description of what the sequence does (for create action)'),
+  expectedOutcome: z.string().optional().describe('Expected outcome when the sequence runs successfully (for create action)'),
   indices: z.array(z.number()).optional().describe('Command indices to include in sequence (for create action)'),
 
   // get/delete/replay/save parameters
@@ -103,7 +105,10 @@ export function createReplayTools(
               });
             }
 
-            const sequence = await commandRecorder.createSequence(args.name, args.indices);
+            const sequence = await commandRecorder.createSequence(args.name, args.indices, {
+              description: args.description,
+              expectedOutcome: args.expectedOutcome,
+            });
 
             if (!sequence) {
               return createErrorResponse('INVALID_INDICES', {
@@ -113,6 +118,12 @@ export function createReplayTools(
 
             let response = `# Sequence Created: ${sequence.name}\n\n`;
             response += `**Sequence ID:** \`${sequence.id}\`\n`;
+            if (sequence.description) {
+              response += `**Description:** ${sequence.description}\n`;
+            }
+            if (sequence.expectedOutcome) {
+              response += `**Expected Outcome:** ${sequence.expectedOutcome}\n`;
+            }
             response += `**Commands:** ${sequence.commands.length}\n\n`;
             response += `## Commands in Sequence\n\n`;
 
@@ -150,6 +161,12 @@ export function createReplayTools(
               const age = Math.floor((Date.now() - seq.createdAt) / 1000 / 60); // minutes
               response += `## ${idx + 1}. ${seq.name}\n`;
               response += `- **ID:** \`${seq.id}\`\n`;
+              if (seq.description) {
+                response += `- **Description:** ${seq.description}\n`;
+              }
+              if (seq.expectedOutcome) {
+                response += `- **Expected Outcome:** ${seq.expectedOutcome}\n`;
+              }
               response += `- **Commands:** ${seq.commands.length}\n`;
               response += `- **Created:** ${age} minutes ago\n`;
               response += `- **Actions:** [View](#) | [Replay](#) | [Delete](#)\n\n`;
@@ -186,6 +203,12 @@ export function createReplayTools(
 
             let response = `# Sequence: ${sequence.name}\n\n`;
             response += `**ID:** \`${sequence.id}\`\n`;
+            if (sequence.description) {
+              response += `**Description:** ${sequence.description}\n`;
+            }
+            if (sequence.expectedOutcome) {
+              response += `**Expected Outcome:** ${sequence.expectedOutcome}\n`;
+            }
             response += `**Commands:** ${sequence.commands.length}\n`;
             response += `**Created:** ${new Date(sequence.createdAt).toLocaleString()}\n\n`;
             response += `## Commands\n\n`;
@@ -444,6 +467,32 @@ export function createReplayTools(
                   await debugLog('replay', `Injecting connectionReason: ${connectionReasonToUse}`);
                 }
 
+                // Debug-aware: Replace stale callFrameId with fresh one from current call stack
+                if (cmd.tool === 'inspect' && params.action === 'getVariables' && params.callFrameId && connectionReasonToUse) {
+                  await debugLog('replay', `getVariables detected with recorded callFrameId: ${params.callFrameId}`);
+                  try {
+                    // Get fresh call stack
+                    const callStackResult = await executeToolCall('inspect', {
+                      action: 'getCallStack',
+                      connectionReason: connectionReasonToUse
+                    });
+
+                    // Parse call stack from markdown response to extract first callFrameId
+                    const callStackText = callStackResult?.content?.[0]?.text || '';
+                    const callFrameIdMatch = callStackText.match(/"callFrameId":\s*"([^"]+)"/);
+
+                    if (callFrameIdMatch && callFrameIdMatch[1]) {
+                      const freshCallFrameId = callFrameIdMatch[1];
+                      await debugLog('replay', `Replacing stale callFrameId with fresh: ${freshCallFrameId}`);
+                      params.callFrameId = freshCallFrameId;
+                    } else {
+                      await debugLog('replay', `Warning: Could not extract fresh callFrameId from call stack`);
+                    }
+                  } catch (err: any) {
+                    await debugLog('replay', `Warning: Failed to get fresh callFrameId: ${err.message}`);
+                  }
+                }
+
                 await debugLog('replay', `Calling ${cmd.tool} with params: ${JSON.stringify(params)}`);
                 let result;
                 try {
@@ -511,6 +560,55 @@ export function createReplayTools(
 
                 results.push({ command: cmd, success: true, result });
                 await debugLog('replay', `Step ${i + 1} completed successfully`);
+
+                // Debug-aware: Wait for debugger pause after navigation if breakpoints exist
+                if (cmd.tool === 'navigate' && connectionReasonToUse) {
+                  try {
+                    // Check if there are active breakpoints
+                    const breakpointResult = await executeToolCall('breakpoint', {
+                      action: 'list',
+                      connectionReason: connectionReasonToUse
+                    });
+
+                    const breakpointText = breakpointResult?.content?.[0]?.text || '';
+                    // Check if there are any breakpoints (look for breakpoint IDs in the output)
+                    const hasBreakpoints = breakpointText.includes('**ID:**') || breakpointText.includes('breakpointId');
+
+                    if (hasBreakpoints) {
+                      await debugLog('replay', `Navigation completed with active breakpoints, waiting for debugger pause...`);
+
+                      // Wait for debugger to pause (with timeout based on step timeout)
+                      const pauseTimeout = Math.min(effectiveStepTimeout, 10000); // Max 10s wait for pause
+                      const pauseStartTime = Date.now();
+                      let isPaused = false;
+
+                      while (Date.now() - pauseStartTime < pauseTimeout) {
+                        // Check if debugger is paused by trying to get call stack
+                        const callStackResult = await executeToolCall('inspect', {
+                          action: 'getCallStack',
+                          connectionReason: connectionReasonToUse
+                        });
+
+                        const callStackText = callStackResult?.content?.[0]?.text || '';
+                        // If we get a call stack with frames, we're paused
+                        if (callStackText.includes('callFrameId') && !callStackText.includes('Not paused')) {
+                          isPaused = true;
+                          await debugLog('replay', `Debugger paused at breakpoint`);
+                          break;
+                        }
+
+                        // Wait a bit before checking again
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                      }
+
+                      if (!isPaused) {
+                        await debugLog('replay', `Warning: Debugger did not pause within ${pauseTimeout}ms (breakpoint may not have been hit)`);
+                      }
+                    }
+                  } catch (err: any) {
+                    await debugLog('replay', `Warning: Could not check for debugger pause: ${err.message}`);
+                  }
+                }
 
                 // Auto-validate after type action: verify text was entered
                 if (cmd.tool === 'input' && params.action === 'type' && params.selector && connectionReasonToUse) {
@@ -680,6 +778,55 @@ export function createReplayTools(
               });
             }
 
+            // Check for active debug session state after replay
+            if (connectionReasonToUse && failed === 0) {
+              try {
+                // Check for active breakpoints
+                const breakpointResult = await executeToolCall('breakpoint', {
+                  action: 'list',
+                  connectionReason: connectionReasonToUse
+                });
+                const breakpointText = breakpointResult?.content?.[0]?.text || '';
+
+                // Extract breakpoint info - look for Total count or table row IDs
+                const totalMatch = breakpointText.match(/\*\*Total:\*\*\s*(\d+)/);
+                const breakpointCount = totalMatch ? parseInt(totalMatch[1], 10) : 0;
+
+                // Check if debugger is paused
+                const callStackResult = await executeToolCall('inspect', {
+                  action: 'getCallStack',
+                  connectionReason: connectionReasonToUse
+                });
+                const callStackText = callStackResult?.content?.[0]?.text || '';
+                const isPaused = callStackText.includes('callFrameId') && !callStackText.includes('Not paused');
+
+                // Add debug state section if there's active debug state
+                if (breakpointCount > 0 || isPaused) {
+                  response += `\n## Debug State\n\n`;
+
+                  if (isPaused) {
+                    // Extract pause location
+                    const pauseLocationMatch = callStackText.match(/Paused at:\s*([^\n]+)/);
+                    const pauseLocation = pauseLocationMatch ? pauseLocationMatch[1] : 'unknown location';
+                    response += `⏸️ **Execution paused** at ${pauseLocation}\n\n`;
+                    response += `**Next steps:**\n`;
+                    response += `- Inspect call stack: \`inspect({ action: 'getCallStack', connectionReason: '${connectionReasonToUse}' })\`\n`;
+                    response += `- Get variables: \`inspect({ action: 'getVariables', connectionReason: '${connectionReasonToUse}', callFrameId: '<from call stack>' })\`\n`;
+                    response += `- Resume execution: \`execution({ action: 'resume', connectionReason: '${connectionReasonToUse}' })\`\n`;
+                    response += `- Step over: \`execution({ action: 'stepOver', connectionReason: '${connectionReasonToUse}' })\`\n`;
+                  }
+
+                  if (breakpointCount > 0) {
+                    response += `\n🔴 **${breakpointCount} active breakpoint${breakpointCount > 1 ? 's' : ''}**\n`;
+                    response += `- List breakpoints: \`breakpoint({ action: 'list', connectionReason: '${connectionReasonToUse}' })\`\n`;
+                    response += `- Remove all: \`breakpoint({ action: 'remove', connectionReason: '${connectionReasonToUse}', breakpointId: '<id>' })\`\n`;
+                  }
+                }
+              } catch (err: any) {
+                await debugLog('replay', `Could not get debug state: ${err.message}`);
+              }
+            }
+
             await debugLog('replay', `Returning replay results (response length: ${response.length} chars)`);
             return {
               content: [{ type: 'text', text: response }]
@@ -777,7 +924,14 @@ export function createReplayTools(
             savedSequences.forEach((seq, idx) => {
               response += `${idx + 1}. **${seq.name}**\n`;
               response += `   - Filename: \`${seq.filename}\`\n`;
-              response += `   - ID: \`${seq.id}\`\n\n`;
+              response += `   - ID: \`${seq.id}\`\n`;
+              if (seq.description) {
+                response += `   - Description: ${seq.description}\n`;
+              }
+              if (seq.expectedOutcome) {
+                response += `   - Expected Outcome: ${seq.expectedOutcome}\n`;
+              }
+              response += `\n`;
             });
 
             response += `---\n\n`;

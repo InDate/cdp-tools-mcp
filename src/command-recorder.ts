@@ -17,6 +17,8 @@ export interface RecordedCommand {
 export interface CommandSequence {
   id: string;
   name: string;
+  description?: string;
+  expectedOutcome?: string;
   commands: RecordedCommand[];
   createdAt: number;
 }
@@ -80,7 +82,11 @@ export class CommandRecorder {
   /**
    * Create a sequence from command indices
    */
-  async createSequence(name: string, commandIndices: number[]): Promise<CommandSequence | null> {
+  async createSequence(
+    name: string,
+    commandIndices: number[],
+    options?: { description?: string; expectedOutcome?: string }
+  ): Promise<CommandSequence | null> {
     // Validate all indices exist and get commands
     const commands: RecordedCommand[] = [];
     for (const idx of commandIndices) {
@@ -99,6 +105,8 @@ export class CommandRecorder {
     const sequence: CommandSequence = {
       id: `seq-${Date.now()}`,
       name,
+      ...(options?.description && { description: options.description }),
+      ...(options?.expectedOutcome && { expectedOutcome: options.expectedOutcome }),
       commands,
       createdAt: Date.now(),
     };
@@ -225,7 +233,7 @@ export class CommandRecorder {
   /**
    * List saved sequences on disk
    */
-  async listSavedSequencesOnDisk(): Promise<Array<{ filename: string; name: string; id: string }>> {
+  async listSavedSequencesOnDisk(): Promise<Array<{ filename: string; name: string; id: string; description?: string; expectedOutcome?: string }>> {
     try {
       // Ensure directory exists
       await fs.mkdir(this.sequencesDir, { recursive: true });
@@ -233,7 +241,7 @@ export class CommandRecorder {
       const files = await fs.readdir(this.sequencesDir);
       const jsonFiles = files.filter(f => f.endsWith('.json'));
 
-      const sequences: Array<{ filename: string; name: string; id: string }> = [];
+      const sequences: Array<{ filename: string; name: string; id: string; description?: string; expectedOutcome?: string }> = [];
 
       for (const file of jsonFiles) {
         try {
@@ -244,6 +252,8 @@ export class CommandRecorder {
             filename: file,
             name: sequence.name,
             id: sequence.id,
+            ...(sequence.description && { description: sequence.description }),
+            ...(sequence.expectedOutcome && { expectedOutcome: sequence.expectedOutcome }),
           });
         } catch (error) {
           await debugLog('command-recorder', `Failed to parse ${file}: ${error}`);
