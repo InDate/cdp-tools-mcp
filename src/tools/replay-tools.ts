@@ -3,14 +3,15 @@
  */
 
 import { z } from 'zod';
-import type { CommandRecorder, RecordedCommand } from '../command-recorder.js';
+import type { CommandRecorder, RecordedCommand, ActiveSequenceState } from '../command-recorder.js';
 import { createTool } from '../validation-helpers.js';
 import { debugLog } from '../debug-logger.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
+import { sanitizeReference } from '../reference-validator.js';
 
 const replaySchema = z.object({
-  action: z.enum(['history', 'create', 'list', 'get', 'delete', 'replay', 'save', 'load', 'listSaved', 'deleteSaved', 'run']).describe(
-    'Replay action: history (view command history), create (create sequence from indices), list (list in-memory sequences), get (get sequence details), delete (delete from memory), replay (execute sequence), save (save to disk), load (load from disk), listSaved (list saved files), deleteSaved (delete saved file), run (load and execute sequence from disk in one step)'
+  action: z.enum(['history', 'create', 'list', 'get', 'delete', 'replay', 'save', 'load', 'listSaved', 'deleteSaved', 'run', 'step', 'finish', 'insert', 'status']).describe(
+    'Replay action: history (view command history), create (create sequence from indices), list (list in-memory sequences), get (get sequence details), delete (delete from memory), replay (execute sequence), save (save to disk), load (load from disk), listSaved (list saved files), deleteSaved (delete saved file), run (load and execute sequence from disk in one step), step (execute next N commands in paused sequence), finish (complete remaining commands), insert (insert recorded commands into sequence), status (show active sequence status)'
   ),
 
   // history parameters
@@ -37,6 +38,16 @@ const replaySchema = z.object({
   variables: z.record(z.string()).optional().describe('Variable substitutions for text parameters (for replay action). Keys are variable names, values are replacement text. Empty object means keep original values.'),
   stepTimeout: z.number().optional().describe('Timeout in milliseconds for each step (for replay action, default: 30000)'),
   totalTimeout: z.number().optional().describe('Total timeout in milliseconds for entire replay (for replay action, default: 300000)'),
+
+  // step-through parameters
+  stepTo: z.number().optional().describe('Execute sequence up to this step number (1-indexed), then pause (for run action)'),
+  stepCount: z.number().optional().describe('Number of commands to execute (for step action, default: 1)'),
+
+  // insert parameters
+  insertIndices: z.array(z.number()).optional().describe('History indices of commands to insert (for insert action)'),
+  insertAfterStep: z.number().optional().describe('Insert commands after this step number in sequence (for insert action)'),
+  overwrite: z.boolean().optional().describe('Overwrite existing sequence instead of creating new (for insert action, default: false)'),
+  newName: z.string().optional().describe('Name for new sequence when not overwriting (for insert action)'),
 }).strict();
 
 export function createReplayTools(
@@ -305,9 +316,11 @@ export function createReplayTools(
 
             if (hasLaunchBeforeConnection && !connectionReasonToUse) {
               // Extract reference from launchChrome command to use as connectionReason
+              // Sanitize for defense-in-depth: handles old sequences or hand-edited files
+              // (new recordings already sanitize at record time in command-recorder.ts)
               const launchParams = commands[launchChromeIndex].params;
               if (launchParams.reference) {
-                connectionReasonToUse = launchParams.reference;
+                connectionReasonToUse = sanitizeReference(launchParams.reference);
                 await debugLog('replay', `Using reference from launchChrome at index ${launchChromeIndex}: ${connectionReasonToUse}`);
               }
             }
@@ -502,6 +515,11 @@ export function createReplayTools(
                   await debugLog('replay', `Injecting connectionReason: ${connectionReasonToUse}`);
                 }
 
+                // Override launchChrome reference if custom connectionReason provided
+                if (cmd.tool === 'launchChrome' && args.connectionReason) {
+                  params.reference = args.connectionReason;
+                }
+
                 // Debug-aware: Replace stale callFrameId with fresh one from current call stack
                 if (cmd.tool === 'inspect' && params.action === 'getVariables' && params.callFrameId && connectionReasonToUse) {
                   await debugLog('replay', `getVariables detected with recorded callFrameId: ${params.callFrameId}`);
@@ -529,16 +547,62 @@ export function createReplayTools(
                 }
 
                 await debugLog('replay', `Calling ${cmd.tool} with params: ${JSON.stringify(params)}`);
+
+                // Retry configuration for input actions
+                const isRetryableAction = cmd.tool === 'input' && ['click', 'type', 'hover'].includes(params.action);
+                const maxRetries = isRetryableAction ? 5 : 1;
+                const retryDelayMs = 500;
+
                 let result;
-                try {
-                  result = await executeWithTimeout(
-                    executeToolCall(cmd.tool, params),
-                    effectiveStepTimeout,
-                    `Step ${i + 1} (${cmd.tool}) timed out after ${effectiveStepTimeout}ms`
-                  );
-                } catch (execError: any) {
-                  await debugLog('replay', `FATAL: executeToolCall threw: ${execError.message}\n${execError.stack}`);
-                  throw execError;
+                let lastError: Error | null = null;
+
+                for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                  try {
+                    result = await executeWithTimeout(
+                      executeToolCall(cmd.tool, params),
+                      effectiveStepTimeout,
+                      `Step ${i + 1} (${cmd.tool}) timed out after ${effectiveStepTimeout}ms`
+                    );
+
+                    // Check if result indicates element not found (retryable error)
+                    if (result && result.isError) {
+                      const errorText = result.content?.[0]?.text || '';
+                      const isElementNotFound = errorText.includes('Element not found') ||
+                                                errorText.includes('not found') ||
+                                                errorText.includes('No element matches');
+
+                      if (isRetryableAction && isElementNotFound && attempt < maxRetries) {
+                        await debugLog('replay', `Element not found, retrying... (attempt ${attempt}/${maxRetries})`);
+                        await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+                        continue;
+                      }
+                    }
+
+                    // Success or non-retryable error
+                    lastError = null;
+                    break;
+                  } catch (execError: any) {
+                    lastError = execError;
+
+                    // Check if this is a retryable error
+                    const errorMsg = execError.message || '';
+                    const isRetryableError = errorMsg.includes('Element not found') ||
+                                             errorMsg.includes('not found') ||
+                                             errorMsg.includes('No element matches');
+
+                    if (isRetryableAction && isRetryableError && attempt < maxRetries) {
+                      await debugLog('replay', `Element not found (exception), retrying... (attempt ${attempt}/${maxRetries})`);
+                      await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+                      continue;
+                    }
+
+                    await debugLog('replay', `FATAL: executeToolCall threw: ${execError.message}\n${execError.stack}`);
+                    throw execError;
+                  }
+                }
+
+                if (lastError) {
+                  throw lastError;
                 }
 
                 // Check if command completed successfully before continuing
@@ -1080,9 +1144,11 @@ export function createReplayTools(
 
             if (hasLaunchBeforeConnection && !connectionReasonToUse) {
               // Extract reference from launchChrome command to use as connectionReason
+              // Sanitize for defense-in-depth: handles old sequences or hand-edited files
+              // (new recordings already sanitize at record time in command-recorder.ts)
               const launchParams = commands[launchChromeIndex].params;
               if (launchParams.reference) {
-                connectionReasonToUse = launchParams.reference;
+                connectionReasonToUse = sanitizeReference(launchParams.reference);
                 await debugLog('replay', `[run] Using reference from launchChrome at index ${launchChromeIndex}: ${connectionReasonToUse}`);
               }
             }
@@ -1274,6 +1340,11 @@ export function createReplayTools(
                   params.connectionReason = connectionReasonToUse;
                 }
 
+                // Override launchChrome reference if custom connectionReason provided
+                if (cmd.tool === 'launchChrome' && args.connectionReason) {
+                  params.reference = args.connectionReason;
+                }
+
                 // Debug-aware: Replace stale callFrameId with fresh one
                 if (cmd.tool === 'inspect' && params.action === 'getVariables' && params.callFrameId && connectionReasonToUse) {
                   try {
@@ -1291,11 +1362,61 @@ export function createReplayTools(
                   }
                 }
 
-                const result = await executeWithTimeout(
-                  executeToolCall(cmd.tool, params),
-                  effectiveStepTimeout,
-                  `Step ${i + 1} (${cmd.tool}) timed out after ${effectiveStepTimeout}ms`
-                );
+                // Retry configuration for input actions
+                const isRetryableAction = cmd.tool === 'input' && ['click', 'type', 'hover'].includes(params.action);
+                const maxRetries = isRetryableAction ? 5 : 1;
+                const retryDelayMs = 500;
+
+                let result;
+                let lastError: Error | null = null;
+
+                for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                  try {
+                    result = await executeWithTimeout(
+                      executeToolCall(cmd.tool, params),
+                      effectiveStepTimeout,
+                      `Step ${i + 1} (${cmd.tool}) timed out after ${effectiveStepTimeout}ms`
+                    );
+
+                    // Check if result indicates element not found (retryable error)
+                    if (result && result.isError) {
+                      const errorText = result.content?.[0]?.text || '';
+                      const isElementNotFound = errorText.includes('Element not found') ||
+                                                errorText.includes('not found') ||
+                                                errorText.includes('No element matches');
+
+                      if (isRetryableAction && isElementNotFound && attempt < maxRetries) {
+                        await debugLog('replay', `[run] Element not found, retrying... (attempt ${attempt}/${maxRetries})`);
+                        await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+                        continue;
+                      }
+                    }
+
+                    // Success or non-retryable error
+                    lastError = null;
+                    break;
+                  } catch (execError: any) {
+                    lastError = execError;
+
+                    // Check if this is a retryable error
+                    const errorMsg = execError.message || '';
+                    const isRetryableError = errorMsg.includes('Element not found') ||
+                                             errorMsg.includes('not found') ||
+                                             errorMsg.includes('No element matches');
+
+                    if (isRetryableAction && isRetryableError && attempt < maxRetries) {
+                      await debugLog('replay', `[run] Element not found (exception), retrying... (attempt ${attempt}/${maxRetries})`);
+                      await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+                      continue;
+                    }
+
+                    throw execError;
+                  }
+                }
+
+                if (lastError) {
+                  throw lastError;
+                }
 
                 if (result && result.isError) {
                   const errorText = result.content?.[0]?.text || 'Unknown error';
@@ -1307,6 +1428,55 @@ export function createReplayTools(
                 }
 
                 results.push({ command: cmd, success: true, result });
+
+                // Check if we should pause at this step (stepTo is 1-indexed)
+                if (args.stepTo !== undefined && (i + 1) >= args.stepTo) {
+                  await debugLog('replay', `[run] Pausing at step ${i + 1} (stepTo: ${args.stepTo})`);
+
+                  // Save active sequence state
+                  const activeState: ActiveSequenceState = {
+                    sequenceId: sequence.id,
+                    sequenceName: sequence.name,
+                    connectionReason: connectionReasonToUse || '',
+                    currentStep: i + 1,  // Next step to execute (0-indexed internally, but we executed i)
+                    totalSteps: commands.length,
+                    pausedAt: Date.now(),
+                    historyIndexAtPause: commandRecorder.getCurrentHistoryIndex(),
+                  };
+                  commandRecorder.setActiveSequence(activeState);
+
+                  // Build paused response
+                  const successful = results.filter(r => r.success).length;
+                  const totalElapsed = Date.now() - replayStartTime;
+
+                  let response = `# Sequence Paused: ${sequence.name}\n\n`;
+                  response += `**⏸️ Paused after step ${i + 1} of ${commands.length}**\n\n`;
+                  response += `**Executed:** ${successful} commands in ${(totalElapsed / 1000).toFixed(1)}s\n`;
+                  response += `**Remaining:** ${commands.length - i - 1} commands\n\n`;
+
+                  response += `## Completed Steps\n\n`;
+                  results.forEach((r, idx) => {
+                    response += `${idx + 1}. **${r.command.tool}** ✓\n`;
+                  });
+
+                  response += `\n## Next Steps\n\n`;
+                  for (let j = i + 1; j < Math.min(i + 4, commands.length); j++) {
+                    response += `${j + 1}. **${commands[j].tool}**\n`;
+                  }
+                  if (commands.length > i + 4) {
+                    response += `... and ${commands.length - i - 4} more\n`;
+                  }
+
+                  response += `\n## Actions\n\n`;
+                  response += `- Continue: \`replay({ action: 'step' })\` or \`replay({ action: 'step', stepCount: N })\`\n`;
+                  response += `- Finish all: \`replay({ action: 'finish' })\`\n`;
+                  response += `- Check status: \`replay({ action: 'status' })\`\n`;
+                  response += `- Insert commands: \`replay({ action: 'insert' })\`\n`;
+
+                  return {
+                    content: [{ type: 'text', text: response }]
+                  };
+                }
 
               } catch (error: any) {
                 await debugLog('replay', `[run] Error at step ${i + 1}: ${error.message}`);
