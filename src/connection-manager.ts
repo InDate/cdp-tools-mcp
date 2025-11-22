@@ -151,10 +151,13 @@ export class ConnectionManager {
 
   /**
    * Find a connection by reference name
+   * Sanitizes input to match stored references (lowercase, trimmed, spaces to hyphens)
    */
   findConnectionByReference(reference: string): Connection | null {
+    // Sanitize: lowercase, trim, spaces to hyphens
+    const sanitized = reference.toLowerCase().trim().replace(/\s+/g, '-');
     for (const connection of this.connections.values()) {
-      if (connection.reference === reference) {
+      if (connection.reference === sanitized) {
         return connection;
       }
     }
