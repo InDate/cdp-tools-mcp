@@ -10,7 +10,7 @@ import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../
 
 // Consolidated schema for console tools
 const consoleSchema = z.object({
-  action: z.enum(['list', 'get', 'recent', 'search', 'clear']).describe('Console action: list (list messages), get (get by ID), recent (get recent messages), search (search by pattern), clear (clear console)'),
+  action: z.enum(['list', 'get', 'recent', 'search', 'clear', 'setObjectDepth']).describe('Console action: list (list messages), get (get by ID), recent (get recent messages), search (search by pattern), clear (clear console), setObjectDepth (set max depth for object expansion in console output)'),
   connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
   // Parameters for 'list' action
   type: z.string().optional().describe('Message type filter (log, error, warn, etc.)'),
@@ -25,6 +25,8 @@ const consoleSchema = z.object({
   count: z.number().optional().describe('Number of recent messages to retrieve (for recent action, default: 50)'),
   // Parameters for 'clear' action
   reason: z.string().optional().describe('Why the console needs to be cleared (required for clear action)'),
+  // Parameters for 'setObjectDepth' action
+  depth: z.number().optional().describe('Max depth for object expansion in console messages (1-10, default: 2). Higher values show more nested object details but increase processing time.'),
 }).strict();
 
 export function createConsoleTools(
@@ -59,6 +61,13 @@ export function createConsoleTools(
             action: 'clear',
             missing: 'reason',
             message: 'The "clear" action requires a "reason" parameter'
+          });
+        }
+        if (action === 'setObjectDepth' && args.depth === undefined) {
+          return createErrorResponse('MISSING_PARAMETER', {
+            action: 'setObjectDepth',
+            missing: 'depth',
+            message: 'The "setObjectDepth" action requires a "depth" parameter (1-10)'
           });
         }
 
@@ -217,6 +226,19 @@ export function createConsoleTools(
             targetConsoleMonitor.clear();
 
             return createSuccessResponse('CONSOLE_CLEARED', { count });
+          }
+
+          case 'setObjectDepth': {
+            const oldDepth = targetConsoleMonitor.getConsoleObjectDepth();
+            targetConsoleMonitor.setConsoleObjectDepth(args.depth!);
+            const newDepth = targetConsoleMonitor.getConsoleObjectDepth();
+
+            return {
+              content: [{
+                type: 'text',
+                text: `Console object expansion depth changed from ${oldDepth} to ${newDepth}\n\nThis affects how deeply nested objects are expanded in console messages. Higher values show more detail but may increase processing time.`
+              }]
+            };
           }
 
           default:
