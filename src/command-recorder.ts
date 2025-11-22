@@ -49,6 +49,7 @@ export class CommandRecorder {
   private maxHistorySize = 1000; // Keep last 1000 commands
   private sequencesDir: string;
   private activeSequence: ActiveSequenceState | null = null;
+  private historyViewedWhilePaused: boolean = false;
 
   constructor() {
     this.sequencesDir = join(process.cwd(), '.claude', 'sequences');
@@ -59,6 +60,31 @@ export class CommandRecorder {
    */
   setActiveSequence(state: ActiveSequenceState | null): void {
     this.activeSequence = state;
+    // Reset history viewed flag when sequence state changes
+    this.historyViewedWhilePaused = false;
+  }
+
+  /**
+   * Mark that history was viewed while paused (enables insert)
+   */
+  markHistoryViewed(): void {
+    if (this.activeSequence) {
+      this.historyViewedWhilePaused = true;
+    }
+  }
+
+  /**
+   * Reset history viewed flag (called when other actions are taken)
+   */
+  resetHistoryViewed(): void {
+    this.historyViewedWhilePaused = false;
+  }
+
+  /**
+   * Check if history was viewed while paused
+   */
+  wasHistoryViewed(): boolean {
+    return this.historyViewedWhilePaused;
   }
 
   /**
@@ -96,6 +122,10 @@ export class CommandRecorder {
    * Record a command (always-on, automatic)
    */
   async recordCommand(tool: string, params: Record<string, any>): Promise<void> {
+    // Reset history viewed flag when any command is recorded
+    // (user must view history again before inserting)
+    this.historyViewedWhilePaused = false;
+
     // Clone params and remove connectionReason to make sequences reusable
     const paramsClone = JSON.parse(JSON.stringify(params));
     delete paramsClone.connectionReason;
@@ -308,7 +338,7 @@ export class CommandRecorder {
   /**
    * List saved sequences on disk
    */
-  async listSavedSequencesOnDisk(): Promise<Array<{ filename: string; name: string; id: string; description?: string; expectedOutcome?: string; startUrl?: string }>> {
+  async listSavedSequencesOnDisk(): Promise<Array<{ filename: string; name: string; id: string; commandCount: number; description?: string; expectedOutcome?: string; startUrl?: string }>> {
     try {
       // Ensure directory exists
       await fs.mkdir(this.sequencesDir, { recursive: true });
@@ -316,7 +346,7 @@ export class CommandRecorder {
       const files = await fs.readdir(this.sequencesDir);
       const jsonFiles = files.filter(f => f.endsWith('.json'));
 
-      const sequences: Array<{ filename: string; name: string; id: string; description?: string; expectedOutcome?: string; startUrl?: string }> = [];
+      const sequences: Array<{ filename: string; name: string; id: string; commandCount: number; description?: string; expectedOutcome?: string; startUrl?: string }> = [];
 
       for (const file of jsonFiles) {
         try {
@@ -327,6 +357,7 @@ export class CommandRecorder {
             filename: file,
             name: sequence.name,
             id: sequence.id,
+            commandCount: sequence.commands?.length || 0,
             ...(sequence.description && { description: sequence.description }),
             ...(sequence.expectedOutcome && { expectedOutcome: sequence.expectedOutcome }),
             ...(sequence.startUrl && { startUrl: sequence.startUrl }),
