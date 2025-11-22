@@ -565,16 +565,16 @@ export function createReplayTools(
                       const networkText = networkResult?.content?.[0]?.text || '';
                       const failedRequests = (networkText.match(/\d{3}/g) || []).filter((s: string) => s.startsWith('4') || s.startsWith('5')).length;
 
-                      // Get clickable elements count
-                      const clickableResult = await executeToolCall('content', {
-                        action: 'findClickable',
+                      // Get interactive elements count
+                      const interactiveResult = await executeToolCall('content', {
+                        action: 'findInteractive',
                         connectionReason: connectionReasonToUse
                       });
-                      const clickableText = clickableResult?.content?.[0]?.text || '';
-                      const clickableMatch = clickableText.match(/Found (\d+)/);
-                      const clickableCount = clickableMatch ? clickableMatch[1] : 'unknown';
+                      const interactiveText = interactiveResult?.content?.[0]?.text || '';
+                      const interactiveMatch = interactiveText.match(/Total: (\d+)/);
+                      const interactiveCount = interactiveMatch ? interactiveMatch[1] : 'unknown';
 
-                      diagnostics = ` | Page state: ${clickableCount} clickable elements, ${errorCount} console errors, ${failedRequests} failed requests`;
+                      diagnostics = ` | Page state: ${interactiveCount} interactive elements, ${errorCount} console errors, ${failedRequests} failed requests`;
                     }
                   } catch (diagError) {
                     // Don't let diagnostic gathering break the error flow
