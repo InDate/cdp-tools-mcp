@@ -9,15 +9,15 @@ import { debugLog } from '../debug-logger.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
 
 const replaySchema = z.object({
-  action: z.enum(['history', 'create', 'list', 'get', 'delete', 'replay', 'save', 'load', 'listSaved', 'deleteSaved']).describe(
-    'Replay action: history (view command history), create (create sequence from indices), list (list in-memory sequences), get (get sequence details), delete (delete from memory), replay (execute sequence), save (save to disk), load (load from disk), listSaved (list saved files), deleteSaved (delete saved file)'
+  action: z.enum(['history', 'create', 'list', 'get', 'delete', 'replay', 'save', 'load', 'listSaved', 'deleteSaved', 'run']).describe(
+    'Replay action: history (view command history), create (create sequence from indices), list (list in-memory sequences), get (get sequence details), delete (delete from memory), replay (execute sequence), save (save to disk), load (load from disk), listSaved (list saved files), deleteSaved (delete saved file), run (load and execute sequence from disk in one step)'
   ),
 
   // history parameters
   limit: z.number().optional().describe('Number of recent commands to show (for history action, default: 50)'),
 
-  // create parameters
-  name: z.string().optional().describe('Name for the sequence (for create action)'),
+  // create/run parameters
+  name: z.string().optional().describe('Name for the sequence (for create action), or sequence name to run (for run action)'),
   description: z.string().optional().describe('Description of what the sequence does (for create action)'),
   expectedOutcome: z.string().optional().describe('Expected outcome when the sequence runs successfully (for create action)'),
   startUrl: z.string().optional().describe('Starting URL for the sequence (for create action). Auto-extracted from first navigate goto if not provided.'),
@@ -45,7 +45,7 @@ export function createReplayTools(
 ) {
   return {
     replay: createTool(
-      'Record and replay command sequences for testing and automation. Actions: history (view command history), create (create sequence from indices), list (list in-memory sequences), get (get sequence details), delete (delete from memory), replay (execute sequence), save (save sequence to disk), load (load sequence from disk), listSaved (list saved files), deleteSaved (delete saved file)',
+      'Record and replay command sequences for testing and automation. Actions: history (view command history), create (create sequence from indices), list (list in-memory sequences), get (get sequence details), delete (delete from memory), replay (execute sequence), save (save sequence to disk), load (load sequence from disk), listSaved (list saved files), deleteSaved (delete saved file), run (load and execute sequence from disk in one step)',
       replaySchema,
       async (args) => {
         const { action } = args;
@@ -1004,6 +1004,397 @@ export function createReplayTools(
               filename: args.filename,
               message: `Sequence file "${args.filename}" deleted successfully.`
             });
+          }
+
+          case 'run': {
+            if (!args.name) {
+              return createErrorResponse('MISSING_PARAMETER', {
+                action: 'run',
+                missing: 'name',
+                message: 'The "run" action requires a "name" parameter. Use listSaved to see available sequences.'
+              });
+            }
+
+            // Find sequence by name
+            const savedSequences = await commandRecorder.listSavedSequencesOnDisk();
+            const searchTerm = args.name.toLowerCase();
+
+            // Match by exact name, partial name, or filename
+            const match = savedSequences.find(s =>
+              s.name.toLowerCase() === searchTerm ||
+              s.name.toLowerCase().includes(searchTerm) ||
+              s.filename.toLowerCase() === searchTerm ||
+              s.filename.toLowerCase().startsWith(searchTerm)
+            );
+
+            if (!match) {
+              const availableNames = savedSequences.map(s => s.name).join(', ');
+              return createErrorResponse('SEQUENCE_NOT_FOUND', {
+                name: args.name,
+                message: `No sequence found matching "${args.name}". Available: ${availableNames || 'none'}`
+              });
+            }
+
+            await debugLog('replay', `[run] Matched "${args.name}" to "${match.name}" (${match.filename})`);
+            const sequence = await commandRecorder.loadSequenceFromDisk(match.filename);
+
+            if (!sequence) {
+              return createErrorResponse('LOAD_FAILED', {
+                name: args.name,
+                filename: match.filename,
+                message: 'Failed to load sequence from disk.'
+              });
+            }
+
+            // Now execute it using the same logic as 'replay' action
+            // Set sequenceId and delegate to replay logic
+            const replayArgs = {
+              ...args,
+              action: 'replay' as const,
+              sequenceId: sequence.id,
+            };
+
+            // Re-invoke this handler with replay action
+            // We need to inline the replay logic here since we can't recursively call
+            const commands = sequence.commands;
+
+            // Check if sequence contains launchChrome before any tools that need a connection
+            const toolsNeedingConnection = ['navigate', 'content', 'input', 'console', 'network', 'dom', 'screenshot', 'storage'];
+            let launchChromeIndex = -1;
+            let firstConnectionToolIndex = -1;
+
+            for (let i = 0; i < commands.length; i++) {
+              if (commands[i].tool === 'launchChrome' && launchChromeIndex === -1) {
+                launchChromeIndex = i;
+              }
+              if (toolsNeedingConnection.includes(commands[i].tool) && firstConnectionToolIndex === -1) {
+                firstConnectionToolIndex = i;
+              }
+            }
+
+            // launchChrome is valid if it appears before any tool that needs a connection
+            const hasLaunchBeforeConnection = launchChromeIndex !== -1 &&
+              (firstConnectionToolIndex === -1 || launchChromeIndex < firstConnectionToolIndex);
+
+            let connectionReasonToUse = args.connectionReason;
+
+            if (hasLaunchBeforeConnection && !connectionReasonToUse) {
+              // Extract reference from launchChrome command to use as connectionReason
+              const launchParams = commands[launchChromeIndex].params;
+              if (launchParams.reference) {
+                connectionReasonToUse = launchParams.reference;
+                await debugLog('replay', `[run] Using reference from launchChrome at index ${launchChromeIndex}: ${connectionReasonToUse}`);
+              }
+            }
+
+            if (!connectionReasonToUse && !args.dryRun && !hasLaunchBeforeConnection) {
+              return createErrorResponse('MISSING_PARAMETER', {
+                action: 'run',
+                missing: 'connectionReason',
+                message: 'The "run" action requires a "connectionReason" parameter (unless doing a dry run or sequence starts with launchChrome)'
+              });
+            }
+
+            // Extract text variables from sequence
+            const extractedVariables: Record<string, { value: string; locations: string[] }> = {};
+            commands.forEach((cmd, cmdIdx) => {
+              if (cmd.tool === 'input' && cmd.params.action === 'type' && cmd.params.text) {
+                const varName = `var_${cmdIdx}_${cmd.params.selector?.replace(/[^a-zA-Z0-9]/g, '_') || 'text'}`;
+                if (!extractedVariables[varName]) {
+                  extractedVariables[varName] = {
+                    value: cmd.params.text,
+                    locations: []
+                  };
+                }
+                extractedVariables[varName].locations.push(`Command ${cmdIdx + 1}: ${cmd.tool} -> ${cmd.params.selector}`);
+              }
+            });
+
+            // If variables exist and none provided, show them and prompt for values
+            if (Object.keys(extractedVariables).length > 0 && args.variables === undefined && !args.dryRun) {
+              let response = `**Loaded:** ${sequence.name}\n\n`;
+              response += `**Found ${Object.keys(extractedVariables).length} customizable text parameter(s):**\n\n`;
+
+              Object.entries(extractedVariables).forEach(([varName, data]) => {
+                response += `- \`${varName}\`: "${data.value}"\n`;
+              });
+
+              response += `\n**Execute:**\n\n`;
+              response += `**Option 1: Keep original values**\n`;
+              response += `\`\`\`javascript\n`;
+              response += `replay({ action: 'run', name: '${args.name}'`;
+              if (connectionReasonToUse) {
+                response += `, connectionReason: '${connectionReasonToUse}'`;
+              }
+              response += `, variables: {} })\n`;
+              response += `\`\`\`\n\n`;
+
+              response += `**Option 2: Custom values** (replace variable values as needed)\n`;
+              response += `\`\`\`javascript\n`;
+              response += `replay({ action: 'run', name: '${args.name}'`;
+              if (connectionReasonToUse) {
+                response += `, connectionReason: '${connectionReasonToUse}'`;
+              }
+              response += `, variables: {\n`;
+              Object.keys(extractedVariables).forEach((varName, idx, arr) => {
+                response += `  "${varName}": "custom-value"${idx < arr.length - 1 ? ',' : ''}\n`;
+              });
+              response += `} })\n`;
+              response += `\`\`\``;
+
+              return {
+                content: [{ type: 'text', text: response }]
+              };
+            }
+
+            // Dry run - just show what would be executed
+            if (args.dryRun) {
+              let response = `# Run Preview: ${sequence.name}\n\n`;
+              response += `**Would execute ${commands.length} command(s):**\n\n`;
+              commands.forEach((cmd, idx) => {
+                response += `${idx + 1}. **${cmd.tool}**\n`;
+                response += `\`\`\`json\n${JSON.stringify(cmd.params, null, 2)}\n\`\`\`\n\n`;
+              });
+              response += `**To execute:** Remove \`dryRun: true\` and provide \`connectionReason\` parameter`;
+
+              return {
+                content: [{ type: 'text', text: response }]
+              };
+            }
+
+            // Check if commands need connectionReason and validate
+            const needsConnection = commands.some(cmd =>
+              toolsNeedingConnection.includes(cmd.tool) &&
+              !cmd.params.connectionReason
+            );
+
+            // If connectionReason provided, auto-launch Chrome if not connected (skip if sequence has launchChrome)
+            if (connectionReasonToUse && needsConnection && !hasLaunchBeforeConnection) {
+              try {
+                await debugLog('replay', `[run] Checking connection: ${connectionReasonToUse}`);
+                await executeToolCall('navigate', { action: 'info', connectionReason: connectionReasonToUse });
+                await debugLog('replay', `[run] Connection ${connectionReasonToUse} is active`);
+              } catch (error) {
+                await debugLog('replay', `[run] Connection ${connectionReasonToUse} not active, launching Chrome...`);
+                try {
+                  await executeToolCall('launchChrome', { reference: connectionReasonToUse });
+                  await debugLog('replay', `[run] Chrome launched with reference: ${connectionReasonToUse}`);
+                } catch (launchError: any) {
+                  return createErrorResponse('LAUNCH_FAILED', {
+                    message: `Failed to auto-launch Chrome for run: ${launchError.message}`,
+                    suggestion: 'Launch Chrome manually first'
+                  });
+                }
+              }
+            }
+
+            // Auto-navigate to startUrl if sequence has one and doesn't start with a navigate command
+            const firstNavigateIndex = commands.findIndex(cmd =>
+              cmd.tool === 'navigate' && cmd.params.action === 'goto'
+            );
+            const startsWithNavigate = firstNavigateIndex === 0 ||
+              (hasLaunchBeforeConnection && firstNavigateIndex === launchChromeIndex + 1);
+
+            if (sequence.startUrl && connectionReasonToUse && !startsWithNavigate) {
+              await debugLog('replay', `[run] Auto-navigating to startUrl: ${sequence.startUrl}`);
+              try {
+                await executeToolCall('navigate', {
+                  action: 'goto',
+                  url: sequence.startUrl,
+                  connectionReason: connectionReasonToUse
+                });
+                await debugLog('replay', `[run] Navigated to startUrl: ${sequence.startUrl}`);
+              } catch (navError: any) {
+                return createErrorResponse('NAVIGATION_FAILED', {
+                  message: `Failed to navigate to startUrl: ${navError.message}`,
+                  startUrl: sequence.startUrl
+                });
+              }
+            }
+
+            // Execute commands sequentially with validation
+            const results: Array<{ command: RecordedCommand; success: boolean; result?: any; error?: string }> = [];
+
+            // Timeout configuration
+            const stepTimeout = args.stepTimeout || 30000;
+            const totalTimeout = args.totalTimeout || 300000;
+            const replayStartTime = Date.now();
+
+            // Helper to execute with timeout
+            const executeWithTimeout = async <T>(
+              promise: Promise<T>,
+              timeoutMs: number,
+              timeoutMessage: string
+            ): Promise<T> => {
+              let timeoutId: NodeJS.Timeout;
+              const timeoutPromise = new Promise<never>((_, reject) => {
+                timeoutId = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+              });
+              try {
+                return await Promise.race([promise, timeoutPromise]);
+              } finally {
+                clearTimeout(timeoutId!);
+              }
+            };
+
+            for (let i = 0; i < commands.length; i++) {
+              const cmd = commands[i];
+
+              // Check total timeout
+              const elapsed = Date.now() - replayStartTime;
+              if (elapsed >= totalTimeout) {
+                await debugLog('replay', `[run] Total timeout exceeded after ${elapsed}ms (limit: ${totalTimeout}ms)`);
+                results.push({
+                  command: cmd,
+                  success: false,
+                  error: `Total replay timeout exceeded (${totalTimeout}ms). Elapsed: ${elapsed}ms`
+                });
+                break;
+              }
+
+              const remainingTotal = totalTimeout - elapsed;
+              const effectiveStepTimeout = Math.min(stepTimeout, remainingTotal);
+
+              try {
+                await debugLog('replay', `[run] Executing step ${i + 1}/${commands.length}: ${cmd.tool}`);
+
+                let params = { ...cmd.params };
+
+                // Apply variable substitutions if provided
+                if (args.variables && cmd.tool === 'input' && params.action === 'type' && params.text) {
+                  const varName = `var_${i}_${params.selector?.replace(/[^a-zA-Z0-9]/g, '_') || 'text'}`;
+                  if (args.variables[varName] !== undefined) {
+                    params.text = args.variables[varName];
+                    await debugLog('replay', `[run] Substituted ${varName}: "${params.text}"`);
+                  }
+                }
+
+                // Insert connectionReason for tools that need it
+                if (connectionReasonToUse && toolsNeedingConnection.includes(cmd.tool) && !cmd.params.connectionReason) {
+                  params.connectionReason = connectionReasonToUse;
+                }
+
+                // Debug-aware: Replace stale callFrameId with fresh one
+                if (cmd.tool === 'inspect' && params.action === 'getVariables' && params.callFrameId && connectionReasonToUse) {
+                  try {
+                    const callStackResult = await executeToolCall('inspect', {
+                      action: 'getCallStack',
+                      connectionReason: connectionReasonToUse
+                    });
+                    const callStackText = callStackResult?.content?.[0]?.text || '';
+                    const callFrameIdMatch = callStackText.match(/"callFrameId":\s*"([^"]+)"/);
+                    if (callFrameIdMatch && callFrameIdMatch[1]) {
+                      params.callFrameId = callFrameIdMatch[1];
+                    }
+                  } catch (err: any) {
+                    await debugLog('replay', `[run] Warning: Failed to get fresh callFrameId: ${err.message}`);
+                  }
+                }
+
+                const result = await executeWithTimeout(
+                  executeToolCall(cmd.tool, params),
+                  effectiveStepTimeout,
+                  `Step ${i + 1} (${cmd.tool}) timed out after ${effectiveStepTimeout}ms`
+                );
+
+                if (result && result.isError) {
+                  const errorText = result.content?.[0]?.text || 'Unknown error';
+                  throw new Error(errorText.split('\n')[0]);
+                }
+
+                if (args.record) {
+                  commandRecorder.recordCommand(cmd.tool, params);
+                }
+
+                results.push({ command: cmd, success: true, result });
+
+              } catch (error: any) {
+                await debugLog('replay', `[run] Error at step ${i + 1}: ${error.message}`);
+                results.push({
+                  command: cmd,
+                  success: false,
+                  error: error.message || 'Unknown error'
+                });
+                break;
+              }
+            }
+
+            const successful = results.filter(r => r.success).length;
+            const failed = results.filter(r => !r.success).length;
+            const totalElapsed = Date.now() - replayStartTime;
+
+            let response = `# Run Results: ${sequence.name}\n\n`;
+            response += `**Executed:** ${results.length} of ${commands.length} commands\n`;
+            response += `**Successful:** ${successful}\n`;
+            response += `**Failed:** ${failed}\n`;
+            response += `**Duration:** ${(totalElapsed / 1000).toFixed(1)}s\n\n`;
+
+            if (failed > 0) {
+              response += `## Failed Commands\n\n`;
+              results.filter(r => !r.success).forEach((r) => {
+                const cmdNum = results.indexOf(r) + 1;
+                response += `${cmdNum}. **${r.command.tool}**\n`;
+                response += `   **Error:** ${r.error}\n\n`;
+              });
+            }
+
+            if (successful > 0) {
+              response += `## Successful Commands\n\n`;
+              results.filter(r => r.success).forEach((r) => {
+                const cmdNum = results.indexOf(r) + 1;
+                response += `${cmdNum}. **${r.command.tool}** ✓\n`;
+              });
+            }
+
+            // Check for active debug session state after run
+            if (connectionReasonToUse && failed === 0) {
+              try {
+                // Check for active breakpoints
+                const breakpointResult = await executeToolCall('breakpoint', {
+                  action: 'list',
+                  connectionReason: connectionReasonToUse
+                });
+                const breakpointText = breakpointResult?.content?.[0]?.text || '';
+
+                const totalMatch = breakpointText.match(/\*\*Total:\*\*\s*(\d+)/);
+                const breakpointCount = totalMatch ? parseInt(totalMatch[1], 10) : 0;
+
+                // Check if debugger is paused
+                const callStackResult = await executeToolCall('inspect', {
+                  action: 'getCallStack',
+                  connectionReason: connectionReasonToUse
+                });
+                const callStackText = callStackResult?.content?.[0]?.text || '';
+                const isPaused = callStackText.includes('callFrameId') && !callStackText.includes('Not paused');
+
+                if (breakpointCount > 0 || isPaused) {
+                  response += `\n## Debug State\n\n`;
+
+                  if (isPaused) {
+                    const pauseLocationMatch = callStackText.match(/Paused at:\s*([^\n]+)/);
+                    const pauseLocation = pauseLocationMatch ? pauseLocationMatch[1] : 'unknown location';
+                    response += `⏸️ **Execution paused** at ${pauseLocation}\n\n`;
+                    response += `**Next steps:**\n`;
+                    response += `- Inspect call stack: \`inspect({ action: 'getCallStack', connectionReason: '${connectionReasonToUse}' })\`\n`;
+                    response += `- Get variables: \`inspect({ action: 'getVariables', connectionReason: '${connectionReasonToUse}', callFrameId: '<from call stack>' })\`\n`;
+                    response += `- Resume execution: \`execution({ action: 'resume', connectionReason: '${connectionReasonToUse}' })\`\n`;
+                    response += `- Step over: \`execution({ action: 'stepOver', connectionReason: '${connectionReasonToUse}' })\`\n`;
+                  }
+
+                  if (breakpointCount > 0) {
+                    response += `\n🔴 **${breakpointCount} active breakpoint${breakpointCount > 1 ? 's' : ''}**\n`;
+                    response += `- List breakpoints: \`breakpoint({ action: 'list', connectionReason: '${connectionReasonToUse}' })\`\n`;
+                    response += `- Remove all: \`breakpoint({ action: 'remove', connectionReason: '${connectionReasonToUse}', breakpointId: '<id>' })\`\n`;
+                  }
+                }
+              } catch (err: any) {
+                await debugLog('replay', `[run] Could not get debug state: ${err.message}`);
+              }
+            }
+
+            return {
+              content: [{ type: 'text', text: response }]
+            };
           }
 
           default:
