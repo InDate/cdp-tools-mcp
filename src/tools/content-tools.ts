@@ -15,8 +15,11 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import type { ClickableCache, ClickableElement } from '../clickable-cache.js';
 
+// All element types for findInteractive
+const elementTypes = ['link', 'button', 'text', 'email', 'password', 'number', 'tel', 'url', 'search', 'textarea', 'select', 'checkbox', 'radio', 'file', 'date', 'other'] as const;
+
 const contentSchema = z.object({
-  action: z.enum(['extractText', 'findClickable', 'findInput']).describe('Content action: extractText (extract webpage text), findClickable (find clickable elements), findInput (find input elements)'),
+  action: z.enum(['extractText', 'findInteractive']).describe('Content action: extractText (extract webpage text), findInteractive (find all interactive elements like links, buttons, inputs)'),
   connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 
   // extractText parameters
@@ -24,12 +27,12 @@ const contentSchema = z.object({
   section: z.string().optional().describe('Section heading (for extractText with mode=section)'),
   save: z.boolean().optional().describe('Save extracted text to disk (.claude/extracts/) - for extractText action'),
 
-  // findClickable parameters
-  types: z.array(z.enum(['link', 'button', 'input', 'text', 'email', 'password', 'number', 'tel', 'url', 'search', 'textarea', 'select', 'checkbox', 'radio', 'file', 'date', 'other'])).optional().describe('Filter by element types (for findClickable/findInput actions)'),
+  // findInteractive parameters
+  types: z.array(z.enum(elementTypes)).optional().describe('Filter by element types (for findInteractive action)'),
 
   // Shared parameters
-  search: z.string().optional().describe('Search term to filter results (for extractText, findClickable, findInput actions)'),
-  limit: z.number().optional().describe('Max results to return (for findClickable/findInput actions, default: 50)'),
+  search: z.string().optional().describe('Search term to filter results (for extractText, findInteractive actions)'),
+  limit: z.number().optional().describe('Max results to return (for findInteractive action, default: 50)'),
 }).strict();
 
 export function createContentTools(puppeteerManager: PuppeteerManager, cdpManager: CDPManager, connectionManager: ConnectionManager, resolveConnectionFromReason: (connectionReason: string) => Promise<any>, clickableCache: ClickableCache) {
@@ -53,9 +56,131 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
     return filepath;
   };
 
+  /**
+   * Collect interactive elements from page (live, not cached)
+   */
+  const collectInteractiveElements = async (page: any): Promise<ClickableElement[]> => {
+    const elements = await page.evaluate(() => {
+      // @ts-ignore - This code runs in browser context
+      const results: any[] = [];
+      // @ts-ignore - window is available in browser context
+      const viewportHeight = window.innerHeight;
+      // @ts-ignore - window is available in browser context
+      const viewportWidth = window.innerWidth;
+
+      // Helper to find associated label for an input
+      const getLabel = (el: any): string => {
+        if (el.getAttribute('aria-label')) return el.getAttribute('aria-label');
+        if (el.id) {
+          // @ts-ignore
+          const label = document.querySelector(`label[for="${el.id}"]`);
+          if (label) return label.textContent?.trim() || '';
+        }
+        let parent = el.parentElement;
+        while (parent) {
+          if (parent.tagName.toLowerCase() === 'label') {
+            return parent.textContent?.trim() || '';
+          }
+          parent = parent.parentElement;
+        }
+        return '';
+      };
+
+      // Find all links
+      // @ts-ignore
+      document.querySelectorAll('a[href]').forEach((el: any) => {
+        // @ts-ignore
+        const style = window.getComputedStyle(el);
+        if (style.display !== 'none' && style.visibility !== 'hidden') {
+          const rect = el.getBoundingClientRect();
+          const inViewport = rect.top >= 0 && rect.left >= 0 &&
+                           rect.bottom <= viewportHeight && rect.right <= viewportWidth;
+          results.push({
+            type: 'link',
+            text: el.textContent?.trim() || '',
+            href: el.href,
+            selector: el.id ? `#${el.id}` : el.className ? `.${el.className.split(' ')[0]}` : 'a',
+            inViewport,
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+          });
+        }
+      });
+
+      // Find all buttons
+      // @ts-ignore
+      document.querySelectorAll('button, input[type="button"], input[type="submit"]').forEach((el: any) => {
+        // @ts-ignore
+        const style = window.getComputedStyle(el);
+        if (style.display !== 'none' && style.visibility !== 'hidden') {
+          const rect = el.getBoundingClientRect();
+          const inViewport = rect.top >= 0 && rect.left >= 0 &&
+                           rect.bottom <= viewportHeight && rect.right <= viewportWidth;
+          results.push({
+            type: 'button',
+            text: el.textContent?.trim() || el.value || '',
+            href: '',
+            selector: el.id ? `#${el.id}` : el.className ? `.${el.className.split(' ')[0]}` : 'button',
+            inViewport,
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+          });
+        }
+      });
+
+      // Find all inputs
+      // @ts-ignore
+      document.querySelectorAll('input:not([type="button"]):not([type="submit"]), textarea, select').forEach((el: any) => {
+        // @ts-ignore
+        const style = window.getComputedStyle(el);
+        if (style.display !== 'none' && style.visibility !== 'hidden') {
+          const rect = el.getBoundingClientRect();
+          const inViewport = rect.top >= 0 && rect.left >= 0 &&
+                           rect.bottom <= viewportHeight && rect.right <= viewportWidth;
+
+          const tag = el.tagName.toLowerCase();
+          let type = 'other';
+          if (tag === 'textarea') {
+            type = 'textarea';
+          } else if (tag === 'select') {
+            type = 'select';
+          } else if (tag === 'input') {
+            const inputType = el.type?.toLowerCase() || 'text';
+            if (['text', 'email', 'password', 'number', 'tel', 'url', 'search', 'checkbox', 'radio', 'file', 'date'].includes(inputType)) {
+              type = inputType;
+            }
+          }
+
+          const label = getLabel(el);
+          results.push({
+            type,
+            text: label || el.placeholder || el.name || el.id || '',
+            href: '',
+            selector: el.id ? `#${el.id}` : el.name ? `[name="${el.name}"]` : tag,
+            inViewport,
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+            label,
+            required: el.required || false,
+          });
+        }
+      });
+
+      return results;
+    });
+
+    return elements;
+  };
+
   return {
     content: createTool(
-      'Inspect and extract content from webpages. Actions: extractText (extract webpage text with outline/full/section modes), findClickable (find clickable elements like links, buttons, inputs), findInput (find input elements with details)',
+      'Inspect and extract content from webpages. Actions: extractText (extract webpage text with outline/full/section modes), findInteractive (find all interactive elements like links, buttons, inputs with summary or filtered view)',
       contentSchema,
       async (args) => {
         const { action } = args;
@@ -292,109 +417,25 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
             };
           }
 
-          case 'findClickable': {
+          case 'findInteractive': {
             const limit = args.limit || 50;
             const url = page.url();
+            const title = await page.title();
 
             // Try to get cached elements first
             const cached = clickableCache.get(url);
             let elements: ClickableElement[];
-            let totalCount: number;
             let wasFromCache = false;
 
             if (cached) {
-              // Use cached data
               elements = cached.elements;
-              totalCount = elements.length;
               wasFromCache = true;
             } else {
               // Fall back to live extraction if not cached
               const result = await executeWithPauseDetection(
                 targetCdpManager,
-                async () => {
-                  const elements = await page.evaluate(() => {
-                    // @ts-ignore - This code runs in browser context
-                    const results: any[] = [];
-                    // @ts-ignore - window is available in browser context
-                    const viewportHeight = window.innerHeight;
-                    // @ts-ignore - window is available in browser context
-                    const viewportWidth = window.innerWidth;
-
-                    // Find all links
-                    // @ts-ignore
-                    document.querySelectorAll('a[href]').forEach((el: any) => {
-                      // @ts-ignore
-                      const style = window.getComputedStyle(el);
-                      if (style.display !== 'none' && style.visibility !== 'hidden') {
-                        const rect = el.getBoundingClientRect();
-                        const inViewport = rect.top >= 0 && rect.left >= 0 &&
-                                         rect.bottom <= viewportHeight && rect.right <= viewportWidth;
-                        results.push({
-                          type: 'link',
-                          text: el.textContent?.trim() || '',
-                          href: el.href,
-                          selector: el.id ? `#${el.id}` : el.className ? `.${el.className.split(' ')[0]}` : 'a',
-                          inViewport,
-                          x: rect.x,
-                          y: rect.y,
-                          width: rect.width,
-                          height: rect.height,
-                        });
-                      }
-                    });
-
-                    // Find all buttons
-                    // @ts-ignore
-                    document.querySelectorAll('button, input[type="button"], input[type="submit"]').forEach((el: any) => {
-                      // @ts-ignore
-                      const style = window.getComputedStyle(el);
-                      if (style.display !== 'none' && style.visibility !== 'hidden') {
-                        const rect = el.getBoundingClientRect();
-                        const inViewport = rect.top >= 0 && rect.left >= 0 &&
-                                         rect.bottom <= viewportHeight && rect.right <= viewportWidth;
-                        results.push({
-                          type: 'button',
-                          text: el.textContent?.trim() || el.value || '',
-                          href: '',
-                          selector: el.id ? `#${el.id}` : el.className ? `.${el.className.split(' ')[0]}` : 'button',
-                          inViewport,
-                          x: rect.x,
-                          y: rect.y,
-                          width: rect.width,
-                          height: rect.height,
-                        });
-                      }
-                    });
-
-                    // Find all inputs
-                    // @ts-ignore
-                    document.querySelectorAll('input:not([type="button"]):not([type="submit"]), textarea, select').forEach((el: any) => {
-                      // @ts-ignore
-                      const style = window.getComputedStyle(el);
-                      if (style.display !== 'none' && style.visibility !== 'hidden') {
-                        const rect = el.getBoundingClientRect();
-                        const inViewport = rect.top >= 0 && rect.left >= 0 &&
-                                         rect.bottom <= viewportHeight && rect.right <= viewportWidth;
-                        results.push({
-                          type: 'input',
-                          text: el.placeholder || el.name || el.id || '',
-                          href: '',
-                          selector: el.id ? `#${el.id}` : el.name ? `[name="${el.name}"]` : 'input',
-                          inViewport,
-                          x: rect.x,
-                          y: rect.y,
-                          width: rect.width,
-                          height: rect.height,
-                        });
-                      }
-                    });
-
-                    return results;
-                  });
-
-                  return elements;
-                },
-                'findClickableElements'
+                async () => collectInteractiveElements(page),
+                'findInteractive'
               );
 
               if (!result.result) {
@@ -402,272 +443,111 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
               }
 
               elements = result.result as ClickableElement[];
-              totalCount = elements.length;
             }
 
-            // By default, filter to viewport only (unless search/types are specified, which implies user wants all)
-            const showOnlyViewport = !args.search && (!args.types || args.types.length === 0);
-            const allElements = [...elements];
-
-            if (showOnlyViewport) {
-              elements = elements.filter((el: ClickableElement) => el.inViewport);
-            }
-
-            // Apply type filter
-            if (args.types && args.types.length > 0) {
-              const validTypes = ['link', 'button', 'input'];
-              const filteredTypes = args.types.filter((t: string) => validTypes.includes(t));
-              if (filteredTypes.length > 0) {
-                elements = elements.filter((el: ClickableElement) => filteredTypes.includes(el.type));
-              }
-            }
-
-            // Apply search filter
-            if (args.search) {
-              const searchLower = args.search.toLowerCase();
-              elements = elements.filter((el: ClickableElement) =>
-                el.text.toLowerCase().includes(searchLower) ||
-                el.href.toLowerCase().includes(searchLower)
-              );
-            }
-
-            // Apply limit
-            const hasMore = elements.length > limit;
-            const displayElements = elements.slice(0, limit);
-
-            // Format response
-            const title = await page.title();
-
-            // Estimate tokens for all elements (rough: ~4 chars per token)
-            const allText = elements.map((el: ClickableElement) => `${el.text} ${el.href}`).join(' ');
-            const estimatedTokens = Math.ceil(allText.length / 4);
-
-            let response = `# Clickable Elements: ${title}\n\n`;
-            response += `**URL:** ${url}\n`;
-            response += `**Total Elements:** ${totalCount}\n`;
-
-            if (showOnlyViewport) {
-              response += `**Showing:** Viewport only (${elements.length} visible)\n`;
-            } else if (args.types || args.search) {
-              response += `**Filtered Results:** ${elements.length}\n`;
-            }
-
-            if (wasFromCache) {
-              response += `**Source:** Cached (from navigation)\n`;
-            }
-
-            response += `**Displaying:** ${displayElements.length}\n`;
-            response += `**Estimated Tokens:** ${estimatedTokens.toLocaleString()}\n\n`;
-
-            // Group by type
-            const byType: any = { link: [], button: [], input: [] };
-            displayElements.forEach((el: any) => {
-              byType[el.type].push(el);
-            });
-
-            for (const type of ['link', 'button', 'input']) {
-              if (byType[type].length > 0) {
-                response += `## ${type.charAt(0).toUpperCase() + type.slice(1)}s (${byType[type].length})\n\n`;
-                byType[type].forEach((el: any, i: number) => {
-                  const href = el.href ? ` → ${el.href}` : '';
-                  response += `${i + 1}. **${el.text || '(no text)'}**${href}\n   - Selector: \`${el.selector}\`\n`;
-                });
-                response += '\n';
-              }
-            }
-
-            if (hasMore) {
-              response += `\n---\n\n**Note:** ${elements.length - limit} more elements not shown. Use \`limit\` parameter to see more.\n`;
-            }
-
-            response += `\n**Filter Options:**\n`;
-            response += `- Search: \`content({ action: 'findClickable', search: 'keyword' })\`\n`;
-            response += `- By type: \`content({ action: 'findClickable', types: ['link'] })\`\n`;
-            response += `- Increase limit: \`content({ action: 'findClickable', limit: 100 })\``;
-
-            return {
-              content: [{ type: 'text', text: response }],
-            };
-          }
-
-          case 'findInput': {
-            const limit = args.limit || 50;
-
-            const result = await executeWithPauseDetection(
-              targetCdpManager,
-              async () => {
-                const elements = await page.evaluate(() => {
-                  // @ts-ignore
-                  const results: any[] = [];
-
-                  // Find associated label for an input
-                  const getLabel = (el: any): string => {
-                    // Check for aria-label
-                    if (el.getAttribute('aria-label')) return el.getAttribute('aria-label');
-
-                    // Check for associated label via for/id
-                    if (el.id) {
-                      // @ts-ignore
-                      const label = document.querySelector(`label[for="${el.id}"]`);
-                      if (label) return label.textContent?.trim() || '';
-                    }
-
-                    // Check for parent label
-                    let parent = el.parentElement;
-                    while (parent) {
-                      if (parent.tagName.toLowerCase() === 'label') {
-                        return parent.textContent?.trim() || '';
-                      }
-                      parent = parent.parentElement;
-                    }
-
-                    return '';
-                  };
-
-                  // Process all input elements
-                  // @ts-ignore
-                  document.querySelectorAll('input, textarea, select').forEach((el: any) => {
-                    // @ts-ignore
-                    const style = window.getComputedStyle(el);
-                    if (style.display === 'none' || style.visibility === 'hidden') return;
-
-                    const tag = el.tagName.toLowerCase();
-                    let type = 'other';
-
-                    if (tag === 'textarea') {
-                      type = 'textarea';
-                    } else if (tag === 'select') {
-                      type = 'select';
-                    } else if (tag === 'input') {
-                      const inputType = el.type?.toLowerCase() || 'text';
-                      // Map common types
-                      if (['text', 'email', 'password', 'number', 'tel', 'url', 'search', 'checkbox', 'radio', 'file', 'date'].includes(inputType)) {
-                        type = inputType;
-                      } else {
-                        type = 'other';
-                      }
-                    }
-
-                    const label = getLabel(el);
-                    const placeholder = el.placeholder || '';
-                    const name = el.name || '';
-                    const id = el.id || '';
-                    const value = el.value || '';
-                    const required = el.required || false;
-
-                    results.push({
-                      type,
-                      label,
-                      placeholder,
-                      name,
-                      id,
-                      value,
-                      required,
-                      selector: id ? `#${id}` : name ? `[name="${name}"]` : `${tag}`,
-                    });
-                  });
-
-                  return results;
-                });
-
-                return elements;
-              },
-              'findInputElements'
-            );
-
-            if (!result.result) {
-              return createErrorResponse('EXTRACTION_FAILED');
-            }
-
-            let elements = result.result;
             const totalCount = elements.length;
+            const hasSearch = !!args.search;
+            const hasTypes = args.types && args.types.length > 0;
 
-            // Count by type for overview
-            const typeCounts: any = {};
-            elements.forEach((el: any) => {
-              typeCounts[el.type] = (typeCounts[el.type] || 0) + 1;
-            });
+            // Summary mode: no search or types filter
+            if (!hasSearch && !hasTypes) {
+              // Count by type
+              const typeCounts: Record<string, { count: number; samples: string[] }> = {};
+              elements.forEach((el) => {
+                if (!typeCounts[el.type]) {
+                  typeCounts[el.type] = { count: 0, samples: [] };
+                }
+                typeCounts[el.type].count++;
+                if (typeCounts[el.type].samples.length < 4 && el.text) {
+                  typeCounts[el.type].samples.push(el.text.substring(0, 25) + (el.text.length > 25 ? '...' : ''));
+                }
+              });
+
+              let response = `# Interactive Elements: ${title}\n\n`;
+              response += `URL: ${url}\n`;
+              response += `Total: ${totalCount} elements`;
+              if (wasFromCache) {
+                response += ` (cached)`;
+              }
+              response += `\n\n`;
+
+              response += `## Summary\n`;
+              response += `| Type | Count | Samples |\n`;
+              response += `|------|-------|--------|\n`;
+
+              // Sort by count descending
+              const sortedTypes = Object.entries(typeCounts).sort(([, a], [, b]) => b.count - a.count);
+              for (const [type, data] of sortedTypes) {
+                const samples = data.samples.join(', ') || '(no text)';
+                response += `| ${type} | ${data.count} | ${samples} |\n`;
+              }
+
+              response += `\n## Actions\n`;
+              response += `- Search: \`findInteractive({ search: 'submit' })\`\n`;
+              response += `- Filter: \`findInteractive({ types: ['button'] })\`\n`;
+              response += `- All inputs: \`findInteractive({ types: ['text','email','password','select','checkbox','radio','textarea'] })\`\n`;
+
+              return {
+                content: [{ type: 'text', text: response }],
+              };
+            }
+
+            // Filtered mode: apply search and/or types filter
+            let filteredElements = elements;
 
             // Apply type filter
-            if (args.types && args.types.length > 0) {
-              elements = elements.filter((el: any) => args.types!.includes(el.type));
+            if (hasTypes) {
+              filteredElements = filteredElements.filter((el) => args.types!.includes(el.type as any));
             }
 
             // Apply search filter
-            if (args.search) {
-              const searchLower = args.search.toLowerCase();
-              elements = elements.filter((el: any) =>
-                el.label.toLowerCase().includes(searchLower) ||
-                el.placeholder.toLowerCase().includes(searchLower) ||
-                el.name.toLowerCase().includes(searchLower) ||
-                el.id.toLowerCase().includes(searchLower)
+            if (hasSearch) {
+              const searchLower = args.search!.toLowerCase();
+              filteredElements = filteredElements.filter((el) =>
+                el.text.toLowerCase().includes(searchLower) ||
+                el.href.toLowerCase().includes(searchLower) ||
+                (el.label && el.label.toLowerCase().includes(searchLower))
               );
             }
 
             // Apply limit
-            const hasMore = elements.length > limit;
-            const displayElements = elements.slice(0, limit);
+            const hasMore = filteredElements.length > limit;
+            const displayElements = filteredElements.slice(0, limit);
 
-            // Estimate tokens
-            const allText = elements.map((el: any) => `${el.label} ${el.placeholder} ${el.name} ${el.id}`).join(' ');
-            const estimatedTokens = Math.ceil(allText.length / 4);
+            // Determine if we're showing input types (need extra columns)
+            const inputTypes = ['text', 'email', 'password', 'number', 'tel', 'url', 'search', 'textarea', 'select', 'checkbox', 'radio', 'file', 'date', 'other'];
+            const showingInputs = displayElements.some((el) => inputTypes.includes(el.type));
 
-            // Format response
-            const url = page.url();
-            const title = await page.title();
-
-            let response = `# Input Elements: ${title}\n\n`;
-            response += `**URL:** ${url}\n`;
-            response += `**Total Input Elements:** ${totalCount}\n`;
-
-            // Show type breakdown
-            response += `**Types Breakdown:**\n`;
-            Object.entries(typeCounts).sort(([,a]: any, [,b]: any) => b - a).forEach(([type, count]) => {
-              response += `  - ${type}: ${count}\n`;
-            });
-            response += `\n`;
-
-            if (args.types || args.search) {
-              response += `**Filtered Results:** ${elements.length}\n`;
+            // Build response header
+            let response = '';
+            if (hasSearch && hasTypes) {
+              response = `# Search "${args.search}" in ${args.types!.join(', ')}\n\n`;
+            } else if (hasSearch) {
+              response = `# Search Results: "${args.search}"\n\n`;
+            } else {
+              response = `# ${args.types!.map(t => t.charAt(0).toUpperCase() + t.slice(1) + 's').join(', ')} (${filteredElements.length})\n\n`;
             }
 
-            response += `**Showing:** ${displayElements.length}\n`;
-            response += `**Estimated Tokens (all):** ${estimatedTokens.toLocaleString()}\n\n`;
+            response += `Found ${filteredElements.length} matches\n\n`;
 
-            // Group by type
-            const byType: any = {};
-            displayElements.forEach((el: any) => {
-              if (!byType[el.type]) byType[el.type] = [];
-              byType[el.type].push(el);
-            });
-
-            // Display elements grouped by type
-            for (const [type, items] of Object.entries(byType)) {
-              const itemList = items as any[];
-              response += `## ${type.charAt(0).toUpperCase() + type.slice(1)} (${itemList.length})\n\n`;
-              itemList.forEach((el: any, i: number) => {
-                const displayName = el.label || el.placeholder || el.name || el.id || '(no label)';
-                const requiredBadge = el.required ? ' **[Required]**' : '';
-                response += `${i + 1}. **${displayName}**${requiredBadge}\n`;
-                if (el.placeholder && el.placeholder !== displayName) {
-                  response += `   - Placeholder: "${el.placeholder}"\n`;
-                }
-                if (el.name) {
-                  response += `   - Name: \`${el.name}\`\n`;
-                }
-                response += `   - Selector: \`${el.selector}\`\n`;
+            // Compact pipe-delimited format
+            if (showingInputs) {
+              response += `type|text|selector|required\n`;
+              displayElements.forEach((el) => {
+                const required = el.required ? 'yes' : '';
+                response += `${el.type}|${el.text || '(no text)'}|${el.selector}|${required}\n`;
               });
-              response += '\n';
+            } else {
+              response += `type|text|selector\n`;
+              displayElements.forEach((el) => {
+                const href = el.href ? ` → ${el.href.substring(0, 40)}${el.href.length > 40 ? '...' : ''}` : '';
+                response += `${el.type}|${el.text || '(no text)'}${href}|${el.selector}\n`;
+              });
             }
 
             if (hasMore) {
-              response += `\n---\n\n**Note:** ${elements.length - limit} more elements not shown. Use \`limit\` parameter to see more.\n`;
+              response += `\n---\n${filteredElements.length - limit} more elements not shown. Use \`limit: ${limit * 2}\` to see more.\n`;
             }
-
-            response += `\n**Filter Options:**\n`;
-            response += `- Search: \`content({ action: 'findInput', search: 'email' })\`\n`;
-            response += `- By type: \`content({ action: 'findInput', types: ['text', 'email'] })\`\n`;
-            response += `- Increase limit: \`content({ action: 'findInput', limit: 100 })\``;
 
             return {
               content: [{ type: 'text', text: response }],
