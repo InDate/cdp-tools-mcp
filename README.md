@@ -141,8 +141,6 @@ MIT
 - **Lazy Source Map Loading**: On-demand loading improves startup performance
 - **Cache-Busting Breakpoints**: Breakpoints survive rebuilds with changing query params
 - **Flexible Connection References**: Lookups now tolerate minor formatting variations
-
-### v0.2.0
 - **Enhanced Replay System**: Record and replay command sequences for testing and automation
 - **Smart Element Caching**: Navigation automatically caches all clickable elements for instant discovery
 - **Viewport-Aware Filtering**: Shows only visible elements by default, searches all when filtering
