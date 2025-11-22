@@ -14,6 +14,7 @@ import { createTool } from '../validation-helpers.js';
 import { getConfiguredDebugPort } from '../port-config.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
 import type { ClickableCache, ClickableElement } from '../clickable-cache.js';
+import { collectInteractiveElements } from '../element-collector.js';
 
 // Consolidated schema for page navigation tools
 const navigateSchema = z.object({
@@ -52,136 +53,17 @@ export function createPageTools(
    * Collect clickable elements from the current page and cache them
    */
   const collectAndCacheClickableElements = async (page: any): Promise<{ total: number; inViewport: number }> => {
-    const elements = await page.evaluate(() => {
-      // @ts-ignore - This code runs in browser context
-      const results: any[] = [];
-      // @ts-ignore - window is available in browser context
-      const viewportHeight = window.innerHeight;
-      // @ts-ignore - window is available in browser context
-      const viewportWidth = window.innerWidth;
-
-      // Find all links
-      // @ts-ignore
-      document.querySelectorAll('a[href]').forEach((el: any) => {
-        // @ts-ignore
-        const style = window.getComputedStyle(el);
-        if (style.display !== 'none' && style.visibility !== 'hidden') {
-          const rect = el.getBoundingClientRect();
-          const inViewport = rect.top >= 0 && rect.left >= 0 &&
-                           rect.bottom <= viewportHeight && rect.right <= viewportWidth;
-          results.push({
-            type: 'link',
-            text: el.textContent?.trim() || '',
-            href: el.href,
-            selector: el.id ? `#${el.id}` : el.className ? `.${el.className.split(' ')[0]}` : 'a',
-            inViewport,
-            x: rect.x,
-            y: rect.y,
-            width: rect.width,
-            height: rect.height,
-          });
-        }
-      });
-
-      // Find all buttons
-      // @ts-ignore
-      document.querySelectorAll('button, input[type="button"], input[type="submit"]').forEach((el: any) => {
-        // @ts-ignore
-        const style = window.getComputedStyle(el);
-        if (style.display !== 'none' && style.visibility !== 'hidden') {
-          const rect = el.getBoundingClientRect();
-          const inViewport = rect.top >= 0 && rect.left >= 0 &&
-                           rect.bottom <= viewportHeight && rect.right <= viewportWidth;
-          results.push({
-            type: 'button',
-            text: el.textContent?.trim() || el.value || '',
-            href: '',
-            selector: el.id ? `#${el.id}` : el.className ? `.${el.className.split(' ')[0]}` : 'button',
-            inViewport,
-            x: rect.x,
-            y: rect.y,
-            width: rect.width,
-            height: rect.height,
-          });
-        }
-      });
-
-      // Helper to find associated label for an input
-      const getLabel = (el: any): string => {
-        // Check for aria-label
-        if (el.getAttribute('aria-label')) return el.getAttribute('aria-label');
-        // Check for associated label via for/id
-        if (el.id) {
-          // @ts-ignore
-          const label = document.querySelector(`label[for="${el.id}"]`);
-          if (label) return label.textContent?.trim() || '';
-        }
-        // Check for parent label
-        let parent = el.parentElement;
-        while (parent) {
-          if (parent.tagName.toLowerCase() === 'label') {
-            return parent.textContent?.trim() || '';
-          }
-          parent = parent.parentElement;
-        }
-        return '';
-      };
-
-      // Find all inputs
-      // @ts-ignore
-      document.querySelectorAll('input:not([type="button"]):not([type="submit"]), textarea, select').forEach((el: any) => {
-        // @ts-ignore
-        const style = window.getComputedStyle(el);
-        if (style.display !== 'none' && style.visibility !== 'hidden') {
-          const rect = el.getBoundingClientRect();
-          const inViewport = rect.top >= 0 && rect.left >= 0 &&
-                           rect.bottom <= viewportHeight && rect.right <= viewportWidth;
-
-          // Determine specific input type
-          const tag = el.tagName.toLowerCase();
-          let type = 'other';
-          if (tag === 'textarea') {
-            type = 'textarea';
-          } else if (tag === 'select') {
-            type = 'select';
-          } else if (tag === 'input') {
-            const inputType = el.type?.toLowerCase() || 'text';
-            if (['text', 'email', 'password', 'number', 'tel', 'url', 'search', 'checkbox', 'radio', 'file', 'date'].includes(inputType)) {
-              type = inputType;
-            }
-          }
-
-          const label = getLabel(el);
-          results.push({
-            type,
-            text: label || el.placeholder || el.name || el.id || '',
-            href: '',
-            selector: el.id ? `#${el.id}` : el.name ? `[name="${el.name}"]` : tag,
-            inViewport,
-            x: rect.x,
-            y: rect.y,
-            width: rect.width,
-            height: rect.height,
-            label,
-            required: el.required || false,
-          });
-        }
-      });
-
-      return { results, viewportHeight, viewportWidth };
-    });
-
-    const viewport = page.viewport();
+    const result = await collectInteractiveElements(page);
     const url = page.url();
 
     // Cache the elements
-    clickableCache.set(url, elements.results as ClickableElement[], elements.viewportHeight, elements.viewportWidth);
+    clickableCache.set(url, result.elements, result.viewportHeight, result.viewportWidth);
 
     // Count in-viewport elements
-    const inViewportCount = elements.results.filter((el: any) => el.inViewport).length;
+    const inViewportCount = result.elements.filter((el) => el.inViewport).length;
 
     return {
-      total: elements.results.length,
+      total: result.elements.length,
       inViewport: inViewportCount,
     };
   };

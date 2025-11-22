@@ -14,6 +14,7 @@ import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 import type { ClickableCache, ClickableElement } from '../clickable-cache.js';
+import { collectInteractiveElements } from '../element-collector.js';
 
 // All element types for findInteractive
 const elementTypes = ['link', 'button', 'text', 'email', 'password', 'number', 'tel', 'url', 'search', 'textarea', 'select', 'checkbox', 'radio', 'file', 'date', 'other'] as const;
@@ -60,162 +61,6 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
   /**
    * Collect interactive elements from page (live, not cached)
    */
-  const collectInteractiveElements = async (page: any): Promise<ClickableElement[]> => {
-    const elements = await page.evaluate(() => {
-      // @ts-ignore - This code runs in browser context
-      const results: any[] = [];
-      // @ts-ignore - window is available in browser context
-      const viewportHeight = window.innerHeight;
-      // @ts-ignore - window is available in browser context
-      const viewportWidth = window.innerWidth;
-
-      // Helper to find associated label for an input
-      const getLabel = (el: any): string => {
-        if (el.getAttribute('aria-label')) return el.getAttribute('aria-label');
-        if (el.id) {
-          // @ts-ignore
-          const label = document.querySelector(`label[for="${el.id}"]`);
-          if (label) return label.textContent?.trim() || '';
-        }
-        let parent = el.parentElement;
-        while (parent) {
-          if (parent.tagName.toLowerCase() === 'label') {
-            return parent.textContent?.trim() || '';
-          }
-          parent = parent.parentElement;
-        }
-        return '';
-      };
-
-      // Helper to generate a unique selector for an element
-      const getUniqueSelector = (el: any, tag: string): string => {
-        // 1. ID is always unique
-        if (el.id) return `#${el.id}`;
-
-        // 2. For inputs, use name attribute
-        if (el.name && (tag === 'input' || tag === 'textarea' || tag === 'select')) {
-          return `[name="${el.name}"]`;
-        }
-
-        // 3. Try href for links
-        if (tag === 'a' && el.href) {
-          const href = el.getAttribute('href');
-          if (href && href !== '#' && !href.startsWith('javascript:')) {
-            return `a[href="${href}"]`;
-          }
-        }
-
-        // 4. Try text-based selector using :has-text() (Puppeteer extension)
-        const text = el.textContent?.trim();
-        if (text && text.length > 0 && text.length <= 30) {
-          const escapedText = text.replace(/"/g, '\\"');
-          return `${tag}:has-text("${escapedText}")`;
-        }
-
-        // 5. Fall back to class-based selector
-        if (el.className && typeof el.className === 'string') {
-          const classes = el.className.split(' ').filter((c: string) => c.length > 0);
-          if (classes.length > 0) {
-            return `${tag}.${classes.join('.')}`;
-          }
-        }
-
-        // 6. Last resort: just the tag
-        return tag;
-      };
-
-      // Find all links
-      // @ts-ignore
-      document.querySelectorAll('a[href]').forEach((el: any) => {
-        // @ts-ignore
-        const style = window.getComputedStyle(el);
-        if (style.display !== 'none' && style.visibility !== 'hidden') {
-          const rect = el.getBoundingClientRect();
-          const inViewport = rect.top >= 0 && rect.left >= 0 &&
-                           rect.bottom <= viewportHeight && rect.right <= viewportWidth;
-          results.push({
-            type: 'link',
-            text: el.textContent?.trim() || '',
-            href: el.href,
-            selector: getUniqueSelector(el, 'a'),
-            inViewport,
-            x: rect.x,
-            y: rect.y,
-            width: rect.width,
-            height: rect.height,
-          });
-        }
-      });
-
-      // Find all buttons
-      // @ts-ignore
-      document.querySelectorAll('button, input[type="button"], input[type="submit"]').forEach((el: any) => {
-        // @ts-ignore
-        const style = window.getComputedStyle(el);
-        if (style.display !== 'none' && style.visibility !== 'hidden') {
-          const rect = el.getBoundingClientRect();
-          const inViewport = rect.top >= 0 && rect.left >= 0 &&
-                           rect.bottom <= viewportHeight && rect.right <= viewportWidth;
-          results.push({
-            type: 'button',
-            text: el.textContent?.trim() || el.value || '',
-            href: '',
-            selector: getUniqueSelector(el, 'button'),
-            inViewport,
-            x: rect.x,
-            y: rect.y,
-            width: rect.width,
-            height: rect.height,
-          });
-        }
-      });
-
-      // Find all inputs
-      // @ts-ignore
-      document.querySelectorAll('input:not([type="button"]):not([type="submit"]), textarea, select').forEach((el: any) => {
-        // @ts-ignore
-        const style = window.getComputedStyle(el);
-        if (style.display !== 'none' && style.visibility !== 'hidden') {
-          const rect = el.getBoundingClientRect();
-          const inViewport = rect.top >= 0 && rect.left >= 0 &&
-                           rect.bottom <= viewportHeight && rect.right <= viewportWidth;
-
-          const tag = el.tagName.toLowerCase();
-          let type = 'other';
-          if (tag === 'textarea') {
-            type = 'textarea';
-          } else if (tag === 'select') {
-            type = 'select';
-          } else if (tag === 'input') {
-            const inputType = el.type?.toLowerCase() || 'text';
-            if (['text', 'email', 'password', 'number', 'tel', 'url', 'search', 'checkbox', 'radio', 'file', 'date'].includes(inputType)) {
-              type = inputType;
-            }
-          }
-
-          const label = getLabel(el);
-          results.push({
-            type,
-            text: label || el.placeholder || el.name || el.id || '',
-            href: '',
-            selector: getUniqueSelector(el, tag),
-            inViewport,
-            x: rect.x,
-            y: rect.y,
-            width: rect.width,
-            height: rect.height,
-            label,
-            required: el.required || false,
-          });
-        }
-      });
-
-      return results;
-    });
-
-    return elements;
-  };
-
   return {
     content: createTool(
       'Inspect and extract content from webpages. Actions: extractText (extract webpage text with outline/full/section modes), findInteractive (find all interactive elements like links, buttons, inputs with summary or filtered view)',
@@ -480,7 +325,7 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
                 return createErrorResponse('EXTRACTION_FAILED');
               }
 
-              elements = result.result as ClickableElement[];
+              elements = result.result.elements as ClickableElement[];
             }
 
             // Count and filter hidden elements (width/height <= 0)
@@ -496,13 +341,15 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
 
             // Summary mode: no search or types filter
             if (!hasSearch && !hasTypes) {
-              // Group elements by type
-              const elementsByType: Record<string, typeof elements> = {};
+              // Group elements by semantic context, then by type
+              const contextOrder = ['header', 'nav', 'main', 'form', 'aside', 'footer'];
+              const elementsByContext: Record<string, typeof elements> = {};
               elements.forEach((el) => {
-                if (!elementsByType[el.type]) {
-                  elementsByType[el.type] = [];
+                const ctx = el.context || 'main';
+                if (!elementsByContext[ctx]) {
+                  elementsByContext[ctx] = [];
                 }
-                elementsByType[el.type].push(el);
+                elementsByContext[ctx].push(el);
               });
 
               let response = `# Interactive Elements: ${title}\n\n`;
@@ -514,23 +361,48 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
               if (wasFromCache) {
                 response += ` (cached)`;
               }
-              response += `\n\n`;
+              response += `\n`;
 
-              // Sort types by count descending
-              const sortedTypes = Object.entries(elementsByType).sort(([, a], [, b]) => b.length - a.length);
+              // Sort contexts by predefined order
+              const sortedContexts = Object.keys(elementsByContext).sort((a, b) => {
+                const aIdx = contextOrder.indexOf(a);
+                const bIdx = contextOrder.indexOf(b);
+                return (aIdx === -1 ? 99 : aIdx) - (bIdx === -1 ? 99 : bIdx);
+              });
 
-              for (const [type, typeElements] of sortedTypes) {
-                response += `\n**${type}** (${typeElements.length})\n`;
-                typeElements.forEach((el) => {
-                  const hidden = (el.width ?? 0) <= 0 || (el.height ?? 0) <= 0 ? ' (hidden)' : '';
-                  response += `${el.text || '(no text)'} [${el.selector}]${hidden}\n`;
+              for (const context of sortedContexts) {
+                const contextElements = elementsByContext[context];
+                response += `\n## ${context} (${contextElements.length})\n`;
+
+                // Group by type within context
+                const byType: Record<string, typeof elements> = {};
+                contextElements.forEach((el) => {
+                  if (!byType[el.type]) byType[el.type] = [];
+                  byType[el.type].push(el);
                 });
+
+                for (const [type, typeElements] of Object.entries(byType)) {
+                  if (typeElements.length > 1) {
+                    response += `**${type}** (${typeElements.length}): `;
+                    response += typeElements.map((el) => {
+                      const hidden = (el.width ?? 0) <= 0 || (el.height ?? 0) <= 0 ? ' ⚠️' : '';
+                      return `${el.text || '(no text)'}${hidden}`;
+                    }).join(', ');
+                    response += `\n`;
+                  } else {
+                    const el = typeElements[0];
+                    const hidden = (el.width ?? 0) <= 0 || (el.height ?? 0) <= 0 ? ' (hidden)' : '';
+                    response += `${el.text || '(no text)'} [${el.selector}]${hidden}\n`;
+                  }
+                }
               }
 
-              // Find a good example selector from the page
-              const exampleElement = elements.find((el) => el.selector.startsWith('#') || el.selector.startsWith('[name='));
-              const exampleSelector = exampleElement?.selector || elements[0]?.selector || '.selector';
-              response += `\nExample: \`input({ action: 'click', selector: '${exampleSelector}' })\``;
+              // Find a good example - prefer element with text for :has-text() example
+              const exampleElement = elements.find((el) => el.text && el.text.length > 0 && el.text.length <= 20);
+              const exampleText = exampleElement?.text || 'Button';
+              const exampleTag = exampleElement?.type === 'link' ? 'a' : 'button';
+              response += `\n:has-text() matches text content, aria-label, and title.`;
+              response += `\nExample: \`input({ action: 'click', selector: '${exampleTag}:has-text("${exampleText}")' })\``;
 
               return {
                 content: [{ type: 'text', text: response }],
