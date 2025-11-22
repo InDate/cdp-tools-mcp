@@ -8,9 +8,9 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 ```
 1. launchChrome({ reference: "your-descriptive-name" })  # Auto-connects, ready immediately
 2. navigate({ action: 'goto', connectionReason: "your-descriptive-name", url: "..." })
-   # Navigation automatically caches clickable elements (links, buttons, inputs) for the page
-3. content({ action: 'findClickable', connectionReason: "your-descriptive-name" })
-   # Shows viewport-visible elements from cache. Use search/types to filter
+   # Navigation automatically caches interactive elements (links, buttons, inputs) for the page
+3. content({ action: 'findInteractive', connectionReason: "your-descriptive-name" })
+   # Shows summary of all interactive elements. Use search/types to filter
 4. Use other tools as needed with connectionReason parameter
 ```
 
@@ -88,7 +88,7 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 ## Important Notes
 
 - **After `launchChrome()`**: You are ALREADY connected. Do NOT call `connectDebugger()`. Use the `reference` parameter when launching, or rename later with `tab({ action: 'rename' })`
-- **Clickable elements cache**: Navigation (goto, reload, back, forward) automatically caches all clickable elements. Cache expires after 5 minutes. `findClickable` shows viewport-only by default; use `search` or `types` parameters to search all elements
+- **Interactive elements cache**: Navigation (goto, reload, back, forward) automatically caches all interactive elements. Cache expires after 5 minutes. `findInteractive` shows a summary by default; use `search` or `types` parameters to filter elements
 - **Logpoint limits**: Default 20 executions. Use `resetLogpointCounter` or adjust `maxExecutions`
 - **Expression failures**: Wrapped in try-catch, shows `[Error: message]`. Search: `searchConsoleLogs({pattern: "Logpoint Error"})`
 - **CDP line mapping**: May map to nearest valid line. Use `validateLogpoint()` first
@@ -124,3 +124,5 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 **Modal**: `detectModals`, `dismissModal`
 
 **Storage**: `getCookies`, `setCookie`, `getLocalStorage`, `setLocalStorage`, `clearStorage`
+
+**Content**: `extractText`, `findInteractive`

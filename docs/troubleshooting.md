@@ -54,14 +54,14 @@
 **Problem:** Selector doesn't match any elements
 
 **Solutions:**
-- Use `content({ action: 'findClickable' })` to see available elements
+- Use `content({ action: 'findInteractive' })` to see available elements
 - Check element is in viewport: might need to scroll first
 - Wait for dynamic content: element may load asynchronously
 - Try broader selector (class instead of ID)
 
 ### Cache not working
 
-**Problem:** `findClickable` shows "no cache" or stale data
+**Problem:** `findInteractive` shows "no cache" or stale data
 
 **Solutions:**
 - Cache expires after 5 minutes - navigate again to refresh

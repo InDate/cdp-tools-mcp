@@ -25,30 +25,30 @@ navigate({ action: 'info', connectionReason: 'test-session' })
 ## Finding Elements
 
 ```javascript
-// Find clickable elements (from cache, viewport only by default)
+// Get summary of all interactive elements (default mode)
 content({
-  action: 'findClickable',
+  action: 'findInteractive',
   connectionReason: 'test-session'
 })
 
-// Search ALL cached elements
+// Search all elements by text
 content({
-  action: 'findClickable',
+  action: 'findInteractive',
   search: 'login',
   connectionReason: 'test-session'
 })
 
 // Filter by type
 content({
-  action: 'findClickable',
+  action: 'findInteractive',
   types: ['button', 'link'],
   connectionReason: 'test-session'
 })
 
-// Find input elements
+// Find all input fields
 content({
-  action: 'findInput',
-  search: 'email',
+  action: 'findInteractive',
+  types: ['text', 'email', 'password', 'textarea'],
   connectionReason: 'test-session'
 })
 ```
