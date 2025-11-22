@@ -6,9 +6,12 @@
  * - :text("text") - matches elements with exact text content
  * - :text-is("text") - alias for :text()
  *
+ * Text matching includes: textContent, aria-label, and title attributes.
+ *
  * Examples:
  *   button:has-text("Submit")      -> finds <button>Submit Form</button>
  *   a:has-text("Login")            -> finds <a href="/login">Login</a>
+ *   a:has-text("Homepage")         -> finds <a aria-label="Homepage">...</a>
  *   div:text("Exact Match")        -> finds <div>Exact Match</div> (exact only)
  *   :has-text("Search")            -> finds any element containing "Search"
  */
@@ -159,22 +162,27 @@ export async function resolveSelector(
       let firstMatchElement: any = null;
 
       elements.forEach((el: any) => {
-        const text = el.textContent?.trim() || '';
+        const textContent = el.textContent?.trim() || '';
+        const ariaLabel = el.getAttribute('aria-label') || '';
+        const title = el.getAttribute('title') || '';
+        // Combine all text sources for matching
+        const allText = [textContent, ariaLabel, title].filter(Boolean).join(' ');
         let isMatch = false;
 
         if (matchType === 'has-text') {
-          isMatch = text.toLowerCase().includes(matchText.toLowerCase());
+          isMatch = allText.toLowerCase().includes(matchText.toLowerCase());
         } else {
-          // 'text' or 'text-is' - exact match
-          isMatch = text === matchText;
+          // 'text' or 'text-is' - exact match (check each source separately)
+          isMatch = textContent === matchText || ariaLabel === matchText || title === matchText;
         }
 
         if (isMatch) {
           if (!firstMatchElement) {
             firstMatchElement = el;
           }
+          const displayText = textContent || ariaLabel || title;
           matches.push({
-            text: text.substring(0, 60) + (text.length > 60 ? '...' : ''),
+            text: displayText.substring(0, 60) + (displayText.length > 60 ? '...' : ''),
             tagName: el.tagName.toLowerCase(),
           });
         }
