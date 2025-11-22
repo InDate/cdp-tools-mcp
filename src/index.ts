@@ -242,6 +242,39 @@ const connectionTools = {
       const url = args.url;
       const autoConnect = args.autoConnect ?? true;
 
+      // Check if a connection with this reference already exists - reuse it instead of creating a new tab
+      if (userReference) {
+        const existingConnection = connectionManager.findConnectionByReference(userReference);
+        if (existingConnection) {
+          const sanitizedRef = validateReference(userReference).sanitized!;
+          await debugLog('index', `Connection with reference "${sanitizedRef}" already exists, reusing`);
+
+          // Set as active connection
+          connectionManager.setActiveConnection(existingConnection.id);
+          updateActiveManagers(existingConnection.id);
+
+          // Get current page info
+          let title = 'Unknown';
+          let pageUrl = 'about:blank';
+          if (existingConnection.puppeteerManager) {
+            const page = existingConnection.puppeteerManager.getPage();
+            pageUrl = page.url();
+            title = await page.title();
+          }
+
+          const message = `Chrome connection reused (already exists)
+Connection Reference: \`${sanitizedRef}\`
+Title: ${title}
+URL: ${pageUrl}
+
+**Ready to use!** Use \`connectionReason: "${sanitizedRef}"\` in tool calls.`;
+
+          return {
+            content: [{ type: 'text', text: message }],
+          };
+        }
+      }
+
       try {
         // Check if Chrome is already running on this port (browser already exists)
         const browserAlreadyExists = connectionManager.hasBrowser('localhost', port);
