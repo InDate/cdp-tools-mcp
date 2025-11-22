@@ -14,6 +14,8 @@ export interface ClickableElement {
   y?: number;
   width?: number;
   height?: number;
+  // Semantic context (nav, main, footer, header, aside, form)
+  context?: string;
   // Input-specific fields
   label?: string;
   required?: boolean;
