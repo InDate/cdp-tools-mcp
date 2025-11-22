@@ -19,6 +19,7 @@ export interface CommandSequence {
   name: string;
   description?: string;
   expectedOutcome?: string;
+  startUrl?: string;
   commands: RecordedCommand[];
   createdAt: number;
 }
@@ -85,7 +86,7 @@ export class CommandRecorder {
   async createSequence(
     name: string,
     commandIndices: number[],
-    options?: { description?: string; expectedOutcome?: string }
+    options?: { description?: string; expectedOutcome?: string; startUrl?: string }
   ): Promise<CommandSequence | null> {
     // Validate all indices exist and get commands
     const commands: RecordedCommand[] = [];
@@ -102,17 +103,30 @@ export class CommandRecorder {
       });
     }
 
+    // Extract startUrl from commands if not explicitly provided
+    let startUrl = options?.startUrl;
+    if (!startUrl) {
+      // Look for the first navigate goto action
+      for (const cmd of commands) {
+        if (cmd.tool === 'navigate' && cmd.params.action === 'goto' && cmd.params.url) {
+          startUrl = cmd.params.url;
+          break;
+        }
+      }
+    }
+
     const sequence: CommandSequence = {
       id: `seq-${Date.now()}`,
       name,
       ...(options?.description && { description: options.description }),
       ...(options?.expectedOutcome && { expectedOutcome: options.expectedOutcome }),
+      ...(startUrl && { startUrl }),
       commands,
       createdAt: Date.now(),
     };
 
     this.sequences.set(sequence.id, sequence);
-    await debugLog('command-recorder', `Created sequence "${name}" with ${commands.length} commands`);
+    await debugLog('command-recorder', `Created sequence "${name}" with ${commands.length} commands${startUrl ? `, startUrl: ${startUrl}` : ''}`);
     return sequence;
   }
 
@@ -233,7 +247,7 @@ export class CommandRecorder {
   /**
    * List saved sequences on disk
    */
-  async listSavedSequencesOnDisk(): Promise<Array<{ filename: string; name: string; id: string; description?: string; expectedOutcome?: string }>> {
+  async listSavedSequencesOnDisk(): Promise<Array<{ filename: string; name: string; id: string; description?: string; expectedOutcome?: string; startUrl?: string }>> {
     try {
       // Ensure directory exists
       await fs.mkdir(this.sequencesDir, { recursive: true });
@@ -241,7 +255,7 @@ export class CommandRecorder {
       const files = await fs.readdir(this.sequencesDir);
       const jsonFiles = files.filter(f => f.endsWith('.json'));
 
-      const sequences: Array<{ filename: string; name: string; id: string; description?: string; expectedOutcome?: string }> = [];
+      const sequences: Array<{ filename: string; name: string; id: string; description?: string; expectedOutcome?: string; startUrl?: string }> = [];
 
       for (const file of jsonFiles) {
         try {
@@ -254,6 +268,7 @@ export class CommandRecorder {
             id: sequence.id,
             ...(sequence.description && { description: sequence.description }),
             ...(sequence.expectedOutcome && { expectedOutcome: sequence.expectedOutcome }),
+            ...(sequence.startUrl && { startUrl: sequence.startUrl }),
           });
         } catch (error) {
           await debugLog('command-recorder', `Failed to parse ${file}: ${error}`);

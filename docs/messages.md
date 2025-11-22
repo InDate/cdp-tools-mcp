@@ -1471,6 +1471,14 @@ Use `replay({ action: 'history' })` to view commands.
 
 ---
 
+## SAVED_SEQUENCE_DELETED
+
+**Type:** success
+
+Sequence file "{{filename}}" deleted successfully.
+
+---
+
 ## MISSING_CONNECTION
 
 **Type:** error

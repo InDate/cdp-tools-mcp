@@ -20,6 +20,7 @@ const replaySchema = z.object({
   name: z.string().optional().describe('Name for the sequence (for create action)'),
   description: z.string().optional().describe('Description of what the sequence does (for create action)'),
   expectedOutcome: z.string().optional().describe('Expected outcome when the sequence runs successfully (for create action)'),
+  startUrl: z.string().optional().describe('Starting URL for the sequence (for create action). Auto-extracted from first navigate goto if not provided.'),
   indices: z.array(z.number()).optional().describe('Command indices to include in sequence (for create action)'),
 
   // get/delete/replay/save parameters
@@ -108,6 +109,7 @@ export function createReplayTools(
             const sequence = await commandRecorder.createSequence(args.name, args.indices, {
               description: args.description,
               expectedOutcome: args.expectedOutcome,
+              startUrl: args.startUrl,
             });
 
             if (!sequence) {
@@ -123,6 +125,9 @@ export function createReplayTools(
             }
             if (sequence.expectedOutcome) {
               response += `**Expected Outcome:** ${sequence.expectedOutcome}\n`;
+            }
+            if (sequence.startUrl) {
+              response += `**Start URL:** ${sequence.startUrl}\n`;
             }
             response += `**Commands:** ${sequence.commands.length}\n\n`;
             response += `## Commands in Sequence\n\n`;
@@ -167,6 +172,9 @@ export function createReplayTools(
               if (seq.expectedOutcome) {
                 response += `- **Expected Outcome:** ${seq.expectedOutcome}\n`;
               }
+              if (seq.startUrl) {
+                response += `- **Start URL:** ${seq.startUrl}\n`;
+              }
               response += `- **Commands:** ${seq.commands.length}\n`;
               response += `- **Created:** ${age} minutes ago\n`;
               response += `- **Actions:** [View](#) | [Replay](#) | [Delete](#)\n\n`;
@@ -208,6 +216,9 @@ export function createReplayTools(
             }
             if (sequence.expectedOutcome) {
               response += `**Expected Outcome:** ${sequence.expectedOutcome}\n`;
+            }
+            if (sequence.startUrl) {
+              response += `**Start URL:** ${sequence.startUrl}\n`;
             }
             response += `**Commands:** ${sequence.commands.length}\n`;
             response += `**Created:** ${new Date(sequence.createdAt).toLocaleString()}\n\n`;
@@ -399,6 +410,30 @@ export function createReplayTools(
                     suggestion: 'Launch Chrome manually first'
                   });
                 }
+              }
+            }
+
+            // Auto-navigate to startUrl if sequence has one and doesn't start with a navigate command
+            const firstNavigateIndex = commands.findIndex(cmd =>
+              cmd.tool === 'navigate' && cmd.params.action === 'goto'
+            );
+            const startsWithNavigate = firstNavigateIndex === 0 ||
+              (hasLaunchBeforeConnection && firstNavigateIndex === launchChromeIndex + 1);
+
+            if (sequence.startUrl && connectionReasonToUse && !startsWithNavigate) {
+              await debugLog('replay', `Auto-navigating to startUrl: ${sequence.startUrl}`);
+              try {
+                await executeToolCall('navigate', {
+                  action: 'goto',
+                  url: sequence.startUrl,
+                  connectionReason: connectionReasonToUse
+                });
+                await debugLog('replay', `Navigated to startUrl: ${sequence.startUrl}`);
+              } catch (navError: any) {
+                return createErrorResponse('NAVIGATION_FAILED', {
+                  message: `Failed to navigate to startUrl: ${navError.message}`,
+                  startUrl: sequence.startUrl
+                });
               }
             }
 
@@ -930,6 +965,9 @@ export function createReplayTools(
               }
               if (seq.expectedOutcome) {
                 response += `   - Expected Outcome: ${seq.expectedOutcome}\n`;
+              }
+              if (seq.startUrl) {
+                response += `   - Start URL: ${seq.startUrl}\n`;
               }
               response += `\n`;
             });
