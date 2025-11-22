@@ -1,9 +1,10 @@
 /**
  * Console Monitor
- * Tracks console messages from the browser
+ * Tracks console messages from the browser or Node.js debugger
  */
 
 import { Page, ConsoleMessage, JSHandle } from 'puppeteer-core';
+import type { CDPConsoleMessage } from './types.js';
 
 export interface StoredConsoleMessage {
   id: string;
@@ -19,12 +20,45 @@ export interface StoredConsoleMessage {
   timestamp: number;
 }
 
+/**
+ * Function type for expanding CDP RemoteObject values
+ * Used to get full object details via Runtime.getProperties
+ * @param objectId - The CDP object ID to expand
+ * @param maxDepth - Maximum depth for nested object expansion
+ */
+export type ValueExpander = (objectId: string, maxDepth: number) => Promise<any>;
+
 export class ConsoleMonitor {
   private messages: StoredConsoleMessage[] = [];
   private messageIdCounter = 0;
   private maxMessages = 1000; // Keep last 1000 messages
   private isMonitoring = false;
   private messageCallbacks: Array<(message: StoredConsoleMessage) => void> = [];
+  private valueExpander: ValueExpander | null = null;
+  private consoleObjectDepth: number = 2; // Default depth for console object expansion
+
+  /**
+   * Set a function to expand object values using Runtime.getProperties
+   * This enables full object inspection for Node.js console messages
+   */
+  setValueExpander(expander: ValueExpander | null): void {
+    this.valueExpander = expander;
+  }
+
+  /**
+   * Set the maximum depth for expanding objects in console messages
+   * @param depth - Maximum nesting depth (default: 2)
+   */
+  setConsoleObjectDepth(depth: number): void {
+    this.consoleObjectDepth = Math.max(1, Math.min(depth, 10)); // Clamp between 1-10
+  }
+
+  /**
+   * Get the current console object depth setting
+   */
+  getConsoleObjectDepth(): number {
+    return this.consoleObjectDepth;
+  }
 
   /**
    * Start monitoring console messages on a page
@@ -87,6 +121,110 @@ export class ConsoleMonitor {
         console.error('[ConsoleMonitor] Error in message callback:', error);
       }
     }
+  }
+
+  /**
+   * Add a console message from CDP Runtime.consoleAPICalled event
+   * This is used for Node.js debugging where Puppeteer's page.on('console') isn't available
+   */
+  async addCDPConsoleMessage(cdpMessage: CDPConsoleMessage): Promise<void> {
+    const id = `console-${this.messageIdCounter++}`;
+
+    // Convert CDP args to serialized format
+    const args = await Promise.all(cdpMessage.args.map(async arg => {
+      // Primitives have direct value
+      if (arg.value !== undefined) {
+        return arg.value;
+      }
+
+      // Unserializable values (Infinity, NaN, -0, bigint)
+      if (arg.unserializableValue) {
+        return arg.unserializableValue;
+      }
+
+      // If we have a value expander and an objectId, expand the object fully
+      if (this.valueExpander && arg.objectId) {
+        try {
+          return await this.valueExpander(arg.objectId, this.consoleObjectDepth);
+        } catch {
+          // Fall through to preview/description if expansion fails
+        }
+      }
+
+      // Try to use preview for objects (if available)
+      if (arg.preview?.properties) {
+        const props: Record<string, any> = {};
+        for (const prop of arg.preview.properties) {
+          props[prop.name] = prop.value;
+        }
+        // Mark if there are more properties not shown
+        if (arg.preview.overflow) {
+          props['...'] = '(more properties)';
+        }
+        return props;
+      }
+
+      // Fall back to description (e.g., "Object", "Array(3)", "Map(2)")
+      if (arg.description) {
+        return arg.description;
+      }
+
+      return `[${arg.type}]`;
+    }));
+
+    // Build text from args (similar to how console.log joins arguments)
+    const text = args.map(arg => {
+      if (typeof arg === 'string') return arg;
+      try {
+        return JSON.stringify(arg);
+      } catch {
+        return String(arg);
+      }
+    }).join(' ');
+
+    // Extract location from stack trace if available
+    const location = cdpMessage.stackTrace?.callFrames[0]
+      ? {
+          url: cdpMessage.stackTrace.callFrames[0].url,
+          lineNumber: cdpMessage.stackTrace.callFrames[0].lineNumber,
+          columnNumber: cdpMessage.stackTrace.callFrames[0].columnNumber,
+        }
+      : undefined;
+
+    const storedMessage: StoredConsoleMessage = {
+      id,
+      type: cdpMessage.type,
+      text,
+      args,
+      location,
+      stackTrace: cdpMessage.stackTrace,
+      timestamp: cdpMessage.timestamp,
+    };
+
+    this.messages.push(storedMessage);
+
+    // Keep only last N messages
+    if (this.messages.length > this.maxMessages) {
+      this.messages.shift();
+    }
+
+    // Notify callbacks
+    for (const callback of this.messageCallbacks) {
+      try {
+        callback(storedMessage);
+      } catch (error) {
+        // Silently ignore callback errors to prevent disruption
+        console.error('[ConsoleMonitor] Error in message callback:', error);
+      }
+    }
+  }
+
+  /**
+   * Enable monitoring without a Puppeteer page (for Node.js/CDP-only connections)
+   * Call this for Node.js debugging connections that will receive messages via addCDPConsoleMessage
+   */
+  enableWithoutPage(): void {
+    this.isMonitoring = true;
   }
 
   /**

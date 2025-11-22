@@ -12,6 +12,7 @@ import { SourceMapHandler } from '../sourcemap-handler.js';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import { validateReference, sanitizeReference, UNNAMED_CONNECTION } from '../reference-validator.js';
+import type { LogpointExecutionTracker } from '../logpoint-execution-tracker.js';
 
 // Consolidated schema for tab tools
 const tabSchema = z.object({
@@ -26,7 +27,8 @@ const tabSchema = z.object({
 export function createTabTools(
   connectionManager: ConnectionManager,
   sourceMapHandler: SourceMapHandler,
-  updateActiveManagers: (connectionId: string) => void
+  updateActiveManagers: (connectionId: string) => void,
+  logpointTracker: LogpointExecutionTracker
 ) {
   return {
     tab: createTool(
@@ -155,6 +157,11 @@ export function createTabTools(
               // Start monitoring
               consoleMonitor.startMonitoring(page);
               networkMonitor.startMonitoring(page);
+
+              // Register logpoint tracker callback on this connection's console monitor
+              consoleMonitor.onMessage((message) => {
+                logpointTracker.handleConsoleMessage(message);
+              });
 
               // Navigate if URL provided
               if (args.url) {

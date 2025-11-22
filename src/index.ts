@@ -221,12 +221,23 @@ const connectionTools = {
       reference: z.string().optional().describe('Connection reference name (3 descriptive words). If not provided, defaults to "unnamed-connection-default". Use this to identify the connection when calling other tools.'),
     }).strict(),
     async (args) => {
+      // Validate reference FIRST, before launching Chrome
+      const userReference = args.reference;
+      if (userReference) {
+        const validation = validateReference(userReference);
+        if (!validation.valid) {
+          return createErrorResponse('INVALID_REFERENCE', {
+            reference: userReference,
+            error: validation.error
+          });
+        }
+      }
+
       // Use reserved port unless explicitly specified
       const port = args.port || getReservedPort();
       await debugLog('index', `launchChrome called: port=${port}, requested=${args.port}, reserved=${getReservedPort()}, url=${args.url}, autoConnect=${args.autoConnect}, reference=${args.reference}`);
       const url = args.url;
       const autoConnect = args.autoConnect ?? true;
-      const userReference = args.reference;
 
       try {
         // Check if Chrome is already running on this port (browser already exists)
@@ -285,6 +296,11 @@ const connectionTools = {
               consoleMonitor.startMonitoring(page);
               networkMonitor.startMonitoring(page);
 
+              // Register logpoint tracker callback on this connection's console monitor
+              consoleMonitor.onMessage((message) => {
+                logpointTracker.handleConsoleMessage(message);
+              });
+
               // Navigate to URL if provided
               if (url) {
                 await debugLog('index', `Navigating to URL: ${url}`);
@@ -310,18 +326,11 @@ const connectionTools = {
             const pageIndex = pages.findIndex(p => p === currentPage);
 
             // Register connection with user-provided reference or default
+            // Reference was already validated at the start of the handler
             let connectionReference = UNNAMED_CONNECTION;
-
-            // Validate and sanitize the reference if user provided one
             if (userReference) {
-              const validation = validateReference(userReference);
-              if (!validation.valid) {
-                return createErrorResponse('INVALID_REFERENCE', {
-                  reference: userReference,
-                  error: validation.error
-                });
-              }
               // Use the sanitized version (lowercase with hyphens)
+              const validation = validateReference(userReference);
               connectionReference = validation.sanitized!;
             }
 
@@ -630,7 +639,22 @@ URL: ${pageUrl}${consoleStats}`;
           }
 
           features.push('browser-automation', 'console-monitoring', 'network-monitoring');
+        } else {
+          // For Node.js debugging, set up console monitoring via CDP Runtime.consoleAPICalled
+          // Set up value expander to get full object details (passes maxDepth from consoleMonitor)
+          consoleMonitor.setValueExpander((objectId, maxDepth) => cdpManager.expandObjectById(objectId, maxDepth));
+          cdpManager.setConsoleMessageCallback((message) => {
+            consoleMonitor.addCDPConsoleMessage(message);
+          });
+          consoleMonitor.enableWithoutPage();
+          features.push('console-monitoring');
         }
+
+        // Register logpoint tracker callback on this connection's console monitor
+        // This ensures logpoint executions are tracked for both Chrome and Node.js connections
+        consoleMonitor.onMessage((message) => {
+          logpointTracker.handleConsoleMessage(message);
+        });
 
         // Get page index for tracking
         let pageIndex: number | undefined;
@@ -641,10 +665,11 @@ URL: ${pageUrl}${consoleStats}`;
         }
 
         // Register connection with ConnectionManager
+        // Note: consoleMonitor is always passed now (works for both Chrome and Node.js)
         const connectionId = connectionManager.createConnection(
           cdpManager,
           runtimeType === 'chrome' ? puppeteerManager : undefined,
-          runtimeType === 'chrome' ? consoleMonitor : undefined,
+          consoleMonitor, // Always include - works for both Chrome (via Puppeteer) and Node.js (via CDP)
           runtimeType === 'chrome' ? networkMonitor : undefined,
           host,
           port,
@@ -679,6 +704,7 @@ URL: ${pageUrl}${consoleStats}`;
           markdown += '\n\n**IMPORTANT:** Please provide a reference name for this tab using the `renameTab` tool (e.g., "wikipedia-search", "product-page").';
         } else if (runtimeType === 'node') {
           markdown += '\n**Note:** Browser automation features are not available for Node.js debugging.';
+          markdown += '\n**Console Monitoring:** Enabled via CDP (logpoint output and console.log calls will be captured).';
         }
 
         return {
@@ -968,7 +994,7 @@ async function executeToolCall(toolName: string, params: Record<string, any>): P
 const allTools = {
   ...connectionTools,
   // Tab Management tools
-  ...createTabTools(connectionManager, sourceMapHandler, updateActiveManagers),
+  ...createTabTools(connectionManager, sourceMapHandler, updateActiveManagers, logpointTracker),
   // CDP Debugging tools
   ...createBreakpointTools(proxyCdpManager, sourceMapHandler, logpointTracker, resolveConnectionFromReason),
   ...createExecutionTools(proxyCdpManager, resolveConnectionFromReason),

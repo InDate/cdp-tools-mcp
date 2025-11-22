@@ -4,7 +4,7 @@
  */
 
 import CDP from 'chrome-remote-interface';
-import type { BreakpointInfo, CallFrame, DebuggerState, RuntimeType } from './types.js';
+import type { BreakpointInfo, CallFrame, DebuggerState, RuntimeType, CDPConsoleMessage, ConsoleMessageCallback } from './types.js';
 import type { SourceMapHandler } from './sourcemap-handler.js';
 
 export class CDPManager {
@@ -27,9 +27,18 @@ export class CDPManager {
     maxExecutions: number;
     logs: any[];
   } | null = null;
+  private consoleMessageCallback: ConsoleMessageCallback | null = null;
 
   constructor(sourceMapHandler?: SourceMapHandler) {
     this.sourceMapHandler = sourceMapHandler || null;
+  }
+
+  /**
+   * Set a callback to receive console messages from Runtime.consoleAPICalled
+   * This is used for Node.js debugging where Puppeteer's page.on('console') isn't available
+   */
+  setConsoleMessageCallback(callback: ConsoleMessageCallback | null): void {
+    this.consoleMessageCallback = callback;
   }
 
   /**
@@ -114,6 +123,14 @@ export class CDPManager {
       Debugger.resumed(() => {
         this.state.paused = false;
         this.state.currentCallFrames = undefined;
+      });
+
+      // Listen for console messages via CDP (works for both Chrome and Node.js)
+      // This enables console capture for Node.js where Puppeteer isn't available
+      Runtime.consoleAPICalled((params: CDPConsoleMessage) => {
+        if (this.consoleMessageCallback) {
+          this.consoleMessageCallback(params);
+        }
       });
 
       this.state.connected = true;
@@ -1181,6 +1198,40 @@ export class CDPManager {
       return '[Function]';
     }
     return String(value.value);
+  }
+
+  /**
+   * Expand a CDP RemoteObject by its objectId
+   * This is used to get full object details for console messages
+   * @param objectId - The CDP object ID to expand
+   * @param maxDepth - Maximum depth for nested object expansion (default: 2)
+   */
+  async expandObjectById(objectId: string, maxDepth: number = 2): Promise<any> {
+    if (!this.state.connected || !this.client) {
+      throw new Error('Not connected to debugger');
+    }
+
+    const { Runtime } = this.client;
+
+    // Get the object properties
+    const properties = await Runtime.getProperties({
+      objectId,
+      ownProperties: true,
+    });
+
+    // Build the expanded object
+    const result: Record<string, any> = {};
+    const validProps = properties.result.filter((p: any) => p.value && !p.name.startsWith('[['));
+
+    for (const prop of validProps.slice(0, 20)) { // Limit to 20 properties for console output
+      result[prop.name] = await this.formatValue(prop.value, true, maxDepth, 0);
+    }
+
+    if (validProps.length > 20) {
+      result['...'] = `(${validProps.length - 20} more properties)`;
+    }
+
+    return result;
   }
 
   /**
