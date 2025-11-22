@@ -106,6 +106,27 @@ export function createPageTools(
         }
       });
 
+      // Helper to find associated label for an input
+      const getLabel = (el: any): string => {
+        // Check for aria-label
+        if (el.getAttribute('aria-label')) return el.getAttribute('aria-label');
+        // Check for associated label via for/id
+        if (el.id) {
+          // @ts-ignore
+          const label = document.querySelector(`label[for="${el.id}"]`);
+          if (label) return label.textContent?.trim() || '';
+        }
+        // Check for parent label
+        let parent = el.parentElement;
+        while (parent) {
+          if (parent.tagName.toLowerCase() === 'label') {
+            return parent.textContent?.trim() || '';
+          }
+          parent = parent.parentElement;
+        }
+        return '';
+      };
+
       // Find all inputs
       // @ts-ignore
       document.querySelectorAll('input:not([type="button"]):not([type="submit"]), textarea, select').forEach((el: any) => {
@@ -115,16 +136,34 @@ export function createPageTools(
           const rect = el.getBoundingClientRect();
           const inViewport = rect.top >= 0 && rect.left >= 0 &&
                            rect.bottom <= viewportHeight && rect.right <= viewportWidth;
+
+          // Determine specific input type
+          const tag = el.tagName.toLowerCase();
+          let type = 'other';
+          if (tag === 'textarea') {
+            type = 'textarea';
+          } else if (tag === 'select') {
+            type = 'select';
+          } else if (tag === 'input') {
+            const inputType = el.type?.toLowerCase() || 'text';
+            if (['text', 'email', 'password', 'number', 'tel', 'url', 'search', 'checkbox', 'radio', 'file', 'date'].includes(inputType)) {
+              type = inputType;
+            }
+          }
+
+          const label = getLabel(el);
           results.push({
-            type: 'input',
-            text: el.placeholder || el.name || el.id || '',
+            type,
+            text: label || el.placeholder || el.name || el.id || '',
             href: '',
-            selector: el.id ? `#${el.id}` : el.name ? `[name="${el.name}"]` : 'input',
+            selector: el.id ? `#${el.id}` : el.name ? `[name="${el.name}"]` : tag,
             inViewport,
             x: rect.x,
             y: rect.y,
             width: rect.width,
             height: rect.height,
+            label,
+            required: el.required || false,
           });
         }
       });
@@ -216,7 +255,7 @@ export function createPageTools(
               clickableElements: {
                 total: result.result.clickableStats.total,
                 inViewport: result.result.clickableStats.inViewport,
-                hint: 'Use content({ action: "findClickable" }) to explore clickable elements with search/filter options'
+                hint: 'Use content({ action: "findInteractive" }) to explore interactive elements with search/filter options'
               }
             });
           }

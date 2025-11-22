@@ -4,7 +4,7 @@
  */
 
 export interface ClickableElement {
-  type: 'link' | 'button' | 'input';
+  type: 'link' | 'button' | 'text' | 'email' | 'password' | 'number' | 'tel' | 'url' | 'search' | 'textarea' | 'select' | 'checkbox' | 'radio' | 'file' | 'date' | 'other';
   text: string;
   href: string;
   selector: string;
@@ -14,6 +14,9 @@ export interface ClickableElement {
   y?: number;
   width?: number;
   height?: number;
+  // Input-specific fields
+  label?: string;
+  required?: boolean;
 }
 
 interface CacheEntry {
