@@ -17,6 +17,7 @@ export class CDPManager {
   private scriptIdToUrl: Map<string, string> = new Map();
   private urlToScriptId: Map<string, string[]> = new Map(); // Support multiple scripts per URL (inline HTML scripts)
   private pauseResolvers: Array<() => void> = [];
+  private scriptWaitResolvers: Array<{ pattern: string | RegExp; resolve: (url: string) => void }> = [];
   private sourceMapHandler: SourceMapHandler | null = null;
   private logpointLimitExceeded: {
     breakpointId: string;
@@ -76,10 +77,19 @@ export class CDPManager {
 
   /**
    * Connect to a Chrome or Node.js debugger instance
+   * @param host - The debugger host (default: localhost)
+   * @param port - The debugger port (default: 9222)
+   * @param targetId - Optional target ID to connect to a specific page/tab
    */
-  async connect(host: string = 'localhost', port: number = 9222): Promise<void> {
+  async connect(host: string = 'localhost', port: number = 9222, targetId?: string): Promise<void> {
     try {
-      this.client = await CDP({ host, port });
+      // If targetId is provided, connect to that specific target
+      // Otherwise, connect to the default target
+      const cdpOptions: any = { host, port };
+      if (targetId) {
+        cdpOptions.target = targetId;
+      }
+      this.client = await CDP(cdpOptions);
 
       const { Debugger, Runtime } = this.client;
 
@@ -102,6 +112,22 @@ export class CDPManager {
         if (params.sourceMapURL && this.sourceMapHandler) {
           this.sourceMapHandler.registerSourceMap(params.url, params.sourceMapURL);
         }
+
+        // Check if any waitForScript calls are waiting for this script
+        const matchingResolvers: number[] = [];
+        this.scriptWaitResolvers.forEach((waiter, index) => {
+          const matches = typeof waiter.pattern === 'string'
+            ? params.url.includes(waiter.pattern)
+            : waiter.pattern.test(params.url);
+          if (matches) {
+            waiter.resolve(params.url);
+            matchingResolvers.push(index);
+          }
+        });
+        // Remove matched resolvers (in reverse order to maintain indices)
+        matchingResolvers.reverse().forEach(index => {
+          this.scriptWaitResolvers.splice(index, 1);
+        });
       });
 
       Debugger.paused((params: any) => {
@@ -123,6 +149,18 @@ export class CDPManager {
       Debugger.resumed(() => {
         this.state.paused = false;
         this.state.currentCallFrames = undefined;
+      });
+
+      // Listen for breakpoint resolution - updates pending breakpoints when script loads
+      Debugger.breakpointResolved((params: any) => {
+        const { breakpointId, location } = params;
+        const existingBp = this.state.breakpoints.get(breakpointId);
+        if (existingBp && existingBp.status === 'pending') {
+          // Update the breakpoint from pending to resolved
+          existingBp.status = 'resolved';
+          existingBp.location = location;
+          this.state.breakpoints.set(breakpointId, existingBp);
+        }
       });
 
       // Listen for console messages via CDP (works for both Chrome and Node.js)
@@ -253,15 +291,25 @@ export class CDPManager {
     });
 
     // Check if breakpoint was resolved to any location
+    // Per CDP spec, setBreakpointByUrl can return empty locations if script isn't loaded yet
+    // The breakpoint is still valid and will activate when the script loads
     if (!result.locations || result.locations.length === 0) {
-      // Diagnose exact cause
-      const diagnosis = await this.diagnoseBreakpointFailure(url, lineNumber);
+      // Breakpoint is pending - script not loaded yet but breakpoint is queued
+      const breakpointInfo: BreakpointInfo = {
+        breakpointId: result.breakpointId,
+        // For pending breakpoints, we don't have a resolved location yet
+        // Use a placeholder that indicates pending state
+        location: {
+          scriptId: '',
+          lineNumber: cdpLineNumber,  // Store the requested 0-based line
+          columnNumber: cdpColumnNumber,
+        },
+        originalLocation: { url, lineNumber, columnNumber },
+        status: 'pending',
+      };
 
-      const errorMsg = diagnosis.totalLines
-        ? `${diagnosis.message} (Script has ${diagnosis.totalLines} lines, you requested line ${diagnosis.requestedLine}). ${diagnosis.suggestion}`
-        : `${diagnosis.message}. ${diagnosis.suggestion}`;
-
-      throw new Error(errorMsg);
+      this.state.breakpoints.set(result.breakpointId, breakpointInfo);
+      return breakpointInfo;
     }
 
     // Warn if multiple locations (rare but possible)
@@ -274,8 +322,9 @@ export class CDPManager {
     // - originalLocation: User-requested location (1-based, what user asked for)
     const breakpointInfo: BreakpointInfo = {
       breakpointId: result.breakpointId,
-      location: result.locations[0],  // Now safe to access since we checked above
-      originalLocation: { url, lineNumber, columnNumber },  // Keep user's 1-based request
+      location: result.locations[0],
+      originalLocation: { url, lineNumber, columnNumber },
+      status: 'resolved',
     };
 
     this.state.breakpoints.set(result.breakpointId, breakpointInfo);
@@ -315,6 +364,76 @@ export class CDPManager {
       breakpoints: regularBreakpoints,
       logpoints,
     };
+  }
+
+  /**
+   * Wait for a script matching the given URL pattern to load
+   * @param urlPattern - String (substring match) or RegExp to match against script URLs
+   * @param timeout - Maximum time to wait in milliseconds (default: 10000)
+   * @returns The URL of the matched script
+   * @throws Error if timeout expires before script loads
+   */
+  async waitForScript(urlPattern: string | RegExp, timeout: number = 10000): Promise<string> {
+    if (!this.state.connected) {
+      throw new Error('Not connected to debugger');
+    }
+
+    // First, check if script is already loaded
+    for (const url of this.urlToScriptId.keys()) {
+      const matches = typeof urlPattern === 'string'
+        ? url.includes(urlPattern)
+        : urlPattern.test(url);
+      if (matches) {
+        return url;  // Script already loaded
+      }
+    }
+
+    // Script not loaded yet, wait for it
+    return new Promise((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        // Remove this waiter from the list
+        const index = this.scriptWaitResolvers.findIndex(w => w.resolve === resolveWrapper);
+        if (index >= 0) {
+          this.scriptWaitResolvers.splice(index, 1);
+        }
+        reject(new Error(`Timeout: Script matching "${urlPattern}" did not load within ${timeout}ms`));
+      }, timeout);
+
+      const resolveWrapper = (url: string) => {
+        clearTimeout(timeoutId);
+        resolve(url);
+      };
+
+      this.scriptWaitResolvers.push({
+        pattern: urlPattern,
+        resolve: resolveWrapper,
+      });
+    });
+  }
+
+  /**
+   * Get list of all loaded scripts
+   * @returns Array of script URLs
+   */
+  getLoadedScripts(): string[] {
+    return Array.from(this.urlToScriptId.keys());
+  }
+
+  /**
+   * Check if a script matching the pattern is loaded
+   * @param urlPattern - String (substring match) or RegExp
+   * @returns The matched URL or null
+   */
+  findLoadedScript(urlPattern: string | RegExp): string | null {
+    for (const url of this.urlToScriptId.keys()) {
+      const matches = typeof urlPattern === 'string'
+        ? url.includes(urlPattern)
+        : urlPattern.test(url);
+      if (matches) {
+        return url;
+      }
+    }
+    return null;
   }
 
   /**

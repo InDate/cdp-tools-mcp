@@ -15,6 +15,12 @@ export interface BreakpointInfo {
     columnNumber?: number;
   };
   isLogpoint?: boolean;
+  /**
+   * Status of the breakpoint:
+   * - 'resolved': Breakpoint is set and bound to a loaded script
+   * - 'pending': Breakpoint is set but script hasn't loaded yet (will activate when script loads)
+   */
+  status?: 'resolved' | 'pending';
 }
 
 export interface CallFrame {

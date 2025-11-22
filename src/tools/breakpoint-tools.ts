@@ -11,11 +11,11 @@ import { createSuccessResponse, createErrorResponse, getErrorMessage } from '../
 
 // Schema definitions
 const breakpointSchema = z.object({
-  action: z.enum(['set', 'remove', 'list', 'setLogpoint', 'validate', 'resetCounter']).describe('Breakpoint action: set (set breakpoint at line), remove (remove breakpoint by ID), list (list active breakpoints), setLogpoint (set logpoint with message), validate (validate logpoint expressions), resetCounter (reset logpoint counter)'),
+  action: z.enum(['set', 'remove', 'list', 'setLogpoint', 'validate', 'resetCounter', 'waitForScript']).describe('Breakpoint action: set (set breakpoint at line), remove (remove breakpoint by ID), list (list active breakpoints), setLogpoint (set logpoint with message), validate (validate logpoint expressions), resetCounter (reset logpoint counter), waitForScript (wait for script to load)'),
   connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 
   // set/setLogpoint/validate parameters
-  url: z.string().optional().describe('File URL or path (for set, setLogpoint, validate actions)'),
+  url: z.string().optional().describe('File URL or path (for set, setLogpoint, validate, waitForScript actions)'),
   lineNumber: z.number().optional().describe('Line number (for set, setLogpoint, validate actions)'),
   columnNumber: z.number().optional().describe('Column number (for set, setLogpoint, validate actions)'),
   condition: z.string().optional().describe('Condition expression (for set, setLogpoint actions)'),
@@ -26,8 +26,8 @@ const breakpointSchema = z.object({
   includeVariables: z.boolean().optional().describe('Include local variables (for setLogpoint action, default: false)'),
   maxExecutions: z.number().int().min(1).optional().describe('Max executions before pause (for setLogpoint action, default: 20)'),
 
-  // validate parameters
-  timeout: z.number().optional().describe('Timeout (ms) for validate action, default: 2000'),
+  // validate/waitForScript parameters
+  timeout: z.number().optional().describe('Timeout (ms) for validate and waitForScript actions, default: 2000 for validate, 10000 for waitForScript'),
 
   // remove/resetCounter parameters
   breakpointId: z.string().optional().describe('Breakpoint ID (for remove, resetCounter actions)'),
@@ -47,7 +47,7 @@ export function createBreakpointTools(
 ) {
   return {
     breakpoint: createTool(
-      'Manage breakpoints and logpoints. Actions: set (set breakpoint at line), remove (remove breakpoint by ID), list (list active breakpoints), setLogpoint (set logpoint with message interpolation), validate (validate logpoint expressions), resetCounter (reset logpoint execution counter)',
+      'Manage breakpoints and logpoints. Actions: set (set breakpoint at line), remove (remove breakpoint by ID), list (list active breakpoints), setLogpoint (set logpoint with message interpolation), validate (validate logpoint expressions), resetCounter (reset logpoint execution counter), waitForScript (wait for a script to load)',
       breakpointSchema,
       async (args) => {
         const { action } = args;
@@ -93,7 +93,30 @@ export function createBreakpointTools(
             try {
               const breakpoint = await targetCdpManager.setBreakpoint(targetUrl, targetLine, targetColumn, args.condition);
 
-              // Inject clickable console link
+              // Check if breakpoint is pending (script not loaded yet)
+              if (breakpoint.status === 'pending') {
+                // Don't inject console link for pending breakpoints (script not loaded)
+                let markdown = `## Breakpoint Set (Pending)\n\n`;
+                markdown += `**Breakpoint ID:** \`${breakpoint.breakpointId}\`\n`;
+                markdown += `**URL:** \`${targetUrl}\`\n`;
+                markdown += `**Line:** ${targetLine}\n`;
+                if (args.condition) {
+                  markdown += `**Condition:** \`${args.condition}\`\n`;
+                }
+                markdown += `\n**Status:** ⏳ Pending - Script not loaded yet\n\n`;
+                markdown += `**Note:** The breakpoint has been set and will activate automatically when the script loads. `;
+                markdown += `Use \`navigate({ action: 'goto' })\` or \`navigate({ action: 'reload' })\` to load the page.\n\n`;
+                markdown += `**TIP:** Use \`breakpoint({ action: 'waitForScript', url: '${targetUrl}' })\` to wait for the script to load.`;
+
+                return {
+                  content: [{
+                    type: 'text',
+                    text: markdown,
+                  }],
+                };
+              }
+
+              // Inject clickable console link (only for resolved breakpoints)
               const icon = args.condition ? '🔶' : '🔴';
               const label = args.condition ? 'Conditional breakpoint set at' : 'Breakpoint set at';
               await targetCdpManager.injectConsoleLink(targetUrl, targetLine, `${icon} ${label}`);
@@ -153,19 +176,27 @@ export function createBreakpointTools(
             const breakpoints = targetCdpManager.getBreakpoints();
             const counts = targetCdpManager.getBreakpointCounts();
 
+            // Count pending breakpoints
+            const pendingCount = breakpoints.filter(bp => bp.status === 'pending').length;
+
             // Build markdown response
             let markdown = `## Active Breakpoints\n\n`;
-            markdown += `**Total:** ${counts.total} (${counts.breakpoints} breakpoint${counts.breakpoints !== 1 ? 's' : ''}, ${counts.logpoints} logpoint${counts.logpoints !== 1 ? 's' : ''})\n\n`;
+            markdown += `**Total:** ${counts.total} (${counts.breakpoints} breakpoint${counts.breakpoints !== 1 ? 's' : ''}, ${counts.logpoints} logpoint${counts.logpoints !== 1 ? 's' : ''}`;
+            if (pendingCount > 0) {
+              markdown += `, ${pendingCount} pending`;
+            }
+            markdown += `)\n\n`;
 
             if (breakpoints.length === 0) {
               markdown += 'No active breakpoints.\n\n';
               markdown += '**TIP:** Use `breakpoint({ action: \'set\' })` to set a breakpoint or `breakpoint({ action: \'setLogpoint\' })` to set a logpoint.';
             } else {
-              markdown += '| ID | Type | Location |\n';
-              markdown += '|---|---|---|\n';
+              markdown += '| ID | Type | Status | Location |\n';
+              markdown += '|---|---|---|---|\n';
 
               breakpoints.forEach(bp => {
                 const type = bp.isLogpoint ? 'logpoint' : 'breakpoint';
+                const status = bp.status === 'pending' ? '⏳ pending' : '✓ resolved';
                 let location: string;
                 if (bp.originalLocation) {
                   location = `${bp.originalLocation.url}:${bp.originalLocation.lineNumber}${bp.originalLocation.columnNumber !== undefined ? `:${bp.originalLocation.columnNumber}` : ''}`;
@@ -173,8 +204,12 @@ export function createBreakpointTools(
                   // Fall back to scriptId-based location (CDP internal)
                   location = `scriptId:${bp.location.scriptId}:${bp.location.lineNumber + 1}${bp.location.columnNumber !== undefined ? `:${bp.location.columnNumber + 1}` : ''}`;
                 }
-                markdown += `| \`${bp.breakpointId}\` | ${type} | \`${location}\` |\n`;
+                markdown += `| \`${bp.breakpointId}\` | ${type} | ${status} | \`${location}\` |\n`;
               });
+
+              if (pendingCount > 0) {
+                markdown += `\n**Note:** Pending breakpoints will activate when their scripts load.`;
+              }
             }
 
             return {
@@ -823,6 +858,86 @@ export function createBreakpointTools(
                 },
               ],
             };
+          }
+
+          case 'waitForScript': {
+            if (!args.url) {
+              return createErrorResponse('INVALID_PARAMS', { message: 'url is required for waitForScript action' });
+            }
+
+            const timeout = args.timeout || 10000;
+
+            // Check connection
+            if (!targetCdpManager.isConnected()) {
+              return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+            }
+
+            try {
+              // First check if script is already loaded
+              const existingScript = targetCdpManager.findLoadedScript(args.url);
+              if (existingScript) {
+                let markdown = `## Script Already Loaded\n\n`;
+                markdown += `**Pattern:** \`${args.url}\`\n`;
+                markdown += `**Matched URL:** \`${existingScript}\`\n`;
+                markdown += `**Status:** ✓ Script is already loaded\n\n`;
+                markdown += `**Next Step:** You can now set breakpoints on this script using \`breakpoint({ action: 'set', url: '${existingScript}', lineNumber: <line> })\``;
+
+                return {
+                  content: [{
+                    type: 'text',
+                    text: markdown,
+                  }],
+                };
+              }
+
+              // Script not loaded, wait for it
+              const matchedUrl = await targetCdpManager.waitForScript(args.url, timeout);
+
+              let markdown = `## Script Loaded\n\n`;
+              markdown += `**Pattern:** \`${args.url}\`\n`;
+              markdown += `**Matched URL:** \`${matchedUrl}\`\n`;
+              markdown += `**Status:** ✓ Script loaded successfully\n\n`;
+              markdown += `**Next Step:** You can now set breakpoints on this script using \`breakpoint({ action: 'set', url: '${matchedUrl}', lineNumber: <line> })\``;
+
+              return {
+                content: [{
+                  type: 'text',
+                  text: markdown,
+                }],
+              };
+            } catch (error: any) {
+              // Timeout or other error
+              let markdown = `## Script Wait Timeout\n\n`;
+              markdown += `**Pattern:** \`${args.url}\`\n`;
+              markdown += `**Timeout:** ${timeout}ms\n`;
+              markdown += `**Error:** ${error.message}\n\n`;
+
+              // List some loaded scripts as hints
+              const loadedScripts = targetCdpManager.getLoadedScripts();
+              if (loadedScripts.length > 0) {
+                markdown += `**Currently Loaded Scripts (first 10):**\n`;
+                loadedScripts.slice(0, 10).forEach(url => {
+                  markdown += `- \`${url}\`\n`;
+                });
+                if (loadedScripts.length > 10) {
+                  markdown += `- ... and ${loadedScripts.length - 10} more\n`;
+                }
+                markdown += `\n`;
+              }
+
+              markdown += `**Suggestions:**\n`;
+              markdown += `- Check that the URL pattern is correct\n`;
+              markdown += `- Use \`navigate({ action: 'goto' })\` to load the page containing the script\n`;
+              markdown += `- Increase the timeout if the script loads slowly`;
+
+              return {
+                content: [{
+                  type: 'text',
+                  text: markdown,
+                }],
+                isError: true,
+              };
+            }
           }
 
           default:
