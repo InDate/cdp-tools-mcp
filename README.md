@@ -26,7 +26,7 @@ An MCP (Model Context Protocol) server that gives AI assistants the ability to:
 ### Claude Code CLI
 
 ```bash
-claude mcp add --transport stdio cdp-tools npx cdp-tools-mcp
+claude mcp add --transport stdio cdp-tools npx cdp-tools-mcp@latest
 ```
 
 ### Claude Desktop
@@ -38,10 +38,14 @@ Add to your config file (`~/Library/Application Support/Claude/claude_desktop_co
   "mcpServers": {
     "cdp-tools": {
       "command": "npx",
-      "args": ["-y", "cdp-tools-mcp"]
+      "args": ["-y", "cdp-tools-mcp@latest"]
     }
   }
 }
+```
+
+```
+Ensure '@latest' is in the args array to get the latest version of cdp-tools-mcp when you start new sessions. 
 ```
 
 Restart and start debugging! Ask Claude to help debug your application.
@@ -102,6 +106,7 @@ Restart and start debugging! Ask Claude to help debug your application.
 - ✅ **Node.js debugging** - Debug backend applications, not just browsers
 - ✅ **Multi-connection support** - Debug Chrome and Node.js simultaneously
 - ✅ **Logpoints** - Add logging without modifying source code
+- ✅ **Replay System** - Record and replay command sequences for testing and automation
 
 **Best for:** Backend debugging, full-stack debugging, understanding code execution flow
 
@@ -131,11 +136,11 @@ MIT
 
 ## What's New
 
-### Latest Features
-- **Command Replay System**: Record command sequences and replay them for testing and automation
+### Latest Features (v0.2.0)
+- **Enhanced Replay System**: Record and replay command sequences for testing and automation
 - **Smart Element Caching**: Navigation automatically caches all clickable elements for instant discovery
 - **Viewport-Aware Filtering**: Shows only visible elements by default, searches all when filtering
 - **Consolidated Tool API**: Action-based tool schemas reduce tool count and improve usability
-- **Nested Object Templates**: Message templates support dot notation for complex data structures
+- **Debug Logging**: Track server operations with `setDebugLogging({ enabled: true })`
 
 See the [GUIDE](./docs/GUIDE.md) for detailed feature documentation.

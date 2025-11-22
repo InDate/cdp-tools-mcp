@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2025-11-22
+
+### Added
+- **Enhanced Replay System**: Major improvements to command replay for workflow automation
+  - Connection injection: Replay sequences across different Chrome sessions
+  - Variable substitution: Replace text inputs with new values during replay
+  - `intoHistory` option: Load sequences into history without executing
+  - Step/total timeout configuration for replay control
+  - Auto-launch Chrome if no active connection
+  - Element validation after navigation/click actions
+- **Chrome Lifecycle Tracking**: Track Chrome process close events with reasons
+  - Close reasons: `inactivity`, `manual`, `crash`, `external`, `signal`, `unknown`
+  - View close history via `getChromeStatus()`
+  - Better debugging for unexpected Chrome terminations
+- **Password Popup Prevention**: Automatically disable Chrome's password manager
+  - Prevents save password prompts that block automation
+  - Disables password leak detection popups
+- **Startup Metrics**: Track MCP server startup performance
+  - Measure import, port reservation, server creation times
+  - View metrics when debug logging is enabled
+  - New `npm run startup:measure` script for diagnostics
+
+### Changed
+- Simplified replay sequence storage format (commands inline, not indices)
+- `recordCommand` is now async for better error handling
+- Improved inactivity cleanup logging for debugging
+
+### Fixed
+- Circular dependency issues with port configuration (extracted to dedicated module)
+
+### Technical
+- Port configuration extracted to `src/port-config.ts`
+- Added stdin close handler for proper cleanup when parent process terminates
+- Added uncaught exception and unhandled rejection handlers
+
+---
+
 ## [0.1.0] - 2025-11-14
 
 ### Added

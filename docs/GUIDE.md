@@ -420,14 +420,97 @@ replay({ action: 'stopRecording', sequenceName: 'daily-smoke-test' })
 replay({ action: 'replay', sequenceId: 'seq-daily-smoke-test' })
 ```
 
+### Advanced Replay Features (v0.2.0)
+
+#### Connection Injection
+
+Replay sequences across different Chrome sessions by injecting a new connection:
+
+```javascript
+// Record a sequence (connectionReason is stripped automatically)
+replay({ action: 'startRecording' })
+navigate({ action: 'goto', url: 'https://example.com', connectionReason: 'original-session' })
+input({ action: 'click', selector: '#button', connectionReason: 'original-session' })
+replay({ action: 'stopRecording', sequenceName: 'my-flow' })
+
+// Replay with a different connection
+launchChrome({ reference: 'new-session' })
+replay({
+  action: 'replay',
+  sequenceId: 'seq-my-flow',
+  connectionReason: 'new-session'  // Injected into all commands
+})
+```
+
+#### Variable Substitution
+
+Replace text inputs with new values during replay:
+
+```javascript
+// Original recording had: input({ action: 'type', text: 'original@email.com' })
+replay({
+  action: 'replay',
+  sequenceId: 'seq-login-flow',
+  connectionReason: 'test-session',
+  variables: {
+    'original@email.com': 'new@email.com',
+    'oldpassword': 'newpassword'
+  }
+})
+```
+
+#### Load Sequences into History
+
+Load saved sequences into command history for editing:
+
+```javascript
+// Load from disk without executing
+replay({ action: 'load', filename: 'my-sequence.json', intoHistory: true })
+
+// View the loaded commands
+replay({ action: 'history' })
+
+// Create a modified sequence from history
+replay({ action: 'create', name: 'modified-flow', indices: [0, 1, 3, 5] })
+```
+
+#### Timeout Configuration
+
+Control execution timing for slow pages:
+
+```javascript
+replay({
+  action: 'replay',
+  sequenceId: 'seq-slow-flow',
+  connectionReason: 'test-session',
+  stepTimeout: 60000,    // 60s per step (default: 30s)
+  totalTimeout: 600000   // 10min total (default: 5min)
+})
+```
+
+#### Auto-Launch Chrome
+
+If no Chrome connection exists, replay will auto-launch:
+
+```javascript
+// No need to launch Chrome first - replay handles it
+replay({
+  action: 'replay',
+  sequenceId: 'seq-my-flow',
+  connectionReason: 'auto-session'  // Chrome launches automatically
+})
+```
+
 ### Notes
 
 - **Recording:** Only tool calls are recorded, not responses
 - **Replay:** Commands execute sequentially in recorded order
 - **Selective Replay:** Use `commandIds` to replay specific steps
 - **Dry Run:** Preview execution without actually running commands
-- **Persistence:** Sequences are kept in memory (cleared on restart)
+- **Persistence:** Sequences are kept in memory (cleared on restart); use save/load for disk persistence
 - **Exclusion:** Replay tool calls are not recorded (prevents recursive recording)
+- **Connection Stripping:** `connectionReason` is automatically removed when recording for portability
+- **Element Validation:** After navigation/click, replay waits for the next element to exist
 
 ## Common Patterns
 
@@ -532,10 +615,71 @@ Each MCP server instance automatically uses a unique debugging port to prevent c
 ```bash
 # Set specific debug port
 export MCP_DEBUG_PORT=9223
-
-# Enable debug logging (not yet implemented)
-# export CDP_TOOLS_DEBUG=1
 ```
+
+### Debug Logging
+
+Enable debug logging to track server operations:
+
+```javascript
+// Enable debug logging
+setDebugLogging({ enabled: true })
+
+// Check status
+getDebugLoggingStatus()
+// Logs written to: .claude/logs/debug.log
+```
+
+### Startup Metrics (v0.2.0)
+
+Track MCP server startup performance:
+
+```bash
+# Measure startup time breakdown
+npm run startup:measure
+
+# Output shows:
+# - Import time (module loading)
+# - Port reservation time
+# - Server creation time
+# - Tool registration time
+# - Transport connection time
+```
+
+When debug logging is enabled, startup metrics are automatically logged on first tool call.
+
+### Chrome Lifecycle Tracking (v0.2.0)
+
+Monitor Chrome process lifecycle for debugging:
+
+```javascript
+// View Chrome status including close events
+getChromeStatus()
+
+// Response includes lastCloseEvents array:
+// [
+//   { reason: 'inactivity', port: 9222, pid: 12345, timestamp: '...' },
+//   { reason: 'manual', port: 9223, pid: 12346, timestamp: '...' }
+// ]
+```
+
+**Close Reasons:**
+- `inactivity` - No active connections for 5 minutes
+- `manual` - Killed via `killChrome()` call
+- `crash` - Chrome process crashed unexpectedly
+- `external` - Killed by external process/user
+- `signal` - Received termination signal
+- `unknown` - Close reason not determined
+
+### Password Popup Prevention (v0.2.0)
+
+Chrome is automatically configured to prevent password-related popups that can block automation:
+
+- Password save prompts disabled
+- Password leak detection disabled
+- Mock keychain used on macOS
+
+No configuration needed - this is enabled by default.
 
 ## Troubleshooting
 
