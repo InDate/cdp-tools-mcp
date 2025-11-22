@@ -8,3 +8,4 @@ build/
 .claude/screenshots/*
 */__pycache__/*
 dev-notes/*
+.claude/sequences/*
