@@ -48,6 +48,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { debugLog, enableDebugLogging, disableDebugLogging, isDebugEnabled } from './debug-logger.js';
 import { validateReference, UNNAMED_CONNECTION } from './reference-validator.js';
+import { getConfiguredDebugPort, getReservedPort, setDebugPort, setReservedPort } from './port-config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -97,23 +98,8 @@ async function getDebugPort(): Promise<number> {
   return findAvailablePort(9222);
 }
 
-// Get the debug port (will be initialized in main())
-let DEBUG_PORT = 9222;
-let RESERVED_PORT = 9222; // The port physically reserved by socket binding
-
-/**
- * Get the current debug port (exported for use in error messages)
- */
-export function getConfiguredDebugPort(): number {
-  return DEBUG_PORT;
-}
-
-/**
- * Get the reserved port (the one we hold with socket binding)
- */
-export function getReservedPort(): number {
-  return RESERVED_PORT;
-}
+// Re-export port config functions for backward compatibility
+export { getConfiguredDebugPort, getReservedPort } from './port-config.js';
 
 /**
  * Load instructions from docs/instructions.md
@@ -1081,17 +1067,18 @@ async function main() {
   const maxAttempts = 10;
 
   while (!reservationSucceeded && attempts < maxAttempts) {
-    DEBUG_PORT = await getDebugPort();
-    RESERVED_PORT = DEBUG_PORT;
+    const debugPort = await getDebugPort();
+    setDebugPort(debugPort);
+    setReservedPort(debugPort);
 
     // Reserve the port by binding a socket to it
     try {
-      await portReserver.reserve(RESERVED_PORT);
-      console.error(`[cdp-tools] Reserved debug port: ${RESERVED_PORT}`);
+      await portReserver.reserve(getReservedPort());
+      console.error(`[cdp-tools] Reserved debug port: ${getReservedPort()}`);
       reservationSucceeded = true;
     } catch (error) {
       attempts++;
-      console.error(`[cdp-tools] Port ${RESERVED_PORT} reservation failed (attempt ${attempts}/${maxAttempts}), trying next port...`);
+      console.error(`[cdp-tools] Port ${getReservedPort()} reservation failed (attempt ${attempts}/${maxAttempts}), trying next port...`);
 
       if (attempts >= maxAttempts) {
         console.error(`[cdp-tools] Failed to reserve a port after ${maxAttempts} attempts`);
@@ -1099,7 +1086,7 @@ async function main() {
       }
 
       // Try the next port
-      process.env.MCP_DEBUG_PORT = String(RESERVED_PORT + 1);
+      process.env.MCP_DEBUG_PORT = String(getReservedPort() + 1);
     }
   }
 

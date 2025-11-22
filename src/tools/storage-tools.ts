@@ -8,7 +8,7 @@ import { PuppeteerManager } from '../puppeteer-manager.js';
 import { executeWithPauseDetection, formatActionResult } from '../debugger-aware-wrapper.js';
 import { checkBrowserAutomation, formatErrorResponse } from '../error-helpers.js';
 import { createTool } from '../validation-helpers.js';
-import { getConfiguredDebugPort } from '../index.js';
+import { getConfiguredDebugPort } from '../port-config.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
 
 // Consolidated schema for storage tools

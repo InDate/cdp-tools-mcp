@@ -9,7 +9,7 @@ import type { ConnectionManager } from '../connection-manager.js';
 import { executeWithPauseDetection } from '../debugger-aware-wrapper.js';
 import { checkBrowserAutomation } from '../error-helpers.js';
 import { createTool } from '../validation-helpers.js';
-import { getConfiguredDebugPort } from '../index.js';
+import { getConfiguredDebugPort } from '../port-config.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import { promises as fs } from 'fs';
 import path from 'path';
