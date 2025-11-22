@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+// Early stderr logging for debugging startup issues
+console.error(`[cdp-tools] Process starting (PID: ${process.pid})`);
+
 // Capture startup time immediately before any imports
 const STARTUP_TIME = performance.now();
 
@@ -1098,6 +1101,8 @@ function registerToolHandlers(server: Server) {
 
 // Start the server
 async function main() {
+  console.error(`[cdp-tools] main() called (PID: ${process.pid})`);
+
   // Capture import time (time from script start to main() being called)
   const importTime = performance.now() - STARTUP_TIME;
 
@@ -1144,10 +1149,14 @@ async function main() {
   const toolRegistrationTime = performance.now() - toolRegistrationStart;
 
   // Connect to transport
+  console.error(`[cdp-tools] Connecting to transport (PID: ${process.pid})`);
   const transportStart = performance.now();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   const transportTime = performance.now() - transportStart;
+  console.error(`[cdp-tools] Transport connected (PID: ${process.pid})`);
+  console.error(`[cdp-tools] Server ready (PID: ${process.pid})`);
+
 
   // Calculate total startup time and store metrics for later logging
   const totalStartupTime = performance.now() - STARTUP_TIME;
