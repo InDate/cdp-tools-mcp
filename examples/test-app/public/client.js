@@ -1,9 +1,8 @@
 /**
- * Client-side JavaScript with intentional bugs
- * These bugs will be debugged using Chrome DevTools Protocol
+ * Client-side JavaScript for CDP-TOOLS Test Application
  */
 
-// Challenge 1: DOM Manipulation Bug
+// Challenge 1: Event Listener Setup
 function setupEventListeners() {
   const fetchButton = document.querySelector('.fetch-button');
 
@@ -32,9 +31,24 @@ function setupEventListeners() {
   if (vaultButton) {
     vaultButton.addEventListener('click', handleVault);
   }
+
+  const calcButton = document.querySelector('.calc-button');
+  if (calcButton) {
+    calcButton.addEventListener('click', handleCalculate);
+  }
+
+  const secretButton = document.querySelector('.secret-button');
+  if (secretButton) {
+    secretButton.addEventListener('click', handleSecretReveal);
+  }
+
+  const stepButton = document.querySelector('.step-button');
+  if (stepButton) {
+    stepButton.addEventListener('click', handleStepThrough);
+  }
 }
 
-// Challenge 2: Network Request Bug
+// Challenge 2: User Data Fetcher
 async function handleFetchUser() {
   console.log('Fetching user data...');
   const userId = document.querySelector('#user-id').value;
@@ -55,11 +69,29 @@ async function handleFetchUser() {
   }
 }
 
-// Challenge 3 & 4: Console Error + Variable Inspection
+// Challenge 3: Data Processor
+function processItems(items) {
+  const result = [];
+
+  for (let i = 0; i <= items.length; i++) {
+    const item = items[i];
+    if (item) {
+      result.push(item.toUpperCase());
+    } else {
+      console.warn('WARN: Undefined item at index', i);
+    }
+  }
+
+  return result;
+}
+
 async function handleProcessData() {
   console.log('Processing data...');
 
   const items = ['apple', 'banana', 'cherry'];
+
+  const localProcessed = processItems(items);
+  console.log('Local processed:', localProcessed);
 
   try {
     const response = await fetch('/api/data', {
@@ -69,7 +101,7 @@ async function handleProcessData() {
     });
 
     const data = await response.json();
-    console.log('Processed data:', data);
+    console.log('Server processed:', data);
     document.querySelector('#result').textContent = JSON.stringify(data, null, 2);
   } catch (error) {
     console.error('ERROR: Failed to process data', error);
@@ -95,21 +127,18 @@ async function handleSlowRequest() {
   }
 }
 
-// Challenge 5: localStorage Bug
+// Challenge 5: Storage Manager
 function handleStorage() {
   console.log('Testing localStorage...');
 
-  // BUG: Storing wrong key name
   const userData = {
     name: 'Test User',
     timestamp: Date.now()
   };
 
-  // Fixed: Storing with correct key name
-  localStorage.setItem('user_data', JSON.stringify(userData));
+  localStorage.setItem('userData', JSON.stringify(userData));
   console.log('Data stored in localStorage');
 
-  // Trying to retrieve with correct key (will fail)
   const retrieved = localStorage.getItem('user_data');
   if (retrieved) {
     console.log('Retrieved data:', JSON.parse(retrieved));
@@ -117,26 +146,125 @@ function handleStorage() {
     console.warn('WARN: Could not find user_data in localStorage');
   }
 
+  document.querySelector('#result').textContent = 'Storage operation complete.';
+}
+
+// Challenge 4: Pricing Calculator
+
+async function fetchPricingConfig() {
+  const response = await fetch('/api/pricing');
+  return response.json();
+}
+
+function applyDiscountRules(config) {
+  const rules = {
+    basePrice: config.basePrice,
+    discountPercent: config.discountPercent,
+    taxRate: config.taxRate,
+    adjustedDiscount: config.discountPercent > 10 ? config.discountPercent * 100 : config.discountPercent
+  };
+  return rules;
+}
+
+function calculateWithRules(rules) {
+  const discountAmount = rules.basePrice * (rules.adjustedDiscount / 100);
+  const afterDiscount = rules.basePrice - discountAmount;
+  const taxAmount = afterDiscount * (rules.taxRate / 100);
+  const finalPrice = afterDiscount + taxAmount;
+  return { discountAmount, afterDiscount, taxAmount, finalPrice };
+}
+
+let calculatorState = { lastResult: null, lastConfig: null };
+
+async function handleCalculate() {
+  console.log('Fetching pricing configuration from server...');
+
+  const config = await fetchPricingConfig();
+  console.log('Server config received');
+
+  const rules = applyDiscountRules(config);
+  const result = calculateWithRules(rules);
+
+  calculatorState.lastResult = result;
+  calculatorState.lastConfig = config;
+
   document.querySelector('#result').textContent =
-    'Check localStorage! Look for the bug.';
+    `Pricing calculation complete!\n\nFinal Price: $${result.finalPrice.toFixed(2)}\n\nExpected: ~$88.00`;
 }
 
-// Challenge 4: Async race condition (client-side version)
-let requestCounter = 0;
+// Challenge 6: Secret Access
+let appState = {
+  debugMode: false,
+  secretCode: 'HIDDEN',
+  revealSecret: function() {
+    if (this.debugMode) {
+      return 'SECRET_CODE_42X';
+    }
+    return 'Access Denied - Debug mode required';
+  }
+};
 
-async function triggerRaceCondition() {
-  const id = ++requestCounter;
-  console.log(`Starting request ${id}`);
-
-  const response = await fetch('/api/async-data');
-  const data = await response.json();
-
-  console.log(`Request ${id} completed with data:`, data);
-  return data;
+function handleSecretReveal() {
+  const result = appState.revealSecret();
+  console.log('Attempting to reveal secret...');
+  document.querySelector('#result').textContent = result;
 }
 
-// Challenge 7: Secret Vault Password (Logpoints Required)
-// LOGPOINT CHALLENGE: Set logpoints in constructVaultPassword() to observe password construction
+// Challenge 8: State Machine Pipeline
+
+const sharedState = {
+  value: 0,
+  multiplier: 1,
+  history: []
+};
+
+function resetState() {
+  sharedState.value = 0;
+  sharedState.multiplier = 1;
+  sharedState.history = [];
+}
+
+function initializeState(input) {
+  sharedState.value = input;
+  sharedState.multiplier = 2;
+  sharedState.history.push('init: ' + input);
+  return processStep1(sharedState);
+}
+
+function processStep1(state) {
+  state.value = state.value + 10;
+  state.history.push('step1: +10 = ' + state.value);
+  return processStep2(state);
+}
+
+function processStep2(state) {
+  state.value = state.value * state.multiplier;
+  state.multiplier = 0;
+  state.history.push('step2: *2 = ' + state.value);
+  return processStep3(state);
+}
+
+function processStep3(state) {
+  state.value = state.value * state.multiplier;
+  state.history.push('step3: *multiplier = ' + state.value);
+  return state.value;
+}
+
+function runStateMachine(input) {
+  resetState();
+  return initializeState(input);
+}
+
+function handleStepThrough() {
+  const input = 5;
+  console.log('Running state machine with input:', input);
+  const result = runStateMachine(input);
+
+  document.querySelector('#result').textContent =
+    `State Machine Result:\n\nInput: ${input}\nOutput: ${result}\n\nExpected: 60\nActual: ${result}`;
+}
+
+// Challenge 7: Vault Password Generator
 function constructVaultPassword() {
   const securityTokens = ['Secret', 'Passphrase', 'Alpha', 'Bravo', 'Charlie', 'Delta'];
   let password = '';

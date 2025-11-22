@@ -9,7 +9,7 @@ import { dirname } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3101;
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../public')));
 app.get('/api/user/:id', (req, res) => {
@@ -85,6 +85,15 @@ async function fetchDataWithDelay() {
         timestamp: Date.now()
     };
 }
+// Challenge 4: Pricing API - returns valid config that gets corrupted client-side
+app.get('/api/pricing', (req, res) => {
+    // Server returns CORRECT values - the bug is in client-side processing
+    res.json({
+        basePrice: 100,
+        discountPercent: 20, // 20% discount
+        taxRate: 10 // 10% tax
+    });
+});
 // Challenge 8: Performance Issue (Slow endpoint)
 app.get('/api/slow', async (req, res) => {
     console.log('Starting slow operation...');
