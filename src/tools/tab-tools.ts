@@ -144,15 +144,21 @@ export function createTabTools(
               const consoleMonitor = new ConsoleMonitor();
               const networkMonitor = new NetworkMonitor();
 
-              // Connect to the same browser
+              // Connect Puppeteer to the same browser first
               const host = chromeConnection.host;
               const port = chromeConnection.port;
 
-              await cdpManager.connect(host, port);
               await puppeteerManager.connect(host, port);
 
-              // Create new page/tab
+              // Create new page/tab BEFORE connecting CDP
               const page = await puppeteerManager.newPage();
+
+              // Get the target ID of the new page so we can connect CDP to it specifically
+              const target = page.target();
+              const targetId = (target as any)._targetId || (target as any)._targetInfo?.targetId;
+
+              // Connect CDPManager to the specific page target
+              await cdpManager.connect(host, port, targetId);
 
               // Start monitoring
               consoleMonitor.startMonitoring(page);
