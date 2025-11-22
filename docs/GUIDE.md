@@ -147,10 +147,26 @@ execution({ action: 'resume', connectionReason: 'my-debug-session' })
 
 TypeScript debugging works automatically:
 
-1. Source maps are auto-detected and loaded
+1. Source maps are auto-detected and registered for lazy loading
 2. Breakpoints map to original TypeScript files
 3. Variable names match your source code
 4. Call stacks show TypeScript file paths
+
+**Lazy Loading**: Source maps are loaded on-demand when needed (e.g., when mapping positions), not eagerly at startup. This improves performance with large codebases.
+
+**Size Limits**: To prevent performance issues:
+- Inline source maps (data URIs): 1MB max
+- File-based source maps: 10MB max
+
+**Manual Loading**:
+```javascript
+// Register source maps from a directory (lazy - does not load immediately)
+loadSourceMaps({ directory: './dist' })
+
+// Source maps load automatically when you:
+// - Set a breakpoint that needs mapping
+// - Get original position from generated code
+```
 
 ## Browser Automation
 
@@ -702,6 +718,8 @@ No configuration needed - this is enabled by default.
 - Ensure code path is actually executed (add `console.log` to verify)
 - Try setting logpoint first to confirm location is reachable
 
+**Note**: Breakpoints now survive rebuilds with cache-busting query params. If your bundler outputs `app.js?v=123` and rebuilds to `app.js?v=456`, existing breakpoints will automatically match the new script.
+
 ### Element Not Found
 
 **Problem**: Selector doesn't match any elements
@@ -775,6 +793,22 @@ Both servers can coexist in your MCP configuration:
 Use cdp-tools for debugging and Chrome DevTools MCP for performance/automation.
 
 ## Advanced Topics
+
+### Code Search with Webpack
+
+When using webpack with `devtool: 'eval'` or similar eval-based source maps, code search automatically extracts the actual source code from webpack's eval wrappers.
+
+**Before**: Search results showed unhelpful lines like:
+```
+eval(__webpack_require__.ts("...truncated..."))
+```
+
+**Now**: Search results show the actual matching source line:
+```javascript
+const user = await fetchUser(userId);
+```
+
+This works automatically for both `searchCode` and `searchFunctions` actions. Long lines are truncated to 200 characters to prevent huge responses from minified code.
 
 ### Custom Port Management
 

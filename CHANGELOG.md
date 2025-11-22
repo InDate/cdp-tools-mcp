@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Webpack Eval Support**: Code search (`searchCode`, `searchFunctions`) now extracts actual source lines from webpack eval wrappers instead of showing unhelpful `eval(__webpack_require__...)` lines
+- **Lazy Source Map Loading**: Source maps are now registered and loaded on-demand instead of eagerly, improving startup performance
+  - Size limits prevent performance issues (1MB inline, 10MB file)
+  - Support for URL-encoded data URIs (not just base64)
+  - Concurrent load protection prevents duplicate loads
+  - Error tracking for debugging without blocking operations
+
+### Fixed
+- **Cache-Busting Breakpoints**: Breakpoints now work across rebuilds when scripts have changing query params (e.g., `app.js?v=123`)
+  - Falls back to base URL matching when exact URL not found
+  - Prefers most recently loaded script when multiple matches exist
+- **Connection Reference Lookups**: References are now normalized (lowercase, trimmed, spaces→hyphens) for more flexible lookups
+
+### Changed
+- `loadSourceMaps` tool now registers maps for lazy loading and reports count; actual loading happens on-demand
+- Long code search results truncated to 200 chars to prevent huge responses from minified code
+
+---
+
 ## [0.2.0] - 2025-11-22
 
 ### Added
