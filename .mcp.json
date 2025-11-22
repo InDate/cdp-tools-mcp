@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "cdp-tools": {
+      "command": "node",
+      "args": ["build/index.js"]
+    }
+  }
+}
