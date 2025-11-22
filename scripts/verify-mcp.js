@@ -40,7 +40,7 @@ serverProcess.stdout.on('data', (data) => {
 
         // Verify key tools exist
         const toolNames = parsed.result.tools.map(t => t.name);
-        const keyTools = ['launchChrome', 'navigateTo', 'setBreakpoint', 'printToPDF'];
+        const keyTools = ['launchChrome', 'navigate', 'breakpoint', 'replay'];
         const missing = keyTools.filter(t => !toolNames.includes(t));
 
         if (missing.length > 0) {
