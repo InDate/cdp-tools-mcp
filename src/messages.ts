@@ -228,10 +228,11 @@ class MessageManager {
 
   /**
    * Format a message template with variable substitution
-   * Supports {{variable}} syntax, {{object.property}} nested access, and {{#variable}}...{{/variable}} conditionals
+   * Supports {{variable}} syntax, {{object.property}} nested access,
+   * {{#variable}}...{{/variable}} conditionals, and {{^variable}}...{{/variable}} inverted conditionals
    */
   private formatMessage(template: string, variables: Record<string, any>): string {
-    // First pass: Handle conditional blocks {{#var}}...{{/var}}
+    // First pass: Handle conditional blocks {{#var}}...{{/var}} (truthy)
     // Using [\s\S] to match across newlines
     let result = template.replace(/\{\{#(\w+)\}\}([\s\S]*?)\{\{\/\1\}\}/g, (match, key, content) => {
       // Check if variable exists and is truthy
@@ -239,6 +240,15 @@ class MessageManager {
         return content; // Keep content if variable is truthy
       }
       return ''; // Remove entire block if variable is falsy/undefined
+    });
+
+    // Second pass: Handle inverted conditional blocks {{^var}}...{{/var}} (falsy)
+    result = result.replace(/\{\{\^(\w+)\}\}([\s\S]*?)\{\{\/\1\}\}/g, (match, key, content) => {
+      // Check if variable is falsy/undefined
+      if (!variables[key]) {
+        return content; // Keep content if variable is falsy/undefined
+      }
+      return ''; // Remove entire block if variable is truthy
     });
 
     // Second pass: Variable substitution supporting dot notation {{var}} or {{obj.prop}}
