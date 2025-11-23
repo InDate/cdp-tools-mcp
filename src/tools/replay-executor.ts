@@ -92,17 +92,11 @@ export async function loadSequence(
   }
 
   if (args.name) {
-    const savedSequences = await recorder.listSavedSequencesOnDisk();
-    const searchTerm = args.name.toLowerCase();
+    // loadSequenceFromDisk has fuzzy matching built in
+    const sequence = await recorder.loadSequenceFromDisk(args.name);
 
-    const match = savedSequences.find(s =>
-      s.name.toLowerCase() === searchTerm ||
-      s.name.toLowerCase().includes(searchTerm) ||
-      s.filename.toLowerCase() === searchTerm ||
-      s.filename.toLowerCase().startsWith(searchTerm)
-    );
-
-    if (!match) {
+    if (!sequence) {
+      const savedSequences = await recorder.listSavedSequencesOnDisk();
       const availableNames = savedSequences.map(s => s.name).join(', ');
       return {
         success: false,
@@ -111,17 +105,7 @@ export async function loadSequence(
       };
     }
 
-    await debugLog('executor', `Matched "${args.name}" to "${match.name}" (${match.filename})`);
-    const sequence = await recorder.loadSequenceFromDisk(match.filename);
-
-    if (!sequence) {
-      return {
-        success: false,
-        error: 'Failed to load sequence from disk.',
-        errorCode: 'LOAD_FAILED'
-      };
-    }
-
+    await debugLog('executor', `Loaded sequence "${sequence.name}" via fuzzy match for "${args.name}"`);
     return { success: true, sequence };
   }
 
