@@ -648,13 +648,22 @@ export class CDPManager {
   /**
    * Get variables for a specific call frame
    */
+  /**
+   * Estimate token count for a value (rough approximation: ~4 chars per token)
+   */
+  private estimateTokens(value: any): number {
+    const str = typeof value === 'string' ? value : JSON.stringify(value);
+    return Math.ceil(str.length / 4);
+  }
+
   async getVariables(
     callFrameId: string,
     includeGlobal: boolean = false,
     filter?: string,
     expandObjects: boolean = true,
-    maxDepth: number = 2
-  ): Promise<any[]> {
+    maxDepth: number = 2,
+    maxTokens: number = 1000
+  ): Promise<{ variables: any[]; totalCount: number; usedDepth: number; requestedDepth: number; tokenEstimate: number; requiresFilter: boolean }> {
     if (!this.state.connected) {
       throw new Error('Not connected to debugger');
     }
@@ -668,12 +677,13 @@ export class CDPManager {
       throw new Error(`Call frame ${callFrameId} not found`);
     }
 
-    const variables: any[] = [];
     const filterRegex = filter ? new RegExp(filter, 'i') : null;
+    const requestedDepth = maxDepth;
 
-    // Get variables from each scope
+    // Collect property metadata first (without expanding)
+    const propertyMeta: Array<{ prop: any; scopeType: string }> = [];
+
     for (const scope of callFrame.scopeChain) {
-      // Skip global scope unless explicitly requested
       if (scope.type === 'global' && !includeGlobal) {
         continue;
       }
@@ -684,26 +694,61 @@ export class CDPManager {
       });
 
       for (const prop of properties.result) {
-        // Skip properties without values
-        if (!prop.value) {
-          continue;
-        }
-
-        // Apply filter if provided (only for global scope)
-        if (scope.type === 'global' && filterRegex && !filterRegex.test(prop.name)) {
-          continue;
-        }
-
-        variables.push({
-          name: prop.name,
-          value: await this.formatValue(prop.value, expandObjects, maxDepth),
-          type: prop.value.type,
-          scopeType: scope.type,
-        });
+        if (!prop.value) continue;
+        if (filterRegex && !filterRegex.test(prop.name)) continue;
+        propertyMeta.push({ prop, scopeType: scope.type });
       }
     }
 
-    return variables;
+    const totalCount = propertyMeta.length;
+
+    // Try progressively lower depths until under token limit
+    for (let currentDepth = maxDepth; currentDepth >= 0; currentDepth--) {
+      const variables: any[] = [];
+      const shouldExpand = expandObjects && currentDepth > 0;
+
+      for (const { prop, scopeType } of propertyMeta) {
+        variables.push({
+          name: prop.name,
+          value: await this.formatValue(prop.value, shouldExpand, currentDepth),
+          type: prop.value.type,
+          scopeType,
+        });
+      }
+
+      const tokenEstimate = this.estimateTokens(variables);
+
+      if (tokenEstimate <= maxTokens) {
+        return {
+          variables,
+          totalCount,
+          usedDepth: currentDepth,
+          requestedDepth,
+          tokenEstimate,
+          requiresFilter: false
+        };
+      }
+    }
+
+    // Even at depth 0, still over limit - require filter
+    const variables: any[] = [];
+    for (const { prop, scopeType } of propertyMeta) {
+      variables.push({
+        name: prop.name,
+        value: await this.formatValue(prop.value, false, 0),
+        type: prop.value.type,
+        scopeType,
+      });
+    }
+
+    return {
+      variables: [], // Return empty - require filter
+      totalCount,
+      usedDepth: 0,
+      requestedDepth,
+      tokenEstimate: this.estimateTokens(variables),
+      requiresFilter: true
+    };
   }
 
   /**

@@ -94,9 +94,10 @@ const inspectionToolSchema = z.object({
   // getVariables and evaluateExpression parameters
   callFrameId: z.string().optional().describe('Call frame ID (required for getVariables, optional for evaluateExpression)'),
   includeGlobal: z.boolean().optional().describe('Include global scope (for getVariables action, default: false)'),
-  filter: z.string().optional().describe('Regex filter for variable names (for getVariables action)'),
+  filter: z.string().optional().describe('Regex filter for variable names (for getVariables action) - applies to ALL scopes. Required when too many variables exist'),
   expandObjects: z.boolean().optional().describe('Expand objects/arrays (for getVariables and evaluateExpression actions, default: true)'),
-  maxDepth: z.number().optional().describe('Max expansion depth (for getVariables and evaluateExpression actions, default: 2)'),
+  maxDepth: z.number().optional().describe('Max expansion depth (for getVariables and evaluateExpression actions, default: 2). Auto-reduced if response too large'),
+  maxTokens: z.number().optional().describe('Max tokens for getVariables response (default: 1000). Depth auto-reduced to fit, filter required if still exceeded'),
 
   // evaluateExpression parameters
   expression: z.string().optional().describe('JavaScript expression (required for evaluateExpression action)'),
@@ -181,7 +182,7 @@ export function createInspectionTools(
           }
 
           case 'getVariables': {
-            const { callFrameId, includeGlobal = false, filter, expandObjects = true, maxDepth = 2 } = args;
+            const { callFrameId, includeGlobal = false, filter, expandObjects = true, maxDepth = 2, maxTokens = 1000 } = args;
 
             if (!callFrameId) {
               return createErrorResponse('MISSING_PARAMETER', {
@@ -192,7 +193,16 @@ export function createInspectionTools(
             }
 
             try {
-              const variables = await targetCdpManager.getVariables(callFrameId, includeGlobal, filter, expandObjects, maxDepth);
+              const result = await targetCdpManager.getVariables(callFrameId, includeGlobal, filter, expandObjects, maxDepth, maxTokens);
+              const { variables, totalCount, usedDepth, requestedDepth, tokenEstimate, requiresFilter } = result;
+
+              // If filter is required due to size, return error with guidance
+              if (requiresFilter) {
+                return createErrorResponse('VARIABLES_TOO_LARGE', {
+                  totalCount,
+                  tokenEstimate,
+                });
+              }
 
               // Group variables by scope type
               const groupedVariables: Record<string, any[]> = {};
@@ -208,9 +218,22 @@ export function createInspectionTools(
                 });
               }
 
+              // Use warning if depth was reduced
+              if (usedDepth < requestedDepth) {
+                return createSuccessResponse('VARIABLES_DEPTH_REDUCED', {
+                  callFrameId,
+                  totalCount,
+                  requestedDepth,
+                  usedDepth,
+                  filter: filter || undefined,
+                  includeGlobal: includeGlobal || undefined,
+                }, groupedVariables);
+              }
+
               return createSuccessResponse('VARIABLES_SUCCESS', {
                 callFrameId,
-                totalCount: variables.length,
+                returnedCount: variables.length,
+                totalCount,
                 filter: filter || undefined,
                 includeGlobal: includeGlobal || undefined,
               }, groupedVariables);

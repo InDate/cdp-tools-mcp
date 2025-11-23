@@ -513,7 +513,30 @@ Call Stack ({{frameCount}} frames){{#pausedLocation}} - Paused at: {{pausedLocat
 
 **Type:** success
 
-Variables for call frame {{callFrameId}}: {{totalCount}} total{{#filter}} (filtered by: {{filter}}){{/filter}}{{#includeGlobal}} (includes global scope){{/includeGlobal}}
+Variables for call frame {{callFrameId}}: {{returnedCount}} of {{totalCount}} total{{#filter}} (filtered by: {{filter}}){{/filter}}{{#includeGlobal}} (includes global scope){{/includeGlobal}}
+
+---
+
+## VARIABLES_DEPTH_REDUCED
+
+**Type:** warning
+
+Variables for call frame {{callFrameId}}: {{totalCount}} total (depth auto-reduced from {{requestedDepth}} to {{usedDepth}} to fit token limit){{#filter}} (filtered by: {{filter}}){{/filter}}
+
+Use `evaluateExpression` to inspect specific variables at full depth.
+
+---
+
+## VARIABLES_TOO_LARGE
+
+**Type:** error
+**Code:** TOO_LARGE
+
+Too many variables ({{totalCount}}, ~{{tokenEstimate}} tokens) even at depth 0. Filter required to narrow scope.
+
+**Suggestions:**
+- Use `filter` parameter with regex to match variable names (e.g., filter: "user|config|state")
+- Use `evaluateExpression` to inspect specific variables directly (e.g., expression: "myVariable")
 
 ---
 
@@ -1850,15 +1873,11 @@ Found {{count}} package(s) in `{{path}}`
 ## SERVER_START_SUCCESS
 
 **Type:** success
+**Summary:** Server started and ready
 
-Server `{{id}}` started (PID: {{pid}})
+{{id}} (PID: {{pid}}){{#port}}, Port: {{port}}{{/port}}{{#autoRun}}, Auto-run: enabled{{/autoRun}}
 
-{{#port}}**Port:** {{port}}{{/port}}
-{{#autoRun}}**Auto-run:** enabled ⚡{{/autoRun}}
-
-**Actions:**
-- Logs: `server({ action: "logs", serverId: "{{id}}" })`
-- Stop: `server({ action: "stop", serverId: "{{id}}" })`
+Logs: server({ action: "logs", serverId: "{{id}}" })
 
 ---
 
@@ -1873,11 +1892,9 @@ Server `{{serverId}}` stopped.
 ## SERVER_RESTART_SUCCESS
 
 **Type:** success
+**Summary:** Server restarted and ready
 
-Server `{{id}}` restarted (PID: {{pid}})
-
-{{#port}}**Port:** {{port}}{{/port}}
-{{#autoRun}}**Auto-run:** enabled ⚡{{/autoRun}}
+{{id}} (PID: {{pid}}){{#port}}, Port: {{port}}{{/port}}{{#autoRun}}, Auto-run: enabled{{/autoRun}}
 
 ---
 

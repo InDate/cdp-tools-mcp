@@ -393,8 +393,8 @@ export function createBreakpointTools(
               if (callFrame) {
                 // Get available variables at this location
                 try {
-                  const vars = await targetCdpManager.getVariables(callFrame.callFrameId, false);
-                  availableVariables = vars.map((v: any) => v.name);
+                  const result = await targetCdpManager.getVariables(callFrame.callFrameId, false);
+                  availableVariables = result.variables.map((v: any) => v.name);
                 } catch (err) {
                   // Ignore errors getting variables
                 }
