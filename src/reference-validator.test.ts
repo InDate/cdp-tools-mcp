@@ -59,6 +59,18 @@ describe('validateReference', () => {
       expect(result.valid).toBe(true);
       expect(result.sanitized).toBe('test-payment-flow');
     });
+
+    it('should accept already-sanitized 3-part references', () => {
+      const result = validateReference('test-payment-flow');
+      expect(result.valid).toBe(true);
+      expect(result.sanitized).toBe('test-payment-flow');
+    });
+
+    it('should accept already-sanitized references with uppercase', () => {
+      const result = validateReference('Test-Payment-Flow');
+      expect(result.valid).toBe(true);
+      expect(result.sanitized).toBe('test-payment-flow');
+    });
   });
 
   describe('invalid word count', () => {
@@ -264,13 +276,17 @@ describe('validateReference', () => {
       expect(result.sanitized).toBe('search-wikipedia-results');
     });
 
-    it('should reject application identifiers', () => {
-      // These are the OLD wrong examples that should be rejected
-      const result1 = validateReference('nodejs-api-server'); // 1 word
-      const result2 = validateReference('chrome-browser'); // 1 word
+    it('should accept hyphenated 3-part references', () => {
+      // These are now valid since we accept already-sanitized references
+      const result1 = validateReference('nodejs-api-server');
+      expect(result1.valid).toBe(true);
+      expect(result1.sanitized).toBe('nodejs-api-server');
+    });
 
-      expect(result1.valid).toBe(false);
-      expect(result2.valid).toBe(false);
+    it('should reject 2-part hyphenated references', () => {
+      const result = validateReference('chrome-browser');
+      expect(result.valid).toBe(false);
+      expect(result.error).toBe('Reference must be exactly 3 words, got 2');
     });
   });
 });
