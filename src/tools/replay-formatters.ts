@@ -31,20 +31,26 @@ export function formatExecutionResults(
       failedStep: failedResult.step,
       failedTool: failedResult.tool
     });
-    response += `\nError: ${failedResult.error}`;
-
-    // Show failed commands with details
-    response += `\n\n**Failed Commands**\n`;
-    results.filter(r => !r.success).forEach((r) => {
-      response += `${r.step}. **${r.tool}**\n`;
-      response += `   Error: ${r.error}\n\n`;
-    });
   } else {
     response = getFormattedResponse('REPLAY_RUN_SUCCESS', {
       sequenceName,
       successful,
       total: totalCommands,
       duration: (durationMs / 1000).toFixed(1)
+    });
+  }
+
+  // Stats section
+  response += `\n\n**Executed:** ${results.length} of ${totalCommands} commands`;
+  response += `\n**Successful:** ${successful}`;
+  response += `\n**Failed:** ${failed}`;
+  response += `\n**Duration:** ${(durationMs / 1000).toFixed(1)}s`;
+
+  if (failed > 0) {
+    response += `\n\n**Failed Commands**\n`;
+    results.filter(r => !r.success).forEach((r) => {
+      response += `${r.step}. **${r.tool}**\n`;
+      response += `   **Error:** ${r.error}\n\n`;
     });
   }
 
@@ -78,7 +84,7 @@ export function formatPausedResponse(
     remaining
   });
 
-  response += `\n**Executed:** ${successful} commands in ${(durationMs / 1000).toFixed(1)}s`;
+  response += `\n\n**Executed:** ${successful} commands in ${(durationMs / 1000).toFixed(1)}s`;
 
   response += `\n\n**Completed Steps**\n`;
   results.forEach((r) => {
@@ -93,7 +99,7 @@ export function formatPausedResponse(
     response += `... and ${commands.length - pausedAtStep - 3} more\n`;
   }
 
-  response += `\n**Actions**\n`;
+  response += `\n---\n\n**Actions**\n`;
   response += `- Continue: \`replay({ action: 'step' })\` or \`replay({ action: 'step', stepCount: N })\`\n`;
   response += `- Finish all: \`replay({ action: 'finish' })\`\n`;
   response += `- Check status: \`replay({ action: 'status' })\`\n`;
@@ -122,10 +128,11 @@ export function formatBreakpointHit(
     total: totalCommands
   });
 
-  response += `\n**Location:** \`${breakpointInfo.url}:${breakpointInfo.lineNumber}\``;
+  response += `\n\n**Location:** \`${breakpointInfo.url}:${breakpointInfo.lineNumber}\``;
   if (breakpointInfo.functionName) {
     response += `\n**Function:** \`${breakpointInfo.functionName}\``;
   }
+  response += `\n**Step:** ${results.length} of ${totalCommands}`;
   response += `\n**Duration:** ${(durationMs / 1000).toFixed(1)}s`;
 
   response += `\n\n**Completed Steps**\n`;
@@ -133,7 +140,7 @@ export function formatBreakpointHit(
     response += `${r.step}. **${r.tool}** ✓\n`;
   });
 
-  response += `\n**Debug Actions**\n`;
+  response += `\n---\n\n**Debug Actions**\n`;
   response += `- Inspect call stack: \`inspect({ action: 'getCallStack', connectionReason: '${connectionReason}' })\`\n`;
   response += `- Get variables: \`inspect({ action: 'getVariables', connectionReason: '${connectionReason}', callFrameId: '<from call stack>' })\`\n`;
   response += `- Resume execution: \`execution({ action: 'resume', connectionReason: '${connectionReason}' })\`\n`;
@@ -150,10 +157,10 @@ export function formatDebugState(debugState: DebugState, connectionReason: strin
     return '';
   }
 
-  let section = `\n## Debug State\n\n`;
+  let section = `\n\n**Debug State**\n`;
 
   if (debugState.isPaused) {
-    section += `**Execution paused** at ${debugState.pauseLocation}\n\n`;
+    section += `\n**Execution paused** at ${debugState.pauseLocation}\n\n`;
     section += `**Next steps:**\n`;
     section += `- Inspect call stack: \`inspect({ action: 'getCallStack', connectionReason: '${connectionReason}' })\`\n`;
     section += `- Get variables: \`inspect({ action: 'getVariables', connectionReason: '${connectionReason}', callFrameId: '<from call stack>' })\`\n`;
@@ -207,9 +214,12 @@ export function formatVariablePrompt(
   variables: Record<string, ExtractedVariable>,
   connectionReason: string | undefined
 ): string {
-  let response = `**Loaded:** ${sequenceName}\n\n`;
-  response += `**Found ${Object.keys(variables).length} customizable text parameter(s):**\n\n`;
+  let response = getFormattedResponse('REPLAY_VARIABLE_PROMPT', {
+    sequenceName,
+    variableCount: Object.keys(variables).length
+  });
 
+  response += `\n\n**Customizable text parameter(s):**\n`;
   Object.entries(variables).forEach(([varName, data]) => {
     response += `- \`${varName}\`: "${data.value}"\n`;
   });
@@ -244,8 +254,12 @@ export function formatVariablePrompt(
  * Format dry run preview
  */
 export function formatDryRunPreview(sequenceName: string, commands: RecordedCommand[]): string {
-  let response = `# Replay Preview: ${sequenceName}\n\n`;
-  response += `**Would execute ${commands.length} command(s):**\n\n`;
+  let response = getFormattedResponse('REPLAY_DRY_RUN', {
+    sequenceName,
+    commandCount: commands.length
+  });
+
+  response += `\n\n**Commands:**\n`;
   commands.forEach((cmd, idx) => {
     response += `${idx + 1}. **${cmd.tool}**\n`;
     response += `\`\`\`json\n${JSON.stringify(cmd.params, null, 2)}\n\`\`\`\n\n`;
@@ -281,15 +295,13 @@ export function formatHistory(
     totalCount: totalCount
   });
 
-  response += '\n';
-
   history.forEach((cmd) => {
     const paramStr = JSON.stringify(cmd.params);
     const truncatedParams = paramStr.length > 60 ? paramStr.slice(0, 60) + '...' : paramStr;
-    response += `${cmd.index}. **${cmd.tool}** - ${truncatedParams}\n`;
+    response += `\n${cmd.index}. **${cmd.tool}** - ${truncatedParams}`;
   });
 
-  response += `\nCreate sequence: \`replay({ action: 'create', name: '...', indices: [${history.slice(0, 3).map(c => c.index).join(', ')}] })\``;
+  response += `\n\n---\n\nCreate sequence: \`replay({ action: 'create', name: '...', indices: [${history.slice(0, 3).map(c => c.index).join(', ')}] })\``;
 
   return response;
 }
@@ -304,14 +316,19 @@ export function formatSequenceCreated(sequence: CommandSequence): string {
     commandCount: sequence.commands.length
   });
 
+  // Optional metadata
+  let hasMetadata = false;
   if (sequence.description) {
-    response += `\n**Description:** ${sequence.description}`;
+    response += `${hasMetadata ? '\n' : '\n\n'}**Description:** ${sequence.description}`;
+    hasMetadata = true;
   }
   if (sequence.expectedOutcome) {
-    response += `\n**Expected Outcome:** ${sequence.expectedOutcome}`;
+    response += `${hasMetadata ? '\n' : '\n\n'}**Expected Outcome:** ${sequence.expectedOutcome}`;
+    hasMetadata = true;
   }
   if (sequence.startUrl) {
-    response += `\n**Start URL:** ${sequence.startUrl}`;
+    response += `${hasMetadata ? '\n' : '\n\n'}**Start URL:** ${sequence.startUrl}`;
+    hasMetadata = true;
   }
 
   response += `\n\n**Commands in Sequence**\n`;
@@ -332,16 +349,20 @@ export function formatSequenceCreated(sequence: CommandSequence): string {
  */
 export function formatSequenceList(sequences: CommandSequence[]): string {
   if (sequences.length === 0) {
-    return `# Saved Sequences\n\nNo sequences saved yet.\n\n` +
-      `**Create a sequence:**\n` +
-      `1. View command history: \`replay({ action: 'history' })\`\n` +
-      `2. Create sequence: \`replay({ action: 'create', name: 'my-workflow', indices: [1, 2, 3] })\``;
+    let response = getFormattedResponse('REPLAY_SEQUENCE_LIST_EMPTY', {});
+    response += `\n\n**Create a sequence:**\n`;
+    response += `1. View command history: \`replay({ action: 'history' })\`\n`;
+    response += `2. Create sequence: \`replay({ action: 'create', name: 'my-workflow', indices: [1, 2, 3] })\``;
+    return response;
   }
 
-  let response = `# Saved Sequences (${sequences.length})\n\n`;
+  let response = getFormattedResponse('REPLAY_SEQUENCE_LIST', {
+    count: sequences.length
+  });
+
   sequences.forEach((seq, idx) => {
     const age = Math.floor((Date.now() - seq.createdAt) / 1000 / 60);
-    response += `## ${idx + 1}. ${seq.name}\n`;
+    response += `\n\n**${idx + 1}. ${seq.name}**\n`;
     response += `- **ID:** \`${seq.id}\`\n`;
     if (seq.description) {
       response += `- **Description:** ${seq.description}\n`;
@@ -353,10 +374,10 @@ export function formatSequenceList(sequences: CommandSequence[]): string {
       response += `- **Start URL:** ${seq.startUrl}\n`;
     }
     response += `- **Commands:** ${seq.commands.length}\n`;
-    response += `- **Created:** ${age} minutes ago\n\n`;
+    response += `- **Created:** ${age} minutes ago`;
   });
 
-  response += `---\n\n`;
+  response += `\n\n---\n\n`;
   response += `**Actions:**\n`;
   response += `- View details: \`replay({ action: 'get', sequenceId: 'seq-id' })\`\n`;
   response += `- Execute: \`replay({ action: 'run', sequenceId: 'seq-id' })\`\n`;
@@ -374,7 +395,7 @@ export function formatSequenceDetails(sequence: CommandSequence): string {
     commandCount: sequence.commands.length
   });
 
-  response += `\n**ID:** \`${sequence.id}\``;
+  response += `\n\n**ID:** \`${sequence.id}\``;
   if (sequence.description) {
     response += `\n**Description:** ${sequence.description}`;
   }
@@ -446,20 +467,23 @@ export function formatActiveStatus(
 ): string {
   const pausedDuration = Math.round((Date.now() - activeSeq.pausedAt) / 1000);
 
-  let response = `# Active Sequence: ${activeSeq.sequenceName}\n\n`;
-  response += `**Paused at step ${activeSeq.currentStep} of ${activeSeq.totalSteps}**\n`;
-  response += `**Connection:** ${activeSeq.connectionReason || 'none'}\n`;
-  response += `**Paused for:** ${pausedDuration}s\n\n`;
+  let response = getFormattedResponse('REPLAY_ACTIVE_STATUS', {
+    sequenceName: activeSeq.sequenceName,
+    currentStep: activeSeq.currentStep,
+    totalSteps: activeSeq.totalSteps
+  });
+
+  response += `\n\n**Connection:** ${activeSeq.connectionReason || 'none'}`;
+  response += `\n**Paused for:** ${pausedDuration}s`;
 
   if (commandsSincePause.length > 0) {
-    response += `## Commands Since Pause (${commandsSincePause.length})\n\n`;
+    response += `\n\n**Commands Since Pause (${commandsSincePause.length})**\n`;
     commandsSincePause.forEach((cmd, idx) => {
       response += `${idx + 1}. [#${cmd.index}] **${cmd.tool}**\n`;
     });
-    response += `\n`;
   }
 
-  response += `## Actions\n\n`;
+  response += `\n---\n\n**Actions**\n`;
   response += `- Continue: \`replay({ action: 'step' })\`\n`;
   response += `- Finish all: \`replay({ action: 'finish' })\`\n`;
   if (commandsSincePause.length > 0) {
@@ -479,25 +503,39 @@ export function formatStepResults(
   totalCommands: number,
   failed: boolean
 ): string {
-  let response = `# Step Results: ${sequenceName}\n\n`;
+  let response: string;
 
   if (failed) {
     const failedResult = results.find(r => !r.success)!;
-    response += `**Failed at step ${failedResult.step}:** ${failedResult.tool}\n`;
-    response += `**Error:** ${failedResult.error}\n\n`;
-    response += `Sequence cancelled due to error.`;
+    response = getFormattedResponse('REPLAY_STEP_FAILED', {
+      sequenceName,
+      failedStep: failedResult.step,
+      failedTool: failedResult.tool
+    });
+    response += `\n\n**Error:** ${failedResult.error}`;
+    response += `\n\nSequence cancelled due to error.`;
   } else {
     const lastExecuted = results.length > 0 ? results[results.length - 1].step : startStep;
+    const remaining = totalCommands - lastExecuted;
 
     if (lastExecuted >= totalCommands) {
-      response += `**Sequence complete!** All ${totalCommands} steps executed.\n`;
+      response = getFormattedResponse('REPLAY_STEP_COMPLETE', {
+        sequenceName,
+        total: totalCommands
+      });
     } else {
-      response += `**Executed steps ${startStep + 1}-${lastExecuted} of ${totalCommands}**\n\n`;
+      response = getFormattedResponse('REPLAY_STEP_SUCCESS', {
+        sequenceName,
+        stepCount: results.length,
+        remaining
+      });
+
+      response += `\n\n**Executed Steps**\n`;
       results.forEach(r => {
         response += `${r.step}. **${r.tool}** ✓\n`;
       });
-      response += `\n**Remaining:** ${totalCommands - lastExecuted} commands\n`;
-      response += `\n## Actions\n`;
+
+      response += `\n---\n\n**Actions**\n`;
       response += `- Continue: \`replay({ action: 'step' })\`\n`;
       response += `- Finish all: \`replay({ action: 'finish' })\`\n`;
     }
@@ -520,12 +558,15 @@ export function formatInsertPrompt(
   totalSteps: number
 ): string {
   if (commandsSincePause.length === 0) {
-    return `**No commands recorded since pause.**\n\nRun some commands first, then use insert to add them to the sequence.`;
+    return getFormattedResponse('REPLAY_NO_COMMANDS_SINCE_PAUSE', {});
   }
 
-  let response = `# Insert Commands into: ${sequenceName}\n\n`;
-  response += `**Commands recorded since pause:**\n\n`;
+  let response = getFormattedResponse('REPLAY_INSERT_PROMPT', {
+    sequenceName,
+    commandCount: commandsSincePause.length
+  });
 
+  response += `\n\n**Commands recorded since pause:**\n`;
   commandsSincePause.forEach((cmd) => {
     response += `- [#${cmd.index}] **${cmd.tool}**`;
     if (cmd.params && Object.keys(cmd.params).length > 0) {
@@ -535,9 +576,9 @@ export function formatInsertPrompt(
     response += `\n`;
   });
 
-  response += `\n**Current position:** After step ${currentStep} of ${totalSteps}\n\n`;
+  response += `\n**Current position:** After step ${currentStep} of ${totalSteps}`;
 
-  response += `## Insert Options\n\n`;
+  response += `\n\n**Insert Options**\n\n`;
   response += `**Insert all commands:**\n`;
   response += `\`\`\`\nreplay({ action: 'insert', insertIndices: [${commandsSincePause.map(c => c.index).join(', ')}], overwrite: true })\n\`\`\`\n\n`;
   response += `**Or select specific indices and optionally save as new sequence:**\n`;
@@ -557,17 +598,24 @@ export function formatInsertResult(
   newTotal: number,
   isOverwrite: boolean
 ): string {
+  let response: string;
+
   if (isOverwrite) {
-    let response = `# Sequence Updated: ${sequenceName}\n\n`;
-    response += `**Inserted ${insertedCount} command(s) after step ${insertAfter}**\n\n`;
-    response += `**New total:** ${newTotal} commands\n\n`;
-    response += `Save to disk: \`replay({ action: 'save', sequenceId: '${sequenceId}' })\``;
-    return response;
+    response = getFormattedResponse('REPLAY_INSERT_SUCCESS', {
+      sequenceName,
+      insertedCount,
+      insertAfter
+    });
+    response += `\n\n**New total:** ${newTotal} commands`;
   } else {
-    let response = `# New Sequence Created: ${sequenceName}\n\n`;
-    response += `**Inserted ${insertedCount} command(s) after step ${insertAfter}**\n\n`;
-    response += `**Total commands:** ${newTotal}\n\n`;
-    response += `Save to disk: \`replay({ action: 'save', sequenceId: '${sequenceId}' })\``;
-    return response;
+    response = getFormattedResponse('REPLAY_INSERT_NEW', {
+      sequenceName,
+      insertedCount
+    });
+    response += `\n\n**Inserted after step:** ${insertAfter}`;
+    response += `\n**Total commands:** ${newTotal}`;
   }
+
+  response += `\n\nSave to disk: \`replay({ action: 'save', sequenceId: '${sequenceId}' })\``;
+  return response;
 }
