@@ -1408,7 +1408,7 @@ No commands were recorded in this session.
 **Type:** error
 **Code:** SEQUENCE_NOT_FOUND
 
-Sequence `{{sequenceId}}` not found. Use `replay({ action: 'listSequences' })` to see available sequences or `replay({ action: 'load', filename: 'filename.json' })` to load a sequence from disk.
+{{#message}}{{message}}{{/message}}{{^message}}Sequence `{{sequenceId}}` not found. Use `replay({ action: 'list' })` to see available sequences or `replay({ action: 'listSaved' })` to see saved files.{{/message}}
 
 ---
 
