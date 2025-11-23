@@ -1480,10 +1480,8 @@ No commands recorded yet. All tool calls are automatically recorded.
 
 ## REPLAY_SAVED_LIST
 
-**Type:** success
-**Summary:** Saved sequences
-
-Found {{count}} sequences on disk
+**Type:** list
+**Summary:** {{count}} saved sequence(s)
 
 ---
 
@@ -1572,10 +1570,8 @@ Breakpoint hit at {{location}}
 
 ## REPLAY_SEQUENCE_LIST
 
-**Type:** success
-**Summary:** Saved sequences
-
-{{count}} sequence(s) in memory
+**Type:** list
+**Summary:** {{count}} sequence(s) in memory
 
 ---
 

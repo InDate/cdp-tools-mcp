@@ -220,32 +220,27 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
               // Estimate tokens (rough: ~4 chars per token)
               const estimatedTokens = Math.ceil(markdown.length / 4);
 
-              let response = `# Content Outline: ${title}\n\n`;
-              response += `**URL:** ${url}\n`;
-              response += `**Total Sections:** ${headings.length}\n`;
-              response += `**Total Words:** ${wordCount}\n`;
-              response += `**Estimated Tokens:** ${estimatedTokens.toLocaleString()}\n`;
-              response += `**Estimated Read Time:** ${Math.ceil(wordCount / 200)} minutes\n\n`;
+              let response = `Content Outline: ${title}\n`;
+              response += `URL: ${url}, Sections: ${headings.length}, Words: ${wordCount}, Tokens: ~${estimatedTokens.toLocaleString()}\n\n`;
 
               if (args.search) {
-                response += `**Filtered by:** "${args.search}" (${filteredHeadings.length} matches)\n\n`;
+                response += `Filtered by: "${args.search}" (${filteredHeadings.length} matches)\n\n`;
               }
 
-              // Add table of contents with clickable links
-              response += `## Table of Contents\n\n`;
+              // Add table of contents
+              response += `Table of Contents:\n`;
               filteredHeadings.forEach((h: any, i: number) => {
                 const indent = '  '.repeat(h.level - 1);
                 response += `${indent}${i + 1}. [${h.text}](#)\n`;
               });
               response += `\n`;
 
-              response += `## Structure\n\n${outlineText}\n\n`;
+              response += `\nStructure:\n${outlineText}\n\n`;
               response += `---\n\n`;
-              response += `**Next Steps:**\n`;
-              response += `- Extract full content: \`content({ action: 'extractText', mode: 'full' })\`\n`;
-              response += `- Extract specific section: \`content({ action: 'extractText', mode: 'section', section: 'Heading Name' })\`\n`;
-              response += `- Search sections: \`content({ action: 'extractText', search: 'keyword' })\`\n`;
-              response += `- Save to disk: \`content({ action: 'extractText', mode: 'full', save: true })\``;
+              response += `Next Steps:\n`;
+              response += `- Extract full: content({ action: 'extractText', mode: 'full' })\n`;
+              response += `- Extract section: content({ action: 'extractText', mode: 'section', section: 'Name' })\n`;
+              response += `- Search: content({ action: 'extractText', search: 'keyword' })`;
 
               return {
                 content: [{ type: 'text', text: response }],
@@ -276,7 +271,9 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
               const sectionContent = markdown.substring(sectionStart, nextMatch ? nextMatch.index : undefined);
               const sectionWordCount = sectionContent.split(/\s+/).length;
 
-              let response = `# ${title}\n\n**URL:** ${url}\n**Section:** ${args.section}\n**Words:** ${sectionWordCount}\n\n---\n\n${sectionContent}`;
+              let response = `${title} - Section: ${args.section}\n`;
+              response += `URL: ${url}, Words: ${sectionWordCount}\n\n`;
+              response += sectionContent;
 
               if (args.save) {
                 const filepath = await saveExtractedContent(response, url);
@@ -289,7 +286,9 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
             }
 
             // Mode: full - return entire page content
-            let response = `# ${title}\n\n**URL:** ${url}\n**Word Count:** ${wordCount}\n\n---\n\n${markdown}`;
+            let response = `${title}\n`;
+            response += `URL: ${url}, Words: ${wordCount}\n\n`;
+            response += markdown;
 
             if (args.save) {
               const filepath = await saveExtractedContent(response, url);
@@ -353,9 +352,8 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
                 elementsByContext[ctx].push(el);
               });
 
-              let response = `# Interactive Elements: ${title}\n\n`;
-              response += `URL: ${url}\n`;
-              response += `Total: ${totalCount} elements`;
+              let response = `Interactive Elements: ${title}\n`;
+              response += `URL: ${url}, Total: ${totalCount} elements`;
               if (hiddenCount > 0 && !showHidden) {
                 response += ` (${hiddenCount} hidden)`;
               }
@@ -373,7 +371,7 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
 
               for (const context of sortedContexts) {
                 const contextElements = elementsByContext[context];
-                response += `\n## ${context} (${contextElements.length})\n`;
+                response += `\n[${context}] (${contextElements.length})\n`;
 
                 // Group by type within context
                 const byType: Record<string, typeof elements> = {};
@@ -384,9 +382,9 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
 
                 for (const [type, typeElements] of Object.entries(byType)) {
                   if (typeElements.length > 1) {
-                    response += `**${type}** (${typeElements.length}): `;
+                    response += `${type} (${typeElements.length}): `;
                     response += typeElements.map((el) => {
-                      const hidden = (el.width ?? 0) <= 0 || (el.height ?? 0) <= 0 ? ' ⚠️' : '';
+                      const hidden = (el.width ?? 0) <= 0 || (el.height ?? 0) <= 0 ? ' [hidden]' : '';
                       return `${el.text || '(no text)'}${hidden}`;
                     }).join(', ');
                     response += `\n`;
@@ -439,11 +437,11 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
             // Build response header
             let response = '';
             if (hasSearch && hasTypes) {
-              response = `# Search "${args.search}" in ${args.types!.join(', ')}\n\n`;
+              response = `Search "${args.search}" in ${args.types!.join(', ')}\n`;
             } else if (hasSearch) {
-              response = `# Search Results: "${args.search}"\n\n`;
+              response = `Search Results: "${args.search}"\n`;
             } else {
-              response = `# ${args.types!.map(t => t.charAt(0).toUpperCase() + t.slice(1) + 's').join(', ')} (${filteredElements.length})\n\n`;
+              response = `${args.types!.map(t => t.charAt(0).toUpperCase() + t.slice(1) + 's').join(', ')}\n`;
             }
 
             response += `Found ${filteredElements.length} matches\n\n`;
