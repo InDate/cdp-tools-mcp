@@ -199,7 +199,8 @@ export class ChromeLauncher {
       return existingLaunch; // Return the same promise, so both callers wait for the same launch
     }
 
-    if (this.chromeProcesses.has(port)) {
+    // Use isRunning() to verify the process is actually alive (handles external kills)
+    if (this.isRunning(port)) {
       throw new Error(`Chrome is already running on port ${port}. Use killChrome() to stop it first, or specify a different port.`);
     }
 
@@ -409,15 +410,52 @@ export class ChromeLauncher {
   }
 
   /**
+   * Check if a process with the given PID is actually running
+   * This handles the case where Chrome is killed externally (e.g., Activity Monitor, kill command)
+   */
+  private isProcessAlive(pid: number): boolean {
+    try {
+      // process.kill with signal 0 doesn't kill the process, just checks if it exists
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      // ESRCH = No such process, EPERM = exists but no permission (still alive)
+      return false;
+    }
+  }
+
+  /**
    * Check if Chrome is running on a specific port, or if any Chrome instance is running
+   * This verifies the process is actually alive, not just tracked
    */
   isRunning(port?: number): boolean {
     if (port !== undefined) {
-      const process = this.chromeProcesses.get(port);
-      return process !== undefined && !process.killed;
+      const chromeProcess = this.chromeProcesses.get(port);
+      if (!chromeProcess || chromeProcess.killed) {
+        return false;
+      }
+      // Verify the process is actually alive (handles external kills)
+      const pid = chromeProcess.pid;
+      if (!pid || !this.isProcessAlive(pid)) {
+        // Process is dead but we didn't know - clean up tracking
+        this.chromeProcesses.delete(port);
+        this.recordCloseEvent(port, pid || -1, 'external', null, null);
+        return false;
+      }
+      return true;
     }
-    // Check if any Chrome instance is running
-    return this.chromeProcesses.size > 0;
+    // Check if any Chrome instance is running - verify each one
+    for (const [p, chromeProcess] of this.chromeProcesses.entries()) {
+      const pid = chromeProcess.pid;
+      if (pid && this.isProcessAlive(pid)) {
+        return true;
+      } else {
+        // Clean up dead process
+        this.chromeProcesses.delete(p);
+        this.recordCloseEvent(p, pid || -1, 'external', null, null);
+      }
+    }
+    return false;
   }
 
   /**
@@ -554,15 +592,36 @@ export class ChromeLauncher {
 
   /**
    * Get Chrome launcher status for all instances
+   * Verifies each process is actually alive and cleans up dead ones
    */
   getStatus(): { instances: Array<{ port: number; pid: number; running: boolean }>; lastCloseEvents: ChromeCloseEvent[] } {
-    const instances = Array.from(this.chromeProcesses.entries()).map(([port, process]) => ({
-      port,
-      pid: process.pid || -1,
-      running: !process.killed,
-    }));
+    const instances: Array<{ port: number; pid: number; running: boolean }> = [];
+    const deadPorts: number[] = [];
 
-    return { instances, lastCloseEvents: this.lastCloseEvents };
+    for (const [port, chromeProcess] of this.chromeProcesses.entries()) {
+      const pid = chromeProcess.pid || -1;
+      const alive = pid > 0 && this.isProcessAlive(pid);
+
+      if (!alive) {
+        deadPorts.push(port);
+      }
+
+      instances.push({ port, pid, running: alive });
+    }
+
+    // Clean up dead processes
+    for (const port of deadPorts) {
+      const chromeProcess = this.chromeProcesses.get(port);
+      const pid = chromeProcess?.pid || -1;
+      this.chromeProcesses.delete(port);
+      this.recordCloseEvent(port, pid, 'external', null, null);
+    }
+
+    // Return only alive instances
+    return {
+      instances: instances.filter(i => i.running),
+      lastCloseEvents: this.lastCloseEvents
+    };
   }
 
   /**

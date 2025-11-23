@@ -165,6 +165,113 @@ export class ConnectionManager {
   }
 
   /**
+   * Check if a connection is still alive by attempting a lightweight CDP call
+   * Returns false if the connection is dead or the CDP client is not responding
+   * Uses a short timeout to avoid hanging when Chrome is killed or page is stuck
+   *
+   * This checks at the TARGET level (specific tab), not browser level.
+   * When a tab is closed, the CDP connection to that target becomes invalid
+   * even if the browser is still running.
+   */
+  async isConnectionAlive(connection: Connection): Promise<boolean> {
+    try {
+      // Quick check: if cdpManager says not connected, it's definitely dead
+      if (!connection.cdpManager.isConnected()) {
+        return false;
+      }
+
+      const client = (connection.cdpManager as any).client;
+      if (!client) {
+        return false;
+      }
+
+      // Check WebSocket state first - this is instant and doesn't require a round-trip
+      // The CDP client uses a WebSocket internally
+      const ws = client._ws;
+      if (ws && ws.readyState !== 1) { // 1 = WebSocket.OPEN
+        return false;
+      }
+
+      // Use a short timeout to avoid hanging on dead/stuck connections
+      const timeoutPromise = new Promise<boolean>((resolve) => {
+        setTimeout(() => resolve(false), 1500);
+      });
+
+      const healthCheckPromise = (async () => {
+        try {
+          // IMPORTANT: Use Runtime.evaluate instead of Browser.getVersion
+          // Browser.getVersion is browser-level and works even when the tab is closed
+          // Runtime.evaluate is target-level and will fail if the tab is closed
+          // This properly detects closed tabs, not just killed Chrome processes
+          await client.Runtime.evaluate({ expression: '1', silent: true });
+          return true;
+        } catch {
+          return false;
+        }
+      })();
+
+      return await Promise.race([healthCheckPromise, timeoutPromise]);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Remove a stale/dead connection from the registry without attempting cleanup operations
+   * Use this when the connection is known to be dead (e.g., Chrome was killed externally)
+   */
+  async removeStaleConnection(connectionId: string): Promise<boolean> {
+    const connection = this.connections.get(connectionId);
+    if (!connection) {
+      return false;
+    }
+
+    console.error(`[ConnectionManager] Removing stale connection: ${connection.reference || connectionId}`);
+
+    // Remove from browser tracking
+    const browserKey = `${connection.host}:${connection.port}`;
+    const browser = this.browsers.get(browserKey);
+    if (browser) {
+      browser.connectionIds = browser.connectionIds.filter(connId => connId !== connectionId);
+      if (browser.connectionIds.length === 0) {
+        this.browsers.delete(browserKey);
+      }
+    }
+
+    // Remove from registry
+    this.connections.delete(connectionId);
+
+    // Update active connection if we just removed it
+    if (this.activeConnectionId === connectionId) {
+      const remaining = Array.from(this.connections.keys());
+      this.activeConnectionId = remaining.length > 0 ? remaining[0] : null;
+    }
+
+    return true;
+  }
+
+  /**
+   * Find a connection by reference and validate it's still alive
+   * If the connection is dead, automatically removes it and returns null
+   * Use this instead of findConnectionByReference when you need to verify the connection is usable
+   */
+  async findConnectionByReferenceValidated(reference: string): Promise<Connection | null> {
+    const connection = this.findConnectionByReference(reference);
+    if (!connection) {
+      return null;
+    }
+
+    const alive = await this.isConnectionAlive(connection);
+    if (!alive) {
+      console.error(`[ConnectionManager] Connection "${connection.reference}" is dead, removing stale reference`);
+      await this.removeStaleConnection(connection.id);
+      return null;
+    }
+
+    return connection;
+  }
+
+  /**
    * Get all connections
    */
   listConnections(): Connection[] {

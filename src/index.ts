@@ -246,8 +246,9 @@ const connectionTools = {
       const autoConnect = args.autoConnect ?? true;
 
       // Check if a connection with this reference already exists - reuse it instead of creating a new tab
+      // Use validated lookup to auto-cleanup dead connections (e.g., if Chrome was killed externally)
       if (userReference) {
-        const existingConnection = connectionManager.findConnectionByReference(userReference);
+        const existingConnection = await connectionManager.findConnectionByReferenceValidated(userReference);
         if (existingConnection) {
           const sanitizedRef = validateReference(userReference).sanitized!;
           await debugLog('index', `Connection with reference "${sanitizedRef}" already exists, reusing`);
@@ -274,9 +275,11 @@ const connectionTools = {
       }
 
       try {
-        // Check if Chrome is already running on this port (browser already exists)
-        const browserAlreadyExists = connectionManager.hasBrowser('localhost', port);
-        await debugLog('index', `browserAlreadyExists: ${browserAlreadyExists}`);
+        // Check if Chrome is already running on this port
+        // We check both connectionManager (tracked connections) and chromeLauncher (actual process)
+        // This handles the case where a tab was closed but Chrome is still running
+        const browserAlreadyExists = connectionManager.hasBrowser('localhost', port) || chromeLauncher.isRunning(port);
+        await debugLog('index', `browserAlreadyExists: ${browserAlreadyExists} (hasBrowser: ${connectionManager.hasBrowser('localhost', port)}, isRunning: ${chromeLauncher.isRunning(port)})`);
         let isNewBrowser = false;
 
         if (!browserAlreadyExists) {
@@ -312,18 +315,49 @@ const connectionTools = {
             const consoleMonitor = new ConsoleMonitor();
             const networkMonitor = new NetworkMonitor();
 
-            // Connect to CDP
-            await cdpManager.connect('localhost', port);
-            runtimeType = cdpManager.getRuntimeType();
-
-            // Connect Puppeteer for Chrome
-            if (runtimeType === 'chrome') {
+            // For existing browser, connect Puppeteer first and create/reuse a tab
+            // This ensures we have a target to connect CDP to (handles case where all tabs were closed)
+            let targetId: string | undefined;
+            if (browserAlreadyExists) {
+              await debugLog('index', `Browser exists, connecting Puppeteer and creating new tab first...`);
               await puppeteerManager.connect('localhost', port);
 
-              // Create new tab if browser already existed, otherwise use existing page
-              if (browserAlreadyExists) {
-                await puppeteerManager.newPage();
+              // Get all existing pages
+              const existingPages = await puppeteerManager.getPages();
+              await debugLog('index', `Found ${existingPages.length} existing pages`);
+
+              // Create a new page for this connection
+              const page = await puppeteerManager.newPage();
+
+              // Close any existing blank pages to avoid clutter
+              for (const existingPage of existingPages) {
+                try {
+                  const pageUrl = existingPage.url();
+                  if (pageUrl === 'about:blank' || pageUrl === 'chrome://newtab/') {
+                    await debugLog('index', `Closing blank page: ${pageUrl}`);
+                    await existingPage.close();
+                  }
+                } catch (e) {
+                  // Page might already be closed, ignore
+                }
               }
+
+              // Get the target ID of the new page so we can connect CDP to it specifically
+              const target = page.target();
+              targetId = (target as any)._targetId || (target as any)._targetInfo?.targetId;
+              await debugLog('index', `Created new tab with targetId: ${targetId}`);
+            }
+
+            // Connect to CDP (with specific target if we created a new tab)
+            await cdpManager.connect('localhost', port, targetId);
+            runtimeType = cdpManager.getRuntimeType();
+
+            // Connect Puppeteer for Chrome (if not already connected)
+            if (runtimeType === 'chrome' && !browserAlreadyExists) {
+              await puppeteerManager.connect('localhost', port);
+            }
+
+            if (runtimeType === 'chrome') {
 
               // Start monitoring console and network
               const page = puppeteerManager.getPage();
@@ -591,8 +625,9 @@ const connectionTools = {
       // Use the sanitized reference from validation
       const reference = validation.sanitized!;
 
-      // Check for duplicate reference
-      if (connectionManager.findConnectionByReference(reference)) {
+      // Check for duplicate reference - use validated lookup to auto-cleanup dead connections
+      const existingConnection = await connectionManager.findConnectionByReferenceValidated(reference);
+      if (existingConnection) {
         return createErrorResponse('REFERENCE_IN_USE', {
           reference
         });

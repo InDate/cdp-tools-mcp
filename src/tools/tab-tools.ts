@@ -66,11 +66,27 @@ export function createTabTools(
               return createSuccessResponse('TAB_LIST_EMPTY');
             }
 
+            // Validate each connection and remove dead ones
+            const aliveTabs: typeof chromeTabs = [];
+            for (const conn of chromeTabs) {
+              const isAlive = await connectionManager.isConnectionAlive(conn);
+              if (isAlive) {
+                aliveTabs.push(conn);
+              } else {
+                // Clean up dead connection
+                await connectionManager.removeStaleConnection(conn.id);
+              }
+            }
+
+            if (aliveTabs.length === 0) {
+              return createSuccessResponse('TAB_LIST_EMPTY');
+            }
+
             // Build tab list, active tab first
             const tabLines: string[] = [];
 
             // Sort so active tab is first
-            const sortedTabs = [...chromeTabs].sort((a, b) => {
+            const sortedTabs = [...aliveTabs].sort((a, b) => {
               if (a.id === activeId) return -1;
               if (b.id === activeId) return 1;
               return 0;
@@ -98,7 +114,7 @@ export function createTabTools(
             }
 
             return createSuccessResponse('TAB_LIST_SUCCESS', {
-              count: chromeTabs.length,
+              count: aliveTabs.length,
               tabList: tabLines.join('\n')
             });
           }
@@ -115,8 +131,9 @@ export function createTabTools(
             // Use the sanitized reference from validation
             const sanitizedReference = validation.sanitized!;
 
-            // Check for duplicate reference
-            if (connectionManager.findConnectionByReference(sanitizedReference)) {
+            // Check for duplicate reference - use validated lookup to auto-cleanup dead connections
+            const existingConnection = await connectionManager.findConnectionByReferenceValidated(sanitizedReference);
+            if (existingConnection) {
               return createErrorResponse('REFERENCE_IN_USE', {
                 reference: sanitizedReference
               });
@@ -228,8 +245,9 @@ export function createTabTools(
             // Use the sanitized reference from validation
             const newSanitized = validation.sanitized!;
 
-            // Check if new reference is already in use
-            if (connectionManager.findConnectionByReference(newSanitized)) {
+            // Check if new reference is already in use - use validated lookup to auto-cleanup dead connections
+            const existingWithNewRef = await connectionManager.findConnectionByReferenceValidated(newSanitized);
+            if (existingWithNewRef) {
               return createErrorResponse('REFERENCE_IN_USE', {
                 reference: newSanitized
               });
@@ -237,7 +255,7 @@ export function createTabTools(
 
             // Find connection by reference (sanitize input)
             const sanitizedOldRef = sanitizeReference(args.reference!);
-            const connection = connectionManager.findConnectionByReference(sanitizedOldRef);
+            const connection = await connectionManager.findConnectionByReferenceValidated(sanitizedOldRef);
 
             if (!connection) {
               return createErrorResponse('CONNECTION_NOT_FOUND', {
@@ -260,9 +278,9 @@ export function createTabTools(
           }
 
           case 'switch': {
-            // Find connection by reference (sanitize input)
+            // Find connection by reference (sanitize input) - validate to auto-cleanup dead connections
             const sanitizedRef = sanitizeReference(args.reference!);
-            const connection = connectionManager.findConnectionByReference(sanitizedRef);
+            const connection = await connectionManager.findConnectionByReferenceValidated(sanitizedRef);
 
             if (!connection) {
               return createErrorResponse('CONNECTION_NOT_FOUND', {
@@ -312,9 +330,9 @@ export function createTabTools(
           }
 
           case 'close': {
-            // Find connection by reference (sanitize input)
+            // Find connection by reference (sanitize input) - validate to auto-cleanup dead connections
             const sanitizedRef = sanitizeReference(args.reference!);
-            const connection = connectionManager.findConnectionByReference(sanitizedRef);
+            const connection = await connectionManager.findConnectionByReferenceValidated(sanitizedRef);
 
             if (!connection) {
               return createErrorResponse('CONNECTION_NOT_FOUND', {
