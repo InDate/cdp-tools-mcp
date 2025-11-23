@@ -226,7 +226,7 @@ async function handleLoad(args: ReplayArgs, recorder: CommandRecorder) {
   if (!sequence) {
     return createErrorResponse('LOAD_FAILED', {
       filename: args.filename,
-      message: 'Failed to load sequence from disk. File may not exist or be invalid.'
+      error: 'File may not exist or be invalid.'
     });
   }
 
