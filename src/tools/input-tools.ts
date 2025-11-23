@@ -17,12 +17,12 @@ import { resolveSelector, isExtendedSelector, cleanupResolvedSelector } from '..
 
 // Consolidated input tool schema
 const inputToolSchema = z.object({
-  action: z.enum(['click', 'type', 'press', 'hover'])
-    .describe('Input action: click (click element), type (type text into element), press (press keyboard key), hover (hover over element)'),
+  action: z.enum(['click', 'type', 'press', 'hover', 'focus', 'focusNext', 'focusPrevious'])
+    .describe('Input action: click (click element), type (type text into element), press (press keyboard key), hover (hover over element), focus (focus element by selector), focusNext (Tab to next focusable element), focusPrevious (Shift+Tab to previous focusable element)'),
   connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 
-  // click, type, hover parameters
-  selector: z.string().optional().describe('CSS selector (required for click, type, hover actions). Supports extended selectors: :has-text("text") for partial match, :text("text") for exact match. Example: button:has-text("Submit")'),
+  // click, type, hover, focus parameters
+  selector: z.string().optional().describe('CSS selector (required for click, type, hover, focus actions). Supports extended selectors: :has-text("text") for partial match, :text("text") for exact match. Example: button:has-text("Submit")'),
   handleModals: z.boolean().optional().describe('Auto-dismiss modals before action (for click, type, hover actions, default: false)'),
   dismissStrategy: z.enum(['accept', 'reject', 'close', 'remove', 'auto']).optional().describe('Strategy to use when dismissing modals if handleModals is true (for click, type, hover actions, default: auto)'),
 
@@ -35,6 +35,9 @@ const inputToolSchema = z.object({
 
   // press parameters
   key: z.string().optional().describe('Key to press (required for press action)'),
+
+  // focusNext/focusPrevious parameters
+  count: z.number().optional().describe('Number of times to tab (for focusNext/focusPrevious actions, default: 1)'),
 }).strict();
 
 export function createInputTools(
@@ -619,12 +622,145 @@ export function createInputTools(
             });
           }
 
+          case 'focus': {
+            const { selector: rawSelector } = args;
+
+            if (!rawSelector) {
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: `## Error\n\nMissing required parameter: \`selector\`\n\n**Action:** focus\n\n**Suggestion:** Provide a CSS selector for the element to focus.`,
+                  },
+                ],
+                isError: true,
+              };
+            }
+
+            // Resolve extended selectors (like :has-text())
+            let selector = rawSelector;
+            let selectorWarning: string | undefined;
+            if (isExtendedSelector(rawSelector)) {
+              const resolved = await resolveSelector(page, rawSelector);
+              if ('error' in resolved) {
+                return createErrorResponse('ELEMENT_NOT_FOUND', {
+                  selector: rawSelector,
+                  suggestion: resolved.suggestion,
+                });
+              }
+              selector = resolved.selector;
+              selectorWarning = resolved.warning;
+            }
+
+            const result = await executeWithPauseDetection(
+              targetCdpManager,
+              async () => {
+                // Check if element exists first
+                const element = await page.$(selector);
+                if (!element) {
+                  return { error: `Element not found: ${selector}` };
+                }
+
+                // Focus the element
+                await page.focus(selector);
+
+                // Get focused element info
+                const focusInfo = await getFocusedElementInfo(page);
+
+                return { selector, focusInfo };
+              },
+              'focus'
+            );
+
+            // Clean up temporary selector attribute
+            await cleanupResolvedSelector(page, selector);
+
+            if (result.result?.error) {
+              return createErrorResponse('ELEMENT_NOT_FOUND', { selector: rawSelector });
+            }
+
+            const focusInfo = result.result?.focusInfo;
+            let response = formatFocusInfo(focusInfo);
+
+            if (selectorWarning) {
+              response += `\n\n**Warning:** ${selectorWarning}`;
+            }
+
+            return {
+              content: [{ type: 'text', text: response }],
+            };
+          }
+
+          case 'focusNext': {
+            const { count = 1 } = args;
+
+            const result = await executeWithPauseDetection(
+              targetCdpManager,
+              async () => {
+                // Press Tab count times
+                for (let i = 0; i < count; i++) {
+                  await page.keyboard.press('Tab');
+                  // Small delay between tabs for stability
+                  if (i < count - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                  }
+                }
+
+                // Get focused element info
+                const focusInfo = await getFocusedElementInfo(page);
+                return { focusInfo, tabCount: count };
+              },
+              'focusNext'
+            );
+
+            const focusInfo = result.result?.focusInfo;
+            const header = `Tabbed forward${count > 1 ? ` ${count} times` : ''}`;
+            const focusOutput = formatFocusInfo(focusInfo, 'No element focused (may have reached end of page)');
+
+            return {
+              content: [{ type: 'text', text: `${header}\n\n${focusOutput}` }],
+            };
+          }
+
+          case 'focusPrevious': {
+            const { count = 1 } = args;
+
+            const result = await executeWithPauseDetection(
+              targetCdpManager,
+              async () => {
+                // Press Shift+Tab count times
+                for (let i = 0; i < count; i++) {
+                  await page.keyboard.down('Shift');
+                  await page.keyboard.press('Tab');
+                  await page.keyboard.up('Shift');
+                  // Small delay between tabs for stability
+                  if (i < count - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                  }
+                }
+
+                // Get focused element info
+                const focusInfo = await getFocusedElementInfo(page);
+                return { focusInfo, tabCount: count };
+              },
+              'focusPrevious'
+            );
+
+            const focusInfo = result.result?.focusInfo;
+            const header = `Tabbed backward${count > 1 ? ` ${count} times` : ''}`;
+            const focusOutput = formatFocusInfo(focusInfo, 'No element focused (may have reached start of page)');
+
+            return {
+              content: [{ type: 'text', text: `${header}\n\n${focusOutput}` }],
+            };
+          }
+
           default:
             return {
               content: [
                 {
                   type: 'text',
-                  text: `## Error\n\nInvalid action: ${action}\n\n**Valid actions:** click, type, press, hover`,
+                  text: `## Error\n\nInvalid action: ${action}\n\n**Valid actions:** click, type, press, hover, focus, focusNext, focusPrevious`,
                 },
               ],
               isError: true,
@@ -633,6 +769,120 @@ export function createInputTools(
       }
     ),
   };
+}
+
+/**
+ * Format focus info into a consistent output string
+ */
+function formatFocusInfo(focusInfo: {
+  description: string;
+  selector?: string;
+  prevTabbable: string[];
+  nextTabbable: string[];
+} | null | undefined, noFocusMessage?: string): string {
+  if (!focusInfo) {
+    return noFocusMessage || 'No element focused';
+  }
+
+  let output = `**Focused:** ${focusInfo.description}`;
+  if (focusInfo.selector) {
+    output += `\n**Selector:** \`${focusInfo.selector}\``;
+  }
+  if (focusInfo.prevTabbable.length > 0) {
+    output += `\n**Prev tab:** ${focusInfo.prevTabbable.join(' ← ')}`;
+  }
+  if (focusInfo.nextTabbable.length > 0) {
+    output += `\n**Next tab:** ${focusInfo.nextTabbable.join(' → ')}`;
+  }
+  return output;
+}
+
+/**
+ * Helper function to get information about the currently focused element
+ */
+async function getFocusedElementInfo(page: any): Promise<{
+  description: string;
+  tag: string;
+  type?: string;
+  text?: string;
+  selector?: string;
+  prevTabbable: string[];
+  nextTabbable: string[];
+} | null> {
+  return await page.evaluate(() => {
+    const focused = (globalThis as any).document.activeElement;
+    if (!focused || focused === (globalThis as any).document.body) {
+      return null;
+    }
+
+    const tag = focused.tagName.toLowerCase();
+    const type = focused.getAttribute('type') || undefined;
+    const text = focused.textContent?.trim().substring(0, 50) ||
+      focused.getAttribute('aria-label') ||
+      focused.getAttribute('placeholder') ||
+      focused.getAttribute('name') ||
+      focused.getAttribute('id') ||
+      '';
+
+    // Build a description
+    let description = tag;
+    if (type) description += `[type="${type}"]`;
+    if (text) description += ` "${text}"`;
+
+    // Try to build a useful selector
+    let selector: string | undefined;
+    if (focused.id) {
+      selector = `#${focused.id}`;
+    } else if (focused.name) {
+      selector = `${tag}[name="${focused.name}"]`;
+    } else if (focused.className && typeof focused.className === 'string') {
+      const classes = focused.className.trim().split(/\s+/).slice(0, 2).join('.');
+      if (classes) selector = `${tag}.${classes}`;
+    }
+
+    // Helper to format element for display
+    const formatEl = (el: any) => {
+      const elTag = el.tagName.toLowerCase();
+      const elText = el.textContent?.trim().substring(0, 20) ||
+        el.getAttribute('aria-label') ||
+        el.getAttribute('placeholder') ||
+        '';
+      const elType = el.getAttribute('type');
+      if (elTag === 'input') {
+        return `${elTag}[${elType || 'text'}]${elText ? ` "${elText}"` : ''}`;
+      }
+      return `${elTag}${elText ? ` "${elText}"` : ''}`;
+    };
+
+    // Get tabbable elements
+    const tabbable = Array.from((globalThis as any).document.querySelectorAll(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )).filter((el: any) => {
+      const style = (globalThis as any).window.getComputedStyle(el);
+      return style.display !== 'none' && style.visibility !== 'hidden';
+    });
+
+    const currentIndex = tabbable.indexOf(focused);
+    let prevTabbable: string[] = [];
+    let nextTabbable: string[] = [];
+
+    if (currentIndex !== -1) {
+      // Previous 3 tabbable elements
+      prevTabbable = tabbable.slice(Math.max(0, currentIndex - 3), currentIndex).map(formatEl);
+      // Next 3 tabbable elements
+      nextTabbable = tabbable.slice(currentIndex + 1, currentIndex + 4).map(formatEl);
+    }
+
+    return {
+      description,
+      tag,
+      type,
+      text: text || undefined,
+      selector,
+      prevTabbable,
+      nextTabbable,
+    };
+  });
 }
 
 /**
