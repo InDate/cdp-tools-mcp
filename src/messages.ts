@@ -227,36 +227,52 @@ class MessageManager {
   }
 
   /**
+   * Resolve a dotted path to a value in the variables object
+   */
+  private resolveVariable(key: string, variables: Record<string, any>): any {
+    return key.split('.').reduce((obj: any, prop: string) => {
+      return obj && obj[prop] !== undefined ? obj[prop] : undefined;
+    }, variables);
+  }
+
+  /**
    * Format a message template with variable substitution
    * Supports {{variable}} syntax, {{object.property}} nested access,
    * {{#variable}}...{{/variable}} conditionals, and {{^variable}}...{{/variable}} inverted conditionals
    */
   private formatMessage(template: string, variables: Record<string, any>): string {
-    // First pass: Handle conditional blocks {{#var}}...{{/var}} (truthy)
-    // Using [\s\S] to match across newlines
-    let result = template.replace(/\{\{#(\w+)\}\}([\s\S]*?)\{\{\/\1\}\}/g, (match, key, content) => {
-      // Check if variable exists and is truthy
-      if (variables[key]) {
-        return content; // Keep content if variable is truthy
-      }
-      return ''; // Remove entire block if variable is falsy/undefined
-    });
+    let result = template;
 
-    // Second pass: Handle inverted conditional blocks {{^var}}...{{/var}} (falsy)
-    result = result.replace(/\{\{\^(\w+)\}\}([\s\S]*?)\{\{\/\1\}\}/g, (match, key, content) => {
-      // Check if variable is falsy/undefined
-      if (!variables[key]) {
-        return content; // Keep content if variable is falsy/undefined
-      }
-      return ''; // Remove entire block if variable is truthy
-    });
+    // Process conditionals repeatedly until no more changes (handles nested conditionals)
+    let previousResult = '';
+    while (previousResult !== result) {
+      previousResult = result;
 
-    // Second pass: Variable substitution supporting dot notation {{var}} or {{obj.prop}}
+      // Handle conditional blocks {{#var}}...{{/var}} (truthy)
+      // Using [\s\S] to match across newlines, supports dot notation like {{#console.hint}}
+      result = result.replace(/\{\{#([\w.]+)\}\}([\s\S]*?)\{\{\/\1\}\}/g, (match, key, content) => {
+        // Check if variable exists and is truthy
+        const value = this.resolveVariable(key, variables);
+        if (value) {
+          return content; // Keep content if variable is truthy
+        }
+        return ''; // Remove entire block if variable is falsy/undefined
+      });
+
+      // Handle inverted conditional blocks {{^var}}...{{/var}} (falsy)
+      result = result.replace(/\{\{\^([\w.]+)\}\}([\s\S]*?)\{\{\/\1\}\}/g, (match, key, content) => {
+        // Check if variable is falsy/undefined
+        const value = this.resolveVariable(key, variables);
+        if (!value) {
+          return content; // Keep content if variable is falsy/undefined
+        }
+        return ''; // Remove entire block if variable is truthy
+      });
+    }
+
+    // Final pass: Variable substitution supporting dot notation {{var}} or {{obj.prop}}
     result = result.replace(/\{\{([\w.]+)\}\}/g, (match, key) => {
-      // Handle nested property access (e.g., "clickableElements.total")
-      const value = key.split('.').reduce((obj: any, prop: string) => {
-        return obj && obj[prop] !== undefined ? obj[prop] : undefined;
-      }, variables);
+      const value = this.resolveVariable(key, variables);
 
       if (value !== undefined) {
         return String(value);

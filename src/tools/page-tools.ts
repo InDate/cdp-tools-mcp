@@ -16,6 +16,116 @@ import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../
 import type { ClickableCache, ClickableElement } from '../clickable-cache.js';
 import { collectInteractiveElements } from '../element-collector.js';
 
+// =============================================================================
+// Types
+// =============================================================================
+
+export interface PageContext {
+  url: string;
+  title: string;
+  clickableElements: {
+    total: number;
+    inViewport: number;
+  };
+  console: {
+    errors: number;
+    warnings: number;
+    total: number;
+  };
+  network: {
+    failed: number;
+    total: number;
+  };
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+/**
+ * Gather page context including console errors and failed network requests
+ */
+export async function gatherPageContext(
+  page: any,
+  consoleMonitor: ConsoleMonitor,
+  networkMonitor: NetworkMonitor,
+  clickableCache: ClickableCache
+): Promise<PageContext> {
+  const url = page.url();
+  const title = await page.title();
+
+  // Get clickable elements stats
+  const result = await collectInteractiveElements(page);
+  clickableCache.set(url, result.elements, result.viewportHeight, result.viewportWidth);
+  const inViewportCount = result.elements.filter((el) => el.inViewport).length;
+
+  // Get console stats
+  const consoleErrors = consoleMonitor.getCount('error');
+  const consoleWarnings = consoleMonitor.getCount('warning');
+  const consoleTotal = consoleMonitor.getCount();
+
+  // Get network stats
+  const allRequests = networkMonitor.getRequests();
+  const failedRequests = allRequests.filter(r =>
+    r.failed || (r.response && r.response.status >= 400)
+  ).length;
+
+  return {
+    url,
+    title,
+    clickableElements: {
+      total: result.elements.length,
+      inViewport: inViewportCount,
+    },
+    console: {
+      errors: consoleErrors,
+      warnings: consoleWarnings,
+      total: consoleTotal,
+    },
+    network: {
+      failed: failedRequests,
+      total: allRequests.length,
+    },
+  };
+}
+
+/**
+ * Format page context for response
+ */
+export function formatPageContextForResponse(context: PageContext): Record<string, any> {
+  const response: Record<string, any> = {
+    url: context.url,
+    title: context.title,
+    clickableElements: {
+      total: context.clickableElements.total,
+      inViewport: context.clickableElements.inViewport,
+      hint: 'Use content({ action: "findInteractive" }) to explore interactive elements',
+    },
+  };
+
+  // Add console status if there are errors or warnings
+  if (context.console.errors > 0 || context.console.warnings > 0) {
+    response.console = {
+      errors: context.console.errors,
+      warnings: context.console.warnings,
+      hint: context.console.errors > 0
+        ? 'Use console({ action: "list", type: "error" }) to view errors'
+        : undefined,
+    };
+  }
+
+  // Add network status if there are failed requests
+  if (context.network.failed > 0) {
+    response.network = {
+      failed: context.network.failed,
+      total: context.network.total,
+      hint: 'Use network({ action: "search", statusCode: "4" }) to view failed requests',
+    };
+  }
+
+  return response;
+}
+
 // Consolidated schema for page navigation tools
 const navigateSchema = z.object({
   action: z.enum(['goto', 'reload', 'back', 'forward', 'info']).describe('Page navigation action: goto (navigate to URL), reload (reload page), back (go back), forward (go forward), info (get page info)'),
@@ -49,24 +159,6 @@ export function createPageTools(
     }
   };
 
-  /**
-   * Collect clickable elements from the current page and cache them
-   */
-  const collectAndCacheClickableElements = async (page: any): Promise<{ total: number; inViewport: number }> => {
-    const result = await collectInteractiveElements(page);
-    const url = page.url();
-
-    // Cache the elements
-    clickableCache.set(url, result.elements, result.viewportHeight, result.viewportWidth);
-
-    // Count in-viewport elements
-    const inViewportCount = result.elements.filter((el) => el.inViewport).length;
-
-    return {
-      total: result.elements.length,
-      inViewport: inViewportCount,
-    };
-  };
 
   return {
     navigate: createTool(
@@ -115,14 +207,8 @@ export function createPageTools(
                 // Auto-restart monitoring after navigation
                 restartMonitoring(page, targetConsoleMonitor, targetNetworkMonitor);
 
-                // Collect and cache clickable elements
-                const clickableStats = await collectAndCacheClickableElements(page);
-
-                return {
-                  url: page.url(),
-                  title: await page.title(),
-                  clickableStats,
-                };
+                // Gather full page context
+                return gatherPageContext(page, targetConsoleMonitor, targetNetworkMonitor, clickableCache);
               },
               'navigateTo'
             );
@@ -131,15 +217,7 @@ export function createPageTools(
               return createSuccessResponse('PAGE_NAVIGATE_SUCCESS', { url: args.url });
             }
 
-            return createSuccessResponse('PAGE_NAVIGATE_SUCCESS', {
-              url: result.result.url,
-              title: result.result.title,
-              clickableElements: {
-                total: result.result.clickableStats.total,
-                inViewport: result.result.clickableStats.inViewport,
-                hint: 'Use content({ action: "findInteractive" }) to explore interactive elements with search/filter options'
-              }
-            });
+            return createSuccessResponse('PAGE_NAVIGATE_SUCCESS', formatPageContextForResponse(result.result));
           }
 
           case 'reload': {
@@ -161,10 +239,8 @@ export function createPageTools(
                 // Auto-restart monitoring after reload
                 restartMonitoring(page, targetConsoleMonitor, targetNetworkMonitor);
 
-                // Collect and cache clickable elements
-                const clickableStats = await collectAndCacheClickableElements(page);
-
-                return { url: page.url(), waitUntil: args.waitUntil, clickableStats };
+                // Gather full page context
+                return gatherPageContext(page, targetConsoleMonitor, targetNetworkMonitor, clickableCache);
               },
               'reloadPage'
             );
@@ -173,12 +249,7 @@ export function createPageTools(
               return createSuccessResponse('PAGE_RELOAD_SUCCESS');
             }
 
-            return createSuccessResponse('PAGE_RELOAD_SUCCESS', {
-              clickableElements: {
-                total: result.result.clickableStats.total,
-                inViewport: result.result.clickableStats.inViewport,
-              }
-            });
+            return createSuccessResponse('PAGE_RELOAD_SUCCESS', formatPageContextForResponse(result.result));
           }
 
           case 'back': {
@@ -190,10 +261,8 @@ export function createPageTools(
                 // Auto-restart monitoring after navigation
                 restartMonitoring(page, targetConsoleMonitor, targetNetworkMonitor);
 
-                // Collect and cache clickable elements
-                const clickableStats = await collectAndCacheClickableElements(page);
-
-                return { url: page.url(), clickableStats };
+                // Gather full page context
+                return gatherPageContext(page, targetConsoleMonitor, targetNetworkMonitor, clickableCache);
               },
               'goBack'
             );
@@ -202,13 +271,7 @@ export function createPageTools(
               return createSuccessResponse('PAGE_GO_BACK_SUCCESS');
             }
 
-            return createSuccessResponse('PAGE_GO_BACK_SUCCESS', {
-              url: result.result.url,
-              clickableElements: {
-                total: result.result.clickableStats.total,
-                inViewport: result.result.clickableStats.inViewport,
-              }
-            });
+            return createSuccessResponse('PAGE_GO_BACK_SUCCESS', formatPageContextForResponse(result.result));
           }
 
           case 'forward': {
@@ -220,10 +283,8 @@ export function createPageTools(
                 // Auto-restart monitoring after navigation
                 restartMonitoring(page, targetConsoleMonitor, targetNetworkMonitor);
 
-                // Collect and cache clickable elements
-                const clickableStats = await collectAndCacheClickableElements(page);
-
-                return { url: page.url(), clickableStats };
+                // Gather full page context
+                return gatherPageContext(page, targetConsoleMonitor, targetNetworkMonitor, clickableCache);
               },
               'goForward'
             );
@@ -232,13 +293,7 @@ export function createPageTools(
               return createSuccessResponse('PAGE_GO_FORWARD_SUCCESS');
             }
 
-            return createSuccessResponse('PAGE_GO_FORWARD_SUCCESS', {
-              url: result.result.url,
-              clickableElements: {
-                total: result.result.clickableStats.total,
-                inViewport: result.result.clickableStats.inViewport,
-              }
-            });
+            return createSuccessResponse('PAGE_GO_FORWARD_SUCCESS', formatPageContextForResponse(result.result));
           }
 
           case 'info': {

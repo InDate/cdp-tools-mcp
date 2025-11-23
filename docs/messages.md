@@ -553,7 +553,11 @@ Page title: {{title}}{{/title}}{{#clickableElements}}
 
 **Clickable elements:** {{clickableElements.total}} total ({{clickableElements.inViewport}} in viewport)
 
-{{clickableElements.hint}}{{/clickableElements}}
+{{clickableElements.hint}}{{/clickableElements}}{{#console}}
+
+**Console:** {{console.errors}} errors, {{console.warnings}} warnings{{#console.hint}} - {{console.hint}}{{/console.hint}}{{/console}}{{#network}}
+
+**Network:** {{network.failed}} failed requests of {{network.total}} total - {{network.hint}}{{/network}}
 
 ---
 
@@ -563,7 +567,11 @@ Page title: {{title}}{{/title}}{{#clickableElements}}
 
 Navigated back{{#url}} to: {{url}}{{/url}}{{#clickableElements}}
 
-**Clickable elements:** {{clickableElements.total}} total ({{clickableElements.inViewport}} in viewport){{/clickableElements}}
+**Clickable elements:** {{clickableElements.total}} total ({{clickableElements.inViewport}} in viewport){{/clickableElements}}{{#console}}
+
+**Console:** {{console.errors}} errors, {{console.warnings}} warnings{{#console.hint}} - {{console.hint}}{{/console.hint}}{{/console}}{{#network}}
+
+**Network:** {{network.failed}} failed requests of {{network.total}} total - {{network.hint}}{{/network}}
 
 ---
 
@@ -573,7 +581,11 @@ Navigated back{{#url}} to: {{url}}{{/url}}{{#clickableElements}}
 
 Navigated forward{{#url}} to: {{url}}{{/url}}{{#clickableElements}}
 
-**Clickable elements:** {{clickableElements.total}} total ({{clickableElements.inViewport}} in viewport){{/clickableElements}}
+**Clickable elements:** {{clickableElements.total}} total ({{clickableElements.inViewport}} in viewport){{/clickableElements}}{{#console}}
+
+**Console:** {{console.errors}} errors, {{console.warnings}} warnings{{#console.hint}} - {{console.hint}}{{/console.hint}}{{/console}}{{#network}}
+
+**Network:** {{network.failed}} failed requests of {{network.total}} total - {{network.hint}}{{/network}}
 
 ---
 
@@ -583,7 +595,11 @@ Navigated forward{{#url}} to: {{url}}{{/url}}{{#clickableElements}}
 
 Page reloaded successfully{{#clickableElements}}
 
-**Clickable elements:** {{clickableElements.total}} total ({{clickableElements.inViewport}} in viewport){{/clickableElements}}
+**Clickable elements:** {{clickableElements.total}} total ({{clickableElements.inViewport}} in viewport){{/clickableElements}}{{#console}}
+
+**Console:** {{console.errors}} errors, {{console.warnings}} warnings{{#console.hint}} - {{console.hint}}{{/console.hint}}{{/console}}{{#network}}
+
+**Network:** {{network.failed}} failed requests of {{network.total}} total - {{network.hint}}{{/network}}
 
 ---
 

@@ -5,6 +5,7 @@
 import type { CommandRecorder, RecordedCommand, CommandSequence, ActiveSequenceState } from '../command-recorder.js';
 import { debugLog } from '../debug-logger.js';
 import { sanitizeReference } from '../reference-validator.js';
+import { checkUrlPort } from '../utils/port-check.js';
 
 // =============================================================================
 // Types
@@ -287,6 +288,31 @@ export async function ensureConnection(
 }
 
 /**
+ * Check if a URL's port is open (for localhost URLs only)
+ * Returns success if port is open or URL is not localhost
+ */
+export async function checkPortBeforeNavigation(
+  url: string,
+  logPrefix: string = 'executor'
+): Promise<{ success: true } | { success: false; error: string }> {
+  const portCheck = await checkUrlPort(url, 2000);
+
+  // null means non-localhost URL - skip check
+  if (portCheck === null) {
+    return { success: true };
+  }
+
+  if (!portCheck.open) {
+    const error = `Port ${portCheck.port} is not open on ${portCheck.host}. Is your server running?`;
+    await debugLog(logPrefix, error);
+    return { success: false, error };
+  }
+
+  await debugLog(logPrefix, `Port ${portCheck.port} is open on ${portCheck.host}`);
+  return { success: true };
+}
+
+/**
  * Navigate to startUrl if sequence has one and doesn't start with navigate
  */
 export async function navigateToStartUrl(
@@ -309,6 +335,12 @@ export async function navigateToStartUrl(
 
   if (startsWithNavigate) {
     return { success: true };
+  }
+
+  // Check if port is open before navigating (localhost only)
+  const portCheck = await checkPortBeforeNavigation(sequence.startUrl, logPrefix);
+  if (!portCheck.success) {
+    return portCheck;
   }
 
   await debugLog(logPrefix, `Auto-navigating to startUrl: ${sequence.startUrl}`);
@@ -705,6 +737,20 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
           }
         } catch (err: any) {
           debugLog(logPrefix, `Warning: Failed to get fresh callFrameId: ${err.message}`);
+        }
+      }
+
+      // Check port before navigate goto (localhost only)
+      if (cmd.tool === 'navigate' && params.action === 'goto' && params.url) {
+        const portCheck = await checkPortBeforeNavigation(params.url, logPrefix);
+        if (!portCheck.success) {
+          results.push({
+            step: i + 1,
+            tool: cmd.tool,
+            success: false,
+            error: portCheck.error
+          });
+          break;
         }
       }
 
