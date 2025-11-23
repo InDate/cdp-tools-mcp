@@ -8,8 +8,9 @@ import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import { promises as fs } from 'fs';
 import { join, basename, normalize } from 'path';
+import { getOutputPath } from '../paths.js';
 
-const DOWNLOADS_DIR = join(process.cwd(), '.claude', 'downloads');
+const DOWNLOADS_DIR = getOutputPath('downloads');
 const QUARANTINE_DIR = join(DOWNLOADS_DIR, 'quarantine');
 
 // Security limits

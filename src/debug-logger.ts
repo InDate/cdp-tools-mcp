@@ -1,12 +1,13 @@
 /**
  * Simple debug logger for troubleshooting
- * Writes to .claude/logs/debug.log when enabled
+ * Writes to .cdp-tools/logs/debug.log when enabled
  */
 
 import { promises as fs } from 'fs';
 import { join } from 'path';
+import { getOutputPath } from './paths.js';
 
-const LOG_DIR = join(process.cwd(), '.claude', 'logs');
+const LOG_DIR = getOutputPath('logs');
 const LOG_FILE = join(LOG_DIR, 'debug.log');
 
 // Global debug state - can be toggled via MCP tool

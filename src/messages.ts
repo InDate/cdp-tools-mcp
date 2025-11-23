@@ -15,7 +15,8 @@ interface MessageTemplate {
   id: string;
   type: 'error' | 'success' | 'warning' | 'info';
   code?: string;
-  content: string;
+  summary?: string;  // Brief action description for status line (e.g., "Breakpoint set")
+  content: string;   // Key details and additional info
   suggestions?: string[];
   note?: string;
   example?: string;
@@ -58,6 +59,7 @@ class MessageManager {
 
       let type: 'error' | 'success' | 'warning' | 'info' = 'info';
       let code: string | undefined;
+      let summary: string | undefined;
       let contentLines: string[] = [];
       let suggestions: string[] = [];
       let note: string | undefined;
@@ -80,6 +82,11 @@ class MessageManager {
         if (line.startsWith('**Code:**')) {
           const codeMatch = line.match(/\*\*Code:\*\*\s+(\w+)/);
           if (codeMatch) code = codeMatch[1];
+          continue;
+        }
+
+        if (line.startsWith('**Summary:**')) {
+          summary = line.replace(/\*\*Summary:\*\*\s*/, '').trim();
           continue;
         }
 
@@ -143,6 +150,7 @@ class MessageManager {
         id,
         type,
         code,
+        summary,
         content: contentLines.join('\n').trim(),
         suggestions: suggestions.length > 0 ? suggestions : undefined,
         note,
@@ -197,30 +205,64 @@ class MessageManager {
 
   /**
    * Format an error message with suggestions and examples
+   * Uses the same Status + Key detail format as getFormattedResponse
    */
   getErrorMessage(id: string, variables: Record<string, any> = {}): string {
     if (!this.loaded) this.loadMessages();
 
     const template = this.messages.get(id);
     if (!template) {
-      return `Message not found: ${id}`;
+      return `Error: Message not found\nTemplate ID: ${id}`;
     }
 
-    let message = this.formatMessage(template.content, variables);
+    // Format the content with variable substitution
+    const formattedContent = this.formatMessage(template.content, variables);
+
+    // Build the response with Status + Key detail format
+    const lines: string[] = [];
+
+    // Line 1: Status line (always "Error" for error messages)
+    if (template.summary) {
+      lines.push(`Error: ${this.formatMessage(template.summary, variables)}`);
+    } else {
+      // Extract first line of content as summary if no explicit summary
+      const firstLine = formattedContent.split('\n')[0].trim();
+      lines.push(`Error: ${firstLine}`);
+    }
+
+    // Line 2: Key detail (first line of content if we have a summary)
+    if (template.summary) {
+      const firstContentLine = formattedContent.split('\n')[0].trim();
+      if (firstContentLine) {
+        lines.push(firstContentLine);
+      }
+    }
+
+    // Build output: first two lines, then blank line, then rest
+    let message = lines.join('\n');
+
+    // Determine remaining content (skip lines already used)
+    const contentLinesToSkip = template.summary ? 1 : 1;
+    const restOfContent = formattedContent.split('\n').slice(contentLinesToSkip).join('\n').trim();
+
+    // Always add blank line after first section, then rest of content if any
+    if (restOfContent) {
+      message += '\n\n' + restOfContent;
+    }
 
     if (template.suggestions && template.suggestions.length > 0) {
-      message += '\n\nSuggestions:\n';
+      message += '\n\n**Suggestions:**\n';
       template.suggestions.forEach(suggestion => {
         message += `- ${this.formatMessage(suggestion, variables)}\n`;
       });
     }
 
     if (template.note) {
-      message += `\nNote: ${this.formatMessage(template.note, variables)}`;
+      message += `\n\n**Note:** ${this.formatMessage(template.note, variables)}`;
     }
 
     if (template.example) {
-      message += `\n\nExample:\n${template.example}`;
+      message += `\n\n**Example:**\n${template.example}`;
     }
 
     return message.trim();
@@ -317,17 +359,55 @@ class MessageManager {
   /**
    * Get a complete markdown-only response for a tool
    * Combines message template with optional data formatting
+   *
+   * Output format:
+   * Line 1: Status line (Success/Error/Warning/Info: Brief description)
+   * Line 2: Key detail (most important info like location, ID, count)
+   * Line 3+: Additional content (suggestions, notes, data)
    */
   getFormattedResponse(id: string, variables: Record<string, any> = {}, data?: any): string {
     if (!this.loaded) this.loadMessages();
 
     const template = this.messages.get(id);
     if (!template) {
-      return `## Error\n\nMessage template not found: ${id}`;
+      return `Error: Message template not found\nTemplate ID: ${id}`;
     }
 
-    // Start with the formatted message
-    let markdown = this.formatMessage(template.content, variables);
+    // Format the content with variable substitution
+    const formattedContent = this.formatMessage(template.content, variables);
+
+    // Build the response with Status + Key detail format
+    const lines: string[] = [];
+
+    // Line 1: Status line
+    const typeLabel = template.type.charAt(0).toUpperCase() + template.type.slice(1);
+    if (template.summary) {
+      lines.push(`${typeLabel}: ${this.formatMessage(template.summary, variables)}`);
+    } else {
+      // Extract first line of content as summary if no explicit summary
+      const firstLine = formattedContent.split('\n')[0].trim();
+      lines.push(`${typeLabel}: ${firstLine}`);
+    }
+
+    // Line 2: Key detail (first line of content if we have a summary)
+    if (template.summary) {
+      const firstContentLine = formattedContent.split('\n')[0].trim();
+      if (firstContentLine) {
+        lines.push(firstContentLine);
+      }
+    }
+
+    // Build output: first two lines, then blank line, then rest
+    let markdown = lines.join('\n');
+
+    // Determine remaining content (skip lines already used)
+    const contentLinesToSkip = template.summary ? 1 : 1;
+    const restOfContent = formattedContent.split('\n').slice(contentLinesToSkip).join('\n').trim();
+
+    // Always add blank line after first section, then rest of content if any
+    if (restOfContent) {
+      markdown += '\n\n' + restOfContent;
+    }
 
     // Add suggestions for errors
     if (template.type === 'error' && template.suggestions && template.suggestions.length > 0) {
@@ -445,9 +525,10 @@ export function createSuccessResponse(messageId: string, variables?: Record<stri
 
 /**
  * Format a tool success response (for tools that don't use message templates)
+ * Uses Status + Key detail format
  */
 export function formatToolSuccess(message: string, data?: any): MCPResponse {
-  let text = message;
+  let text = `Success: ${message}`;
   if (data) {
     text += '\n\n' + formatCodeBlock(data);
   }
@@ -458,9 +539,10 @@ export function formatToolSuccess(message: string, data?: any): MCPResponse {
 
 /**
  * Format a tool error response (for tools that don't use message templates)
+ * Uses Status + Key detail format
  */
 export function formatToolError(code: string, message: string, data?: any): MCPResponse {
-  let text = `**Error (${code}):** ${message}`;
+  let text = `Error: ${message}\nCode: ${code}`;
   if (data) {
     text += '\n\n' + formatCodeBlock(data);
   }

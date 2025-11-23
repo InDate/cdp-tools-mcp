@@ -9,6 +9,7 @@ import { promises as fs } from 'fs';
 import { join } from 'path';
 import { debugLog } from './debug-logger.js';
 import { sanitizeReference } from './reference-validator.js';
+import { getOutputPath } from './paths.js';
 
 export interface RecordedCommand {
   tool: string;
@@ -52,7 +53,7 @@ export class CommandRecorder {
   private historyViewedWhilePaused: boolean = false;
 
   constructor() {
-    this.sequencesDir = join(process.cwd(), '.claude', 'sequences');
+    this.sequencesDir = getOutputPath('sequences');
   }
 
   /**

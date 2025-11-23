@@ -47,6 +47,8 @@ import { createTabTools } from './tools/tab-tools.js';
 import { createDownloadTools } from './tools/download-tools.js';
 import { createModalTools } from './tools/modal-tools.js';
 import { createReplayTools } from './tools/replay-tools.js';
+import { createServerTools } from './tools/server-tools.js';
+import { ServerManager } from './server-manager.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock, getMessage } from './messages.js';
 import { createServer } from 'net';
 import { readFile } from 'fs/promises';
@@ -128,6 +130,7 @@ const logpointTracker = new LogpointExecutionTracker();
 const clickableCache = new ClickableCache();
 const commandRecorder = new CommandRecorder();
 const portReserver = new PortReserver();
+const serverManager = new ServerManager();
 
 // Configure connection manager to kill Chrome when last connection closes
 connectionManager.setChromeLauncher(chromeLauncher);
@@ -542,10 +545,10 @@ URL: ${pageUrl}${consoleStats}`;
       if (args.enabled) {
         await enableDebugLogging(); // Now async to log startup metrics
         return createSuccessResponse('DEBUG_LOGGING_ENABLED', {
-          message: 'Debug logging enabled. Logs will be written to .claude/logs/debug.log'
+          message: 'Debug logging enabled. Logs will be written to .cdp-tools/logs/debug.log'
         }, {
           enabled: true,
-          message: 'Debug logging enabled. Logs will be written to .claude/logs/debug.log'
+          message: 'Debug logging enabled. Logs will be written to .cdp-tools/logs/debug.log'
         });
       } else {
         disableDebugLogging();
@@ -567,10 +570,10 @@ URL: ${pageUrl}${consoleStats}`;
       return createSuccessResponse('DEBUG_LOGGING_STATUS', {
         status: enabled ? 'enabled' : 'disabled',
         enabled,  // Pass boolean for conditionals
-        logFile: '.claude/logs/debug.log'
+        logFile: '.cdp-tools/logs/debug.log'
       }, {
         enabled,
-        logFile: '.claude/logs/debug.log'
+        logFile: '.cdp-tools/logs/debug.log'
       });
     }
   ),
@@ -1050,6 +1053,8 @@ const allTools = {
   ...createDownloadTools(),
   // Replay tools
   ...createReplayTools(commandRecorder, executeToolCall),
+  // Server management tools
+  ...createServerTools(serverManager),
 };
 
 /**
@@ -1113,7 +1118,25 @@ function registerToolHandlers(server: Server) {
 
     // Pass validated data to handler
     try {
-      return await tool.handler(validation.data);
+      const result = await tool.handler(validation.data);
+
+      // Append server log status to all tool responses
+      const logStats = serverManager.getLogStats();
+      if (logStats.length > 0) {
+        const parts = logStats
+          .filter(s => s.newStderr > 0 || s.newStdout > 0)
+          .map(s => `${s.serverId} (${s.newStderr} err/${s.newStdout} out)`);
+
+        if (parts.length > 0 && result.content && result.content.length > 0) {
+          const statusLine = `\n\n---\n📊 **Server Logs:** ${parts.join(' | ')}`;
+          const lastContent = result.content[result.content.length - 1];
+          if (lastContent && lastContent.type === 'text') {
+            lastContent.text += statusLine;
+          }
+        }
+      }
+
+      return result;
     } catch (error) {
       return {
         content: [
@@ -1188,8 +1211,20 @@ async function main() {
   await server.connect(transport);
   const transportTime = performance.now() - transportStart;
   console.error(`[cdp-tools] Transport connected (PID: ${process.pid})`);
-  console.error(`[cdp-tools] Server ready (PID: ${process.pid})`);
 
+  // Initialize server manager - recover running servers and start auto-run servers
+  const serverInitResult = await serverManager.initialize();
+  if (serverInitResult.recovered.length > 0) {
+    console.error(`[cdp-tools] Recovered ${serverInitResult.recovered.length} running server(s): ${serverInitResult.recovered.join(', ')}`);
+  }
+  if (serverInitResult.started.length > 0) {
+    console.error(`[cdp-tools] Auto-started ${serverInitResult.started.length} server(s): ${serverInitResult.started.join(', ')}`);
+  }
+  if (serverInitResult.failed.length > 0) {
+    console.error(`[cdp-tools] Failed to auto-start ${serverInitResult.failed.length} server(s): ${serverInitResult.failed.join(', ')}`);
+  }
+
+  console.error(`[cdp-tools] Server ready (PID: ${process.pid})`);
 
   // Calculate total startup time and store metrics for later logging
   const totalStartupTime = performance.now() - STARTUP_TIME;

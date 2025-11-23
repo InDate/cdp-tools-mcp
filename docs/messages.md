@@ -111,8 +111,9 @@ Failed to connect to debugger at {{host}}:{{port}}: {{error}}
 
 **Type:** error
 **Code:** NOT_CONNECTED
+**Summary:** Debugger not connected
 
-Not connected to debugger
+No active debugger connection found.
 
 **Suggestions:**
 - Use `launchChrome()` to launch Chrome with debugging enabled
@@ -222,8 +223,9 @@ Connection with reference "{{reference}}" not found
 
 **Type:** error
 **Code:** NO_CONNECTION
+**Summary:** Connection not found
 
-No active connection found
+No active browser connection available.
 
 **Suggestions:**
 - Use `launchChrome()` to launch Chrome with debugging enabled
@@ -315,8 +317,9 @@ Function search completed - found {{count}} matches for '{{functionName}}'
 ## BREAKPOINT_SET_SUCCESS
 
 **Type:** success
+**Summary:** Breakpoint set
 
-Breakpoint set at {{url}}:{{resolvedLine}} (ID: {{breakpointId}}){{#wasAdjusted}}
+Location: {{url}}:{{resolvedLine}}, ID: {{breakpointId}}{{#wasAdjusted}}
 
 ⚠️ CDP resolved to {{resolvedLocation}} (requested {{requestedLocation}}) due to source mapping{{/wasAdjusted}}{{#condition}}
 Condition: {{condition}}{{/condition}}
@@ -327,8 +330,10 @@ Condition: {{condition}}{{/condition}}
 
 **Type:** error
 **Code:** BREAKPOINT_FAILED
+**Summary:** Failed to set breakpoint
 
-Failed to set breakpoint at {{url}}:{{lineNumber}}: {{error}}
+Location: {{url}}:{{lineNumber}}
+Reason: {{error}}
 
 **Suggestions:**
 - Verify the file URL is correct (use `file://` for local files or `http://` for web URLs)
@@ -546,10 +551,9 @@ Timeout waiting for execution to pause
 ## PAGE_NAVIGATE_SUCCESS
 
 **Type:** success
+**Summary:** Navigation complete
 
-Navigated to {{url}}{{#title}}
-
-Page title: {{title}}{{/title}}{{#clickableElements}}
+URL: {{url}}{{#title}}, Title: {{title}}{{/title}}{{#clickableElements}}
 
 **Clickable elements:** {{clickableElements.total}} total ({{clickableElements.inViewport}} in viewport)
 
@@ -620,8 +624,9 @@ Element not found: `{{selector}}`
 ## ELEMENT_CLICK_SUCCESS
 
 **Type:** success
+**Summary:** Element clicked
 
-Clicked element: `{{selector}}`
+Selector: `{{selector}}`
 
 ---
 
@@ -683,8 +688,9 @@ Cannot interact with element `{{selector}}` - blocked by {{modalDescription}}
 ## SCREENSHOT_SAVED
 
 **Type:** success
+**Summary:** Screenshot saved
 
-Screenshot saved to `{{filepath}}` ({{fileSize}})
+Path: {{filepath}}, Size: {{fileSize}}
 
 ---
 
@@ -717,8 +723,9 @@ Console cleared successfully ({{count}} messages removed)
 ## CONSOLE_MESSAGES_LIST
 
 **Type:** success
+**Summary:** Console messages retrieved
 
-Console Messages: {{count}} of {{totalCount}} total{{#type}} (filtered by type: {{type}}){{/type}}
+Count: {{count}} of {{totalCount}} total{{#type}} (filtered by type: {{type}}){{/type}}
 
 ---
 
@@ -774,8 +781,9 @@ Network conditions set to **{{preset}}**
 ## NETWORK_REQUESTS_LIST
 
 **Type:** success
+**Summary:** Network requests retrieved
 
-Network Requests: {{count}} of {{totalCount}} total{{#resourceType}} (filtered by type: {{resourceType}}){{/resourceType}}
+Count: {{count}} of {{totalCount}} total{{#resourceType}} (filtered by type: {{resourceType}}){{/resourceType}}
 
 ---
 
@@ -1101,7 +1109,7 @@ Failed to close tab: {{reference}}
 
 {{message}}
 
-Debug logs will be written to `.claude/logs/debug.log` and visible in the MCP server's stderr output.
+Debug logs will be written to `.cdp-tools/logs/debug.log` and visible in the MCP server's stderr output.
 
 ---
 
@@ -1357,6 +1365,116 @@ Error: {{error}}
 
 ## Replay Messages
 
+## REPLAY_HISTORY
+
+**Type:** success
+**Summary:** Command history
+
+Showing {{count}} of {{totalCount}} commands
+
+---
+
+## REPLAY_HISTORY_EMPTY
+
+**Type:** info
+**Summary:** Command history empty
+
+No commands recorded yet. All tool calls are automatically recorded.
+
+---
+
+## REPLAY_SAVED_LIST
+
+**Type:** success
+**Summary:** Saved sequences
+
+Found {{count}} sequences on disk
+
+---
+
+## REPLAY_SAVED_EMPTY
+
+**Type:** info
+**Summary:** No saved sequences
+
+No sequences saved to disk yet.
+
+Location: `.cdp-tools/sequences/`
+
+---
+
+## REPLAY_RUN_SUCCESS
+
+**Type:** success
+**Summary:** Sequence completed
+
+{{sequenceName}}: {{successful}}/{{total}} commands in {{duration}}s
+
+---
+
+## REPLAY_RUN_FAILED
+
+**Type:** error
+**Summary:** Sequence failed
+
+{{sequenceName}}: Failed at step {{failedStep}} ({{failedTool}})
+
+---
+
+## REPLAY_PAUSED
+
+**Type:** info
+**Summary:** Sequence paused
+
+{{sequenceName}}: Paused at step {{pausedStep}}/{{total}}, {{remaining}} remaining
+
+---
+
+## REPLAY_SEQUENCE_CREATED
+
+**Type:** success
+**Summary:** Sequence created
+
+Name: {{name}}, ID: {{id}}, Commands: {{commandCount}}
+
+---
+
+## REPLAY_SEQUENCE_DETAILS
+
+**Type:** success
+**Summary:** Sequence details
+
+{{name}}: {{commandCount}} commands
+
+---
+
+## REPLAY_STEP_SUCCESS
+
+**Type:** success
+**Summary:** Steps executed
+
+{{sequenceName}}: Executed steps {{startStep}}-{{endStep}} of {{total}}
+
+---
+
+## REPLAY_STEP_COMPLETE
+
+**Type:** success
+**Summary:** Sequence complete
+
+{{sequenceName}}: All {{total}} steps executed successfully
+
+---
+
+## REPLAY_BREAKPOINT_HIT
+
+**Type:** info
+**Summary:** Breakpoint hit
+
+{{sequenceName}}: Paused at {{location}} after step {{step}}/{{total}}
+
+---
+
 ## RECORDING_STARTED
 
 **Type:** success
@@ -1446,7 +1564,7 @@ No commands matched the provided IDs.
 Sequence saved to disk successfully!
 
 **Filename:** `{{filename}}`
-**Location:** `.claude/sequences/`
+**Location:** `.cdp-tools/sequences/`
 
 ---
 
@@ -1462,7 +1580,7 @@ Failed to load sequence from disk.
 
 **Suggestions:**
 - Verify the filename is correct
-- Check that the file exists in `.claude/sequences/`
+- Check that the file exists in `.cdp-tools/sequences/`
 - Use `replay({ action: 'listSaved' })` to see available files
 
 ---
@@ -1519,5 +1637,237 @@ Missing required parameter: {{missing}}
 
 **Action:** {{action}}
 **Message:** {{message}}
+
+---
+
+## Server Messages
+
+## SERVER_SCAN_SUCCESS
+
+**Type:** success
+
+Found {{count}} package(s) in `{{path}}`
+
+{{#hasServerPackages}}**Packages with server scripts:**
+{{serverPackages}}{{/hasServerPackages}}
+
+{{#hasOtherPackages}}**Other packages:** {{otherPackages}}{{/hasOtherPackages}}
+
+**Usage:** `server({ action: "start", path: "<package-path>", script: "<script-name>" })`
+
+---
+
+## SERVER_START_SUCCESS
+
+**Type:** success
+
+Server `{{id}}` started (PID: {{pid}})
+
+{{#port}}**Port:** {{port}}{{/port}}
+{{#autoRun}}**Auto-run:** enabled ⚡{{/autoRun}}
+
+**Actions:**
+- Logs: `server({ action: "logs", serverId: "{{id}}" })`
+- Stop: `server({ action: "stop", serverId: "{{id}}" })`
+
+---
+
+## SERVER_STOP_SUCCESS
+
+**Type:** success
+
+Server `{{serverId}}` stopped.
+
+---
+
+## SERVER_RESTART_SUCCESS
+
+**Type:** success
+
+Server `{{id}}` restarted (PID: {{pid}})
+
+{{#port}}**Port:** {{port}}{{/port}}
+{{#autoRun}}**Auto-run:** enabled ⚡{{/autoRun}}
+
+---
+
+## SERVER_LIST_SUCCESS
+
+**Type:** success
+
+{{count}} server(s) running
+
+{{serverList}}
+
+**Actions:**
+- Stop: `server({ action: "stop", serverId: "<id>" })`
+- Restart: `server({ action: "restart", serverId: "<id>" })`
+- Logs: `server({ action: "logs", serverId: "<id>" })`
+
+---
+
+## SERVER_LIST_EMPTY
+
+**Type:** success
+
+No servers running.
+
+Use `server({ action: "scan", path: "<directory>" })` to find available servers.
+
+---
+
+## SERVER_LOGS_SUCCESS
+
+**Type:** success
+
+**Logs for `{{serverId}}`** ({{lineCount}} lines{{#isDelta}}, new since last view{{/isDelta}})
+
+{{#running}}🟢 Running{{/running}}{{^running}}🔴 Stopped{{/running}}{{#autoRun}} ⚡{{/autoRun}}
+{{#port}}**Port:** {{port}}{{/port}}
+{{#uptime}}**Uptime:** {{uptime}}{{/uptime}}
+
+{{logs}}
+
+---
+
+## SERVER_LOGS_EMPTY
+
+**Type:** success
+
+**Logs for `{{serverId}}`**
+
+{{#running}}🟢 Running{{/running}}{{^running}}🔴 Stopped{{/running}}{{#autoRun}} ⚡{{/autoRun}}
+
+_No {{#isDelta}}new {{/isDelta}}log output._
+
+---
+
+## SERVER_STOP_ALL_SUCCESS
+
+**Type:** success
+
+Stopped {{count}} server(s): {{serverIds}}
+
+---
+
+## SERVER_STOP_ALL_EMPTY
+
+**Type:** success
+
+No servers were running.
+
+---
+
+## SERVER_AUTORUN_ENABLED
+
+**Type:** success
+
+Auto-run enabled for `{{serverId}}`.
+
+Server will automatically start when MCP server starts.
+
+---
+
+## SERVER_AUTORUN_DISABLED
+
+**Type:** success
+
+Auto-run disabled for `{{serverId}}`.
+
+Server will not auto-start when MCP server starts.
+
+---
+
+## SERVER_NOT_FOUND
+
+**Type:** error
+**Code:** SERVER_NOT_FOUND
+
+Server `{{serverId}}` not found.
+
+**Suggestions:**
+- Use `server({ action: "list" })` to see running servers
+- Check the server ID format: `package-name:script`
+
+---
+
+## SERVER_ALREADY_RUNNING
+
+**Type:** error
+**Code:** SERVER_ALREADY_RUNNING
+
+Server `{{serverId}}` is already running (PID: {{pid}}).
+
+**Suggestions:**
+- Use `server({ action: "stop", serverId: "{{serverId}}" })` to stop it first
+- Use `server({ action: "restart", serverId: "{{serverId}}" })` to restart it
+
+---
+
+## SERVER_START_FAILED
+
+**Type:** error
+**Code:** SERVER_START_FAILED
+
+Failed to start server: {{error}}
+
+**Suggestions:**
+- Check that the package path exists
+- Verify the script name is correct
+- Check for port conflicts
+
+---
+
+## SERVER_MISSING_PATH
+
+**Type:** error
+**Code:** MISSING_PARAMETER
+
+Missing required parameter: `path`
+
+Provide the directory containing package.json.
+
+---
+
+## SERVER_MISSING_SCRIPT
+
+**Type:** error
+**Code:** MISSING_PARAMETER
+
+Missing required parameter: `script`
+
+Provide the npm script name to run (e.g., "dev", "start").
+
+---
+
+## SERVER_MISSING_SERVER_ID
+
+**Type:** error
+**Code:** MISSING_PARAMETER
+
+Missing required parameter: `serverId`
+
+Use `server({ action: "list" })` to see running servers.
+
+---
+
+## SERVER_MISSING_AUTORUN
+
+**Type:** error
+**Code:** MISSING_PARAMETER
+
+Missing required parameter: `autoRun`
+
+Set to `true` to enable auto-start on MCP startup, or `false` to disable.
+
+---
+
+## SERVER_LOGS_CLEARED
+
+**Type:** success
+
+Logs cleared for `{{serverId}}`.
+
+**Log directory:** `{{logDir}}`
 
 ---

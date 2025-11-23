@@ -52,7 +52,7 @@ replay({ action: 'delete', sequenceId: 'seq-1234567890' })
 ```javascript
 // Save sequence to disk
 replay({ action: 'save', sequenceId: 'seq-1234567890' })
-// Saves to: .claude/sequences/<name>-<id>.json
+// Saves to: .cdp-tools/sequences/<name>-<id>.json
 
 // List saved sequences on disk
 replay({ action: 'listSaved' })

@@ -65,7 +65,7 @@ setDebugLogging({ enabled: true })
 
 // Check status
 getDebugLoggingStatus()
-// Logs written to: .claude/logs/debug.log
+// Logs written to: .cdp-tools/logs/debug.log
 ```
 
 ### Password Popup Prevention

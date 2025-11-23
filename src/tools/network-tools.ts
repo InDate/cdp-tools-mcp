@@ -5,12 +5,12 @@
 import { z } from 'zod';
 import { promises as fs } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
 import { PuppeteerManager } from '../puppeteer-manager.js';
 import { NetworkMonitor, StoredNetworkRequest } from '../network-monitor.js';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
 import type { Page } from 'puppeteer-core';
+import { getHomeOutputPath } from '../paths.js';
 
 // Consolidated network tool schema
 const networkToolSchema = z.object({
@@ -140,7 +140,7 @@ export function createNetworkTools(
 
             if (includeBody && request.response?.body) {
               // Save body to disk and return path instead of inline body
-              const networkBodiesDir = join(homedir(), '.claude', 'network-bodies');
+              const networkBodiesDir = getHomeOutputPath('network-bodies');
               await fs.mkdir(networkBodiesDir, { recursive: true });
 
               // Create filename based on request ID and sanitized URL

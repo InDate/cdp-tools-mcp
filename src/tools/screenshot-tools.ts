@@ -16,6 +16,7 @@ import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import { spawn } from 'child_process';
 import { resolveSelector, isExtendedSelector, cleanupResolvedSelector } from '../utils/selector-resolver.js';
 import { randomBytes } from 'crypto';
+import { getOutputPath } from '../paths.js';
 
 // WeasyPrint availability cache
 let weasyPrintCache: { available: boolean; version?: string; error?: string; checkedAt: number } | null = null;
@@ -198,7 +199,7 @@ async function generatePDFWithWeasyPrint(
 
   // Inject A4 page size via CSS to match Chrome default (WeasyPrint has no --page-size flag)
   // Create temporary CSS file with @page rule
-  const tempCssPath = path.join(process.cwd(), '.claude', 'temp', `a4-page-${Date.now()}.css`);
+  const tempCssPath = getOutputPath('temp', `a4-page-${Date.now()}.css`);
   await fs.mkdir(path.dirname(tempCssPath), { recursive: true });
   await fs.writeFile(tempCssPath, '@page { size: A4; margin: 1cm; }');
   wpArgs.push('--stylesheet', tempCssPath);
@@ -441,9 +442,9 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
       return filepath;
     }
 
-    // Default: save to .claude/screenshots/YYYY-MM-DD/
+    // Default: save to .cdp-tools/screenshots/YYYY-MM-DD/
     const date = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
-    const screenshotDir = path.join(process.cwd(), '.claude', 'screenshots', date);
+    const screenshotDir = getOutputPath('screenshots', date);
 
     // Ensure directory exists
     await fs.mkdir(screenshotDir, { recursive: true });

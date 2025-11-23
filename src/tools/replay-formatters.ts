@@ -4,6 +4,7 @@
 
 import type { RecordedCommand, CommandSequence, ActiveSequenceState } from '../command-recorder.js';
 import type { StepResult, DebugState, BreakpointHitInfo } from './replay-executor.js';
+import { getFormattedResponse } from '../messages.js';
 
 // =============================================================================
 // Result Formatting
@@ -21,22 +22,34 @@ export function formatExecutionResults(
   const successful = results.filter(r => r.success).length;
   const failed = results.filter(r => !r.success).length;
 
-  let response = `# Run Results: ${sequenceName}\n\n`;
-  response += `**Executed:** ${results.length} of ${totalCommands} commands\n`;
-  response += `**Successful:** ${successful}\n`;
-  response += `**Failed:** ${failed}\n`;
-  response += `**Duration:** ${(durationMs / 1000).toFixed(1)}s\n\n`;
+  let response: string;
 
   if (failed > 0) {
-    response += `## Failed Commands\n\n`;
+    const failedResult = results.find(r => !r.success)!;
+    response = getFormattedResponse('REPLAY_RUN_FAILED', {
+      sequenceName,
+      failedStep: failedResult.step,
+      failedTool: failedResult.tool
+    });
+    response += `\nError: ${failedResult.error}`;
+
+    // Show failed commands with details
+    response += `\n\n**Failed Commands**\n`;
     results.filter(r => !r.success).forEach((r) => {
       response += `${r.step}. **${r.tool}**\n`;
-      response += `   **Error:** ${r.error}\n\n`;
+      response += `   Error: ${r.error}\n\n`;
+    });
+  } else {
+    response = getFormattedResponse('REPLAY_RUN_SUCCESS', {
+      sequenceName,
+      successful,
+      total: totalCommands,
+      duration: (durationMs / 1000).toFixed(1)
     });
   }
 
   if (successful > 0) {
-    response += `## Successful Commands\n\n`;
+    response += `\n\n**Successful Commands**\n`;
     results.filter(r => r.success).forEach((r) => {
       response += `${r.step}. **${r.tool}** ✓\n`;
     });
@@ -56,18 +69,23 @@ export function formatPausedResponse(
 ): string {
   const commands = sequence.commands;
   const successful = results.filter(r => r.success).length;
+  const remaining = commands.length - pausedAtStep;
 
-  let response = `# Sequence Paused: ${sequence.name}\n\n`;
-  response += `**Paused after step ${pausedAtStep} of ${commands.length}**\n\n`;
-  response += `**Executed:** ${successful} commands in ${(durationMs / 1000).toFixed(1)}s\n`;
-  response += `**Remaining:** ${commands.length - pausedAtStep} commands\n\n`;
+  let response = getFormattedResponse('REPLAY_PAUSED', {
+    sequenceName: sequence.name,
+    pausedStep: pausedAtStep,
+    total: commands.length,
+    remaining
+  });
 
-  response += `## Completed Steps\n\n`;
+  response += `\n**Executed:** ${successful} commands in ${(durationMs / 1000).toFixed(1)}s`;
+
+  response += `\n\n**Completed Steps**\n`;
   results.forEach((r) => {
     response += `${r.step}. **${r.tool}** ✓\n`;
   });
 
-  response += `\n## Next Steps\n\n`;
+  response += `\n**Next Steps**\n`;
   for (let j = pausedAtStep; j < Math.min(pausedAtStep + 3, commands.length); j++) {
     response += `${j + 1}. **${commands[j].tool}**\n`;
   }
@@ -75,7 +93,7 @@ export function formatPausedResponse(
     response += `... and ${commands.length - pausedAtStep - 3} more\n`;
   }
 
-  response += `\n## Actions\n\n`;
+  response += `\n**Actions**\n`;
   response += `- Continue: \`replay({ action: 'step' })\` or \`replay({ action: 'step', stepCount: N })\`\n`;
   response += `- Finish all: \`replay({ action: 'finish' })\`\n`;
   response += `- Check status: \`replay({ action: 'status' })\`\n`;
@@ -95,20 +113,27 @@ export function formatBreakpointHit(
   breakpointInfo: BreakpointHitInfo,
   connectionReason: string
 ): string {
-  let response = `# Breakpoint Hit: ${sequenceName}\n\n`;
-  response += `**Paused at breakpoint** after step ${results.length} of ${totalCommands}\n\n`;
-  response += `**Location:** \`${breakpointInfo.url}:${breakpointInfo.lineNumber}\`\n`;
-  if (breakpointInfo.functionName) {
-    response += `**Function:** \`${breakpointInfo.functionName}\`\n`;
-  }
-  response += `**Duration:** ${(durationMs / 1000).toFixed(1)}s\n\n`;
+  const location = `${breakpointInfo.url}:${breakpointInfo.lineNumber}`;
 
-  response += `## Completed Steps\n\n`;
+  let response = getFormattedResponse('REPLAY_BREAKPOINT_HIT', {
+    sequenceName,
+    location,
+    step: results.length,
+    total: totalCommands
+  });
+
+  response += `\n**Location:** \`${breakpointInfo.url}:${breakpointInfo.lineNumber}\``;
+  if (breakpointInfo.functionName) {
+    response += `\n**Function:** \`${breakpointInfo.functionName}\``;
+  }
+  response += `\n**Duration:** ${(durationMs / 1000).toFixed(1)}s`;
+
+  response += `\n\n**Completed Steps**\n`;
   results.forEach((r) => {
     response += `${r.step}. **${r.tool}** ✓\n`;
   });
 
-  response += `\n## Debug Actions\n\n`;
+  response += `\n**Debug Actions**\n`;
   response += `- Inspect call stack: \`inspect({ action: 'getCallStack', connectionReason: '${connectionReason}' })\`\n`;
   response += `- Get variables: \`inspect({ action: 'getVariables', connectionReason: '${connectionReason}', callFrameId: '<from call stack>' })\`\n`;
   response += `- Resume execution: \`execution({ action: 'resume', connectionReason: '${connectionReason}' })\`\n`;
@@ -247,12 +272,16 @@ export function formatHistory(
   totalCount: number
 ): string {
   if (history.length === 0) {
-    return `# Command History\n\n` +
-      `No commands recorded yet.\n\n` +
-      `**Note:** All tool calls are automatically recorded. Execute some commands to see them here.`;
+    return getFormattedResponse('REPLAY_HISTORY_EMPTY', {});
   }
 
-  let response = `# Command History (${history.length} of ${totalCount})\n\n`;
+  // Use message template for first two lines
+  let response = getFormattedResponse('REPLAY_HISTORY', {
+    count: history.length,
+    totalCount: totalCount
+  });
+
+  response += '\n';
 
   history.forEach((cmd) => {
     const paramStr = JSON.stringify(cmd.params);
@@ -260,8 +289,7 @@ export function formatHistory(
     response += `${cmd.index}. **${cmd.tool}** - ${truncatedParams}\n`;
   });
 
-  response += `\n---\n`;
-  response += `Create sequence: \`replay({ action: 'create', name: '...', indices: [${history.slice(0, 3).map(c => c.index).join(', ')}] })\``;
+  response += `\nCreate sequence: \`replay({ action: 'create', name: '...', indices: [${history.slice(0, 3).map(c => c.index).join(', ')}] })\``;
 
   return response;
 }
@@ -270,20 +298,23 @@ export function formatHistory(
  * Format sequence created response
  */
 export function formatSequenceCreated(sequence: CommandSequence): string {
-  let response = `# Sequence Created: ${sequence.name}\n\n`;
-  response += `**Sequence ID:** \`${sequence.id}\`\n`;
+  let response = getFormattedResponse('REPLAY_SEQUENCE_CREATED', {
+    name: sequence.name,
+    id: sequence.id,
+    commandCount: sequence.commands.length
+  });
+
   if (sequence.description) {
-    response += `**Description:** ${sequence.description}\n`;
+    response += `\n**Description:** ${sequence.description}`;
   }
   if (sequence.expectedOutcome) {
-    response += `**Expected Outcome:** ${sequence.expectedOutcome}\n`;
+    response += `\n**Expected Outcome:** ${sequence.expectedOutcome}`;
   }
   if (sequence.startUrl) {
-    response += `**Start URL:** ${sequence.startUrl}\n`;
+    response += `\n**Start URL:** ${sequence.startUrl}`;
   }
-  response += `**Commands:** ${sequence.commands.length}\n\n`;
-  response += `## Commands in Sequence\n\n`;
 
+  response += `\n\n**Commands in Sequence**\n`;
   sequence.commands.forEach((cmd, idx) => {
     response += `${idx + 1}. **${cmd.tool}**\n`;
     response += `\`\`\`json\n${JSON.stringify(cmd.params, null, 2)}\n\`\`\`\n\n`;
@@ -338,21 +369,24 @@ export function formatSequenceList(sequences: CommandSequence[]): string {
  * Format sequence details
  */
 export function formatSequenceDetails(sequence: CommandSequence): string {
-  let response = `# Sequence: ${sequence.name}\n\n`;
-  response += `**ID:** \`${sequence.id}\`\n`;
+  let response = getFormattedResponse('REPLAY_SEQUENCE_DETAILS', {
+    name: sequence.name,
+    commandCount: sequence.commands.length
+  });
+
+  response += `\n**ID:** \`${sequence.id}\``;
   if (sequence.description) {
-    response += `**Description:** ${sequence.description}\n`;
+    response += `\n**Description:** ${sequence.description}`;
   }
   if (sequence.expectedOutcome) {
-    response += `**Expected Outcome:** ${sequence.expectedOutcome}\n`;
+    response += `\n**Expected Outcome:** ${sequence.expectedOutcome}`;
   }
   if (sequence.startUrl) {
-    response += `**Start URL:** ${sequence.startUrl}\n`;
+    response += `\n**Start URL:** ${sequence.startUrl}`;
   }
-  response += `**Commands:** ${sequence.commands.length}\n`;
-  response += `**Created:** ${new Date(sequence.createdAt).toLocaleString()}\n\n`;
-  response += `## Commands\n\n`;
+  response += `\n**Created:** ${new Date(sequence.createdAt).toLocaleString()}`;
 
+  response += `\n\n**Commands**\n`;
   sequence.commands.forEach((cmd: RecordedCommand, idx: number) => {
     response += `### ${idx + 1}. ${cmd.tool}\n`;
     response += `**Parameters:**\n\`\`\`json\n${JSON.stringify(cmd.params, null, 2)}\n\`\`\`\n\n`;
@@ -373,12 +407,7 @@ export function formatSavedSequencesList(
   sequences: Array<{ filename: string; name: string; id: string; commandCount: number; description?: string; expectedOutcome?: string; startUrl?: string }>
 ): string {
   if (sequences.length === 0) {
-    return `# Saved Sequences on Disk\n\n` +
-      `No sequences saved to disk yet.\n\n` +
-      `**Save a sequence:**\n` +
-      `1. Create or select a sequence\n` +
-      `2. Save it: \`replay({ action: 'save', sequenceId: 'seq-id' })\`\n\n` +
-      `**Location:** \`.claude/sequences/\``;
+    return getFormattedResponse('REPLAY_SAVED_EMPTY', {});
   }
 
   // Sort by ID timestamp (oldest first) - ID format is "seq-{timestamp}"
@@ -388,7 +417,12 @@ export function formatSavedSequencesList(
     return tsA - tsB;
   });
 
-  let response = `# Saved Sequences (${sorted.length})\n\n`;
+  // Use message template for first two lines
+  let response = getFormattedResponse('REPLAY_SAVED_LIST', {
+    count: sorted.length
+  });
+
+  response += '\n';
 
   sorted.forEach((seq, idx) => {
     response += `${idx + 1}. ${seq.name} (${seq.commandCount})\n`;

@@ -154,7 +154,7 @@
 
 ```javascript
 setDebugLogging({ enabled: true })
-// Check logs at: .claude/logs/debug.log
+// Check logs at: .cdp-tools/logs/debug.log
 ```
 
 ### Check connection status

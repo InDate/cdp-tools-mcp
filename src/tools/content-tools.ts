@@ -14,6 +14,7 @@ import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 import type { ClickableCache, ClickableElement } from '../clickable-cache.js';
+import { getOutputPath } from '../paths.js';
 import { collectInteractiveElements } from '../element-collector.js';
 
 // All element types for findInteractive
@@ -26,7 +27,7 @@ const contentSchema = z.object({
   // extractText parameters
   mode: z.enum(['outline', 'full', 'section']).optional().describe('Mode: outline (metadata only), full (entire page), section (specific section by heading) - for extractText action'),
   section: z.string().optional().describe('Section heading (for extractText with mode=section)'),
-  save: z.boolean().optional().describe('Save extracted text to disk (.claude/extracts/) - for extractText action'),
+  save: z.boolean().optional().describe('Save extracted text to disk (.cdp-tools/extracts/) - for extractText action'),
 
   // findInteractive parameters
   types: z.array(z.enum(elementTypes)).optional().describe('Filter by element types (for findInteractive action)'),
@@ -44,7 +45,7 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
   const saveExtractedContent = async (content: string, url: string): Promise<string> => {
     const timestamp = Date.now();
     const date = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
-    const extractDir = path.join(process.cwd(), '.claude', 'extracts', date);
+    const extractDir = getOutputPath('extracts', date);
 
     // Ensure directory exists
     await fs.mkdir(extractDir, { recursive: true });

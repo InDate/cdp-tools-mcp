@@ -126,3 +126,5 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 **Storage**: `getCookies`, `setCookie`, `getLocalStorage`, `setLocalStorage`, `clearStorage`
 
 **Content**: `extractText`, `findInteractive`
+
+**Server**: `server` (actions: scan, start, stop, restart, list, logs, stopAll)
