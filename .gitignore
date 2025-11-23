@@ -7,3 +7,4 @@ build/
 */__pycache__/*
 dev-notes/*
 .cdp-tools/*
+.claude/commands/commit.md
