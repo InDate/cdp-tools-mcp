@@ -72,6 +72,12 @@ Restart and start debugging! Ask Claude to help debug your application.
 - **Connection Management**: Debug Chrome and Node.js simultaneously with isolated connections
 - **Port Handling**: Automatic port assignment prevents conflicts when running multiple sessions
 
+### Server Management
+- **Multi-Session Coordination**: Multiple MCP sessions share the same dev servers without port conflicts
+- **Persistent State**: Server PIDs, ports, and config survive session restarts
+- **Auto-Restart**: Servers with autoRun enabled restart automatically with exponential backoff
+- **Cross-Session Logs**: File-based logging lets any session read server output
+
 ## Example Usage
 
 **Web Debugging:**
@@ -137,6 +143,7 @@ MIT
 ## What's New
 
 ### Latest (Unreleased)
+- **Server Management**: Coordinate dev servers across multiple MCP sessions with persistent state, auto-restart, and cross-session log access
 - **Webpack Eval Support**: Code search now extracts actual source from webpack eval wrappers
 - **Lazy Source Map Loading**: On-demand loading improves startup performance
 - **Cache-Busting Breakpoints**: Breakpoints survive rebuilds with changing query params
