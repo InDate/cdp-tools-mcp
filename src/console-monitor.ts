@@ -28,6 +28,13 @@ export interface StoredConsoleMessage {
  */
 export type ValueExpander = (objectId: string, maxDepth: number) => Promise<any>;
 
+export interface ConsoleLogStats {
+  totalMessages: number;
+  newMessages: number;
+  newErrors: number;
+  newWarnings: number;
+}
+
 export class ConsoleMonitor {
   private messages: StoredConsoleMessage[] = [];
   private messageIdCounter = 0;
@@ -36,6 +43,7 @@ export class ConsoleMonitor {
   private messageCallbacks: Array<(message: StoredConsoleMessage) => void> = [];
   private valueExpander: ValueExpander | null = null;
   private consoleObjectDepth: number = 2; // Default depth for console object expansion
+  private lastSeenCount = 0; // Cursor for tracking new messages since last check
 
   /**
    * Set a function to expand object values using Runtime.getProperties
@@ -421,7 +429,8 @@ export class ConsoleMonitor {
    */
   clear(): void {
     this.messages = [];
-    // Don't reset counter - prevents ID collisions after clear
+    this.lastSeenCount = 0; // Reset cursor when messages are cleared
+    // Don't reset messageIdCounter - prevents ID collisions after clear
   }
 
   /**
@@ -432,6 +441,42 @@ export class ConsoleMonitor {
       return this.messages.filter(msg => msg.type === type).length;
     }
     return this.messages.length;
+  }
+
+  /**
+   * Get log stats with delta tracking (new messages since last check)
+   * This updates the cursor so subsequent calls show only newer messages
+   */
+  getLogStats(): ConsoleLogStats {
+    const totalMessages = this.messages.length;
+    const newMessages = this.messages.slice(this.lastSeenCount);
+
+    const stats: ConsoleLogStats = {
+      totalMessages,
+      newMessages: newMessages.length,
+      newErrors: newMessages.filter(m => m.type === 'error').length,
+      newWarnings: newMessages.filter(m => m.type === 'warn' || m.type === 'warning').length,
+    };
+
+    // Update cursor to current position
+    this.lastSeenCount = totalMessages;
+
+    return stats;
+  }
+
+  /**
+   * Peek at log stats without updating the cursor
+   */
+  peekLogStats(): ConsoleLogStats {
+    const totalMessages = this.messages.length;
+    const newMessages = this.messages.slice(this.lastSeenCount);
+
+    return {
+      totalMessages,
+      newMessages: newMessages.length,
+      newErrors: newMessages.filter(m => m.type === 'error').length,
+      newWarnings: newMessages.filter(m => m.type === 'warn' || m.type === 'warning').length,
+    };
   }
 
   /**

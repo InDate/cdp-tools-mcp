@@ -6,7 +6,7 @@ import { z } from 'zod';
 import type { ConnectionManager } from '../connection-manager.js';
 import { CDPManager } from '../cdp-manager.js';
 import { PuppeteerManager } from '../puppeteer-manager.js';
-import { ConsoleMonitor, type StoredConsoleMessage } from '../console-monitor.js';
+import { ConsoleMonitor } from '../console-monitor.js';
 import { NetworkMonitor } from '../network-monitor.js';
 import { SourceMapHandler } from '../sourcemap-handler.js';
 import { createTool } from '../validation-helpers.js';
@@ -63,22 +63,22 @@ export function createTabTools(
             const chromeTabs = connections.filter(conn => conn.type === 'chrome');
 
             if (chromeTabs.length === 0) {
-              return {
-                content: [{
-                  type: 'text',
-                  text: '## Open Tabs\n\nNo Chrome tabs currently open.\n\n**Note:** Use action "create" to create a new tab.'
-                }]
-              };
+              return createSuccessResponse('TAB_LIST_EMPTY');
             }
 
-            // Build tab list with references
-            let markdown = '## Open Tabs\n\n';
-            markdown += `Total tabs: ${chromeTabs.length}\n\n`;
+            // Build tab list, active tab first
+            const tabLines: string[] = [];
 
-            for (const conn of chromeTabs) {
+            // Sort so active tab is first
+            const sortedTabs = [...chromeTabs].sort((a, b) => {
+              if (a.id === activeId) return -1;
+              if (b.id === activeId) return 1;
+              return 0;
+            });
+
+            for (const conn of sortedTabs) {
               const isActive = conn.id === activeId;
-              const activeMarker = isActive ? ' ✓ **ACTIVE**' : '';
-              const reference = conn.reference || '*No reference set*';
+              const reference = conn.reference || '(no reference)';
 
               // Get page info if available
               let url = 'Unknown';
@@ -93,19 +93,14 @@ export function createTabTools(
                 // Ignore errors getting page info
               }
 
-              markdown += `### Tab: ${reference}${activeMarker}\n`;
-              markdown += `- **Reference:** ${reference}\n`;
-              markdown += `- **URL:** ${url}\n`;
-              markdown += `- **Title:** ${title}\n`;
-              markdown += `- **Page Index:** ${conn.pageIndex ?? 'Unknown'}\n`;
-              markdown += `\n`;
+              const activeMarker = isActive ? '*' : '-';
+              tabLines.push(`${activeMarker} ${reference}: ${title} (${url})`);
             }
 
-            markdown += '\n**Tip:** Use action "switch" to switch to a different tab, or action "create" to open a new one.';
-
-            return {
-              content: [{ type: 'text', text: markdown }],
-            };
+            return createSuccessResponse('TAB_LIST_SUCCESS', {
+              count: chromeTabs.length,
+              tabList: tabLines.join('\n')
+            });
           }
 
           case 'create': {
@@ -196,20 +191,24 @@ export function createTabTools(
               const url = page.url();
               const title = await page.title();
 
-              // Get console log stats
-              const allMessages = consoleMonitor.getMessages({});
-              const errorCount = allMessages.filter((m: StoredConsoleMessage) => m.type === 'error').length;
-              const warnCount = allMessages.filter((m: StoredConsoleMessage) => m.type === 'warn').length;
+              // Get console log stats and update cursor
+              const logStats = consoleMonitor.getLogStats();
+              let consoleStats: string | undefined;
+              if (logStats.totalMessages > 0) {
+                const details: string[] = [];
+                if (logStats.newErrors > 0) details.push(`${logStats.newErrors} err`);
+                if (logStats.newWarnings > 0) details.push(`${logStats.newWarnings} warn`);
+                const otherCount = logStats.totalMessages - logStats.newErrors - logStats.newWarnings;
+                if (otherCount > 0) details.push(`${otherCount} log`);
+                consoleStats = details.join('/');
+              }
 
-              // Format response
-              const markdown = `New tab created and connected - Reference: ${args.reference}
-Title: ${title}
-URL: ${url}
-Console: ${allMessages.length} logs (${errorCount} errors, ${warnCount} warnings)`;
-
-              return {
-                content: [{ type: 'text', text: markdown }],
-              };
+              return createSuccessResponse('TAB_CREATE_SUCCESS', {
+                reference: sanitizedReference,
+                title,
+                url,
+                consoleStats
+              });
             } catch (error) {
               return createErrorResponse('TAB_CREATE_FAILED', {
                 error: `${error}`

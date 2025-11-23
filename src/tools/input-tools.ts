@@ -680,15 +680,13 @@ export function createInputTools(
             }
 
             const focusInfo = result.result?.focusInfo;
-            let response = formatFocusInfo(focusInfo);
 
-            if (selectorWarning) {
-              response += `\n\n**Warning:** ${selectorWarning}`;
-            }
-
-            return {
-              content: [{ type: 'text', text: response }],
-            };
+            return createSuccessResponse('ELEMENT_FOCUS_SUCCESS', {
+              description: focusInfo?.description || 'Unknown element',
+              selector: focusInfo?.selector || rawSelector,
+              nextTabbable: focusInfo?.nextTabbable?.length ? focusInfo.nextTabbable.join(' → ') : undefined,
+              warning: selectorWarning || undefined
+            });
           }
 
           case 'focusNext': {
@@ -714,12 +712,13 @@ export function createInputTools(
             );
 
             const focusInfo = result.result?.focusInfo;
-            const header = `Tabbed forward${count > 1 ? ` ${count} times` : ''}`;
-            const focusOutput = formatFocusInfo(focusInfo, 'No element focused (may have reached end of page)');
 
-            return {
-              content: [{ type: 'text', text: `${header}\n\n${focusOutput}` }],
-            };
+            return createSuccessResponse('FOCUS_NEXT_SUCCESS', {
+              count: count > 1 ? count : undefined,
+              description: focusInfo?.description || 'No element focused (may have reached end of page)',
+              selector: focusInfo?.selector || 'none',
+              nextTabbable: focusInfo?.nextTabbable?.length ? focusInfo.nextTabbable.join(' → ') : undefined
+            });
           }
 
           case 'focusPrevious': {
@@ -747,54 +746,24 @@ export function createInputTools(
             );
 
             const focusInfo = result.result?.focusInfo;
-            const header = `Tabbed backward${count > 1 ? ` ${count} times` : ''}`;
-            const focusOutput = formatFocusInfo(focusInfo, 'No element focused (may have reached start of page)');
 
-            return {
-              content: [{ type: 'text', text: `${header}\n\n${focusOutput}` }],
-            };
+            return createSuccessResponse('FOCUS_PREVIOUS_SUCCESS', {
+              count: count > 1 ? count : undefined,
+              description: focusInfo?.description || 'No element focused (may have reached start of page)',
+              selector: focusInfo?.selector || 'none',
+              nextTabbable: focusInfo?.nextTabbable?.length ? focusInfo.nextTabbable.join(' → ') : undefined
+            });
           }
 
           default:
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: `## Error\n\nInvalid action: ${action}\n\n**Valid actions:** click, type, press, hover, focus, focusNext, focusPrevious`,
-                },
-              ],
-              isError: true,
-            };
+            return createErrorResponse('INVALID_ACTION', {
+              action,
+              validActions: 'click, type, press, hover, focus, focusNext, focusPrevious'
+            });
         }
       }
     ),
   };
-}
-
-/**
- * Format focus info into a consistent output string
- */
-function formatFocusInfo(focusInfo: {
-  description: string;
-  selector?: string;
-  prevTabbable: string[];
-  nextTabbable: string[];
-} | null | undefined, noFocusMessage?: string): string {
-  if (!focusInfo) {
-    return noFocusMessage || 'No element focused';
-  }
-
-  let output = `**Focused:** ${focusInfo.description}`;
-  if (focusInfo.selector) {
-    output += `\n**Selector:** \`${focusInfo.selector}\``;
-  }
-  if (focusInfo.prevTabbable.length > 0) {
-    output += `\n**Prev tab:** ${focusInfo.prevTabbable.join(' ← ')}`;
-  }
-  if (focusInfo.nextTabbable.length > 0) {
-    output += `\n**Next tab:** ${focusInfo.nextTabbable.join(' → ')}`;
-  }
-  return output;
 }
 
 /**

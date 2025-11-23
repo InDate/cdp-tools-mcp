@@ -47,10 +47,24 @@ Chrome is already running. You can either:
 ## CHROME_LAUNCH_SUCCESS
 
 **Type:** success
+**Summary:** Chrome launched and connected
 
-Chrome launched and debugger connected on port {{port}}
-Reference: {{reference}}, Runtime: {{runtimeType}}, PID: {{pid}}
-Features: {{features}}
+Title: {{title}}, URL: {{url}}{{#consoleStats}}
+
+Console: {{consoleStats}}{{/consoleStats}}
+
+{{#hasUserReference}}Ready to use! Use connectionReason: "{{reference}}" in tool calls.{{/hasUserReference}}{{^hasUserReference}}Ready to use! Use connectionReason: "{{reference}}" in tool calls, or rename with tab({ action: 'rename' }) first.{{/hasUserReference}}
+
+---
+
+## CHROME_CONNECTION_REUSED
+
+**Type:** success
+**Summary:** Chrome connection reused (already exists)
+
+Title: {{title}}, URL: {{url}}
+
+Ready to use! Use connectionReason: "{{reference}}" in tool calls.
 
 ---
 
@@ -75,10 +89,19 @@ Chrome launched successfully but auto-connect failed: {{error}}
 ## DEBUGGER_CONNECT_SUCCESS
 
 **Type:** success
+**Summary:** Connected to {{runtimeType}} debugger
 
-Connected to {{runtimeType}} debugger on {{host}}:{{port}}
-Reference: {{reference}}
-Features: {{features}}
+Host: {{host}}:{{port}}, Reference: {{reference}}
+
+Features: {{features}}{{#consoleStats}}
+Console: {{consoleStats}}{{/consoleStats}}{{#isChrome}}
+
+Note: Console monitoring auto-enabled. Page auto-reloaded to capture initial logs.
+
+IMPORTANT: Please provide a reference name for this tab using the renameTab tool.{{/isChrome}}{{#isNode}}
+
+Note: Browser automation features are not available for Node.js debugging.
+Console Monitoring: Enabled via CDP (logpoint output and console.log calls will be captured).{{/isNode}}
 
 ---
 
@@ -497,8 +520,12 @@ Variables for call frame {{callFrameId}}: {{totalCount}} total{{#filter}} (filte
 ## EVALUATE_EXPRESSION_SUCCESS
 
 **Type:** success
+**Summary:** Expression evaluated successfully
 
-Expression result: {{expression}}
+Expression: {{expression}}, Context: {{context}}
+
+Result:
+{{result}}
 
 ---
 
@@ -593,6 +620,15 @@ Navigated forward{{#url}} to: {{url}}{{/url}}{{#clickableElements}}
 
 ---
 
+## PAGE_INFO_SUCCESS
+
+**Type:** success
+**Summary:** Page information
+
+URL: {{url}}, Title: {{title}}
+
+---
+
 ## PAGE_RELOAD_SUCCESS
 
 **Type:** success
@@ -651,6 +687,52 @@ Key pressed: `{{key}}`
 **Type:** success
 
 Hovered over element: `{{selector}}`
+
+---
+
+## ELEMENT_FOCUS_SUCCESS
+
+**Type:** success
+**Summary:** Element focused
+
+{{description}}, Selector: {{selector}}{{#nextTabbable}}
+
+Next tab: {{nextTabbable}}{{/nextTabbable}}{{#warning}}
+
+Warning: {{warning}}{{/warning}}
+
+---
+
+## FOCUS_NEXT_SUCCESS
+
+**Type:** success
+**Summary:** Tabbed forward{{#count}} {{count}} times{{/count}}
+
+{{description}}, Selector: {{selector}}{{#nextTabbable}}
+
+Next tab: {{nextTabbable}}{{/nextTabbable}}
+
+---
+
+## FOCUS_PREVIOUS_SUCCESS
+
+**Type:** success
+**Summary:** Tabbed backward{{#count}} {{count}} times{{/count}}
+
+{{description}}, Selector: {{selector}}{{#nextTabbable}}
+
+Next tab: {{nextTabbable}}{{/nextTabbable}}
+
+---
+
+## INVALID_ACTION
+
+**Type:** error
+**Code:** INVALID_ACTION
+
+Invalid action: {{action}}
+
+**Valid actions:** {{validActions}}
 
 ---
 
@@ -1034,12 +1116,31 @@ Common variables used across messages:
 ## TAB_CREATE_SUCCESS
 
 **Type:** success
+**Summary:** New tab created and connected
 
-Tab created successfully!
+Title: {{title}}, URL: {{url}}{{#consoleStats}}
 
-**Reference:** {{reference}}
-**URL:** {{url}}
-**Title:** {{title}}
+Console: {{consoleStats}}{{/consoleStats}}
+
+---
+
+## TAB_LIST_EMPTY
+
+**Type:** info
+**Summary:** No Chrome tabs open
+
+Use action "create" to create a new tab.
+
+---
+
+## TAB_LIST_SUCCESS
+
+**Type:** list
+**Summary:** {{count}} open tab(s)
+
+{{tabList}}
+
+Tip: Use action "switch" to switch tabs, or "create" to open a new one.
 
 ---
 
@@ -1059,33 +1160,27 @@ Failed to create new tab: {{error}}
 ## TAB_RENAME_SUCCESS
 
 **Type:** success
+**Summary:** Tab renamed
 
-Tab renamed successfully!
-
-**Old Reference:** {{oldReference}}
-**New Reference:** {{newReference}}
+Old: {{oldReference}}, New: {{newReference}}
 
 ---
 
 ## TAB_SWITCH_SUCCESS
 
 **Type:** success
+**Summary:** Switched to tab
 
-Switched to tab: {{reference}}
-
-**URL:** {{url}}
-**Title:** {{title}}
+Title: {{title}}, URL: {{url}}
 
 ---
 
 ## TAB_CLOSE_SUCCESS
 
 **Type:** success
+**Summary:** Tab closed
 
-Tab closed successfully!
-
-**Closed Tab:** {{closedReference}}
-**New Active Tab:** {{newActiveReference}}
+New active: {{newActiveReference}}
 
 ---
 
@@ -1406,27 +1501,27 @@ Location: `.cdp-tools/sequences/`
 ## REPLAY_RUN_SUCCESS
 
 **Type:** success
-**Summary:** Sequence completed
+**Summary:** {{sequenceName}}
 
-{{sequenceName}}: {{successful}}/{{total}} commands in {{duration}}s
+Completed {{successful}}/{{total}} commands in {{duration}}s
 
 ---
 
 ## REPLAY_RUN_FAILED
 
 **Type:** error
-**Summary:** Sequence failed
+**Summary:** {{sequenceName}}
 
-{{sequenceName}}: Failed at step {{failedStep}} ({{failedTool}})
+Failed at step {{failedStep}} ({{failedTool}})
 
 ---
 
 ## REPLAY_PAUSED
 
 **Type:** info
-**Summary:** Sequence paused
+**Summary:** {{sequenceName}}
 
-{{sequenceName}}: Paused at step {{pausedStep}}/{{total}}, {{remaining}} remaining
+Paused at step {{pausedStep}} of {{total}}, {{remaining}} remaining
 
 ---
 
@@ -1451,27 +1546,126 @@ Name: {{name}}, ID: {{id}}, Commands: {{commandCount}}
 ## REPLAY_STEP_SUCCESS
 
 **Type:** success
-**Summary:** Steps executed
+**Summary:** {{sequenceName}}
 
-{{sequenceName}}: Executed steps {{startStep}}-{{endStep}} of {{total}}
+Executed {{stepCount}} step(s), {{remaining}} remaining
 
 ---
 
 ## REPLAY_STEP_COMPLETE
 
 **Type:** success
-**Summary:** Sequence complete
+**Summary:** {{sequenceName}}
 
-{{sequenceName}}: All {{total}} steps executed successfully
+All {{total}} steps executed successfully
 
 ---
 
 ## REPLAY_BREAKPOINT_HIT
 
 **Type:** info
-**Summary:** Breakpoint hit
+**Summary:** {{sequenceName}}
 
-{{sequenceName}}: Paused at {{location}} after step {{step}}/{{total}}
+Breakpoint hit at {{location}}
+
+---
+
+## REPLAY_SEQUENCE_LIST
+
+**Type:** success
+**Summary:** Saved sequences
+
+{{count}} sequence(s) in memory
+
+---
+
+## REPLAY_SEQUENCE_LIST_EMPTY
+
+**Type:** info
+**Summary:** No sequences saved
+
+No sequences saved yet in memory.
+
+---
+
+## REPLAY_ACTIVE_STATUS
+
+**Type:** info
+**Summary:** {{sequenceName}}
+
+Paused at step {{currentStep}} of {{totalSteps}}
+
+---
+
+## REPLAY_STEP_FAILED
+
+**Type:** error
+**Summary:** Step failed
+
+{{sequenceName}}: Failed at step {{failedStep}} ({{failedTool}})
+
+---
+
+## REPLAY_INSERT_PROMPT
+
+**Type:** info
+**Summary:** Insert commands
+
+{{sequenceName}}: {{commandCount}} command(s) available to insert
+
+---
+
+## REPLAY_INSERT_SUCCESS
+
+**Type:** success
+**Summary:** Commands inserted
+
+{{sequenceName}}: Inserted {{insertedCount}} command(s) after step {{insertAfter}}
+
+---
+
+## REPLAY_INSERT_NEW
+
+**Type:** success
+**Summary:** New sequence created
+
+{{sequenceName}}: Created with {{insertedCount}} inserted command(s)
+
+---
+
+## REPLAY_DEBUG_STATE
+
+**Type:** info
+**Summary:** Debug state
+
+Execution paused at {{location}}
+
+---
+
+## REPLAY_VARIABLE_PROMPT
+
+**Type:** info
+**Summary:** Variables found
+
+{{sequenceName}}: {{variableCount}} customizable parameter(s)
+
+---
+
+## REPLAY_DRY_RUN
+
+**Type:** info
+**Summary:** Dry run preview
+
+{{sequenceName}}: Would execute {{commandCount}} command(s)
+
+---
+
+## REPLAY_NO_COMMANDS_SINCE_PAUSE
+
+**Type:** info
+**Summary:** No commands to insert
+
+No commands recorded since pause. Run some commands first.
 
 ---
 

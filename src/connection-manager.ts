@@ -339,4 +339,38 @@ export class ConnectionManager {
 
     return inactive;
   }
+
+  /**
+   * Get console log stats from all connections
+   * Returns an array of stats per connection that has new messages
+   */
+  getConsoleLogStats(): Array<{
+    reference: string;
+    newMessages: number;
+    newErrors: number;
+    newWarnings: number;
+  }> {
+    const stats: Array<{
+      reference: string;
+      newMessages: number;
+      newErrors: number;
+      newWarnings: number;
+    }> = [];
+
+    for (const connection of this.connections.values()) {
+      if (connection.consoleMonitor) {
+        const logStats = connection.consoleMonitor.getLogStats();
+        if (logStats.newMessages > 0) {
+          stats.push({
+            reference: connection.reference || connection.id,
+            newMessages: logStats.newMessages,
+            newErrors: logStats.newErrors,
+            newWarnings: logStats.newWarnings,
+          });
+        }
+      }
+    }
+
+    return stats;
+  }
 }

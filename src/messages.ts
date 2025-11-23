@@ -13,7 +13,7 @@ const __dirname = dirname(__filename);
 
 interface MessageTemplate {
   id: string;
-  type: 'error' | 'success' | 'warning' | 'info';
+  type: 'error' | 'success' | 'warning' | 'info' | 'list';
   code?: string;
   summary?: string;  // Brief action description for status line (e.g., "Breakpoint set")
   content: string;   // Key details and additional info
@@ -57,7 +57,7 @@ class MessageManager {
 
       if (!id || id.startsWith('#') || id === 'Variable Templates') continue;
 
-      let type: 'error' | 'success' | 'warning' | 'info' = 'info';
+      let type: 'error' | 'success' | 'warning' | 'info' | 'list' = 'info';
       let code: string | undefined;
       let summary: string | undefined;
       let contentLines: string[] = [];
@@ -74,7 +74,7 @@ class MessageManager {
 
         // Parse metadata
         if (line.startsWith('**Type:**')) {
-          const typeMatch = line.match(/\*\*Type:\*\*\s+(error|success|warning|info)/);
+          const typeMatch = line.match(/\*\*Type:\*\*\s+(error|success|warning|info|list)/);
           if (typeMatch) type = typeMatch[1] as any;
           continue;
         }
@@ -379,14 +379,16 @@ class MessageManager {
     // Build the response with Status + Key detail format
     const lines: string[] = [];
 
-    // Line 1: Status line
+    // Line 1: Status line (skip prefix for 'list' type)
     const typeLabel = template.type.charAt(0).toUpperCase() + template.type.slice(1);
+    const skipPrefix = template.type === 'list';
     if (template.summary) {
-      lines.push(`${typeLabel}: ${this.formatMessage(template.summary, variables)}`);
+      const summaryText = this.formatMessage(template.summary, variables);
+      lines.push(skipPrefix ? summaryText : `${typeLabel}: ${summaryText}`);
     } else {
       // Extract first line of content as summary if no explicit summary
       const firstLine = formattedContent.split('\n')[0].trim();
-      lines.push(`${typeLabel}: ${firstLine}`);
+      lines.push(skipPrefix ? firstLine : `${typeLabel}: ${firstLine}`);
     }
 
     // Line 2: Key detail (first line of content if we have a summary)

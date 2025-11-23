@@ -49,7 +49,7 @@ import { createModalTools } from './tools/modal-tools.js';
 import { createReplayTools } from './tools/replay-tools.js';
 import { createServerTools } from './tools/server-tools.js';
 import { ServerManager } from './server-manager.js';
-import { createSuccessResponse, createErrorResponse, formatCodeBlock, getMessage } from './messages.js';
+import { createSuccessResponse, createErrorResponse, formatCodeBlock, getMessage, getFormattedResponse } from './messages.js';
 import { createServer } from 'net';
 import { readFile } from 'fs/promises';
 import { join, dirname } from 'path';
@@ -265,16 +265,11 @@ const connectionTools = {
             title = await page.title();
           }
 
-          const message = `Chrome connection reused (already exists)
-Connection Reference: \`${sanitizedRef}\`
-Title: ${title}
-URL: ${pageUrl}
-
-**Ready to use!** Use \`connectionReason: "${sanitizedRef}"\` in tool calls.`;
-
-          return {
-            content: [{ type: 'text', text: message }],
-          };
+          return createSuccessResponse('CHROME_CONNECTION_REUSED', {
+            reference: sanitizedRef,
+            title,
+            url: pageUrl
+          });
         }
       }
 
@@ -387,16 +382,24 @@ URL: ${pageUrl}
             // Update active manager references
             updateActiveManagers(connectionId);
 
-            // Get page info and console stats for Chrome connections
+            // Get page info for Chrome connections
             if (runtimeType === 'chrome') {
               const page = puppeteerManager.getPage();
               pageUrl = page.url();
               title = await page.title();
 
-              const allMessages = consoleMonitor.getMessages({});
-              const errorCount = allMessages.filter(m => m.type === 'error').length;
-              const warnCount = allMessages.filter(m => m.type === 'warn').length;
-              consoleStats = `\nConsole: ${allMessages.length} logs (${errorCount} errors, ${warnCount} warnings)`;
+              // Get console stats and update cursor so first tool call doesn't re-report these
+              const logStats = consoleMonitor.getLogStats();
+              if (logStats.totalMessages > 0) {
+                const details: string[] = [];
+                const errorCount = logStats.newErrors;
+                const warnCount = logStats.newWarnings;
+                const otherCount = logStats.totalMessages - errorCount - warnCount;
+                if (errorCount > 0) details.push(`${errorCount} err`);
+                if (warnCount > 0) details.push(`${warnCount} warn`);
+                if (otherCount > 0) details.push(`${otherCount} log`);
+                consoleStats = `\n**Console:** ${details.join('/')}`;
+              }
             }
           } catch (connectError) {
             // Log the auto-connect failure
@@ -420,22 +423,13 @@ URL: ${pageUrl}
           const connection = connectionManager.getConnection(connectionId);
           const reference = connection?.reference || UNNAMED_CONNECTION;
 
-          const message = `Chrome launched and connected
-Connection Reference: \`${reference}\`
-Title: ${title}
-URL: ${pageUrl}${consoleStats}`;
-
-          // Add instruction based on whether user provided a reference
-          let instruction: string;
-          if (userReference) {
-            instruction = `\n\n**Ready to use!** Use \`connectionReason: "${reference}"\` in tool calls. Navigate with \`navigate({ action: 'goto', connectionReason: "${reference}", url: "..." })\`.`;
-          } else {
-            instruction = `\n\n**Ready to use!** Use \`connectionReason: "${reference}"\` in tool calls, or rename with \`tab({ action: 'rename', reference: "${reference}", newReference: "your-name" })\` first.`;
-          }
-
-          return {
-            content: [{ type: 'text', text: message + instruction }],
-          };
+          return createSuccessResponse('CHROME_LAUNCH_SUCCESS', {
+            reference,
+            title: title || '(no title)',
+            url: pageUrl,
+            consoleStats: consoleStats || undefined,
+            hasUserReference: !!userReference
+          });
         } else {
           return createSuccessResponse('CHROME_LAUNCH_NO_CONNECT', { port: port.toString() }, { port, isNewBrowser });
         }
@@ -719,36 +713,34 @@ URL: ${pageUrl}${consoleStats}`;
         // Update active manager references
         updateActiveManagers(connectionId);
 
-        // Build markdown response using template
-        let markdown = getMessage('DEBUGGER_CONNECT_SUCCESS', {
+        // Build console stats for Chrome connections
+        let consoleStats: string | undefined;
+        if (runtimeType === 'chrome') {
+          const connection = connectionManager.getConnection(connectionId);
+          if (connection?.consoleMonitor) {
+            // Get console stats and update cursor so first tool call doesn't re-report these
+            const logStats = connection.consoleMonitor.getLogStats();
+            if (logStats.totalMessages > 0) {
+              const details: string[] = [];
+              if (logStats.newErrors > 0) details.push(`${logStats.newErrors} err`);
+              if (logStats.newWarnings > 0) details.push(`${logStats.newWarnings} warn`);
+              const otherCount = logStats.totalMessages - logStats.newErrors - logStats.newWarnings;
+              if (otherCount > 0) details.push(`${otherCount} log`);
+              consoleStats = details.join('/');
+            }
+          }
+        }
+
+        return createSuccessResponse('DEBUGGER_CONNECT_SUCCESS', {
           runtimeType,
           host,
           port: port.toString(),
           reference,
-          features: features.join(', ')
+          features: features.join(', '),
+          consoleStats,
+          isChrome: runtimeType === 'chrome',
+          isNode: runtimeType === 'node'
         });
-
-        // Add console log summary for Chrome connections
-        if (runtimeType === 'chrome') {
-          const connection = connectionManager.getConnection(connectionId);
-          if (connection?.consoleMonitor) {
-            const allMessages = connection.consoleMonitor.getMessages({});
-            const errorCount = allMessages.filter(m => m.type === 'error').length;
-            const warnCount = allMessages.filter(m => m.type === 'warn').length;
-            const logCount = allMessages.filter(m => m.type === 'log').length;
-            markdown += `\n**Console Logs:** ${allMessages.length} total (${errorCount} errors, ${warnCount} warnings, ${logCount} logs)\n`;
-          }
-          markdown += '\n**Note:** Console monitoring auto-enabled. Page auto-reloaded to capture initial logs.';
-          // Add instruction to provide tab reference
-          markdown += '\n\n**IMPORTANT:** Please provide a reference name for this tab using the `renameTab` tool (e.g., "wikipedia-search", "product-page").';
-        } else if (runtimeType === 'node') {
-          markdown += '\n**Note:** Browser automation features are not available for Node.js debugging.';
-          markdown += '\n**Console Monitoring:** Enabled via CDP (logpoint output and console.log calls will be captured).';
-        }
-
-        return {
-          content: [{ type: 'text', text: markdown.trim() }],
-        };
       } catch (error) {
         return createErrorResponse('DEBUGGER_CONNECT_FAILED', {
           host,
@@ -1120,19 +1112,44 @@ function registerToolHandlers(server: Server) {
     try {
       const result = await tool.handler(validation.data);
 
+      // Collect status lines to append to response
+      const statusLines: string[] = [];
+
       // Append server log status to all tool responses
-      const logStats = serverManager.getLogStats();
-      if (logStats.length > 0) {
-        const parts = logStats
+      const serverLogStats = serverManager.getLogStats();
+      if (serverLogStats.length > 0) {
+        const parts = serverLogStats
           .filter(s => s.newStderr > 0 || s.newStdout > 0)
           .map(s => `${s.serverId} (${s.newStderr} err/${s.newStdout} out)`);
 
-        if (parts.length > 0 && result.content && result.content.length > 0) {
-          const statusLine = `\n\n---\n📊 **Server Logs:** ${parts.join(' | ')}`;
-          const lastContent = result.content[result.content.length - 1];
-          if (lastContent && lastContent.type === 'text') {
-            lastContent.text += statusLine;
+        if (parts.length > 0) {
+          statusLines.push(`**Server Logs:** ${parts.join(' | ')}`);
+        }
+      }
+
+      // Append console log status if tool used a connectionReason
+      const connectionReason = validation.data?.connectionReason;
+      if (connectionReason) {
+        const connection = connectionManager.findConnectionByReference(connectionReason);
+        if (connection?.consoleMonitor) {
+          const logStats = connection.consoleMonitor.getLogStats();
+          if (logStats.newMessages > 0) {
+            const details: string[] = [];
+            if (logStats.newErrors > 0) details.push(`${logStats.newErrors} err`);
+            if (logStats.newWarnings > 0) details.push(`${logStats.newWarnings} warn`);
+            const otherCount = logStats.newMessages - logStats.newErrors - logStats.newWarnings;
+            if (otherCount > 0) details.push(`${otherCount} log`);
+            statusLines.push(`**Console:** ${details.join('/')}`);
           }
+        }
+      }
+
+      // Append all status lines if any
+      if (statusLines.length > 0 && result.content && result.content.length > 0) {
+        const statusText = `\n\n---\n${statusLines.join('\n')}`;
+        const lastContent = result.content[result.content.length - 1];
+        if (lastContent && lastContent.type === 'text') {
+          lastContent.text += statusText;
         }
       }
 

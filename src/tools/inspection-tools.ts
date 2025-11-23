@@ -184,15 +184,11 @@ export function createInspectionTools(
             const { callFrameId, includeGlobal = false, filter, expandObjects = true, maxDepth = 2 } = args;
 
             if (!callFrameId) {
-              return {
-                content: [
-                  {
-                    type: 'text',
-                    text: `## Error\n\nMissing required parameter: \`callFrameId\`\n\n**Action:** getVariables\n\n**Suggestion:** Provide a valid call frame ID from the call stack.`,
-                  },
-                ],
-                isError: true,
-              };
+              return createErrorResponse('MISSING_PARAMETER', {
+                action: 'getVariables',
+                missing: 'callFrameId',
+                message: 'Provide a valid call frame ID from the call stack'
+              });
             }
 
             try {
@@ -229,49 +225,34 @@ export function createInspectionTools(
             const { expression, callFrameId, expandObjects = true, maxDepth = 2 } = args;
 
             if (!expression) {
-              return {
-                content: [
-                  {
-                    type: 'text',
-                    text: `## Error\n\nMissing required parameter: \`expression\`\n\n**Action:** evaluateExpression\n\n**Suggestion:** Provide a JavaScript expression to evaluate.`,
-                  },
-                ],
-                isError: true,
-              };
+              return createErrorResponse('MISSING_PARAMETER', {
+                action: 'evaluateExpression',
+                missing: 'expression',
+                message: 'Provide a JavaScript expression to evaluate'
+              });
             }
 
             try {
               const result = await targetCdpManager.evaluateExpression(expression, callFrameId, expandObjects, maxDepth);
 
-              // The manual construction in evaluateExpression was intentionally added to
-              // solve a specific problem - ensuring that expression results are always visible with proper
-              // formatting and context. This is a legitimate use case for manual construction, not a bug.
-
-              let markdown = `Expression evaluated successfully\n\n`;
-              markdown += `**Expression:** \`${expression}\`\n`;
-              markdown += `**Context:** ${callFrameId ? `Call frame ${callFrameId}` : 'Global context'}\n\n`;
-              markdown += `**Result:**\n`;
-
               // Format result based on type
+              let formattedResult: string;
               if (result === undefined || result === 'undefined') {
-                markdown += '```\nundefined\n```';
+                formattedResult = '```\nundefined\n```';
               } else if (result === null || result === 'null') {
-                markdown += '```\nnull\n```';
+                formattedResult = '```\nnull\n```';
               } else if (typeof result === 'string') {
-                markdown += `\`\`\`\n${result}\n\`\`\``;
+                formattedResult = `\`\`\`\n${result}\n\`\`\``;
               } else {
                 // For objects/arrays, use JSON formatting
-                markdown += `\`\`\`json\n${JSON.stringify(result, null, 2)}\n\`\`\``;
+                formattedResult = `\`\`\`json\n${JSON.stringify(result, null, 2)}\n\`\`\``;
               }
 
-              return {
-                content: [
-                  {
-                    type: 'text',
-                    text: markdown,
-                  },
-                ],
-              };
+              return createSuccessResponse('EVALUATE_EXPRESSION_SUCCESS', {
+                expression,
+                context: callFrameId ? `Call frame ${callFrameId}` : 'Global context',
+                result: formattedResult
+              });
             } catch (error) {
               return createErrorResponse('EVALUATE_EXPRESSION_FAILED', {
                 expression,
@@ -284,15 +265,11 @@ export function createInspectionTools(
             const { pattern, caseSensitive = false, isRegex = true, urlFilter, limit = 100 } = args;
 
             if (!pattern) {
-              return {
-                content: [
-                  {
-                    type: 'text',
-                    text: `## Error\n\nMissing required parameter: \`pattern\`\n\n**Action:** searchCode\n\n**Suggestion:** Provide a regex pattern to search for in the code.`,
-                  },
-                ],
-                isError: true,
-              };
+              return createErrorResponse('MISSING_PARAMETER', {
+                action: 'searchCode',
+                missing: 'pattern',
+                message: 'Provide a regex pattern to search for in the code'
+              });
             }
 
             if (!cdpManager.isConnected()) {
@@ -384,15 +361,11 @@ export function createInspectionTools(
             const { functionName, caseSensitive = false, urlFilter, limit = 50 } = args;
 
             if (!functionName) {
-              return {
-                content: [
-                  {
-                    type: 'text',
-                    text: `## Error\n\nMissing required parameter: \`functionName\`\n\n**Action:** searchFunctions\n\n**Suggestion:** Provide a function name to search for.`,
-                  },
-                ],
-                isError: true,
-              };
+              return createErrorResponse('MISSING_PARAMETER', {
+                action: 'searchFunctions',
+                missing: 'functionName',
+                message: 'Provide a function name to search for'
+              });
             }
 
             if (!cdpManager.isConnected()) {

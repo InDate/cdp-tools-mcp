@@ -309,21 +309,14 @@ export function createPageTools(
             );
 
             if (!result.result) {
-              return {
-                content: [{ type: 'text', text: 'Unable to retrieve page information' }],
-              };
+              return createErrorResponse('PAGE_NOT_LOADED', { toolName: 'navigate.info' });
             }
 
             const pageInfo = result.result;
-            const markdown = `## Page Information\n\n**URL:** ${pageInfo.url}\n**Title:** ${pageInfo.title}\n\n${formatCodeBlock(pageInfo.viewport)}`;
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: markdown,
-                },
-              ],
-            };
+            return createSuccessResponse('PAGE_INFO_SUCCESS', {
+              url: pageInfo.url,
+              title: pageInfo.title
+            });
           }
 
           default:
