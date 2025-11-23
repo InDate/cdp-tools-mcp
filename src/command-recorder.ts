@@ -312,14 +312,85 @@ export class CommandRecorder {
   }
 
   /**
-   * Load a sequence from disk
+   * Find best matching filename from saved sequences
+   * Supports: exact match, with/without .json, name prefix (returns latest by timestamp)
+   */
+  async findMatchingFilename(searchTerm: string): Promise<{ filename: string; matchType: string } | null> {
+    const savedSequences = await this.listSavedSequencesOnDisk();
+    if (savedSequences.length === 0) return null;
+
+    const term = searchTerm.toLowerCase();
+    const termWithoutJson = term.endsWith('.json') ? term.slice(0, -5) : term;
+
+    // 1. Exact filename match (with or without .json)
+    const exactMatch = savedSequences.find(s =>
+      s.filename.toLowerCase() === term ||
+      s.filename.toLowerCase() === termWithoutJson + '.json'
+    );
+    if (exactMatch) {
+      return { filename: exactMatch.filename, matchType: 'exact' };
+    }
+
+    // 2. Exact name match
+    const nameMatch = savedSequences.find(s => s.name.toLowerCase() === termWithoutJson);
+    if (nameMatch) {
+      return { filename: nameMatch.filename, matchType: 'name' };
+    }
+
+    // 3. Filename starts with search term (gets latest by sorting)
+    const prefixMatches = savedSequences.filter(s =>
+      s.filename.toLowerCase().startsWith(termWithoutJson)
+    );
+    if (prefixMatches.length > 0) {
+      // Sort by filename descending to get latest timestamp
+      prefixMatches.sort((a, b) => b.filename.localeCompare(a.filename));
+      return { filename: prefixMatches[0].filename, matchType: 'prefix' };
+    }
+
+    // 4. Name starts with search term
+    const namePrefixMatches = savedSequences.filter(s =>
+      s.name.toLowerCase().startsWith(termWithoutJson)
+    );
+    if (namePrefixMatches.length > 0) {
+      namePrefixMatches.sort((a, b) => b.filename.localeCompare(a.filename));
+      return { filename: namePrefixMatches[0].filename, matchType: 'name-prefix' };
+    }
+
+    // 5. Name contains search term
+    const containsMatches = savedSequences.filter(s =>
+      s.name.toLowerCase().includes(termWithoutJson)
+    );
+    if (containsMatches.length > 0) {
+      containsMatches.sort((a, b) => b.filename.localeCompare(a.filename));
+      return { filename: containsMatches[0].filename, matchType: 'contains' };
+    }
+
+    return null;
+  }
+
+  /**
+   * Load a sequence from disk (supports fuzzy filename matching)
    */
   async loadSequenceFromDisk(filename: string): Promise<CommandSequence | null> {
     try {
-      // Support both full paths and relative filenames
-      const filepath = filename.startsWith('/') || filename.includes(':\\')
-        ? filename  // Absolute path (Unix or Windows)
-        : join(this.sequencesDir, filename);  // Relative to sequences directory
+      // Support absolute paths directly
+      if (filename.startsWith('/') || filename.includes(':\\')) {
+        const content = await fs.readFile(filename, 'utf-8');
+        const sequence: CommandSequence = JSON.parse(content);
+        this.sequences.set(sequence.id, sequence);
+        await debugLog('command-recorder', `Loaded sequence "${sequence.name}" from ${filename}`);
+        return sequence;
+      }
+
+      // Try fuzzy matching for relative filenames
+      const match = await this.findMatchingFilename(filename);
+      if (!match) {
+        await debugLog('command-recorder', `No matching sequence found for "${filename}"`);
+        return null;
+      }
+
+      const filepath = join(this.sequencesDir, match.filename);
+      await debugLog('command-recorder', `Matched "${filename}" to "${match.filename}" (${match.matchType})`);
 
       const content = await fs.readFile(filepath, 'utf-8');
       const sequence: CommandSequence = JSON.parse(content);
@@ -375,14 +446,26 @@ export class CommandRecorder {
   }
 
   /**
-   * Delete a sequence from disk
+   * Delete a sequence from disk (supports fuzzy filename matching)
    */
   async deleteSequenceFromDisk(filename: string): Promise<boolean> {
     try {
-      // Support both full paths and relative filenames
-      const filepath = filename.startsWith('/') || filename.includes(':\\')
-        ? filename  // Absolute path (Unix or Windows)
-        : join(this.sequencesDir, filename);  // Relative to sequences directory
+      // Support absolute paths directly
+      if (filename.startsWith('/') || filename.includes(':\\')) {
+        await fs.unlink(filename);
+        await debugLog('command-recorder', `Deleted sequence file: ${filename}`);
+        return true;
+      }
+
+      // Try fuzzy matching for relative filenames
+      const match = await this.findMatchingFilename(filename);
+      if (!match) {
+        await debugLog('command-recorder', `No matching sequence found for "${filename}"`);
+        return false;
+      }
+
+      const filepath = join(this.sequencesDir, match.filename);
+      await debugLog('command-recorder', `Matched "${filename}" to "${match.filename}" (${match.matchType})`);
 
       await fs.unlink(filepath);
       await debugLog('command-recorder', `Deleted sequence file: ${filepath}`);
