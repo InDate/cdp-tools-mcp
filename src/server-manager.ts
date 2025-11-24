@@ -1,6 +1,6 @@
 /**
  * Server Manager
- * Manages npm/node servers - start, stop, restart, and monitor
+ * Manages development servers (any language/framework) - start, stop, restart, and monitor
  * Persists state to .cdp-tools/servers.json for recovery and auto-run
  * Logs to .cdp-tools/logs/<server-id>/ for cross-MCP access
  */
@@ -12,20 +12,10 @@ import * as net from 'net';
 import { debugLog } from './debug-logger.js';
 import { getOutputPath } from './paths.js';
 
-export interface PackageInfo {
-  path: string;
-  name: string;
-  version?: string;
-  scripts: Record<string, string>;
-  serverScripts: string[]; // Scripts that look like servers (dev, start, serve, etc.)
-}
-
 export interface PersistedServer {
   id: string;
-  packagePath: string;
-  packageName: string;
-  script: string;
   command: string;
+  cwd: string;
   pid: number;
   port?: number;
   autoRun: boolean;
@@ -34,10 +24,8 @@ export interface PersistedServer {
 
 export interface RunningServer {
   id: string;
-  packagePath: string;
-  packageName: string;
-  script: string;
   command: string;
+  cwd: string;
   process: ChildProcess | null; // null if attached to existing process
   pid: number;
   startedAt: Date;
@@ -47,16 +35,23 @@ export interface RunningServer {
 
 export interface ServerStatus {
   id: string;
-  packagePath: string;
-  packageName: string;
-  script: string;
   command: string;
+  cwd: string;
   pid: number;
   startedAt: Date;
   uptime: string;
   port?: number;
   running: boolean;
   autoRun: boolean;
+}
+
+export interface StartServerOptions {
+  command: string;
+  cwd: string;
+  id: string;
+  autoRun?: boolean;
+  env?: Record<string, string>;
+  port?: number; // Optional: if provided, check port availability before starting
 }
 
 export interface LogCursor {
@@ -72,9 +67,6 @@ export interface LogStats {
 
 export class ServerManager {
   private servers: Map<string, RunningServer> = new Map();
-  private scanCache: Map<string, PackageInfo[]> = new Map();
-  private scanCacheExpiry: number = 30000; // 30 seconds
-  private lastScanTime: Map<string, number> = new Map();
 
   // Per-session cursor tracking for log deltas
   private sessionCursors: Map<string, LogCursor> = new Map();
@@ -96,10 +88,8 @@ export class ServerManager {
         // Process is still running - attach to it (no ChildProcess, just track)
         this.servers.set(server.id, {
           id: server.id,
-          packagePath: server.packagePath,
-          packageName: server.packageName,
-          script: server.script,
           command: server.command,
+          cwd: server.cwd,
           process: null, // Attached, not owned
           pid: server.pid,
           startedAt: new Date(server.startedAt),
@@ -124,7 +114,12 @@ export class ServerManager {
               await this.waitForPortRelease(server.port, 5);
             }
 
-            await this.startServer(server.packagePath, server.script, { autoRun: true });
+            await this.startServer({
+              command: server.command,
+              cwd: server.cwd,
+              id: server.id,
+              autoRun: true,
+            });
             started.push(server.id);
             success = true;
             await debugLog('ServerManager', `Auto-started server: ${server.id} (attempt ${attempt})`);
@@ -140,8 +135,19 @@ export class ServerManager {
         if (!success) {
           failed.push(server.id);
         }
+      } else {
+        // Not running and not autoRun - load into memory as stopped (so it can be manually restarted)
+        this.servers.set(server.id, {
+          id: server.id,
+          command: server.command,
+          cwd: server.cwd,
+          process: null,
+          pid: -1,
+          startedAt: new Date(server.startedAt),
+          port: server.port,
+          autoRun: server.autoRun,
+        });
       }
-      // If not running and not autoRun, just remove from state
     }
 
     // Save updated state
@@ -240,10 +246,8 @@ export class ServerManager {
 
     const servers: PersistedServer[] = Array.from(this.servers.values()).map(s => ({
       id: s.id,
-      packagePath: s.packagePath,
-      packageName: s.packageName,
-      script: s.script,
       command: s.command,
+      cwd: s.cwd,
       pid: s.pid,
       port: s.port,
       autoRun: s.autoRun,
@@ -251,7 +255,7 @@ export class ServerManager {
     }));
 
     const data = {
-      version: 1,
+      version: 2,
       updatedAt: new Date().toISOString(),
       servers,
     };
@@ -267,20 +271,13 @@ export class ServerManager {
    * Check if a process is running by PID
    */
   private isProcessRunning(pid: number): boolean {
+    if (pid <= 0) return false; // Invalid PID (stopped server uses -1)
     try {
       process.kill(pid, 0);
       return true;
     } catch {
       return false;
     }
-  }
-
-  /**
-   * Generate a unique server ID
-   */
-  private generateServerId(packagePath: string, script: string): string {
-    const packageName = path.basename(packagePath);
-    return `${packageName}:${script}`;
   }
 
   /**
@@ -353,128 +350,15 @@ export class ServerManager {
   }
 
   /**
-   * Identify server-like scripts from package.json scripts
+   * Start a server with a command
    */
-  private identifyServerScripts(scripts: Record<string, string>): string[] {
-    const serverPatterns = [
-      /^dev$/i,
-      /^start$/i,
-      /^serve$/i,
-      /^server$/i,
-      /^start:dev$/i,
-      /^start:prod$/i,
-      /^start:debug$/i,
-      /^dev:server$/i,
-      /^watch$/i,
-      /next\s+dev/i,
-      /next\s+start/i,
-      /nest\s+start/i,
-      /vite/i,
-      /webpack.*serve/i,
-      /nodemon/i,
-      /ts-node-dev/i,
-      /node\s+.*server/i,
-      /express/i,
-    ];
+  async startServer(options: StartServerOptions): Promise<{ id: string; pid: number }> {
+    const { command, cwd, id: serverId, autoRun, env, port } = options;
 
-    const serverScripts: string[] = [];
-
-    for (const [name, command] of Object.entries(scripts)) {
-      const isServer = serverPatterns.some(pattern =>
-        pattern.test(name) || pattern.test(command)
-      );
-
-      if (isServer) {
-        serverScripts.push(name);
-      }
+    // Validate cwd exists
+    if (!fs.existsSync(cwd)) {
+      throw new Error(`Working directory does not exist: ${cwd}`);
     }
-
-    return serverScripts;
-  }
-
-  /**
-   * Recursively scan directory for package.json files
-   */
-  async scanForPackages(rootDir: string, maxDepth: number = 5): Promise<PackageInfo[]> {
-    const cacheKey = rootDir;
-    const now = Date.now();
-    const lastScan = this.lastScanTime.get(cacheKey) || 0;
-
-    if (now - lastScan < this.scanCacheExpiry && this.scanCache.has(cacheKey)) {
-      return this.scanCache.get(cacheKey)!;
-    }
-
-    const packages: PackageInfo[] = [];
-
-    const scan = async (dir: string, depth: number): Promise<void> => {
-      if (depth > maxDepth) return;
-
-      try {
-        const entries = await fs.promises.readdir(dir, { withFileTypes: true });
-
-        for (const entry of entries) {
-          const fullPath = path.join(dir, entry.name);
-
-          if (entry.isDirectory()) {
-            const skipDirs = ['node_modules', '.git', 'dist', 'build', '.next', 'coverage', '.cache', '.cdp-tools'];
-            if (!skipDirs.includes(entry.name)) {
-              await scan(fullPath, depth + 1);
-            }
-          } else if (entry.name === 'package.json') {
-            try {
-              const content = await fs.promises.readFile(fullPath, 'utf-8');
-              const pkg = JSON.parse(content);
-              const scripts = pkg.scripts || {};
-              const serverScripts = this.identifyServerScripts(scripts);
-
-              packages.push({
-                path: dir,
-                name: pkg.name || path.basename(dir),
-                version: pkg.version,
-                scripts,
-                serverScripts,
-              });
-            } catch (parseError) {
-              await debugLog('ServerManager', `Failed to parse ${fullPath}: ${parseError}`);
-            }
-          }
-        }
-      } catch (readError) {
-        await debugLog('ServerManager', `Failed to read directory ${dir}: ${readError}`);
-      }
-    };
-
-    await scan(rootDir, 0);
-
-    this.scanCache.set(cacheKey, packages);
-    this.lastScanTime.set(cacheKey, now);
-
-    return packages;
-  }
-
-  /**
-   * Start a server from a package.json script
-   */
-  async startServer(
-    packagePath: string,
-    script: string,
-    options: { env?: Record<string, string>; autoRun?: boolean } = {}
-  ): Promise<{ id: string; pid: number }> {
-    const packageJsonPath = path.join(packagePath, 'package.json');
-
-    if (!fs.existsSync(packageJsonPath)) {
-      throw new Error(`No package.json found at ${packagePath}`);
-    }
-
-    const content = await fs.promises.readFile(packageJsonPath, 'utf-8');
-    const pkg = JSON.parse(content);
-    const scripts = pkg.scripts || {};
-
-    if (!scripts[script]) {
-      throw new Error(`Script "${script}" not found in ${packagePath}/package.json. Available scripts: ${Object.keys(scripts).join(', ')}`);
-    }
-
-    const serverId = this.generateServerId(packagePath, script);
 
     // Check if already running
     const existing = this.servers.get(serverId);
@@ -486,8 +370,16 @@ export class ServerManager {
       this.servers.delete(serverId);
     }
 
-    const command = scripts[script];
-    await debugLog('ServerManager', `Starting server: npm run ${script} in ${packagePath}`);
+    // Check port availability if specified or if we know the previous port
+    const portToCheck = port || existing?.port;
+    if (portToCheck) {
+      const inUse = await this.isPortInUse(portToCheck);
+      if (inUse) {
+        throw new Error(`Port ${portToCheck} is already in use. Wait for it to be released or use a different port.`);
+      }
+    }
+
+    await debugLog('ServerManager', `Starting server: ${command} in ${cwd}`);
 
     // Ensure log directory exists
     await this.ensureLogDir(serverId);
@@ -506,9 +398,9 @@ export class ServerManager {
     const stderrFd = fs.openSync(stderrPath, 'a');
 
     // Spawn with stdio redirected to files
-    const npmProcess = spawn('npm', ['run', script], {
-      cwd: packagePath,
-      env: { ...process.env, ...options.env },
+    const serverProcess = spawn(command, [], {
+      cwd,
+      env: { ...process.env, ...env },
       stdio: ['ignore', stdoutFd, stderrFd],
       shell: true,
       detached: true,
@@ -518,24 +410,22 @@ export class ServerManager {
     fs.closeSync(stdoutFd);
     fs.closeSync(stderrFd);
 
-    const pid = npmProcess.pid || -1;
+    const pid = serverProcess.pid || -1;
     if (pid === -1) {
       throw new Error('Failed to spawn server process');
     }
 
     // Unref so parent can exit independently
-    npmProcess.unref();
+    serverProcess.unref();
 
     const server: RunningServer = {
       id: serverId,
-      packagePath,
-      packageName: pkg.name || path.basename(packagePath),
-      script,
       command,
-      process: npmProcess,
+      cwd,
+      process: serverProcess,
       pid,
       startedAt: new Date(),
-      autoRun: options.autoRun ?? false,
+      autoRun: autoRun ?? false,
     };
 
     this.servers.set(serverId, server);
@@ -663,7 +553,9 @@ export class ServerManager {
       }, 100);
     });
 
-    this.servers.delete(serverId);
+    // Keep the server config but mark it as stopped (process = null, pid = -1)
+    server.process = null;
+    server.pid = -1;
     this.sessionCursors.delete(serverId);
     await this.saveState();
     await debugLog('ServerManager', `Server ${serverId} stopped`);
@@ -678,20 +570,35 @@ export class ServerManager {
       throw new Error(`Server "${serverId}" not found. Use list action to see running servers.`);
     }
 
-    const { packagePath, script, port, autoRun } = server;
+    // Capture config before stopping (in case restart fails)
+    const { command, cwd, port, autoRun } = server;
 
     await this.stopServer(serverId);
 
     if (port) {
       const released = await this.waitForPortRelease(port);
       if (!released) {
+        // Re-add the server config so it's not lost
+        if (autoRun) {
+          this.servers.set(serverId, { ...server, process: null, pid: -1 });
+          await this.saveState();
+        }
         throw new Error(`Port ${port} is still in use after stopping server. Try again in a few seconds.`);
       }
     } else {
       await new Promise(resolve => setTimeout(resolve, 500));
     }
 
-    return this.startServer(packagePath, script, { autoRun });
+    try {
+      return await this.startServer({ command, cwd, id: serverId, autoRun });
+    } catch (err) {
+      // If restart fails and autoRun is true, preserve the config for later
+      if (autoRun) {
+        this.servers.set(serverId, { ...server, process: null, pid: -1 });
+        await this.saveState();
+      }
+      throw err;
+    }
   }
 
   /**
@@ -725,10 +632,8 @@ export class ServerManager {
       const isRunning = server.process ? !server.process.killed : this.isProcessRunning(server.pid);
       return {
         id: server.id,
-        packagePath: server.packagePath,
-        packageName: server.packageName,
-        script: server.script,
         command: server.command,
+        cwd: server.cwd,
         pid: server.pid,
         startedAt: server.startedAt,
         uptime: formatUptime(server.startedAt),
@@ -878,6 +783,28 @@ export class ServerManager {
   }
 
   /**
+   * Remove a server from the config entirely (stops it first if running)
+   */
+  async removeServer(serverId: string): Promise<void> {
+    const server = this.servers.get(serverId);
+    if (!server) {
+      throw new Error(`Server "${serverId}" not found. Use list action to see servers.`);
+    }
+
+    // Stop if running
+    const isRunning = server.pid > 0 && (server.process ? !server.process.killed : this.isProcessRunning(server.pid));
+    if (isRunning) {
+      await this.stopServer(serverId);
+    }
+
+    // Now delete from map
+    this.servers.delete(serverId);
+    this.sessionCursors.delete(serverId);
+    await this.saveState();
+    await debugLog('ServerManager', `Server ${serverId} removed from config`);
+  }
+
+  /**
    * Get all running server IDs
    */
   getRunningServerIds(): string[] {
@@ -914,10 +841,8 @@ export class ServerManager {
           // Add to in-memory tracking
           this.servers.set(ps.id, {
             id: ps.id,
-            packagePath: ps.packagePath,
-            packageName: ps.packageName,
-            script: ps.script,
             command: ps.command,
+            cwd: ps.cwd,
             process: null,
             pid: ps.pid,
             startedAt: new Date(ps.startedAt),

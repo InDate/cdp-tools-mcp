@@ -1911,21 +1911,6 @@ Missing required parameter: {{missing}}
 
 ## Server Messages
 
-## SERVER_SCAN_SUCCESS
-
-**Type:** success
-
-Found {{count}} package(s) in `{{path}}`
-
-{{#hasServerPackages}}**Packages with server scripts:**
-{{serverPackages}}{{/hasServerPackages}}
-
-{{#hasOtherPackages}}**Other packages:** {{otherPackages}}{{/hasOtherPackages}}
-
-**Usage:** `server({ action: "start", path: "<package-path>", script: "<script-name>" })`
-
----
-
 ## SERVER_START_SUCCESS
 
 **Type:** success
@@ -1975,7 +1960,7 @@ Server `{{serverId}}` stopped.
 
 No servers running.
 
-Use `server({ action: "scan", path: "<directory>" })` to find available servers.
+Use `server({ action: "start", command: "<cmd>", cwd: "<dir>", id: "<name>" })` to start a server.
 
 ---
 
@@ -2050,7 +2035,7 @@ Server `{{serverId}}` not found.
 
 **Suggestions:**
 - Use `server({ action: "list" })` to see running servers
-- Check the server ID format: `package-name:script`
+- Check the server ID you provided when starting the server
 
 ---
 
@@ -2075,31 +2060,42 @@ Server `{{serverId}}` is already running (PID: {{pid}}).
 Failed to start server: {{error}}
 
 **Suggestions:**
-- Check that the package path exists
-- Verify the script name is correct
+- Check that the working directory (cwd) exists
+- Verify the command is correct
 - Check for port conflicts
 
 ---
 
-## SERVER_MISSING_PATH
+## SERVER_MISSING_COMMAND
 
 **Type:** error
 **Code:** MISSING_PARAMETER
 
-Missing required parameter: `path`
+Missing required parameter: `command`
 
-Provide the directory containing package.json.
+Provide the command to run (e.g., "npm run dev", "flask run", "python manage.py runserver").
 
 ---
 
-## SERVER_MISSING_SCRIPT
+## SERVER_MISSING_CWD
 
 **Type:** error
 **Code:** MISSING_PARAMETER
 
-Missing required parameter: `script`
+Missing required parameter: `cwd`
 
-Provide the npm script name to run (e.g., "dev", "start").
+Provide the working directory for the server command.
+
+---
+
+## SERVER_MISSING_ID
+
+**Type:** error
+**Code:** MISSING_PARAMETER
+
+Missing required parameter: `id`
+
+Provide a unique identifier for this server (e.g., "flask-api", "next-frontend").
 
 ---
 
@@ -2132,5 +2128,13 @@ Set to `true` to enable auto-start on MCP startup, or `false` to disable.
 Logs cleared for `{{serverId}}`.
 
 **Log directory:** `{{logDir}}`
+
+---
+
+## SERVER_REMOVED
+
+**Type:** success
+
+Server `{{serverId}}` removed from config.
 
 ---

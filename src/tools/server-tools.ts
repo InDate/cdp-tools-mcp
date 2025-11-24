@@ -1,22 +1,24 @@
 /**
  * Server Tools
- * MCP tools for managing npm/node development servers
+ * MCP tools for managing development servers (any language/framework)
  */
 
 import { z } from 'zod';
 import { createTool } from '../validation-helpers.js';
-import { ServerManager, type PackageInfo, type ServerStatus, type LogStats } from '../server-manager.js';
+import { ServerManager, type ServerStatus, type LogStats } from '../server-manager.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
 
 const serverSchema = z.object({
-  action: z.enum(['scan', 'start', 'stop', 'restart', 'list', 'logs', 'stopAll', 'setAutoRun', 'clearLogs'])
-    .describe('Server action: scan (find package.json files), start (start a server), stop (stop a server), restart (restart a server), list (list running servers), logs (get server logs), stopAll (stop all servers), setAutoRun (enable/disable auto-start on MCP startup), clearLogs (clear log files for a server)'),
-  path: z.string().optional()
-    .describe('Directory path to scan for package.json files (for scan action), or package directory path (for start action)'),
-  script: z.string().optional()
-    .describe('npm script name to run (for start action). Common scripts: dev, start, serve'),
+  action: z.enum(['start', 'stop', 'restart', 'list', 'logs', 'stopAll', 'setAutoRun', 'clearLogs', 'remove'])
+    .describe('Server action: start (start a server), stop (stop a server), restart (restart a server), list (list servers), logs (get server logs), stopAll (stop all servers), setAutoRun (enable/disable auto-start on MCP startup), clearLogs (clear log files for a server), remove (remove server from config)'),
+  command: z.string().optional()
+    .describe('Command to run (for start action). Examples: "npm run dev", "flask run", "python manage.py runserver"'),
+  cwd: z.string().optional()
+    .describe('Working directory for the command (for start action)'),
+  id: z.string().optional()
+    .describe('Server identifier (for start action). Use a descriptive name like "flask-api" or "next-frontend"'),
   serverId: z.string().optional()
-    .describe('Server ID to operate on (for stop, restart, logs, setAutoRun actions). Format: "package-name:script"'),
+    .describe('Server ID to operate on (for stop, restart, logs, setAutoRun, clearLogs actions)'),
   autoRun: z.boolean().optional()
     .describe('Enable auto-run on MCP startup (for setAutoRun action, or when starting a server)'),
   env: z.record(z.string()).optional()
@@ -25,8 +27,6 @@ const serverSchema = z.object({
     .describe('Type of logs to retrieve (for logs action, default: all)'),
   lines: z.number().optional()
     .describe('Number of log lines to retrieve (for logs action). If not specified, returns new logs since last view.'),
-  maxDepth: z.number().optional()
-    .describe('Maximum directory depth to scan (for scan action, default: 5)'),
 }).strict();
 
 type ServerArgs = z.infer<typeof serverSchema>;
@@ -48,28 +48,6 @@ function formatLogStatusLine(stats: LogStats[]): string {
   return `📊 **Logs:** ${parts.join(' | ')}`;
 }
 
-/**
- * Format packages for scan response
- */
-function formatPackagesForScan(packages: PackageInfo[]): { serverPackages: string; otherPackages: string; hasServerPackages: boolean; hasOtherPackages: boolean } {
-  const withServers = packages.filter(p => p.serverScripts.length > 0);
-  const withoutServers = packages.filter(p => p.serverScripts.length === 0);
-
-  let serverPackages = '';
-  for (const pkg of withServers) {
-    serverPackages += `\n**${pkg.name}** - \`${pkg.path}\`\n`;
-    serverPackages += `Scripts: ${pkg.serverScripts.map(s => `\`${s}\``).join(', ')}\n`;
-  }
-
-  const otherPackages = withoutServers.map(p => `\`${p.name}\``).join(', ');
-
-  return {
-    serverPackages: serverPackages.trim(),
-    otherPackages,
-    hasServerPackages: withServers.length > 0,
-    hasOtherPackages: withoutServers.length > 0,
-  };
-}
 
 /**
  * Format server list for response
@@ -80,11 +58,10 @@ function formatServerList(servers: ServerStatus[]): string {
     const status = s.running ? '🟢' : '🔴';
     const autoRunBadge = s.autoRun ? ' ⚡' : '';
     output += `### ${status} ${s.id}${autoRunBadge}\n`;
-    output += `- **Package:** ${s.packageName}\n`;
-    output += `- **Script:** \`${s.script}\` → \`${s.command}\`\n`;
+    output += `- **Command:** \`${s.command}\`\n`;
+    output += `- **CWD:** \`${s.cwd}\`\n`;
     output += `- **PID:** ${s.pid}${s.port ? ` | **Port:** ${s.port}` : ''}\n`;
-    output += `- **Uptime:** ${s.uptime}${s.autoRun ? ' | **Auto-run:** enabled' : ''}\n`;
-    output += `- **Path:** \`${s.packagePath}\`\n\n`;
+    output += `- **Uptime:** ${s.uptime}${s.autoRun ? ' | **Auto-run:** enabled' : ''}\n\n`;
   }
   return output.trim();
 }
@@ -108,40 +85,26 @@ export function createServerTools(serverManager: ServerManager) {
 
   return {
     server: createTool(
-      'Manage npm/node development servers. Actions: scan (find all package.json with server scripts), start (start a server from npm script), stop (stop a running server), restart (restart a server), list (list running servers with status), logs (get server console output), stopAll (stop all servers), setAutoRun (enable/disable auto-start on MCP startup)',
+      'Manage development servers. Actions: start (start a server from npm script), stop (stop a running server), restart (restart a server), list (list running servers with status), logs (get server console output), stopAll (stop all servers), setAutoRun (enable/disable auto-start on MCP startup)',
       serverSchema,
       async (args: ServerArgs) => {
         switch (args.action) {
-          case 'scan': {
-            const scanPath = args.path || process.cwd();
-            const maxDepth = args.maxDepth || 5;
-
-            try {
-              const packages = await serverManager.scanForPackages(scanPath, maxDepth);
-              const formatted = formatPackagesForScan(packages);
-
-              return createSuccessResponse('SERVER_SCAN_SUCCESS', withLogStatus({
-                count: packages.length,
-                path: scanPath,
-                ...formatted,
-              }));
-            } catch (err) {
-              return createErrorResponse('SERVER_START_FAILED', withLogStatus({
-                error: err instanceof Error ? err.message : String(err),
-              }));
-            }
-          }
-
           case 'start': {
-            if (!args.path) {
-              return createErrorResponse('SERVER_MISSING_PATH', withLogStatus({}));
+            if (!args.command) {
+              return createErrorResponse('SERVER_MISSING_COMMAND', withLogStatus({}));
             }
-            if (!args.script) {
-              return createErrorResponse('SERVER_MISSING_SCRIPT', withLogStatus({}));
+            if (!args.cwd) {
+              return createErrorResponse('SERVER_MISSING_CWD', withLogStatus({}));
+            }
+            if (!args.id) {
+              return createErrorResponse('SERVER_MISSING_ID', withLogStatus({}));
             }
 
             try {
-              const result = await serverManager.startServer(args.path, args.script, {
+              const result = await serverManager.startServer({
+                command: args.command,
+                cwd: args.cwd,
+                id: args.id,
                 autoRun: args.autoRun,
                 env: args.env,
               });
@@ -310,6 +273,23 @@ export function createServerTools(serverManager: ServerManager) {
               return createSuccessResponse('SERVER_LOGS_CLEARED', withLogStatus({
                 serverId: args.serverId,
                 logDir: result.logDir,
+              }));
+            } catch (err) {
+              return createErrorResponse('SERVER_NOT_FOUND', withLogStatus({
+                serverId: args.serverId,
+              }));
+            }
+          }
+
+          case 'remove': {
+            if (!args.serverId) {
+              return createErrorResponse('SERVER_MISSING_SERVER_ID', withLogStatus({}));
+            }
+
+            try {
+              await serverManager.removeServer(args.serverId);
+              return createSuccessResponse('SERVER_REMOVED', withLogStatus({
+                serverId: args.serverId,
               }));
             } catch (err) {
               return createErrorResponse('SERVER_NOT_FOUND', withLogStatus({
