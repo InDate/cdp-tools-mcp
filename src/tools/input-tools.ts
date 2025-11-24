@@ -268,6 +268,15 @@ export function createInputTools(
               'click'
             );
 
+            // If paused at breakpoint, return immediately - don't try any more page interactions
+            if (result.pausedAtBreakpoint) {
+              return createSuccessResponse('ACTION_PAUSED_AT_BREAKPOINT', {
+                action: 'click',
+                selector: rawSelector,
+                ...result.pauseInfo,
+              });
+            }
+
             // Clean up temporary selector attribute
             await cleanupResolvedSelector(page, selector);
 
@@ -440,6 +449,15 @@ export function createInputTools(
               'typeText'
             );
 
+            // If paused at breakpoint, return immediately - don't try any more page interactions
+            if (result.pausedAtBreakpoint) {
+              return createSuccessResponse('ACTION_PAUSED_AT_BREAKPOINT', {
+                action: 'type',
+                selector: rawSelector,
+                ...result.pauseInfo,
+              });
+            }
+
             // Clean up temporary selector attribute
             await cleanupResolvedSelector(page, selector);
 
@@ -585,6 +603,15 @@ export function createInputTools(
               },
               'hoverElement'
             );
+
+            // If paused at breakpoint, return immediately - don't try any more page interactions
+            if (result.pausedAtBreakpoint) {
+              return createSuccessResponse('ACTION_PAUSED_AT_BREAKPOINT', {
+                action: 'hover',
+                selector: rawSelector,
+                ...result.pauseInfo,
+              });
+            }
 
             // Clean up temporary selector attribute
             await cleanupResolvedSelector(page, selector);

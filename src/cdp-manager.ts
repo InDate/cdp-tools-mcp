@@ -656,6 +656,19 @@ export class CDPManager {
     return Math.ceil(str.length / 4);
   }
 
+  /**
+   * Calculate effective token budget accounting for response overhead.
+   * The final MCP response includes:
+   * - Message template text (~100 tokens)
+   * - JSON code block markers and wrapper (~50 tokens)
+   * - JSON.stringify indentation adds ~30% to data size
+   */
+  private calculateEffectiveBudget(maxTokens: number): number {
+    const FIXED_OVERHEAD = 200; // Message template + code block + wrapper
+    const PROPORTIONAL_OVERHEAD = 1.3; // JSON indentation adds ~30%
+    return Math.floor((maxTokens - FIXED_OVERHEAD) / PROPORTIONAL_OVERHEAD);
+  }
+
   async getVariables(
     callFrameId: string,
     includeGlobal: boolean = false,
@@ -663,7 +676,14 @@ export class CDPManager {
     expandObjects: boolean = true,
     maxDepth: number = 2,
     maxTokens: number = 1000
-  ): Promise<{ variables: any[]; totalCount: number; usedDepth: number; requestedDepth: number; tokenEstimate: number; requiresFilter: boolean }> {
+  ): Promise<{
+    data: any;
+    totalCount: number;
+    usedDepth: number;
+    requestedDepth: number;
+    responseType: 'full' | 'depth_reduced' | 'names_only' | 'counts_only';
+    filterInsufficient: boolean;
+  }> {
     if (!this.state.connected) {
       throw new Error('Not connected to debugger');
     }
@@ -677,7 +697,14 @@ export class CDPManager {
       throw new Error(`Call frame ${callFrameId} not found`);
     }
 
-    const filterRegex = filter ? new RegExp(filter, 'i') : null;
+    let filterRegex: RegExp | null = null;
+    if (filter) {
+      try {
+        filterRegex = new RegExp(filter, 'i');
+      } catch {
+        throw new Error(`Invalid filter regex: ${filter}`);
+      }
+    }
     const requestedDepth = maxDepth;
 
     // Collect property metadata first (without expanding)
@@ -701,53 +728,109 @@ export class CDPManager {
     }
 
     const totalCount = propertyMeta.length;
+    const effectiveBudget = this.calculateEffectiveBudget(maxTokens);
+    const hasFilter = !!filter;
 
-    // Try progressively lower depths until under token limit
-    for (let currentDepth = maxDepth; currentDepth >= 0; currentDepth--) {
+    // Helper to group variables by scope
+    const groupByScope = (variables: any[]): Record<string, any[]> => {
+      const grouped: Record<string, any[]> = {};
+      for (const v of variables) {
+        const scopeType = v.scopeType || 'unknown';
+        if (!grouped[scopeType]) grouped[scopeType] = [];
+        grouped[scopeType].push({ name: v.name, value: v.value, type: v.type });
+      }
+      return grouped;
+    };
+
+    // Helper to compute variables at a given depth
+    const computeAtDepth = async (depth: number): Promise<{ variables: any[]; tokens: number }> => {
       const variables: any[] = [];
-      const shouldExpand = expandObjects && currentDepth > 0;
-
+      const shouldExpand = expandObjects && depth > 0;
       for (const { prop, scopeType } of propertyMeta) {
         variables.push({
           name: prop.name,
-          value: await this.formatValue(prop.value, shouldExpand, currentDepth),
+          value: await this.formatValue(prop.value, shouldExpand, depth),
           type: prop.value.type,
           scopeType,
         });
       }
+      return { variables, tokens: this.estimateTokens(variables) };
+    };
 
-      const tokenEstimate = this.estimateTokens(variables);
+    // Helper to get names-only data
+    const getNamesOnly = (variables: any[]): Record<string, string[]> => {
+      const namesByScope: Record<string, string[]> = {};
+      for (const v of variables) {
+        const scopeType = v.scopeType || 'unknown';
+        if (!namesByScope[scopeType]) namesByScope[scopeType] = [];
+        namesByScope[scopeType].push(v.name);
+      }
+      return namesByScope;
+    };
 
-      if (tokenEstimate <= maxTokens) {
+    // Helper to get counts-only data
+    const getCountsOnly = (variables: any[]): Record<string, number> => {
+      const countsByScope: Record<string, number> = {};
+      for (const v of variables) {
+        const scopeType = v.scopeType || 'unknown';
+        countsByScope[scopeType] = (countsByScope[scopeType] || 0) + 1;
+      }
+      return countsByScope;
+    };
+
+    // Step 1: Try full data at requested depth
+    if (expandObjects && maxDepth > 0) {
+      const requestedResult = await computeAtDepth(maxDepth);
+      if (requestedResult.tokens <= effectiveBudget) {
         return {
-          variables,
+          data: groupByScope(requestedResult.variables),
           totalCount,
-          usedDepth: currentDepth,
+          usedDepth: maxDepth,
           requestedDepth,
-          tokenEstimate,
-          requiresFilter: false
+          responseType: 'full',
+          filterInsufficient: false,
         };
       }
     }
 
-    // Even at depth 0, still over limit - require filter
-    const variables: any[] = [];
-    for (const { prop, scopeType } of propertyMeta) {
-      variables.push({
-        name: prop.name,
-        value: await this.formatValue(prop.value, false, 0),
-        type: prop.value.type,
-        scopeType,
-      });
+    // Step 2: Try full data at depth 0
+    const depth0Result = await computeAtDepth(0);
+    if (depth0Result.tokens <= effectiveBudget) {
+      // If we got here after trying requested depth, it means depth was reduced
+      const wasDepthReduced = expandObjects && maxDepth > 0;
+      return {
+        data: groupByScope(depth0Result.variables),
+        totalCount,
+        usedDepth: 0,
+        requestedDepth,
+        responseType: wasDepthReduced ? 'depth_reduced' : 'full',
+        filterInsufficient: false,
+      };
     }
 
+    // Step 3: Try names-only
+    const namesOnly = getNamesOnly(depth0Result.variables);
+    const namesTokens = this.estimateTokens(namesOnly);
+    if (namesTokens <= effectiveBudget) {
+      return {
+        data: namesOnly,
+        totalCount,
+        usedDepth: 0,
+        requestedDepth,
+        responseType: 'names_only',
+        filterInsufficient: hasFilter, // Filter was provided but still too large
+      };
+    }
+
+    // Step 4: Fall back to counts-only (always fits)
+    const countsOnly = getCountsOnly(depth0Result.variables);
     return {
-      variables: [], // Return empty - require filter
+      data: countsOnly,
       totalCount,
       usedDepth: 0,
       requestedDepth,
-      tokenEstimate: this.estimateTokens(variables),
-      requiresFilter: true
+      responseType: 'counts_only',
+      filterInsufficient: hasFilter,
     };
   }
 

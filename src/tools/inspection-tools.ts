@@ -9,6 +9,88 @@ import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
 
 /**
+ * Format variables data as TOON (Token-Oriented Object Notation)
+ * Each variable on its own line for readability
+ */
+function formatVariablesAsToon(data: any, responseType: string): string {
+  const lines: string[] = [];
+
+  if (responseType === 'counts_only') {
+    // Format: scope:count
+    for (const [scope, count] of Object.entries(data)) {
+      lines.push(`${scope}:${count}`);
+    }
+  } else if (responseType === 'names_only') {
+    // Format each name on its own line grouped by scope
+    for (const [scope, names] of Object.entries(data)) {
+      lines.push(`[${scope}]`);
+      for (const name of names as string[]) {
+        lines.push(`  ${name}`);
+      }
+    }
+  } else {
+    // full or depth_reduced - format each variable
+    for (const [scope, vars] of Object.entries(data)) {
+      lines.push(`[${scope}]`);
+      for (const v of vars as any[]) {
+        const valueStr = formatToonValue(v.value);
+        lines.push(`  ${v.name}:${valueStr};type:${v.type}`);
+      }
+    }
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Format call stack as TOON
+ */
+function formatCallStackAsToon(stack: any[]): string {
+  const lines: string[] = [];
+  for (let i = 0; i < stack.length; i++) {
+    const frame = stack[i];
+    const loc = frame.location;
+    lines.push(`${i}:${frame.functionName || '(anonymous)'};${loc.source}:${loc.line}:${loc.column};id:${frame.callFrameId}`);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Format search results as TOON
+ */
+function formatSearchResultsAsToon(results: Array<{ url: string; scriptId: string; lineNumber: number; lineContent: string }>): string {
+  const lines: string[] = [];
+  for (const r of results) {
+    lines.push(`${r.url}:${r.lineNumber}`);
+    lines.push(`  ${r.lineContent}`);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Format a value for TOON output
+ */
+function formatToonValue(value: any): string {
+  if (value === null || value === undefined) return 'null';
+  if (typeof value === 'string') {
+    // Check if it's already a formatted string like "[Function: ...]"
+    if (value.startsWith('[') || value.startsWith('"')) return value;
+    return value;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) {
+    if (value.length === 0) return '[]';
+    const items = value.map(v => formatToonValue(v)).join('|');
+    return `[${items}]`;
+  }
+  if (typeof value === 'object') {
+    const entries = Object.entries(value).map(([k, v]) => `${k}:${formatToonValue(v)}`);
+    return `{${entries.join(';')}}`;
+  }
+  return String(value);
+}
+
+/**
  * Check if line content appears to be a webpack eval wrapper (truncated or not)
  */
 function isWebpackEvalLine(lineContent: string): boolean {
@@ -175,10 +257,13 @@ export function createInspectionTools(
               ? `${mappedStack[0].location.source}:${mappedStack[0].location.line}`
               : undefined;
 
+            // Format as TOON
+            const toonData = '```\n' + formatCallStackAsToon(mappedStack) + '\n```';
+
             return createSuccessResponse('CALL_STACK_SUCCESS', {
               pausedLocation,
               frameCount: mappedStack.length,
-            }, mappedStack);
+            }, toonData);
           }
 
           case 'getVariables': {
@@ -194,50 +279,67 @@ export function createInspectionTools(
 
             try {
               const result = await targetCdpManager.getVariables(callFrameId, includeGlobal, filter, expandObjects, maxDepth, maxTokens);
-              const { variables, totalCount, usedDepth, requestedDepth, tokenEstimate, requiresFilter } = result;
+              const { data, totalCount, usedDepth, requestedDepth, responseType, filterInsufficient } = result;
 
-              // If filter is required due to size, return error with guidance
-              if (requiresFilter) {
-                return createErrorResponse('VARIABLES_TOO_LARGE', {
-                  totalCount,
-                  tokenEstimate,
-                });
+              // Format data as TOON (Token-Oriented Object Notation)
+              const toonData = '```\n' + formatVariablesAsToon(data, responseType) + '\n```';
+
+              // Select message based on responseType and filterInsufficient
+              switch (responseType) {
+                case 'full':
+                  return createSuccessResponse('VARIABLES_SUCCESS', {
+                    callFrameId,
+                    returnedCount: totalCount,
+                    totalCount,
+                    usedDepth,
+                    filter: filter || undefined,
+                    includeGlobal: includeGlobal || undefined,
+                  }, toonData);
+
+                case 'depth_reduced':
+                  return createSuccessResponse('VARIABLES_DEPTH_REDUCED', {
+                    callFrameId,
+                    totalCount,
+                    requestedDepth,
+                    usedDepth,
+                    filter: filter || undefined,
+                    includeGlobal: includeGlobal || undefined,
+                  }, toonData);
+
+                case 'names_only':
+                  if (filterInsufficient) {
+                    return createSuccessResponse('VARIABLES_FILTER_INSUFFICIENT', {
+                      callFrameId,
+                      totalCount,
+                      filter,
+                    }, toonData);
+                  }
+                  return createSuccessResponse('VARIABLES_NAMES_ONLY', {
+                    callFrameId,
+                    totalCount,
+                  }, toonData);
+
+                case 'counts_only':
+                  if (filterInsufficient) {
+                    return createSuccessResponse('VARIABLES_FILTER_INSUFFICIENT', {
+                      callFrameId,
+                      totalCount,
+                      filter,
+                    }, toonData);
+                  }
+                  return createSuccessResponse('VARIABLES_COUNTS_ONLY', {
+                    callFrameId,
+                    totalCount,
+                  }, toonData);
               }
-
-              // Group variables by scope type
-              const groupedVariables: Record<string, any[]> = {};
-              for (const variable of variables) {
-                const scopeType = variable.scopeType || 'unknown';
-                if (!groupedVariables[scopeType]) {
-                  groupedVariables[scopeType] = [];
-                }
-                groupedVariables[scopeType].push({
-                  name: variable.name,
-                  value: variable.value,
-                  type: variable.type,
-                });
-              }
-
-              // Use warning if depth was reduced
-              if (usedDepth < requestedDepth) {
-                return createSuccessResponse('VARIABLES_DEPTH_REDUCED', {
-                  callFrameId,
-                  totalCount,
-                  requestedDepth,
-                  usedDepth,
-                  filter: filter || undefined,
-                  includeGlobal: includeGlobal || undefined,
-                }, groupedVariables);
-              }
-
-              return createSuccessResponse('VARIABLES_SUCCESS', {
-                callFrameId,
-                returnedCount: variables.length,
-                totalCount,
-                filter: filter || undefined,
-                includeGlobal: includeGlobal || undefined,
-              }, groupedVariables);
             } catch (error) {
+              const errorMsg = String(error);
+              if (errorMsg.includes('Invalid filter regex')) {
+                return createErrorResponse('INVALID_FILTER', {
+                  filter,
+                  error: errorMsg,
+                });
+              }
               return createErrorResponse('CALL_FRAME_NOT_FOUND', {
                 callFrameId,
               });
@@ -258,7 +360,7 @@ export function createInspectionTools(
             try {
               const result = await targetCdpManager.evaluateExpression(expression, callFrameId, expandObjects, maxDepth);
 
-              // Format result based on type
+              // Format result as TOON
               let formattedResult: string;
               if (result === undefined || result === 'undefined') {
                 formattedResult = '```\nundefined\n```';
@@ -267,8 +369,8 @@ export function createInspectionTools(
               } else if (typeof result === 'string') {
                 formattedResult = `\`\`\`\n${result}\n\`\`\``;
               } else {
-                // For objects/arrays, use JSON formatting
-                formattedResult = `\`\`\`json\n${JSON.stringify(result, null, 2)}\n\`\`\``;
+                // For objects/arrays, use TOON formatting
+                formattedResult = `\`\`\`\n${formatToonValue(result)}\n\`\`\``;
               }
 
               return createSuccessResponse('EVALUATE_EXPRESSION_SUCCESS', {
@@ -366,15 +468,15 @@ export function createInspectionTools(
                 }
               }
 
+              // Format as TOON
+              const toonData = allResults.length > 0
+                ? '```\n' + formatSearchResultsAsToon(allResults) + '\n```'
+                : 'No matches found';
+
               return createSuccessResponse('CODE_SEARCH_RESULTS', {
-                count: allResults.length.toString()
-              }, {
-                pattern,
-                caseSensitive,
-                scriptsSearched: scriptsToSearch.length,
-                totalScripts: allScripts.length,
-                results: allResults,
-              });
+                count: allResults.length.toString(),
+                scriptsSearched: scriptsToSearch.length.toString(),
+              }, toonData);
             } catch (error) {
               return createErrorResponse('SOURCE_CODE_FAILED', { error: `${error}` });
             }
@@ -468,15 +570,16 @@ export function createInspectionTools(
                 }
               }
 
+              // Format as TOON
+              const toonData = allResults.length > 0
+                ? '```\n' + formatSearchResultsAsToon(allResults) + '\n```'
+                : 'No matches found';
+
               return createSuccessResponse('FUNCTION_SEARCH_RESULTS', {
                 count: allResults.length.toString(),
-                functionName
-              }, {
-                caseSensitive,
-                scriptsSearched: scriptsToSearch.length,
-                totalScripts: allScripts.length,
-                results: allResults,
-              });
+                functionName,
+                scriptsSearched: scriptsToSearch.length.toString(),
+              }, toonData);
             } catch (error) {
               return createErrorResponse('SOURCE_CODE_FAILED', { error: `${error}` });
             }

@@ -394,7 +394,22 @@ export function createBreakpointTools(
                 // Get available variables at this location
                 try {
                   const result = await targetCdpManager.getVariables(callFrame.callFrameId, false);
-                  availableVariables = result.variables.map((v: any) => v.name);
+                  // Extract variable names from grouped data structure
+                  const { data, responseType } = result;
+                  if (responseType === 'full' || responseType === 'depth_reduced') {
+                    // data is Record<string, {name, value, type}[]>
+                    for (const vars of Object.values(data as Record<string, any[]>)) {
+                      for (const v of vars) {
+                        availableVariables.push(v.name);
+                      }
+                    }
+                  } else if (responseType === 'names_only') {
+                    // data is Record<string, string[]>
+                    for (const names of Object.values(data as Record<string, string[]>)) {
+                      availableVariables.push(...names);
+                    }
+                  }
+                  // For counts_only, we don't have names to suggest
                 } catch (err) {
                   // Ignore errors getting variables
                 }

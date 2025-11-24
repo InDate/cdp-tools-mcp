@@ -513,7 +513,7 @@ Call Stack ({{frameCount}} frames){{#pausedLocation}} - Paused at: {{pausedLocat
 
 **Type:** success
 
-Variables for call frame {{callFrameId}}: {{returnedCount}} of {{totalCount}} total{{#filter}} (filtered by: {{filter}}){{/filter}}{{#includeGlobal}} (includes global scope){{/includeGlobal}}
+Variables for call frame {{callFrameId}}: {{returnedCount}} of {{totalCount}} total at depth {{usedDepth}}{{#filter}} (filtered by: {{filter}}){{/filter}}{{#includeGlobal}} (includes global scope){{/includeGlobal}}
 
 ---
 
@@ -521,22 +521,49 @@ Variables for call frame {{callFrameId}}: {{returnedCount}} of {{totalCount}} to
 
 **Type:** warning
 
-Variables for call frame {{callFrameId}}: {{totalCount}} total (depth auto-reduced from {{requestedDepth}} to {{usedDepth}} to fit token limit){{#filter}} (filtered by: {{filter}}){{/filter}}
+Variables for call frame {{callFrameId}}: {{totalCount}} total (depth reduced from {{requestedDepth}} to {{usedDepth}}){{#filter}} (filtered by: {{filter}}){{/filter}}
 
-Use `evaluateExpression` to inspect specific variables at full depth.
+Variable names/types shown. To inspect at full depth:
+- Use `filter` parameter (e.g., filter: "^myVar$") to narrow results
+- Use `evaluateExpression` (e.g., expression: "myVar") for specific values
 
 ---
 
-## VARIABLES_TOO_LARGE
+## VARIABLES_NAMES_ONLY
 
-**Type:** error
-**Code:** TOO_LARGE
+**Type:** warning
 
-Too many variables ({{totalCount}}, ~{{tokenEstimate}} tokens) even at depth 0. Filter required to narrow scope.
+Variables for call frame {{callFrameId}}: {{totalCount}} total (names only, values exceed limit)
 
-**Suggestions:**
-- Use `filter` parameter with regex to match variable names (e.g., filter: "user|config|state")
-- Use `evaluateExpression` to inspect specific variables directly (e.g., expression: "myVariable")
+Variable names listed by scope. To inspect values:
+- Use `filter` parameter (e.g., filter: "^myVar$") to get values for matching variables
+- Use `evaluateExpression` (e.g., expression: "myVar") to evaluate directly
+
+---
+
+## VARIABLES_COUNTS_ONLY
+
+**Type:** warning
+
+Variables for call frame {{callFrameId}}: {{totalCount}} total (counts only, names exceed limit)
+
+Variable counts per scope shown. Too many variables to list names. To inspect:
+- Use `filter` parameter to narrow scope (e.g., filter: "config|state|user")
+- Use `includeGlobal: false` to exclude global scope (often has 100+ built-ins)
+- Use `evaluateExpression` to check a specific variable directly
+
+---
+
+## VARIABLES_FILTER_INSUFFICIENT
+
+**Type:** warning
+
+Variables for call frame {{callFrameId}}: {{totalCount}} variables match filter "{{filter}}" (still exceeds limit)
+
+The filter matches too many variables. Try:
+- A more specific filter pattern (e.g., filter: "^exactName$" instead of "name")
+- Use `evaluateExpression` to inspect a specific variable directly
+- Use `includeGlobal: false` if global scope variables are included
 
 ---
 
@@ -767,6 +794,20 @@ Element `{{selector}}` was clicked, but may not have a click handler attached. V
 
 ---
 
+## ACTION_PAUSED_AT_BREAKPOINT
+
+**Type:** success
+
+{{action}} on `{{selector}}` triggered breakpoint at {{url}}:{{lineNumber}}
+
+**Next steps:**
+- Use `getCallStack()` to see the full call stack
+- Use `getVariables()` to inspect variables at this location
+- Use `stepOver()`, `stepInto()`, or `stepOut()` to continue debugging
+- Use `resume()` to continue execution
+
+---
+
 ## ELEMENT_BLOCKED_BY_MODAL
 
 **Type:** error
@@ -966,6 +1007,21 @@ Call frame {{callFrameId}} not found
 - Use `getCallStack()` to get valid call frame IDs
 - Ensure execution is still paused at a breakpoint
 - The call stack may have changed if execution resumed
+
+---
+
+## INVALID_FILTER
+
+**Type:** error
+**Code:** INVALID_REGEX
+
+Invalid filter regex: {{filter}}
+
+{{error}}
+
+**Suggestions:**
+- Check regex syntax (e.g., escape special characters like `[`, `]`, `(`, `)`)
+- Test your regex at regex101.com before using
 
 ---
 
