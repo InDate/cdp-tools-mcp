@@ -143,6 +143,8 @@ MIT
 ## What's New
 
 ### Latest (Unreleased)
+- **Variable Inspection Fallbacks**: `getVariables` gracefully degrades when data exceeds token limits (full → depth reduced → names only → counts only)
+- **Breakpoint Pause Detection**: Input actions now detect and report when they trigger breakpoints
 - **Server Management**: Coordinate dev servers across multiple MCP sessions with persistent state, auto-restart, and cross-session log access
 - **Webpack Eval Support**: Code search now extracts actual source from webpack eval wrappers
 - **Lazy Source Map Loading**: On-demand loading improves startup performance

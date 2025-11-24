@@ -47,6 +47,9 @@ inspect({ action: 'getCallStack', connectionReason: 'my-debug-session' })
 // Get variables in current scope
 inspect({ action: 'getVariables', callFrameId: '0', connectionReason: 'my-debug-session' })
 
+// Filter variables by name pattern
+inspect({ action: 'getVariables', callFrameId: '0', filter: 'user|config', connectionReason: 'my-debug-session' })
+
 // Evaluate expression
 inspect({ action: 'evaluateExpression', expression: 'user.email', connectionReason: 'my-debug-session' })
 
@@ -173,6 +176,25 @@ logMessage: 'Timestamp: {Date.now()}'
 
 // Complex expressions
 logMessage: 'Cart total: {cart.items.reduce((sum, item) => sum + item.price, 0)}'
+```
+
+## Variable Inspection Fallbacks
+
+When debugging code with many variables or deeply nested objects, `getVariables` automatically degrades gracefully to fit within token limits:
+
+1. **Full data** at requested depth (ideal case)
+2. **Depth reduced** - automatically reduce expansion depth
+3. **Names only** - variable names grouped by scope
+4. **Counts only** - scope counts as last resort
+
+To inspect specific variables at full depth, use `filter` or `evaluateExpression`:
+
+```javascript
+// Filter to specific variable
+inspect({ action: 'getVariables', callFrameId: '0', filter: '^myVar$', connectionReason: 'my-debug-session' })
+
+// Or evaluate directly
+inspect({ action: 'evaluateExpression', expression: 'myVar', connectionReason: 'my-debug-session' })
 ```
 
 ## Bug Hunting Pattern
