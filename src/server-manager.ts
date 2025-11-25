@@ -1,36 +1,49 @@
 /**
  * Server Manager
  * Manages development servers (any language/framework) - start, stop, restart, and monitor
+ * Supports multiple runner types: native (spawn), docker, docker-compose
  * Persists state to .cdp-tools/servers.json for recovery and auto-run
- * Logs to .cdp-tools/logs/<server-id>/ for cross-MCP access
+ * Logs to .cdp-tools/logs/<server-id>/ for cross-MCP access (native runner only)
  */
 
-import { spawn, ChildProcess } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as net from 'net';
 import { debugLog } from './debug-logger.js';
 import { getOutputPath } from './paths.js';
+import {
+  type Runner,
+  type RunnerType,
+  type PersistedRunnerState,
+  detectRunnerType,
+  createRunner,
+  NativeRunner,
+  DockerRunner,
+  DockerComposeRunner,
+} from './runners/index.js';
 
-export interface PersistedServer {
-  id: string;
-  command: string;
-  cwd: string;
-  pid: number;
-  port?: number;
-  autoRun: boolean;
-  startedAt: string;
-}
-
-export interface RunningServer {
-  id: string;
-  command: string;
-  cwd: string;
-  process: ChildProcess | null; // null if attached to existing process
-  pid: number;
-  startedAt: Date;
-  port?: number;
-  autoRun: boolean;
+/**
+ * Validate server ID to prevent security issues.
+ * Server IDs are used in container names, file paths, and project names.
+ * Only alphanumeric characters, dashes, and underscores are allowed.
+ */
+function validateServerId(id: string): void {
+  if (!id || id.length === 0) {
+    throw new Error('Server ID cannot be empty');
+  }
+  if (id.length > 64) {
+    throw new Error('Server ID cannot exceed 64 characters');
+  }
+  // Only allow alphanumeric, dash, underscore
+  if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
+    throw new Error(
+      `Invalid server ID "${id}". Server IDs can only contain letters, numbers, dashes, and underscores.`
+    );
+  }
+  // Cannot start with a dash (would cause issues with CLI args)
+  if (id.startsWith('-')) {
+    throw new Error('Server ID cannot start with a dash');
+  }
 }
 
 export interface ServerStatus {
@@ -38,11 +51,13 @@ export interface ServerStatus {
   command: string;
   cwd: string;
   pid: number;
+  containerId?: string;
   startedAt: Date;
   uptime: string;
   port?: number;
   running: boolean;
   autoRun: boolean;
+  runnerType: RunnerType;
 }
 
 export interface StartServerOptions {
@@ -51,12 +66,11 @@ export interface StartServerOptions {
   id: string;
   autoRun?: boolean;
   env?: Record<string, string>;
-  port?: number; // Optional: if provided, check port availability before starting
-}
-
-export interface LogCursor {
-  stdout: number;
-  stderr: number;
+  port?: number;
+  /** Runner type - auto-detected from command if not specified */
+  runner?: RunnerType;
+  /** Optional: if provided, auto-monitor the detected port at this level */
+  monitoringLevel?: MonitoringLevel;
 }
 
 export interface LogStats {
@@ -65,51 +79,378 @@ export interface LogStats {
   newStderr: number;
 }
 
-export class ServerManager {
-  private servers: Map<string, RunningServer> = new Map();
+interface ManagedServer {
+  id: string;
+  runner: Runner;
+  autoRun: boolean;
+  monitoringLevel?: MonitoringLevel;
+}
 
-  // Per-session cursor tracking for log deltas
-  private sessionCursors: Map<string, LogCursor> = new Map();
+// ============================================================================
+// Port Monitoring Types and Class
+// ============================================================================
+
+export type MonitoringLevel = 'inform' | 'error' | 'block';
+
+export interface PersistedMonitoredPort {
+  port: number;
+  level: MonitoringLevel;
+  description?: string;
+  interval?: number; // Custom interval in ms (overrides config)
+}
+
+export interface MonitoredPort {
+  port: number;
+  level: MonitoringLevel;
+  description?: string;
+  interval?: number; // Custom interval in ms (overrides config)
+  status: 'up' | 'down' | 'connecting';
+  socket: net.Socket | null;
+  failedAt?: Date;
+  acknowledged: boolean;
+  reconnectTimer?: ReturnType<typeof setTimeout>;
+}
+
+export interface MonitoredPortStatus {
+  port: number;
+  level: MonitoringLevel;
+  description?: string;
+  interval?: number;
+  status: 'up' | 'down' | 'connecting';
+  failedAt?: Date;
+  acknowledged: boolean;
+}
+
+export interface PortFailureInfo {
+  port: number;
+  level: MonitoringLevel;
+  description?: string;
+  failedAt: Date;
+}
+
+/** Function type for getting interval for a monitoring level */
+export type GetIntervalForLevel = (level: MonitoringLevel) => number;
+
+/**
+ * Port Monitor - monitors ports using persistent TCP connections
+ */
+export class PortMonitor {
+  private ports: Map<number, MonitoredPort> = new Map();
+  private onFailureCallback?: (port: number, level: MonitoringLevel) => void;
+  private getIntervalForLevel: GetIntervalForLevel;
+
+  constructor(getIntervalForLevel?: GetIntervalForLevel) {
+    // Default intervals if no config provided
+    this.getIntervalForLevel = getIntervalForLevel ?? ((level) => {
+      switch (level) {
+        case 'block': return 1000;
+        case 'error': return 2000;
+        case 'inform': return 5000;
+        default: return 2000;
+      }
+    });
+  }
+
+  onFailure(callback: (port: number, level: MonitoringLevel) => void): void {
+    this.onFailureCallback = callback;
+  }
+
+  async startMonitoring(port: number, level: MonitoringLevel, description?: string, interval?: number): Promise<void> {
+    const existing = this.ports.get(port);
+    if (existing) {
+      existing.level = level;
+      existing.description = description;
+      existing.interval = interval;
+      if (existing.status === 'down' && existing.acknowledged) {
+        existing.acknowledged = false;
+      }
+      await debugLog('PortMonitor', `Updated monitoring for port ${port}: level=${level}, interval=${interval ?? 'default'}`);
+      return;
+    }
+
+    const monitored: MonitoredPort = {
+      port,
+      level,
+      description,
+      interval,
+      status: 'connecting',
+      socket: null,
+      acknowledged: false,
+    };
+
+    this.ports.set(port, monitored);
+    await debugLog('PortMonitor', `Starting monitoring for port ${port} (level: ${level}, interval: ${interval ?? 'default'})`);
+    this.connectToPort(port);
+  }
+
+  private connectToPort(port: number): void {
+    const monitored = this.ports.get(port);
+    if (!monitored) return;
+
+    if (monitored.reconnectTimer) {
+      clearTimeout(monitored.reconnectTimer);
+      monitored.reconnectTimer = undefined;
+    }
+
+    if (monitored.socket) {
+      monitored.socket.removeAllListeners();
+      monitored.socket.destroy();
+      monitored.socket = null;
+    }
+
+    if (monitored.status !== 'up') {
+      monitored.status = 'connecting';
+    }
+
+    const socket = new net.Socket();
+    socket.setTimeout(5000);
+    let hadError = false;
+
+    socket.on('connect', async () => {
+      const wasDown = monitored.status === 'down' || monitored.status === 'connecting';
+      monitored.status = 'up';
+      monitored.socket = socket;
+      monitored.failedAt = undefined;
+      monitored.acknowledged = false;
+      if (wasDown) {
+        await debugLog('PortMonitor', `Port ${port} is UP`);
+      }
+      socket.destroy();
+    });
+
+    socket.on('close', async () => {
+      monitored.socket = null;
+      if (!hadError) {
+        this.scheduleReconnect(port);
+      }
+    });
+
+    socket.on('error', async (err: NodeJS.ErrnoException) => {
+      hadError = true;
+      const wasUp = monitored.status === 'up';
+
+      if (err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT' || err.code === 'ENOTFOUND') {
+        if (wasUp || monitored.status === 'connecting') {
+          monitored.status = 'down';
+          monitored.failedAt = monitored.failedAt || new Date();
+          monitored.socket = null;
+
+          if (wasUp) {
+            await debugLog('PortMonitor', `Port ${port} went DOWN: ${err.message}`);
+            if (this.onFailureCallback) {
+              this.onFailureCallback(port, monitored.level);
+            }
+          } else {
+            await debugLog('PortMonitor', `Port ${port} is down: ${err.message}`);
+          }
+        }
+      } else {
+        await debugLog('PortMonitor', `Port ${port} connection error (ignoring): ${err.message}`);
+      }
+
+      this.scheduleReconnect(port);
+    });
+
+    socket.on('timeout', () => {
+      hadError = true;
+      socket.destroy();
+
+      if (monitored.status === 'connecting' || monitored.status === 'up') {
+        const wasUp = monitored.status === 'up';
+        monitored.status = 'down';
+        monitored.failedAt = monitored.failedAt || new Date();
+
+        if (wasUp) {
+          debugLog('PortMonitor', `Port ${port} went DOWN: connection timeout`);
+          if (this.onFailureCallback) {
+            this.onFailureCallback(port, monitored.level);
+          }
+        }
+      }
+
+      this.scheduleReconnect(port);
+    });
+
+    socket.connect(port, 'localhost');
+  }
+
+  private scheduleReconnect(port: number): void {
+    const monitored = this.ports.get(port);
+    if (!monitored || monitored.reconnectTimer) return;
+
+    // Use per-port interval if set, otherwise get from config based on level
+    const interval = monitored.interval ?? this.getIntervalForLevel(monitored.level);
+
+    monitored.reconnectTimer = setTimeout(() => {
+      monitored.reconnectTimer = undefined;
+      if (this.ports.has(port)) {
+        this.connectToPort(port);
+      }
+    }, interval);
+  }
+
+  async stopMonitoring(port: number): Promise<boolean> {
+    const monitored = this.ports.get(port);
+    if (!monitored) return false;
+
+    if (monitored.socket) {
+      monitored.socket.removeAllListeners();
+      monitored.socket.destroy();
+    }
+    if (monitored.reconnectTimer) {
+      clearTimeout(monitored.reconnectTimer);
+    }
+
+    this.ports.delete(port);
+    await debugLog('PortMonitor', `Stopped monitoring port ${port}`);
+    return true;
+  }
+
+  async acknowledgeFailure(port: number): Promise<boolean> {
+    const monitored = this.ports.get(port);
+    if (!monitored || monitored.status !== 'down') return false;
+
+    monitored.acknowledged = true;
+    await debugLog('PortMonitor', `Acknowledged failure for port ${port}`);
+    return true;
+  }
+
+  getFailedPorts(): PortFailureInfo[] {
+    const failed: PortFailureInfo[] = [];
+    for (const [port, monitored] of this.ports) {
+      if (monitored.status === 'down' && !monitored.acknowledged && monitored.failedAt) {
+        failed.push({
+          port,
+          level: monitored.level,
+          description: monitored.description,
+          failedAt: monitored.failedAt,
+        });
+      }
+    }
+    return failed;
+  }
+
+  getFailedPortsByLevel(level: MonitoringLevel): PortFailureInfo[] {
+    return this.getFailedPorts().filter(p => p.level === level);
+  }
+
+  hasBlockingFailures(): boolean {
+    return this.getFailedPortsByLevel('block').length > 0;
+  }
+
+  getStatus(port?: number): MonitoredPortStatus[] {
+    if (port !== undefined) {
+      const monitored = this.ports.get(port);
+      if (!monitored) return [];
+      return [{
+        port: monitored.port,
+        level: monitored.level,
+        description: monitored.description,
+        interval: monitored.interval,
+        status: monitored.status,
+        failedAt: monitored.failedAt,
+        acknowledged: monitored.acknowledged,
+      }];
+    }
+
+    return Array.from(this.ports.values()).map(m => ({
+      port: m.port,
+      level: m.level,
+      description: m.description,
+      interval: m.interval,
+      status: m.status,
+      failedAt: m.failedAt,
+      acknowledged: m.acknowledged,
+    }));
+  }
+
+  getPersistedState(): PersistedMonitoredPort[] {
+    return Array.from(this.ports.values()).map(m => ({
+      port: m.port,
+      level: m.level,
+      description: m.description,
+      interval: m.interval,
+    }));
+  }
+
+  async restoreFromState(ports: PersistedMonitoredPort[]): Promise<void> {
+    for (const p of ports) {
+      await this.startMonitoring(p.port, p.level, p.description, p.interval);
+    }
+  }
+
+  async stopAll(): Promise<void> {
+    for (const port of this.ports.keys()) {
+      await this.stopMonitoring(port);
+    }
+  }
+}
+
+// ============================================================================
+// Server Manager
+// ============================================================================
+
+export class ServerManager {
+  private servers: Map<string, ManagedServer> = new Map();
+  private portMonitor: PortMonitor = new PortMonitor();
+
+  getPortMonitor(): PortMonitor {
+    return this.portMonitor;
+  }
+
+  private getServersFilePath(): string {
+    return getOutputPath('servers.json');
+  }
 
   /**
-   * Initialize the server manager - load state and recover/start auto-run servers
+   * Initialize - load state and recover/start auto-run servers
    */
-  async initialize(): Promise<{ recovered: string[]; started: string[]; failed: string[] }> {
+  async initialize(): Promise<{ recovered: string[]; started: string[]; failed: string[]; monitoredPorts: number[] }> {
     const recovered: string[] = [];
     const started: string[] = [];
     const failed: string[] = [];
+    const monitoredPorts: number[] = [];
 
     const persisted = await this.loadState();
 
-    for (const server of persisted) {
-      const isRunning = this.isProcessRunning(server.pid);
+    // Restore monitored ports first
+    if (persisted.monitoredPorts.length > 0) {
+      await this.portMonitor.restoreFromState(persisted.monitoredPorts);
+      monitoredPorts.push(...persisted.monitoredPorts.map(p => p.port));
+      await debugLog('ServerManager', `Restored ${monitoredPorts.length} monitored ports`);
+    }
+
+    for (const server of persisted.servers) {
+      const runnerType = server.type || 'native';
+      const runner = createRunner(runnerType, server.id);
+
+      // Restore runner state using the interface method (pass PersistedRunnerState directly)
+      runner.restore(server);
+
+      const isRunning = await runner.isRunning();
 
       if (isRunning) {
-        // Process is still running - attach to it (no ChildProcess, just track)
         this.servers.set(server.id, {
           id: server.id,
-          command: server.command,
-          cwd: server.cwd,
-          process: null, // Attached, not owned
-          pid: server.pid,
-          startedAt: new Date(server.startedAt),
-          port: server.port,
+          runner,
           autoRun: server.autoRun,
+          monitoringLevel: server.monitoringLevel,
         });
+
+        // For native runner, init cursor to EOF (native-specific method)
+        if (runner.type === 'native' && 'initializeCursorToEOF' in runner) {
+          await (runner as any).initializeCursorToEOF();
+        }
+
         recovered.push(server.id);
-
-        // Set cursor to EOF so we only see new logs from this session
-        await this.initializeCursorToEOF(server.id);
-
-        await debugLog('ServerManager', `Recovered running server: ${server.id} (PID: ${server.pid})`);
+        await debugLog('ServerManager', `Recovered running server: ${server.id} (${runnerType})`);
       } else if (server.autoRun) {
-        // Process died but autoRun is true - restart it with retry
+        // Not running but autoRun - restart
         let success = false;
         const maxRetries = 3;
 
         for (let attempt = 1; attempt <= maxRetries && !success; attempt++) {
           try {
-            // Wait for port release if known
             if (server.port) {
               await this.waitForPortRelease(server.port, 5);
             }
@@ -119,6 +460,8 @@ export class ServerManager {
               cwd: server.cwd,
               id: server.id,
               autoRun: true,
+              runner: runnerType,
+              monitoringLevel: server.monitoringLevel,
             });
             started.push(server.id);
             success = true;
@@ -126,7 +469,6 @@ export class ServerManager {
           } catch (err) {
             await debugLog('ServerManager', `Auto-start attempt ${attempt}/${maxRetries} failed for ${server.id}: ${err}`);
             if (attempt < maxRetries) {
-              // Exponential backoff: 500ms, 1000ms, 2000ms
               await new Promise(resolve => setTimeout(resolve, 500 * Math.pow(2, attempt - 1)));
             }
           }
@@ -136,128 +478,84 @@ export class ServerManager {
           failed.push(server.id);
         }
       } else {
-        // Not running and not autoRun - load into memory as stopped (so it can be manually restarted)
+        // Not running and not autoRun - keep config for manual restart
         this.servers.set(server.id, {
           id: server.id,
-          command: server.command,
-          cwd: server.cwd,
-          process: null,
-          pid: -1,
-          startedAt: new Date(server.startedAt),
-          port: server.port,
-          autoRun: server.autoRun,
+          runner,
+          autoRun: false,
+          monitoringLevel: server.monitoringLevel,
         });
       }
     }
 
-    // Save updated state
     await this.saveState();
-
-    return { recovered, started, failed };
+    return { recovered, started, failed, monitoredPorts };
   }
 
-  /**
-   * Get path for servers.json
-   */
-  private getServersFilePath(): string {
-    return getOutputPath('servers.json');
-  }
-
-  /**
-   * Get log directory for a server
-   */
-  private getLogDir(serverId: string): string {
-    return getOutputPath('logs', serverId);
-  }
-
-  /**
-   * Get stdout log file path
-   */
-  private getStdoutLogPath(serverId: string): string {
-    return path.join(this.getLogDir(serverId), 'stdout.log');
-  }
-
-  /**
-   * Get stderr log file path
-   */
-  private getStderrLogPath(serverId: string): string {
-    return path.join(this.getLogDir(serverId), 'stderr.log');
-  }
-
-  /**
-   * Ensure log directory exists
-   */
-  private async ensureLogDir(serverId: string): Promise<void> {
-    const dir = this.getLogDir(serverId);
-    if (!fs.existsSync(dir)) {
-      await fs.promises.mkdir(dir, { recursive: true });
-    }
-  }
-
-  /**
-   * Initialize cursor to end of file (for recovered servers)
-   */
-  private async initializeCursorToEOF(serverId: string): Promise<void> {
-    const stdoutLines = await this.countFileLines(this.getStdoutLogPath(serverId));
-    const stderrLines = await this.countFileLines(this.getStderrLogPath(serverId));
-    this.sessionCursors.set(serverId, { stdout: stdoutLines, stderr: stderrLines });
-  }
-
-  /**
-   * Count lines in a file
-   */
-  private async countFileLines(filePath: string): Promise<number> {
-    try {
-      if (!fs.existsSync(filePath)) return 0;
-      const content = await fs.promises.readFile(filePath, 'utf-8');
-      return content.split('\n').filter(l => l.length > 0).length;
-    } catch {
-      return 0;
-    }
-  }
-
-  /**
-   * Load persisted server state (from disk, for multi-MCP support)
-   */
-  private async loadState(): Promise<PersistedServer[]> {
+  private async loadState(): Promise<{ servers: PersistedRunnerState[]; monitoredPorts: PersistedMonitoredPort[] }> {
     const filePath = this.getServersFilePath();
 
     try {
       if (fs.existsSync(filePath)) {
         const content = await fs.promises.readFile(filePath, 'utf-8');
         const data = JSON.parse(content);
-        return data.servers || [];
+
+        // Handle migration from old format (no runner type)
+        const servers = (data.servers || []).map((s: any) => ({
+          ...s,
+          type: s.type || 'native',
+        }));
+
+        return {
+          servers,
+          monitoredPorts: data.monitoredPorts || [],
+        };
       }
     } catch (err) {
       await debugLog('ServerManager', `Failed to load state: ${err}`);
     }
 
-    return [];
+    return { servers: [], monitoredPorts: [] };
   }
 
-  /**
-   * Save server state to disk
-   */
-  private async saveState(): Promise<void> {
+  async saveState(): Promise<void> {
     const dir = path.dirname(this.getServersFilePath());
     if (!fs.existsSync(dir)) {
       await fs.promises.mkdir(dir, { recursive: true });
     }
 
-    const servers: PersistedServer[] = Array.from(this.servers.values()).map(s => ({
-      id: s.id,
-      command: s.command,
-      cwd: s.cwd,
-      pid: s.pid,
-      port: s.port,
-      autoRun: s.autoRun,
-      startedAt: s.startedAt.toISOString(),
-    }));
+    const servers: PersistedRunnerState[] = [];
+
+    for (const [id, managed] of this.servers) {
+      const runner = managed.runner;
+      const status = await runner.getStatus();
+
+      let containerId: string | undefined;
+      if (runner instanceof DockerRunner) {
+        containerId = runner.getContainerId() ?? undefined;
+      }
+
+      servers.push({
+        type: runner.type,
+        id,
+        command: this.getRunnerCommand(runner),
+        cwd: this.getRunnerCwd(runner),
+        pid: status.pid,
+        containerId,
+        port: status.port,
+        autoRun: managed.autoRun,
+        startedAt: status.startedAt?.toISOString() ?? new Date().toISOString(),
+        monitoringLevel: managed.monitoringLevel,
+      });
+    }
+
+    const monitoredPorts = this.portMonitor.getPersistedState();
 
     const data = {
-      version: 2,
+      version: 4,
       updatedAt: new Date().toISOString(),
       servers,
+      monitoredPorts,
     };
 
     await fs.promises.writeFile(
@@ -267,23 +565,21 @@ export class ServerManager {
     );
   }
 
-  /**
-   * Check if a process is running by PID
-   */
-  private isProcessRunning(pid: number): boolean {
-    if (pid <= 0) return false; // Invalid PID (stopped server uses -1)
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch {
-      return false;
-    }
+  private getRunnerCommand(runner: Runner): string {
+    if (runner instanceof NativeRunner) return runner.getCommand();
+    if (runner instanceof DockerRunner) return runner.getCommand();
+    if (runner instanceof DockerComposeRunner) return runner.getCommand();
+    return '';
   }
 
-  /**
-   * Check if a port is in use
-   */
-  private isPortInUse(port: number): Promise<boolean> {
+  private getRunnerCwd(runner: Runner): string {
+    if (runner instanceof NativeRunner) return runner.getCwd();
+    if (runner instanceof DockerRunner) return runner.getCwd();
+    if (runner instanceof DockerComposeRunner) return runner.getCwd();
+    return '';
+  }
+
+  private async isPortInUse(port: number): Promise<boolean> {
     return new Promise((resolve) => {
       const socket = new net.Socket();
       socket.setTimeout(300);
@@ -307,9 +603,6 @@ export class ServerManager {
     });
   }
 
-  /**
-   * Wait for a port to be released with exponential backoff
-   */
   private async waitForPortRelease(port: number, maxAttempts: number = 10): Promise<boolean> {
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const inUse = await this.isPortInUse(port);
@@ -328,32 +621,16 @@ export class ServerManager {
   }
 
   /**
-   * Detect port from log line - improved patterns
+   * Start a server
    */
-  private detectPort(line: string): number | null {
-    const patterns = [
-      /(?:port|listening on|localhost:|127\.0\.0\.1:)\s*(\d{4,5})/i,
-      /http:\/\/(?:localhost|127\.0\.0\.1):(\d{4,5})/i,
-      /Local:\s*http:\/\/[^:]+:(\d{4,5})/i,
-      /ready on\s+.*:(\d{4,5})/i,
-      /->\s*http:\/\/[^:]+:(\d{4,5})/i,
-      /server.*running.*:(\d{4,5})/i,
-    ];
+  async startServer(options: StartServerOptions): Promise<{ id: string; pid: number; runnerType: RunnerType; containerId?: string }> {
+    const { command, cwd, id: serverId, autoRun, env, port, monitoringLevel } = options;
 
-    for (const pattern of patterns) {
-      const match = line.match(pattern);
-      if (match) {
-        return parseInt(match[1], 10);
-      }
-    }
-    return null;
-  }
+    // Validate server ID for security (prevents command injection via container names)
+    validateServerId(serverId);
 
-  /**
-   * Start a server with a command
-   */
-  async startServer(options: StartServerOptions): Promise<{ id: string; pid: number }> {
-    const { command, cwd, id: serverId, autoRun, env, port } = options;
+    // Auto-detect runner type if not specified
+    const runnerType = options.runner ?? detectRunnerType(command);
 
     // Validate cwd exists
     if (!fs.existsSync(cwd)) {
@@ -363,262 +640,171 @@ export class ServerManager {
     // Check if already running
     const existing = this.servers.get(serverId);
     if (existing) {
-      const isRunning = existing.process ? !existing.process.killed : this.isProcessRunning(existing.pid);
+      const isRunning = await existing.runner.isRunning();
       if (isRunning) {
-        throw new Error(`Server "${serverId}" is already running (PID: ${existing.pid}). Stop it first or use restart.`);
+        throw new Error(`Server "${serverId}" is already running. Stop it first or use restart.`);
       }
       this.servers.delete(serverId);
     }
 
-    // Check port availability if specified or if we know the previous port
-    const portToCheck = port || existing?.port;
+    // Check port availability
+    const existingStatus = existing ? await existing.runner.getStatus() : null;
+    const portToCheck = port || existingStatus?.port;
     if (portToCheck) {
       const inUse = await this.isPortInUse(portToCheck);
       if (inUse) {
-        throw new Error(`Port ${portToCheck} is already in use. Wait for it to be released or use a different port.`);
+        throw new Error(`Port ${portToCheck} is already in use.`);
       }
     }
 
-    await debugLog('ServerManager', `Starting server: ${command} in ${cwd}`);
+    await debugLog('ServerManager', `Starting server: ${command} (runner: ${runnerType})`);
 
-    // Ensure log directory exists
-    await this.ensureLogDir(serverId);
+    // Create and start runner
+    const runner = createRunner(runnerType, serverId);
+    const result = await runner.start({ command, cwd, id: serverId, env, port });
 
-    // Open log files for writing
-    const stdoutPath = this.getStdoutLogPath(serverId);
-    const stderrPath = this.getStderrLogPath(serverId);
-
-    // Add restart marker to logs (don't clear - only clearLogs should wipe)
-    const timestamp = new Date().toISOString();
-    const marker = `\n--- Server ${serverId} started at ${timestamp} ---\n`;
-    await fs.promises.appendFile(stdoutPath, marker, 'utf-8');
-    await fs.promises.appendFile(stderrPath, marker, 'utf-8');
-
-    const stdoutFd = fs.openSync(stdoutPath, 'a');
-    const stderrFd = fs.openSync(stderrPath, 'a');
-
-    // Spawn with stdio redirected to files
-    const serverProcess = spawn(command, [], {
-      cwd,
-      env: { ...process.env, ...env },
-      stdio: ['ignore', stdoutFd, stderrFd],
-      shell: true,
-      detached: true,
+    this.servers.set(serverId, {
+      id: serverId,
+      runner,
+      autoRun: autoRun ?? false,
+      monitoringLevel,
     });
 
-    // Close file descriptors in parent process
-    fs.closeSync(stdoutFd);
-    fs.closeSync(stderrFd);
-
-    const pid = serverProcess.pid || -1;
-    if (pid === -1) {
-      throw new Error('Failed to spawn server process');
-    }
-
-    // Unref so parent can exit independently
-    serverProcess.unref();
-
-    const server: RunningServer = {
-      id: serverId,
-      command,
-      cwd,
-      process: serverProcess,
-      pid,
-      startedAt: new Date(),
-      autoRun: autoRun ?? false,
-    };
-
-    this.servers.set(serverId, server);
-
-    // Initialize cursor to 0 for new server
-    this.sessionCursors.set(serverId, { stdout: 0, stderr: 0 });
-
     // Start port detection in background
-    this.detectPortFromLogs(serverId);
+    this.detectPortInBackground(serverId);
 
     await this.saveState();
 
-    await debugLog('ServerManager', `Server started: ${serverId} (PID: ${pid})`);
-    return { id: serverId, pid };
+    await debugLog('ServerManager', `Server started: ${serverId} (${runnerType}, PID: ${result.pid})`);
+
+    return {
+      id: serverId,
+      pid: result.pid,
+      runnerType,
+      containerId: result.containerId,
+    };
   }
 
-  /**
-   * Detect port from log files (runs in background)
-   */
-  private async detectPortFromLogs(serverId: string): Promise<void> {
-    const server = this.servers.get(serverId);
-    if (!server) return;
+  private async detectPortInBackground(serverId: string): Promise<void> {
+    const managed = this.servers.get(serverId);
+    if (!managed) return;
 
-    // Check logs periodically for first 30 seconds
-    const maxChecks = 30;
-    for (let i = 0; i < maxChecks; i++) {
+    // Check periodically for 30 seconds
+    for (let i = 0; i < 30; i++) {
       await new Promise(resolve => setTimeout(resolve, 1000));
 
-      const currentServer = this.servers.get(serverId);
-      if (!currentServer || currentServer.port) break;
+      const current = this.servers.get(serverId);
+      if (!current) break;
 
-      // Read both log files
-      const stdoutPath = this.getStdoutLogPath(serverId);
-      const stderrPath = this.getStderrLogPath(serverId);
-
-      for (const logPath of [stdoutPath, stderrPath]) {
-        try {
-          if (fs.existsSync(logPath)) {
-            const content = await fs.promises.readFile(logPath, 'utf-8');
-            for (const line of content.split('\n')) {
-              const port = this.detectPort(line);
-              if (port) {
-                currentServer.port = port;
-                await this.saveState();
-                await debugLog('ServerManager', `Detected port ${port} for ${serverId}`);
-                return;
-              }
-            }
-          }
-        } catch {
-          // Ignore read errors
+      const status = await current.runner.getStatus();
+      if (status.port) {
+        // Port already detected, check if we need to start monitoring
+        if (current.monitoringLevel) {
+          await this.portMonitor.startMonitoring(
+            status.port,
+            current.monitoringLevel,
+            `Server: ${serverId}`
+          );
+          await this.saveState();
+          await debugLog('ServerManager', `Auto-started monitoring for port ${status.port}`);
         }
+        break;
+      }
+
+      const port = await current.runner.detectPort();
+      if (port) {
+        await this.saveState();
+        await debugLog('ServerManager', `Detected port ${port} for ${serverId}`);
+
+        // Auto-start port monitoring if level was specified
+        if (current.monitoringLevel) {
+          await this.portMonitor.startMonitoring(
+            port,
+            current.monitoringLevel,
+            `Server: ${serverId}`
+          );
+          await this.saveState();
+          await debugLog('ServerManager', `Auto-started monitoring for port ${port}`);
+        }
+        break;
       }
     }
   }
 
   /**
-   * Stop a running server
+   * Stop a server
    */
   async stopServer(serverId: string): Promise<void> {
-    const server = this.servers.get(serverId);
-    if (!server) {
-      throw new Error(`Server "${serverId}" not found. Use list action to see running servers.`);
+    const managed = this.servers.get(serverId);
+    if (!managed) {
+      throw new Error(`Server "${serverId}" not found. Use list action to see servers.`);
     }
 
-    const pid = server.pid;
-    const isRunning = server.process ? !server.process.killed : this.isProcessRunning(pid);
-
+    const isRunning = await managed.runner.isRunning();
     if (!isRunning) {
-      this.servers.delete(serverId);
-      this.sessionCursors.delete(serverId);
       await this.saveState();
       return;
     }
 
-    await debugLog('ServerManager', `Stopping server ${serverId} (PID: ${pid})`);
-
-    // Kill process group
-    try {
-      process.kill(-pid, 'SIGTERM');
-      await debugLog('ServerManager', `Sent SIGTERM to process group -${pid}`);
-    } catch (err) {
-      await debugLog('ServerManager', `Process group kill failed, trying single process: ${err}`);
-      try {
-        process.kill(pid, 'SIGTERM');
-      } catch {
-        // Process may already be dead
-      }
-    }
-
-    // Wait for exit or force kill
-    await new Promise<void>((resolve) => {
-      const checkDead = () => {
-        if (!this.isProcessRunning(pid)) {
-          resolve();
-          return true;
-        }
-        return false;
-      };
-
-      if (checkDead()) return;
-
-      const timeout = setTimeout(async () => {
-        clearInterval(interval);
-        if (this.isProcessRunning(pid)) {
-          await debugLog('ServerManager', `Server ${serverId} didn't exit gracefully, sending SIGKILL`);
-          try {
-            process.kill(-pid, 'SIGKILL');
-          } catch {
-            try {
-              process.kill(pid, 'SIGKILL');
-            } catch {
-              // Already dead
-            }
-          }
-        }
-        resolve();
-      }, 3000);
-
-      const interval = setInterval(() => {
-        if (checkDead()) {
-          clearTimeout(timeout);
-          clearInterval(interval);
-        }
-      }, 100);
-    });
-
-    // Keep the server config but mark it as stopped (process = null, pid = -1)
-    server.process = null;
-    server.pid = -1;
-    this.sessionCursors.delete(serverId);
+    await debugLog('ServerManager', `Stopping server ${serverId}`);
+    await managed.runner.stop();
     await this.saveState();
     await debugLog('ServerManager', `Server ${serverId} stopped`);
   }
 
   /**
-   * Restart a running server
+   * Restart a server
    */
-  async restartServer(serverId: string): Promise<{ id: string; pid: number }> {
-    const server = this.servers.get(serverId);
-    if (!server) {
-      throw new Error(`Server "${serverId}" not found. Use list action to see running servers.`);
+  async restartServer(serverId: string): Promise<{ id: string; pid: number; runnerType: RunnerType; containerId?: string }> {
+    const managed = this.servers.get(serverId);
+    if (!managed) {
+      throw new Error(`Server "${serverId}" not found.`);
     }
 
-    // Capture config before stopping (in case restart fails)
-    const { command, cwd, port, autoRun } = server;
+    const status = await managed.runner.getStatus();
+    const command = this.getRunnerCommand(managed.runner);
+    const cwd = this.getRunnerCwd(managed.runner);
+    const { autoRun, monitoringLevel } = managed;
 
     await this.stopServer(serverId);
 
-    if (port) {
-      const released = await this.waitForPortRelease(port);
+    if (status.port) {
+      const released = await this.waitForPortRelease(status.port);
       if (!released) {
-        // Re-add the server config so it's not lost
-        if (autoRun) {
-          this.servers.set(serverId, { ...server, process: null, pid: -1 });
-          await this.saveState();
-        }
-        throw new Error(`Port ${port} is still in use after stopping server. Try again in a few seconds.`);
+        throw new Error(`Port ${status.port} is still in use after stopping server.`);
       }
     } else {
       await new Promise(resolve => setTimeout(resolve, 500));
     }
 
-    try {
-      return await this.startServer({ command, cwd, id: serverId, autoRun });
-    } catch (err) {
-      // If restart fails and autoRun is true, preserve the config for later
-      if (autoRun) {
-        this.servers.set(serverId, { ...server, process: null, pid: -1 });
-        await this.saveState();
-      }
-      throw err;
-    }
+    return await this.startServer({
+      command,
+      cwd,
+      id: serverId,
+      autoRun,
+      runner: managed.runner.type,
+      monitoringLevel,
+    });
   }
 
   /**
-   * Set autoRun flag for a server
+   * Set autoRun flag
    */
   async setAutoRun(serverId: string, autoRun: boolean): Promise<void> {
-    const server = this.servers.get(serverId);
-    if (!server) {
-      throw new Error(`Server "${serverId}" not found. Use list action to see running servers.`);
+    const managed = this.servers.get(serverId);
+    if (!managed) {
+      throw new Error(`Server "${serverId}" not found.`);
     }
 
-    server.autoRun = autoRun;
+    managed.autoRun = autoRun;
     await this.saveState();
     await debugLog('ServerManager', `Set autoRun=${autoRun} for ${serverId}`);
   }
 
   /**
-   * Get status of servers (merges in-memory with persisted for multi-MCP)
+   * Get status of servers
    */
-  getStatus(serverId?: string): ServerStatus[] {
+  async getStatus(serverId?: string): Promise<ServerStatus[]> {
     const formatUptime = (startedAt: Date): string => {
       const seconds = Math.floor((Date.now() - startedAt.getTime()) / 1000);
       if (seconds < 60) return `${seconds}s`;
@@ -628,146 +814,93 @@ export class ServerManager {
       return `${hours}h ${minutes}m`;
     };
 
-    const getServerStatus = (server: RunningServer): ServerStatus => {
-      const isRunning = server.process ? !server.process.killed : this.isProcessRunning(server.pid);
+    const getServerStatus = async (managed: ManagedServer): Promise<ServerStatus> => {
+      const status = await managed.runner.getStatus();
       return {
-        id: server.id,
-        command: server.command,
-        cwd: server.cwd,
-        pid: server.pid,
-        startedAt: server.startedAt,
-        uptime: formatUptime(server.startedAt),
-        port: server.port,
-        running: isRunning,
-        autoRun: server.autoRun,
+        id: managed.id,
+        command: this.getRunnerCommand(managed.runner),
+        cwd: this.getRunnerCwd(managed.runner),
+        pid: status.pid,
+        containerId: status.containerId,
+        startedAt: status.startedAt ?? new Date(),
+        uptime: status.startedAt ? formatUptime(status.startedAt) : '0s',
+        port: status.port,
+        running: status.running,
+        autoRun: managed.autoRun,
+        runnerType: managed.runner.type,
       };
     };
 
     if (serverId) {
-      const server = this.servers.get(serverId);
-      if (!server) {
-        return [];
-      }
-      return [getServerStatus(server)];
+      const managed = this.servers.get(serverId);
+      if (!managed) return [];
+      return [await getServerStatus(managed)];
     }
 
-    return Array.from(this.servers.values()).map(getServerStatus);
+    const results: ServerStatus[] = [];
+    for (const managed of this.servers.values()) {
+      results.push(await getServerStatus(managed));
+    }
+    return results;
   }
 
   /**
-   * Get log stats for all servers (for status line)
+   * Get log stats (for native runner only)
    */
   getLogStats(): LogStats[] {
     const stats: LogStats[] = [];
 
-    for (const [serverId] of this.servers) {
-      const cursor = this.sessionCursors.get(serverId) || { stdout: 0, stderr: 0 };
-
-      const stdoutLines = this.countFileLinesSync(this.getStdoutLogPath(serverId));
-      const stderrLines = this.countFileLinesSync(this.getStderrLogPath(serverId));
-
-      stats.push({
-        serverId,
-        newStdout: Math.max(0, stdoutLines - cursor.stdout),
-        newStderr: Math.max(0, stderrLines - cursor.stderr),
-      });
+    for (const [serverId, managed] of this.servers) {
+      if (managed.runner instanceof NativeRunner) {
+        const runnerStats = managed.runner.getLogStats();
+        stats.push({
+          serverId,
+          newStdout: runnerStats.newStdout,
+          newStderr: runnerStats.newStderr,
+        });
+      } else {
+        stats.push({
+          serverId,
+          newStdout: 0,
+          newStderr: 0,
+        });
+      }
     }
 
     return stats;
   }
 
   /**
-   * Count lines synchronously (for status line)
+   * Get logs from a server
    */
-  private countFileLinesSync(filePath: string): number {
-    try {
-      if (!fs.existsSync(filePath)) return 0;
-      const content = fs.readFileSync(filePath, 'utf-8');
-      return content.split('\n').filter(l => l.length > 0).length;
-    } catch {
-      return 0;
-    }
-  }
-
-  /**
-   * Get logs from a server (delta mode by default)
-   */
-  getLogs(serverId: string, options: { type?: 'stdout' | 'stderr' | 'all'; lines?: number; delta?: boolean } = {}): string[] {
-    const server = this.servers.get(serverId);
-    if (!server) {
+  async getLogs(serverId: string, options: { type?: 'stdout' | 'stderr' | 'all'; lines?: number; delta?: boolean } = {}): Promise<string[]> {
+    const managed = this.servers.get(serverId);
+    if (!managed) {
       throw new Error(`Server "${serverId}" not found`);
     }
 
-    const { type = 'all', lines, delta = true } = options;
-    const cursor = this.sessionCursors.get(serverId) || { stdout: 0, stderr: 0 };
-
-    const readLogFile = (filePath: string, cursorPos: number): string[] => {
-      try {
-        if (!fs.existsSync(filePath)) return [];
-        const content = fs.readFileSync(filePath, 'utf-8');
-        const allLines = content.split('\n').filter(l => l.length > 0);
-
-        if (lines !== undefined) {
-          // Return last N lines (doesn't move cursor)
-          return allLines.slice(-lines);
-        } else if (delta) {
-          // Return lines since cursor
-          return allLines.slice(cursorPos);
-        } else {
-          return allLines;
-        }
-      } catch {
-        return [];
-      }
-    };
-
-    let result: string[] = [];
-
-    if (type === 'stdout' || type === 'all') {
-      const stdoutLogs = readLogFile(this.getStdoutLogPath(serverId), cursor.stdout);
-      result = result.concat(stdoutLogs.map(l => type === 'all' ? `[out] ${l}` : l));
-    }
-
-    if (type === 'stderr' || type === 'all') {
-      const stderrLogs = readLogFile(this.getStderrLogPath(serverId), cursor.stderr);
-      result = result.concat(stderrLogs.map(l => type === 'all' ? `[err] ${l}` : l));
-    }
-
-    // Update cursor if delta mode and no specific line count requested
-    if (delta && lines === undefined) {
-      const newStdoutCount = this.countFileLinesSync(this.getStdoutLogPath(serverId));
-      const newStderrCount = this.countFileLinesSync(this.getStderrLogPath(serverId));
-      this.sessionCursors.set(serverId, { stdout: newStdoutCount, stderr: newStderrCount });
-    }
-
-    return result;
+    const { type = 'all', lines } = options;
+    return await managed.runner.getLogs({ type, lines });
   }
 
   /**
-   * Clear logs for a server (resets files and cursors)
+   * Clear logs (native runner only)
    */
   async clearLogs(serverId: string): Promise<{ logDir: string; stdoutPath: string; stderrPath: string }> {
-    const server = this.servers.get(serverId);
-    if (!server) {
+    const managed = this.servers.get(serverId);
+    if (!managed) {
       throw new Error(`Server "${serverId}" not found`);
     }
 
-    const logDir = this.getLogDir(serverId);
-    const stdoutPath = this.getStdoutLogPath(serverId);
-    const stderrPath = this.getStderrLogPath(serverId);
+    if (managed.runner instanceof NativeRunner) {
+      return await managed.runner.clearLogs();
+    }
 
-    // Clear log files
-    await fs.promises.writeFile(stdoutPath, '', 'utf-8');
-    await fs.promises.writeFile(stderrPath, '', 'utf-8');
-
-    // Reset cursor to 0
-    this.sessionCursors.set(serverId, { stdout: 0, stderr: 0 });
-
-    return { logDir, stdoutPath, stderrPath };
+    throw new Error(`clearLogs is only supported for native runner, not ${managed.runner.type}`);
   }
 
   /**
-   * Stop all running servers
+   * Stop all servers
    */
   async stopAll(): Promise<string[]> {
     const stopped: string[] = [];
@@ -783,74 +916,48 @@ export class ServerManager {
   }
 
   /**
-   * Remove a server from the config entirely (stops it first if running)
+   * Remove a server from config
    */
   async removeServer(serverId: string): Promise<void> {
-    const server = this.servers.get(serverId);
-    if (!server) {
-      throw new Error(`Server "${serverId}" not found. Use list action to see servers.`);
+    const managed = this.servers.get(serverId);
+    if (!managed) {
+      throw new Error(`Server "${serverId}" not found.`);
     }
 
-    // Stop if running
-    const isRunning = server.pid > 0 && (server.process ? !server.process.killed : this.isProcessRunning(server.pid));
+    const isRunning = await managed.runner.isRunning();
     if (isRunning) {
       await this.stopServer(serverId);
     }
 
-    // Now delete from map
     this.servers.delete(serverId);
-    this.sessionCursors.delete(serverId);
     await this.saveState();
     await debugLog('ServerManager', `Server ${serverId} removed from config`);
   }
 
   /**
-   * Get all running server IDs
+   * Get running server IDs
    */
-  getRunningServerIds(): string[] {
-    return Array.from(this.servers.keys()).filter(id => {
-      const server = this.servers.get(id);
-      if (!server) return false;
-      return server.process ? !server.process.killed : this.isProcessRunning(server.pid);
-    });
+  async getRunningServerIds(): Promise<string[]> {
+    const running: string[] = [];
+    for (const [id, managed] of this.servers) {
+      if (await managed.runner.isRunning()) {
+        running.push(id);
+      }
+    }
+    return running;
   }
 
   /**
-   * Clean up dead servers from the map (also removes stale entries)
+   * Cleanup dead servers
    */
   async cleanup(): Promise<number> {
     let cleaned = 0;
 
-    // Also load from disk to check for stale entries
-    const persisted = await this.loadState();
-
-    for (const [id, server] of this.servers.entries()) {
-      const isRunning = server.process ? !server.process.killed : this.isProcessRunning(server.pid);
-      if (!isRunning && !server.autoRun) {
+    for (const [id, managed] of this.servers) {
+      const isRunning = await managed.runner.isRunning();
+      if (!isRunning && !managed.autoRun) {
         this.servers.delete(id);
-        this.sessionCursors.delete(id);
         cleaned++;
-      }
-    }
-
-    // Check persisted entries not in memory
-    for (const ps of persisted) {
-      if (!this.servers.has(ps.id)) {
-        const isRunning = this.isProcessRunning(ps.pid);
-        if (isRunning) {
-          // Add to in-memory tracking
-          this.servers.set(ps.id, {
-            id: ps.id,
-            command: ps.command,
-            cwd: ps.cwd,
-            process: null,
-            pid: ps.pid,
-            startedAt: new Date(ps.startedAt),
-            port: ps.port,
-            autoRun: ps.autoRun,
-          });
-          await this.initializeCursorToEOF(ps.id);
-        }
       }
     }
 

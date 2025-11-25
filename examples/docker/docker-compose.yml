@@ -1,0 +1,8 @@
+# Docker Compose example for testing docker-compose runner
+# Simple app exposed directly
+
+services:
+  app:
+    build: .
+    ports:
+      - "8080:3000"
