@@ -158,6 +158,7 @@ MIT
 - **Cache-Busting Breakpoints**: Breakpoints survive rebuilds with changing query params
 - **Flexible Connection References**: Lookups now tolerate minor formatting variations
 - **Enhanced Replay System**: Record and replay command sequences for testing and automation
+- **Conditional Commands**: Sequences can branch based on runtime conditions (selectors, URLs, cookies, localStorage) with configurable depth limits
 - **Smart Element Caching**: Navigation automatically caches all clickable elements for instant discovery
 - **Viewport-Aware Filtering**: Shows only visible elements by default, searches all when filtering
 - **Consolidated Tool API**: Action-based tool schemas reduce tool count and improve usability
