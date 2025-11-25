@@ -49,6 +49,8 @@ import { createModalTools } from './tools/modal-tools.js';
 import { createReplayTools } from './tools/replay-tools.js';
 import { createServerTools } from './tools/server-tools.js';
 import { ServerManager } from './server-manager.js';
+import { configManager } from './config.js';
+import { checkPortFailures, prependToResponse, appendToResponse, buildStatusSuffix, type StatusLineItem } from './tool-response.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock, getMessage, getFormattedResponse } from './messages.js';
 import { createServer } from 'net';
 import { readFile } from 'fs/promises';
@@ -517,7 +519,7 @@ const connectionTools = {
             }
           }
 
-          return createSuccessResponse('CHROME_KILLED', { message: `Chrome instance on port ${port} killed` });
+          return createSuccessResponse('CHROME_KILLED', { port, reason: args.reason });
         } else {
           // Kill all instances - close all connections
           const allConnections = connectionManager.listConnections();
@@ -534,7 +536,7 @@ const connectionTools = {
             console.error(`[cdp-tools] Warning: Failed to re-reserve port ${getReservedPort()}: ${reserveError}`);
           }
 
-          return createSuccessResponse('CHROME_KILLED', { message: 'All Chrome instances killed' });
+          return createSuccessResponse('CHROME_KILLED', { port: 'all', reason: args.reason });
         }
       } catch (error) {
         return createErrorResponse('CHROME_SPAWN_FAILED', { error: `${error}` });
@@ -560,7 +562,16 @@ const connectionTools = {
     z.object({}).strict(),
     async () => {
       const status = chromeLauncher.getStatus();
-      return createSuccessResponse('CHROME_STATUS', {}, status);
+      // Format for template rendering
+      const formattedStatus = {
+        ...status,
+        lastCloseEvents: status.lastCloseEvents.map(event => ({
+          ...event,
+          timestamp: event.timestamp.toISOString(),
+          hasExitCode: event.exitCode !== null && event.exitCode !== undefined,
+        })),
+      };
+      return createSuccessResponse('CHROME_STATUS', formattedStatus, status);
     }
   ),
 
@@ -1143,12 +1154,29 @@ function registerToolHandlers(server: Server) {
       await commandRecorder.recordCommand(toolName, validation.data);
     }
 
+    // Check for failed monitored ports
+    const portMonitor = serverManager.getPortMonitor();
+    const failedPorts = portMonitor.getFailedPorts();
+    const portCheck = checkPortFailures(failedPorts, toolName);
+
+    if (portCheck.blocked) {
+      return portCheck.response;
+    }
+
     // Pass validated data to handler
     try {
       const result = await tool.handler(validation.data);
 
+      // Prepend port failure prefix if any
+      if (portCheck.prefix) {
+        prependToResponse(result, portCheck.prefix);
+        if (portCheck.markAsError) {
+          result.isError = true;
+        }
+      }
+
       // Collect status lines to append to response
-      const statusLines: string[] = [];
+      const statusItems: StatusLineItem[] = [];
 
       // Append server log status to all tool responses
       const serverLogStats = serverManager.getLogStats();
@@ -1158,7 +1186,7 @@ function registerToolHandlers(server: Server) {
           .map(s => `${s.serverId} (${s.newStderr} err/${s.newStdout} out)`);
 
         if (parts.length > 0) {
-          statusLines.push(`**Server Logs:** ${parts.join(' | ')}`);
+          statusItems.push({ label: 'Server Logs', value: parts.join(' | ') });
         }
       }
 
@@ -1174,18 +1202,15 @@ function registerToolHandlers(server: Server) {
             if (logStats.newWarnings > 0) details.push(`${logStats.newWarnings} warn`);
             const otherCount = logStats.newMessages - logStats.newErrors - logStats.newWarnings;
             if (otherCount > 0) details.push(`${otherCount} log`);
-            statusLines.push(`**Console:** ${details.join('/')}`);
+            statusItems.push({ label: 'Console', value: details.join('/') });
           }
         }
       }
 
       // Append all status lines if any
-      if (statusLines.length > 0 && result.content && result.content.length > 0) {
-        const statusText = `\n\n---\n${statusLines.join('\n')}`;
-        const lastContent = result.content[result.content.length - 1];
-        if (lastContent && lastContent.type === 'text') {
-          lastContent.text += statusText;
-        }
+      const statusSuffix = buildStatusSuffix(statusItems);
+      if (statusSuffix) {
+        appendToResponse(result, statusSuffix);
       }
 
       return result;
@@ -1263,6 +1288,9 @@ async function main() {
   await server.connect(transport);
   const transportTime = performance.now() - transportStart;
   console.error(`[cdp-tools] Transport connected (PID: ${process.pid})`);
+
+  // Load configuration
+  await configManager.load();
 
   // Initialize server manager - recover running servers and start auto-run servers
   const serverInitResult = await serverManager.initialize();

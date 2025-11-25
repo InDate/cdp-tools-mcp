@@ -31,6 +31,9 @@ const serverSchema = z.object({
   // Runner type parameter
   runner: z.enum(['native', 'docker', 'docker-compose']).optional()
     .describe('Runner type (for start action): native (spawn process directly), docker (run container), docker-compose (run compose stack). Auto-detected from command if not specified.'),
+  // Server port monitoring
+  monitorPort: z.boolean().optional()
+    .describe('If true, auto-add server port to monitoredPorts when detected (for start action)'),
   // Port monitoring parameters
   port: z.number().optional()
     .describe('Port number (for monitorPort, unmonitorPort, acknowledgePort actions)'),
@@ -38,6 +41,8 @@ const serverSchema = z.object({
     .describe('Monitoring level (for monitorPort action): inform (info line in responses), error (error line in responses), block (block all tools until acknowledged)'),
   description: z.string().optional()
     .describe('Description for the monitored port (for monitorPort action)'),
+  interval: z.number().optional()
+    .describe('Custom check interval in milliseconds (for monitorPort action). Overrides level-based defaults from config. Default: block=1000ms, error=2000ms, inform=5000ms'),
 }).strict();
 
 type ServerArgs = z.infer<typeof serverSchema>;
@@ -100,7 +105,7 @@ function formatMonitoredPortsList(ports: MonitoredPortStatus[]): string {
     if (p.description) {
       output += `- **Description:** ${p.description}\n`;
     }
-    output += `- **Level:** ${p.level}\n`;
+    output += `- **Level:** ${p.level}${p.interval ? ` | **Interval:** ${p.interval}ms` : ''}\n`;
     output += `- **Status:** ${p.status}${p.failedAt ? ` (since ${p.failedAt.toISOString()})` : ''}\n`;
     if (p.acknowledged) {
       output += `- **Acknowledged:** yes\n`;
@@ -152,7 +157,7 @@ export function createServerTools(serverManager: ServerManager) {
                 autoRun: args.autoRun,
                 env: args.env,
                 runner: args.runner as RunnerType | undefined,
-                monitoringLevel: args.monitoringLevel,
+                monitorPort: args.monitorPort,
               });
 
               // Wait briefly for port detection
@@ -366,13 +371,14 @@ export function createServerTools(serverManager: ServerManager) {
             }
 
             const portMonitor = serverManager.getPortMonitor();
-            await portMonitor.startMonitoring(args.port, args.monitoringLevel, args.description);
+            await portMonitor.startMonitoring(args.port, args.monitoringLevel, args.description, args.interval);
             await serverManager.saveState();
 
             return createSuccessResponse('PORT_MONITOR_STARTED', withLogStatus({
               port: args.port,
               level: args.monitoringLevel,
               description: args.description,
+              interval: args.interval,
             }));
           }
 

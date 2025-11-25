@@ -10,7 +10,8 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as net from 'net';
 import { debugLog } from './debug-logger.js';
-import { getOutputPath } from './paths.js';
+import { getOutputPath } from './helpers/paths.js';
+import { configManager } from './config.js';
 import {
   type Runner,
   type RunnerType,
@@ -69,8 +70,8 @@ export interface StartServerOptions {
   port?: number;
   /** Runner type - auto-detected from command if not specified */
   runner?: RunnerType;
-  /** Optional: if provided, auto-monitor the detected port at this level */
-  monitoringLevel?: MonitoringLevel;
+  /** If true, auto-add detected port to monitoredPorts with default level 'block' */
+  monitorPort?: boolean;
 }
 
 export interface LogStats {
@@ -83,7 +84,7 @@ interface ManagedServer {
   id: string;
   runner: Runner;
   autoRun: boolean;
-  monitoringLevel?: MonitoringLevel;
+  monitorPort?: boolean;
 }
 
 // ============================================================================
@@ -338,6 +339,10 @@ export class PortMonitor {
     return this.getFailedPortsByLevel('block').length > 0;
   }
 
+  isMonitoring(port: number): boolean {
+    return this.ports.has(port);
+  }
+
   getStatus(port?: number): MonitoredPortStatus[] {
     if (port !== undefined) {
       const monitored = this.ports.get(port);
@@ -392,9 +397,17 @@ export class PortMonitor {
 
 export class ServerManager {
   private servers: Map<string, ManagedServer> = new Map();
-  private portMonitor: PortMonitor = new PortMonitor();
+  private portMonitor: PortMonitor | null = null;
 
+  /**
+   * Get the port monitor instance (lazy-initialized)
+   * Must be called after configManager.load() for config values to be used
+   */
   getPortMonitor(): PortMonitor {
+    if (!this.portMonitor) {
+      // Lazy init - ensures config is loaded before we read intervals
+      this.portMonitor = new PortMonitor((level) => configManager.getIntervalForLevel(level));
+    }
     return this.portMonitor;
   }
 
@@ -415,7 +428,7 @@ export class ServerManager {
 
     // Restore monitored ports first
     if (persisted.monitoredPorts.length > 0) {
-      await this.portMonitor.restoreFromState(persisted.monitoredPorts);
+      await this.getPortMonitor().restoreFromState(persisted.monitoredPorts);
       monitoredPorts.push(...persisted.monitoredPorts.map(p => p.port));
       await debugLog('ServerManager', `Restored ${monitoredPorts.length} monitored ports`);
     }
@@ -434,7 +447,7 @@ export class ServerManager {
           id: server.id,
           runner,
           autoRun: server.autoRun,
-          monitoringLevel: server.monitoringLevel,
+          monitorPort: server.monitorPort,
         });
 
         // For native runner, init cursor to EOF (native-specific method)
@@ -461,7 +474,7 @@ export class ServerManager {
               id: server.id,
               autoRun: true,
               runner: runnerType,
-              monitoringLevel: server.monitoringLevel,
+              monitorPort: server.monitorPort,
             });
             started.push(server.id);
             success = true;
@@ -483,7 +496,7 @@ export class ServerManager {
           id: server.id,
           runner,
           autoRun: false,
-          monitoringLevel: server.monitoringLevel,
+          monitorPort: server.monitorPort,
         });
       }
     }
@@ -545,11 +558,11 @@ export class ServerManager {
         port: status.port,
         autoRun: managed.autoRun,
         startedAt: status.startedAt?.toISOString() ?? new Date().toISOString(),
-        monitoringLevel: managed.monitoringLevel,
+        monitorPort: managed.monitorPort,
       });
     }
 
-    const monitoredPorts = this.portMonitor.getPersistedState();
+    const monitoredPorts = this.getPortMonitor().getPersistedState();
 
     const data = {
       version: 4,
@@ -624,7 +637,7 @@ export class ServerManager {
    * Start a server
    */
   async startServer(options: StartServerOptions): Promise<{ id: string; pid: number; runnerType: RunnerType; containerId?: string }> {
-    const { command, cwd, id: serverId, autoRun, env, port, monitoringLevel } = options;
+    const { command, cwd, id: serverId, autoRun, env, port, monitorPort } = options;
 
     // Validate server ID for security (prevents command injection via container names)
     validateServerId(serverId);
@@ -667,7 +680,7 @@ export class ServerManager {
       id: serverId,
       runner,
       autoRun: autoRun ?? false,
-      monitoringLevel,
+      monitorPort,
     });
 
     // Start port detection in background
@@ -699,10 +712,10 @@ export class ServerManager {
       const status = await current.runner.getStatus();
       if (status.port) {
         // Port already detected, check if we need to start monitoring
-        if (current.monitoringLevel) {
-          await this.portMonitor.startMonitoring(
+        if (current.monitorPort && !this.getPortMonitor().isMonitoring(status.port)) {
+          await this.getPortMonitor().startMonitoring(
             status.port,
-            current.monitoringLevel,
+            'block', // Default level
             `Server: ${serverId}`
           );
           await this.saveState();
@@ -716,11 +729,11 @@ export class ServerManager {
         await this.saveState();
         await debugLog('ServerManager', `Detected port ${port} for ${serverId}`);
 
-        // Auto-start port monitoring if level was specified
-        if (current.monitoringLevel) {
-          await this.portMonitor.startMonitoring(
+        // Auto-start port monitoring if monitorPort is true and not already monitored
+        if (current.monitorPort && !this.getPortMonitor().isMonitoring(port)) {
+          await this.getPortMonitor().startMonitoring(
             port,
-            current.monitoringLevel,
+            'block', // Default level
             `Server: ${serverId}`
           );
           await this.saveState();
@@ -764,7 +777,7 @@ export class ServerManager {
     const status = await managed.runner.getStatus();
     const command = this.getRunnerCommand(managed.runner);
     const cwd = this.getRunnerCwd(managed.runner);
-    const { autoRun, monitoringLevel } = managed;
+    const { autoRun, monitorPort } = managed;
 
     await this.stopServer(serverId);
 
@@ -783,7 +796,7 @@ export class ServerManager {
       id: serverId,
       autoRun,
       runner: managed.runner.type,
-      monitoringLevel,
+      monitorPort,
     });
   }
 

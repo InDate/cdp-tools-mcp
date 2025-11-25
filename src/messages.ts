@@ -279,36 +279,101 @@ class MessageManager {
 
   /**
    * Format a message template with variable substitution
-   * Supports {{variable}} syntax, {{object.property}} nested access,
-   * {{#variable}}...{{/variable}} conditionals, and {{^variable}}...{{/variable}} inverted conditionals
+   * Supports:
+   * - {{variable}} - simple substitution
+   * - {{object.property}} - nested access
+   * - {{#variable}}...{{/variable}} - conditional (truthy)
+   * - {{^variable}}...{{/variable}} - inverted conditional (falsy)
+   * - {{#if condition}}...{{/if}} - explicit if blocks
+   * - {{#each array}}...{{/each}} - iteration over arrays
    */
   private formatMessage(template: string, variables: Record<string, any>): string {
     let result = template;
 
-    // Process conditionals repeatedly until no more changes (handles nested conditionals)
+    // Process conditionals and loops repeatedly until no more changes (handles nested)
     let previousResult = '';
-    while (previousResult !== result) {
-      previousResult = result;
+    let iterations = 0;
+    const maxIterations = 100; // Prevent infinite loops
 
-      // Handle conditional blocks {{#var}}...{{/var}} (truthy)
-      // Using [\s\S] to match across newlines, supports dot notation like {{#console.hint}}
+    while (previousResult !== result && iterations < maxIterations) {
+      previousResult = result;
+      iterations++;
+
+      // Handle {{#each array}}...{{/each}} loops - must be processed before conditionals
+      result = result.replace(/\{\{#each\s+([\w.]+)\}\}([\s\S]*?)\{\{\/each\}\}/g, (match, key, content) => {
+        const array = this.resolveVariable(key, variables);
+        if (!Array.isArray(array) || array.length === 0) {
+          return ''; // Remove block if not an array or empty
+        }
+
+        // Iterate and substitute each item
+        return array.map((item, index) => {
+          // Create a context with the item's properties available directly
+          // and also as 'this' for simple values
+          let itemContent = content;
+
+          if (typeof item === 'object' && item !== null) {
+            // For objects, substitute {{property}} with item.property
+            itemContent = itemContent.replace(/\{\{([\w.]+)\}\}/g, (m: string, prop: string) => {
+              // Check if it's a property of the item
+              if (prop in item) {
+                return String(item[prop] ?? '');
+              }
+              // Check nested properties
+              const value = this.resolveVariable(prop, item);
+              if (value !== undefined) {
+                return String(value);
+              }
+              // Fall back to parent variables
+              const parentValue = this.resolveVariable(prop, variables);
+              if (parentValue !== undefined) {
+                return String(parentValue);
+              }
+              return m; // Keep placeholder if not found
+            });
+
+            // Handle conditionals within each block using item context
+            itemContent = this.processConditionals(itemContent, { ...variables, ...item });
+          } else {
+            // For primitive values, {{this}} refers to the value
+            itemContent = itemContent.replace(/\{\{this\}\}/g, String(item));
+          }
+
+          return itemContent;
+        }).join('');
+      });
+
+      // Handle {{#if condition}}...{{/if}} blocks
+      result = result.replace(/\{\{#if\s+([\w.]+)\}\}([\s\S]*?)\{\{\/if\}\}/g, (match, key, content) => {
+        const value = this.resolveVariable(key, variables);
+        // Check for truthy: non-null, non-undefined, non-empty array, non-empty string, true
+        const isTruthy = Array.isArray(value) ? value.length > 0 : Boolean(value);
+        if (isTruthy) {
+          return content;
+        }
+        return '';
+      });
+
+      // Handle conditional blocks {{#var}}...{{/var}} (truthy) - original syntax
       result = result.replace(/\{\{#([\w.]+)\}\}([\s\S]*?)\{\{\/\1\}\}/g, (match, key, content) => {
-        // Check if variable exists and is truthy
+        // Skip if this looks like a helper (if, each, etc.)
+        if (['if', 'each', 'unless'].includes(key)) {
+          return match;
+        }
         const value = this.resolveVariable(key, variables);
         if (value) {
-          return content; // Keep content if variable is truthy
+          return content;
         }
-        return ''; // Remove entire block if variable is falsy/undefined
+        return '';
       });
 
       // Handle inverted conditional blocks {{^var}}...{{/var}} (falsy)
       result = result.replace(/\{\{\^([\w.]+)\}\}([\s\S]*?)\{\{\/\1\}\}/g, (match, key, content) => {
-        // Check if variable is falsy/undefined
         const value = this.resolveVariable(key, variables);
         if (!value) {
-          return content; // Keep content if variable is falsy/undefined
+          return content;
         }
-        return ''; // Remove entire block if variable is truthy
+        return '';
       });
     }
 
@@ -320,6 +385,31 @@ class MessageManager {
         return String(value);
       }
       return match; // Keep placeholder if variable not provided
+    });
+
+    return result;
+  }
+
+  /**
+   * Process conditionals within a given context (used by #each)
+   */
+  private processConditionals(template: string, context: Record<string, any>): string {
+    let result = template;
+
+    // Handle {{#if condition}}...{{/if}} blocks
+    result = result.replace(/\{\{#if\s+([\w.]+)\}\}([\s\S]*?)\{\{\/if\}\}/g, (match, key, content) => {
+      const value = this.resolveVariable(key, context);
+      const isTruthy = Array.isArray(value) ? value.length > 0 : Boolean(value);
+      return isTruthy ? content : '';
+    });
+
+    // Handle {{#var}}...{{/var}} conditionals (truthy)
+    result = result.replace(/\{\{#([\w.]+)\}\}([\s\S]*?)\{\{\/\1\}\}/g, (match, key, content) => {
+      if (['if', 'each', 'unless'].includes(key)) {
+        return match;
+      }
+      const value = this.resolveVariable(key, context);
+      return value ? content : '';
     });
 
     return result;
@@ -379,9 +469,9 @@ class MessageManager {
     // Build the response with Status + Key detail format
     const lines: string[] = [];
 
-    // Line 1: Status line (skip prefix for 'list' type)
+    // Line 1: Status line (skip prefix for 'list' and 'success' types - they're self-evident)
     const typeLabel = template.type.charAt(0).toUpperCase() + template.type.slice(1);
-    const skipPrefix = template.type === 'list';
+    const skipPrefix = template.type === 'list' || template.type === 'success';
     if (template.summary) {
       const summaryText = this.formatMessage(template.summary, variables);
       lines.push(skipPrefix ? summaryText : `${typeLabel}: ${summaryText}`);

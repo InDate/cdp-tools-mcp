@@ -179,7 +179,7 @@ Chrome debugging port {{port}} failed to become inspectable within the timeout p
 
 **Type:** success
 
-Chrome process killed successfully
+action:killed;port:{{port}};reason:{{reason}}
 
 ---
 
@@ -193,7 +193,7 @@ Chrome launcher status
 ### Recent Close Events
 
 {{#each lastCloseEvents}}
-- **{{reason}}** (port {{port}}, PID {{pid}}) at {{timestamp}}{{#if exitCode}} - exit code: {{exitCode}}{{/if}}{{#if signal}} - signal: {{signal}}{{/if}}
+- **{{reason}}** (port {{port}}, PID {{pid}}) at {{timestamp}}{{#hasExitCode}} - exit code: {{exitCode}}{{/hasExitCode}}{{#signal}} - signal: {{signal}}{{/signal}}
 {{/each}}
 {{/if}}
 
@@ -1943,7 +1943,7 @@ Server `{{serverId}}` stopped.
 
 **Type:** success
 
-{{count}} server(s) running
+{{count}} server(s) ({{runningCount}} running, {{stoppedCount}} stopped)
 
 {{serverList}}
 
@@ -2136,5 +2136,118 @@ Logs cleared for `{{serverId}}`.
 **Type:** success
 
 Server `{{serverId}}` removed from config.
+
+---
+
+## Port Monitoring Messages
+
+## PORT_MONITOR_STARTED
+
+**Type:** success
+**Summary:** Port monitoring started
+
+Now monitoring port {{port}} at level `{{level}}`{{#description}} ({{description}}){{/description}}{{#interval}} with custom interval {{interval}}ms{{/interval}}.
+
+The port will be checked via TCP connection probes. If the port goes down, tool responses will be affected based on the monitoring level:
+- `inform`: Info line prepended to responses
+- `error`: Error line prepended to responses
+- `block`: All tools blocked until acknowledged
+
+**Default intervals:** block=1000ms, error=2000ms, inform=5000ms (configurable in `.cdp-tools/config.json`)
+
+---
+
+## PORT_MONITOR_STOPPED
+
+**Type:** success
+**Summary:** Port monitoring stopped
+
+Stopped monitoring port {{port}}.
+
+---
+
+## PORT_MONITOR_LIST
+
+**Type:** list
+**Summary:** {{count}} monitored port(s)
+
+**Up:** {{upCount}} | **Down:** {{downCount}} | **Connecting:** {{connectingCount}}
+
+{{portList}}
+
+---
+
+## PORT_MONITOR_LIST_EMPTY
+
+**Type:** success
+
+No ports are currently being monitored.
+
+Use `server({ action: 'monitorPort', port: <port>, monitoringLevel: 'inform'|'error'|'block' })` to start monitoring.
+
+---
+
+## PORT_ACKNOWLEDGED
+
+**Type:** success
+**Summary:** Port failure acknowledged
+
+Acknowledged failure for port {{port}}. Tool execution will now continue.
+
+**Note:** The port is still being monitored. If it comes back up and fails again, you will need to acknowledge again.
+
+---
+
+## PORT_MISSING_PORT
+
+**Type:** error
+**Code:** MISSING_PORT
+
+Port number is required.
+
+**Example:**
+```
+server({ action: 'monitorPort', port: 3000, monitoringLevel: 'error' })
+```
+
+---
+
+## PORT_MISSING_LEVEL
+
+**Type:** error
+**Code:** MISSING_LEVEL
+
+Monitoring level is required. Choose one of: `inform`, `error`, or `block`.
+
+- `inform`: Info line prepended to tool responses when port is down
+- `error`: Error line prepended to tool responses when port is down
+- `block`: All tools blocked until failure is acknowledged
+
+**Example:**
+```
+server({ action: 'monitorPort', port: 3000, monitoringLevel: 'block' })
+```
+
+---
+
+## PORT_NOT_MONITORED
+
+**Type:** error
+**Code:** NOT_MONITORED
+
+Port {{port}} is not being monitored.
+
+Use `server({ action: 'listMonitored' })` to see all monitored ports.
+
+---
+
+## PORT_ACK_FAILED
+
+**Type:** error
+**Code:** ACK_FAILED
+
+Cannot acknowledge port {{port}}. Either the port is not being monitored, or it is not currently in a failed state.
+
+Use `server({ action: 'listMonitored' })` to check the current status of monitored ports.
 
 ---
