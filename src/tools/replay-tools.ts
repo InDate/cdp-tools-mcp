@@ -306,7 +306,7 @@ async function handleRun(
     return createErrorResponse('MISSING_PARAMETER', {
       action: 'run',
       missing: 'connectionReason',
-      message: 'The "run" action requires a "connectionReason" parameter (unless doing a dry run or sequence starts with launchChrome)'
+      message: 'The "run" action requires a "connectionReason" parameter to name the browser connection. Provide a connection name - the system will auto-launch Chrome if it doesn\'t exist. Alternatively: use dryRun: true to preview, or ensure sequence starts with launchChrome.'
     });
   }
 

@@ -265,7 +265,11 @@ export async function ensureConnection(
 
   try {
     await debugLog(logPrefix, `Checking connection: ${connectionReason}`);
-    await executeToolCall('navigate', { action: 'info', connectionReason });
+    const infoResult = await executeToolCall('navigate', { action: 'info', connectionReason });
+    // Check if navigate returned an error response (doesn't throw, returns isError: true)
+    if (infoResult?.isError) {
+      throw new Error('Connection not active');
+    }
     await debugLog(logPrefix, `Connection ${connectionReason} is active`);
 
     // Auto-resume if paused at a breakpoint
@@ -275,7 +279,15 @@ export async function ensureConnection(
   } catch {
     await debugLog(logPrefix, `Connection ${connectionReason} not active, launching Chrome...`);
     try {
-      await executeToolCall('launchChrome', { reference: connectionReason });
+      const launchResult = await executeToolCall('launchChrome', { reference: connectionReason });
+      // Check if launchChrome returned an error response (doesn't throw, returns isError: true)
+      if (launchResult?.isError) {
+        const errorText = launchResult?.content?.[0]?.text || 'Unknown error';
+        return {
+          success: false,
+          error: `Failed to auto-launch Chrome: ${errorText}`
+        };
+      }
       await debugLog(logPrefix, `Chrome launched with reference: ${connectionReason}`);
       return { success: true };
     } catch (launchError: any) {
