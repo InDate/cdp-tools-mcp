@@ -1,0 +1,1 @@
+- IMPORTANT: The mcp server must be restarted by me after a build. Every time. No exceptions.

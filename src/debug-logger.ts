@@ -5,7 +5,7 @@
 
 import { promises as fs } from 'fs';
 import { join } from 'path';
-import { getOutputPath } from './paths.js';
+import { getOutputPath } from './helpers/paths.js';
 
 const LOG_DIR = getOutputPath('logs');
 const LOG_FILE = join(LOG_DIR, 'debug.log');

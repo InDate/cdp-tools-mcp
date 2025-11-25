@@ -127,4 +127,4 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 
 **Content**: `extractText`, `findInteractive`
 
-**Server**: `server` (actions: scan, start, stop, restart, list, logs, stopAll)
+**Server**: `server` (actions: start, stop, restart, list, logs, stopAll, setAutoRun, clearLogs, remove, monitorPort, unmonitorPort, listMonitored, acknowledgePort)

@@ -14,7 +14,7 @@ import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 import type { ClickableCache, ClickableElement } from '../clickable-cache.js';
-import { getOutputPath } from '../paths.js';
+import { getOutputPath } from '../helpers/paths.js';
 import { collectInteractiveElements } from '../element-collector.js';
 
 // All element types for findInteractive

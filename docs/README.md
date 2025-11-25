@@ -17,7 +17,7 @@ Instead of just analyzing static code, AI assistants can now:
 |-------|-------------|
 | [Installation](./installation.md) | Setup for Claude Code, Claude Desktop, and from source |
 | [Debugging](./debugging.md) | Breakpoints, stepping, variables, call stacks, source maps |
-| [Automation](./automation.md) | Navigation, element interaction, screenshots, storage |
+| [Automation](./automation.md) | Navigation, element interaction, screenshots, storage, server management |
 | [Replay](./replay.md) | Record and replay command sequences |
 | [Troubleshooting](./troubleshooting.md) | Common issues and solutions |
 | [API Reference](./instructions.md) | Tool schemas and MCP instructions |

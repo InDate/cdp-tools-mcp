@@ -10,7 +10,7 @@ import { NetworkMonitor, StoredNetworkRequest } from '../network-monitor.js';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
 import type { Page } from 'puppeteer-core';
-import { getHomeOutputPath } from '../paths.js';
+import { getHomeOutputPath } from '../helpers/paths.js';
 
 // Consolidated network tool schema
 const networkToolSchema = z.object({

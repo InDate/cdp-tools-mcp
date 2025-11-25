@@ -337,6 +337,117 @@ console({ action: 'recent', count: 10, connectionReason: 'test-flow' })
 network({ action: 'search', pattern: '/api/signup', connectionReason: 'test-flow' })
 ```
 
+## Server Management
+
+Manage development servers across multiple MCP sessions:
+
+```javascript
+// Start a server (any command)
+server({
+  action: 'start',
+  command: 'npm run dev',
+  cwd: '/path/to/project',
+  id: 'next-frontend'
+})
+
+// Start with environment variables
+server({
+  action: 'start',
+  command: 'flask run',
+  cwd: '/path/to/api',
+  id: 'flask-api',
+  env: { FLASK_DEBUG: '1' }
+})
+
+// List running servers
+server({ action: 'list' })
+
+// Get server logs (delta since last view)
+server({ action: 'logs', serverId: 'next-frontend' })
+
+// Get all logs
+server({ action: 'logs', serverId: 'next-frontend', lines: 100 })
+
+// Stop a server
+server({ action: 'stop', serverId: 'next-frontend' })
+
+// Restart a server
+server({ action: 'restart', serverId: 'flask-api' })
+
+// Enable auto-start on MCP startup
+server({ action: 'setAutoRun', serverId: 'next-frontend', autoRun: true })
+
+// Remove server from config
+server({ action: 'remove', serverId: 'old-server' })
+
+// Stop all servers
+server({ action: 'stopAll' })
+```
+
+### Docker Support
+
+Run Docker containers and Docker Compose stacks:
+
+```javascript
+// Docker container
+server({
+  action: 'start',
+  command: 'docker run -p 3000:3000 myimage',
+  id: 'docker-app',
+  runner: 'docker'  // Optional - auto-detected from command
+})
+
+// Docker Compose
+server({
+  action: 'start',
+  command: 'docker compose up',
+  cwd: '/path/to/project',
+  id: 'compose-stack',
+  runner: 'docker-compose'  // Optional - auto-detected
+})
+```
+
+### Port Monitoring
+
+Monitor ports to detect server failures:
+
+```javascript
+// Start monitoring with different severity levels
+server({
+  action: 'monitorPort',
+  port: 3000,
+  monitoringLevel: 'block',  // or 'error' or 'inform'
+  description: 'Frontend dev server'
+})
+
+// Monitoring levels:
+// - 'inform': Info message prepended to tool responses
+// - 'error': Error message prepended to tool responses
+// - 'block': All tools blocked until acknowledged
+
+// List monitored ports
+server({ action: 'listMonitored' })
+
+// Acknowledge a port failure (unblocks tools if level is 'block')
+server({ action: 'acknowledgePort', port: 3000 })
+
+// Stop monitoring
+server({ action: 'unmonitorPort', port: 3000 })
+```
+
+### Auto-Start with Monitoring
+
+```javascript
+// Start server and auto-monitor its port
+server({
+  action: 'start',
+  command: 'npm run dev',
+  cwd: '/path/to/project',
+  id: 'my-app',
+  monitorPort: true  // Auto-adds detected port to monitoring
+})
+```
+
 ## Performance Investigation Pattern
 
 1. **Enable network monitoring**

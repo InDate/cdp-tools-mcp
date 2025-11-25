@@ -87,6 +87,16 @@
 - Verify Node didn't restart (e.g., from nodemon)
 - Reconnect with same reference: `connectDebugger({ reference: 'same ref', port: 9229 })`
 
+### "Reference already in use" but no connection exists
+
+**Problem:** Chrome was killed externally or tab was closed manually, but MCP still shows reference in use
+
+**Solutions:**
+- This is now auto-handled - stale connections are automatically detected and cleaned up
+- Use `tab({ action: 'list' })` which validates and cleans up dead connections
+- Use `listConnections()` which also cleans up stale references
+- As fallback, use `killChrome({ reason: "cleanup" })` then relaunch
+
 ## Replay Issues
 
 ### Replay times out
@@ -147,6 +157,43 @@
 - Verify source map is valid (check `.map` file exists and is valid JSON)
 - Check `sourcesContent` is present in source map
 - Try rebuilding with fresh source maps
+
+## Server Management Issues
+
+### Server won't start
+
+**Problem:** `server({ action: 'start' })` fails
+
+**Solutions:**
+- Check working directory exists and is correct
+- Verify the command works when run manually
+- Check for port conflicts: `lsof -i :<port>`
+- Check server logs: `server({ action: 'logs', serverId: '...' })`
+
+### Docker server not detected
+
+**Problem:** Docker container starts but port not detected
+
+**Solutions:**
+- Ensure port mapping is in the command: `-p 3000:3000`
+- Runner may need explicit type: `runner: 'docker'`
+- Check Docker is running: `docker ps`
+
+### Port monitoring blocks all tools
+
+**Problem:** Monitoring level is `block` and port went down
+
+**Solutions:**
+- Acknowledge the failure: `server({ action: 'acknowledgePort', port: <port> })`
+- Check server status: `server({ action: 'list' })`
+- Restart the server: `server({ action: 'restart', serverId: '...' })`
+
+### Server logs not updating
+
+**Solutions:**
+- Logs are fetched incrementally (delta since last view)
+- Use `lines: 100` to fetch all recent logs
+- Clear logs: `server({ action: 'clearLogs', serverId: '...' })`
 
 ## General Tips
 

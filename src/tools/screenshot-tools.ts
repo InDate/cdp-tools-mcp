@@ -16,7 +16,7 @@ import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import { spawn } from 'child_process';
 import { resolveSelector, isExtendedSelector, cleanupResolvedSelector } from '../utils/selector-resolver.js';
 import { randomBytes } from 'crypto';
-import { getOutputPath } from '../paths.js';
+import { getOutputPath } from '../helpers/paths.js';
 
 // WeasyPrint availability cache
 let weasyPrintCache: { available: boolean; version?: string; error?: string; checkedAt: number } | null = null;

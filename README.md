@@ -73,7 +73,10 @@ Restart and start debugging! Ask Claude to help debug your application.
 - **Port Handling**: Automatic port assignment prevents conflicts when running multiple sessions
 
 ### Server Management
+- **Language-Agnostic**: Run any command - npm, flask, docker, or custom scripts
+- **Docker Support**: Native support for Docker containers and Docker Compose stacks
 - **Multi-Session Coordination**: Multiple MCP sessions share the same dev servers without port conflicts
+- **Port Monitoring**: Detect server failures with configurable response levels (inform, error, block)
 - **Persistent State**: Server PIDs, ports, and config survive session restarts
 - **Auto-Restart**: Servers with autoRun enabled restart automatically with exponential backoff
 - **Cross-Session Logs**: File-based logging lets any session read server output
@@ -143,9 +146,13 @@ MIT
 ## What's New
 
 ### Latest (Unreleased)
+- **Port Monitoring**: Detect server failures with `monitorPort` action - configurable levels (inform, error, block) affect tool responses when monitored ports go down
+- **Docker Support**: Server management now supports Docker containers and Docker Compose stacks alongside native processes
+- **Language-Agnostic Servers**: Generic command execution replaces npm-specific logic - run any command (flask, python, go, etc.)
 - **Variable Inspection Fallbacks**: `getVariables` gracefully degrades when data exceeds token limits (full → depth reduced → names only → counts only)
+- **Stale Connection Cleanup**: Auto-detects and removes dead connections when Chrome is killed externally or tabs are closed
 - **Breakpoint Pause Detection**: Input actions now detect and report when they trigger breakpoints
-- **Server Management**: Coordinate dev servers across multiple MCP sessions with persistent state, auto-restart, and cross-session log access
+- **Multi-Session Server Coordination**: Multiple MCP sessions share dev servers with persistent state, auto-restart, and cross-session log access
 - **Webpack Eval Support**: Code search now extracts actual source from webpack eval wrappers
 - **Lazy Source Map Loading**: On-demand loading improves startup performance
 - **Cache-Busting Breakpoints**: Breakpoints survive rebuilds with changing query params
@@ -156,4 +163,4 @@ MIT
 - **Consolidated Tool API**: Action-based tool schemas reduce tool count and improve usability
 - **Debug Logging**: Track server operations with `setDebugLogging({ enabled: true })`
 
-See the [GUIDE](./docs/GUIDE.md) for detailed feature documentation.
+See the [docs](./docs/README.md) for detailed feature documentation.

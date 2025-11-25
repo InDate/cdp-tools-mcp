@@ -109,11 +109,6 @@ export interface Runner {
 }
 
 /**
- * Monitoring level for port monitoring
- */
-export type MonitoringLevel = 'inform' | 'error' | 'block';
-
-/**
  * Runner state that can be persisted and restored
  */
 export interface PersistedRunnerState {
@@ -126,7 +121,7 @@ export interface PersistedRunnerState {
   port?: number;
   autoRun: boolean;
   startedAt: string;
-  monitoringLevel?: MonitoringLevel;
+  monitorPort?: boolean;
 }
 
 /**

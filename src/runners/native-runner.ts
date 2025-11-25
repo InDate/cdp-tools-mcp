@@ -7,7 +7,7 @@ import { spawn, ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { debugLog } from '../debug-logger.js';
-import { getOutputPath } from '../paths.js';
+import { getOutputPath } from '../helpers/paths.js';
 import type {
   Runner,
   RunnerType,
