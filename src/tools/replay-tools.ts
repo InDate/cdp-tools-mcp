@@ -29,7 +29,6 @@ import {
   formatBreakpointHit,
   extractTextVariables,
   formatVariablePrompt,
-  formatDryRunPreview,
   formatHistory,
   formatSequenceCreated,
   formatSequenceList,
@@ -72,7 +71,6 @@ const replaySchema = z.object({
   intoHistory: z.boolean().optional().describe('Load sequence commands into history without executing (for load action, default: false)'),
 
   // run parameters
-  dryRun: z.boolean().optional().describe('Preview run without executing (for run action, default: false)'),
   connectionReason: z.string().optional().describe('Connection reference to use for all commands in replay'),
   record: z.boolean().optional().describe('Record replayed commands into current recording session (for run action, default: false)'),
   variables: z.record(z.string()).optional().describe('Variable substitutions for text parameters (for run action). Keys are variable names, values are replacement text. Empty object means keep original values.'),
@@ -147,23 +145,13 @@ async function handleList(recorder: CommandRecorder) {
 }
 
 async function handleGet(args: ReplayArgs, recorder: CommandRecorder) {
-  if (!args.sequenceId) {
-    return createErrorResponse('MISSING_PARAMETER', {
-      action: 'get',
-      missing: 'sequenceId',
-      message: 'The "get" action requires a "sequenceId" parameter'
-    });
+  // Use loadSequence to support both name (disk) and sequenceId (memory)
+  const loadResult = await loadSequence({ name: args.name, sequenceId: args.sequenceId }, recorder);
+  if (!loadResult.success) {
+    return createErrorResponse(loadResult.errorCode, { message: loadResult.error });
   }
 
-  const sequence = recorder.getSequence(args.sequenceId);
-  if (!sequence) {
-    return createErrorResponse('SEQUENCE_NOT_FOUND', {
-      sequenceId: args.sequenceId,
-      message: `Sequence "${args.sequenceId}" not found. Use replay({ action: 'list' }) to see available sequences.`
-    });
-  }
-
-  return { content: [{ type: 'text', text: formatSequenceDetails(sequence) }] };
+  return { content: [{ type: 'text', text: formatSequenceDetails(loadResult.sequence) }] };
 }
 
 async function handleDelete(args: ReplayArgs, recorder: CommandRecorder) {
@@ -302,24 +290,19 @@ async function handleRun(
 
   // Validate connection requirement
   const needsConnection = sequenceNeedsConnection(commands);
-  if (!connectionReason && !args.dryRun && !analysis.hasLaunchBeforeConnection && needsConnection) {
+  if (!connectionReason && !analysis.hasLaunchBeforeConnection && needsConnection) {
     return createErrorResponse('MISSING_PARAMETER', {
       action: 'run',
       missing: 'connectionReason',
-      message: 'The "run" action requires a "connectionReason" parameter to name the browser connection. Provide a connection name - the system will auto-launch Chrome if it doesn\'t exist. Alternatively: use dryRun: true to preview, or ensure sequence starts with launchChrome.'
+      message: 'The "run" action requires a "connectionReason" parameter to name the browser connection. Provide a connection name - the system will auto-launch Chrome if it doesn\'t exist. Alternatively: ensure sequence starts with launchChrome, or use replay({ action: \'get\', name: \'...\' }) to preview.'
     });
   }
 
   // Handle variable extraction and prompting
   const extractedVariables = extractTextVariables(commands);
-  if (Object.keys(extractedVariables).length > 0 && args.variables === undefined && !args.dryRun) {
+  if (Object.keys(extractedVariables).length > 0 && args.variables === undefined) {
     const idParam = args.sequenceId || args.name!;
     return { content: [{ type: 'text', text: formatVariablePrompt(sequence.name, idParam, extractedVariables, connectionReason) }] };
-  }
-
-  // Dry run preview
-  if (args.dryRun) {
-    return { content: [{ type: 'text', text: formatDryRunPreview(sequence.name, commands) }] };
   }
 
   // Build execution context

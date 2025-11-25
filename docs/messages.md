@@ -1726,15 +1726,6 @@ Execution paused at {{location}}
 
 ---
 
-## REPLAY_DRY_RUN
-
-**Type:** info
-**Summary:** Dry run preview
-
-{{sequenceName}}: Would execute {{commandCount}} command(s)
-
----
-
 ## REPLAY_NO_COMMANDS_SINCE_PAUSE
 
 **Type:** info

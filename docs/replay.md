@@ -40,8 +40,9 @@ The `description` and `expectedOutcome` fields are saved to disk and displayed w
 // List all in-memory sequences
 replay({ action: 'list' })
 
-// View sequence details
+// View sequence details (by sequenceId or name)
 replay({ action: 'get', sequenceId: 'seq-1234567890' })
+replay({ action: 'get', name: 'login-flow' })  // loads from disk
 
 // Delete a sequence from memory
 replay({ action: 'delete', sequenceId: 'seq-1234567890' })
@@ -80,14 +81,13 @@ replay({
 })
 ```
 
-### Preview (Dry Run)
+### Preview Sequence
+
+Use `get` action to preview a sequence before running:
 
 ```javascript
-replay({
-  action: 'replay',
-  sequenceId: 'seq-1234567890',
-  dryRun: true
-})
+replay({ action: 'get', name: 'login-flow' })
+// Shows: commands, variables, metadata, and run instructions
 ```
 
 ### Variable Substitution

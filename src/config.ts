@@ -25,12 +25,23 @@ export interface PortMonitoringConfig {
 }
 
 /**
+ * Replay system configuration
+ */
+export interface ReplayConfig {
+  /** Maximum nested conditional depth (default: 10) */
+  maxConditionalDepth: number;
+  /** Maximum regex pattern length for url:matches conditions (default: 500) */
+  maxRegexLength: number;
+}
+
+/**
  * Root configuration structure
  */
 export interface CdpToolsConfig {
   version: number;
   directoryPath: string;
   portMonitoring: PortMonitoringConfig;
+  replay: ReplayConfig;
 }
 
 /**
@@ -45,6 +56,10 @@ const DEFAULT_CONFIG: CdpToolsConfig = {
       error: 2000,   // Standard
       inform: 5000,  // Lower overhead for informational
     },
+  },
+  replay: {
+    maxConditionalDepth: 10,  // Maximum nesting depth for conditional commands
+    maxRegexLength: 500,      // Maximum regex pattern length for url:matches
   },
 };
 
@@ -112,6 +127,10 @@ export class ConfigManager {
           inform: loaded.portMonitoring?.portMonitoringFreqMs?.inform ?? defaults.portMonitoring.portMonitoringFreqMs.inform,
         },
       },
+      replay: {
+        maxConditionalDepth: loaded.replay?.maxConditionalDepth ?? defaults.replay.maxConditionalDepth,
+        maxRegexLength: loaded.replay?.maxRegexLength ?? defaults.replay.maxRegexLength,
+      },
     };
   }
 
@@ -156,6 +175,13 @@ export class ConfigManager {
    */
   getIntervalForLevel(level: 'block' | 'error' | 'inform'): number {
     return this.getPortMonitoringConfig().portMonitoringFreqMs[level];
+  }
+
+  /**
+   * Get replay system configuration
+   */
+  getReplayConfig(): ReplayConfig {
+    return this.getConfig().replay;
   }
 
   /**

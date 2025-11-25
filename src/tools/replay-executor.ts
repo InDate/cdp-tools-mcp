@@ -6,6 +6,7 @@ import type { CommandRecorder, RecordedCommand, CommandSequence, ActiveSequenceS
 import { debugLog } from '../debug-logger.js';
 import { sanitizeReference } from '../reference-validator.js';
 import { checkUrlPort } from '../utils/port-check.js';
+import { configManager } from '../config.js';
 
 // =============================================================================
 // Types
@@ -16,6 +17,10 @@ export interface ExecutionContext {
   commandRecorder: CommandRecorder;
   connectionReason: string;
   logPrefix?: string;
+  /** Current nesting depth for conditional commands (used for recursion protection) */
+  conditionalDepth?: number;
+  /** Call stack of sequence names for circular reference detection */
+  conditionalCallStack?: string[];
 }
 
 export interface StepResult {
@@ -23,6 +28,10 @@ export interface StepResult {
   tool: string;
   success: boolean;
   error?: string;
+  // For conditional commands - nested substeps
+  substeps?: StepResult[];
+  sequenceName?: string;
+  conditionMet?: boolean;
 }
 
 export interface BreakpointHitInfo {
@@ -54,6 +63,280 @@ export interface ConnectionAnalysis {
 export const TOOLS_NEEDING_CONNECTION = [
   'navigate', 'content', 'input', 'console', 'network', 'dom', 'screenshot', 'storage'
 ];
+
+// =============================================================================
+// Conditional Evaluation
+// =============================================================================
+
+/**
+ * Result of condition evaluation
+ * - met: true - condition matched
+ * - met: false, isError: undefined - condition legitimately not met
+ * - met: false, isError: true - evaluation FAILED (should stop sequence)
+ */
+export type ConditionResult =
+  | { met: true }
+  | { met: false; reason?: string }
+  | { met: false; reason: string; isError: true };
+
+/**
+ * Evaluate a handlebar-style condition
+ * Supported patterns:
+ *   {{selector:CSS_SELECTOR}}     - true if element exists
+ *   {{!selector:CSS_SELECTOR}}    - true if element does NOT exist
+ *   {{url:contains:STRING}}       - true if URL contains string
+ *   {{url:matches:REGEX}}         - true if URL matches regex
+ *   {{cookie:NAME}}               - true if cookie exists
+ *   {{!cookie:NAME}}              - true if cookie does NOT exist
+ *   {{localStorage:KEY}}          - true if localStorage key exists
+ *   {{!localStorage:KEY}}         - true if localStorage key does NOT exist
+ */
+export async function evaluateCondition(
+  condition: string,
+  ctx: ExecutionContext
+): Promise<ConditionResult> {
+  const { executeToolCall, connectionReason, logPrefix = 'executor' } = ctx;
+  const replayConfig = configManager.getReplayConfig();
+
+  // Parse the handlebar pattern
+  const match = condition.match(/^\{\{(!?)(\w+):(.+)\}\}$/);
+  if (!match) {
+    return {
+      met: false,
+      reason: `Invalid condition format: "${condition}". Expected {{type:value}} or {{!type:value}}. Supported types: selector, url, cookie, localStorage`,
+      isError: true
+    };
+  }
+
+  const [, negated, type, value] = match;
+  const isNegated = negated === '!';
+
+  await debugLog(logPrefix, `Evaluating condition: ${type}${isNegated ? ' (negated)' : ''} = ${value}`);
+
+  try {
+    let conditionMet = false;
+
+    switch (type) {
+      case 'selector': {
+        const result = await executeToolCall('dom', {
+          action: 'querySelector',
+          selector: value,
+          connectionReason
+        });
+        const resultText = result?.content?.[0]?.text || '';
+        conditionMet = !result?.isError && resultText.includes('Element found');
+        break;
+      }
+
+      case 'url': {
+        const pageInfo = await executeToolCall('navigate', {
+          action: 'info',
+          connectionReason
+        });
+        const pageText = pageInfo?.content?.[0]?.text || '';
+        const urlMatch = pageText.match(/URL:\s*([^\s,]+)/);
+        const currentUrl = urlMatch ? urlMatch[1] : '';
+
+        if (value.startsWith('contains:')) {
+          const searchStr = value.substring('contains:'.length);
+          conditionMet = currentUrl.includes(searchStr);
+        } else if (value.startsWith('matches:')) {
+          const pattern = value.substring('matches:'.length);
+
+          // Check regex length limit
+          if (pattern.length > replayConfig.maxRegexLength) {
+            return {
+              met: false,
+              reason: `Regex pattern too long (${pattern.length} chars, max ${replayConfig.maxRegexLength}). Simplify the pattern or increase maxRegexLength in config.`,
+              isError: true
+            };
+          }
+
+          // Safely compile regex
+          let regex: RegExp;
+          try {
+            regex = new RegExp(pattern);
+          } catch (regexError: any) {
+            return {
+              met: false,
+              reason: `Invalid regex pattern "${pattern}": ${regexError.message}. Check syntax at https://regex101.com (JavaScript flavor).`,
+              isError: true
+            };
+          }
+
+          conditionMet = regex.test(currentUrl);
+        } else {
+          conditionMet = currentUrl === value;
+        }
+        break;
+      }
+
+      case 'cookie': {
+        const result = await executeToolCall('storage', {
+          action: 'getCookies',
+          connectionReason
+        });
+        const resultText = result?.content?.[0]?.text || '';
+        conditionMet = resultText.includes(`"name": "${value}"`) || resultText.includes(`name=${value}`);
+        break;
+      }
+
+      case 'localStorage': {
+        const result = await executeToolCall('storage', {
+          action: 'getLocalStorage',
+          key: value,
+          connectionReason
+        });
+        const resultText = result?.content?.[0]?.text || '';
+        conditionMet = !result?.isError && !resultText.includes('not found') && !resultText.includes('null');
+        break;
+      }
+
+      default:
+        return {
+          met: false,
+          reason: `Unknown condition type: "${type}". Supported types: selector, url, cookie, localStorage`,
+          isError: true
+        };
+    }
+
+    // Apply negation
+    const finalResult = isNegated ? !conditionMet : conditionMet;
+    await debugLog(logPrefix, `Condition ${condition} = ${finalResult}`);
+
+    if (finalResult) {
+      return { met: true };
+    } else {
+      return { met: false };
+    }
+  } catch (error: any) {
+    // Tool execution errors are real errors, not just "condition not met"
+    return {
+      met: false,
+      reason: `Error evaluating ${type} condition: ${error.message}`,
+      isError: true
+    };
+  }
+}
+
+export interface ConditionalFlowResult {
+  success: boolean;
+  executed: boolean;
+  sequenceName: string;
+  substeps?: StepResult[];
+  error?: string;
+  durationMs?: number;
+}
+
+/**
+ * Execute a conditional flow - runs a sequence if condition is met
+ */
+export async function executeConditionalFlow(
+  condition: string,
+  sequenceName: string,
+  ctx: ExecutionContext,
+  recorder: CommandRecorder
+): Promise<ConditionalFlowResult> {
+  const { logPrefix = 'executor' } = ctx;
+  const replayConfig = configManager.getReplayConfig();
+  const currentDepth = ctx.conditionalDepth ?? 0;
+  const callStack = ctx.conditionalCallStack ?? [];
+
+  // Check recursion depth limit - allows oscillating patterns (A→B→A) up to max depth
+  if (currentDepth >= replayConfig.maxConditionalDepth) {
+    const chain = [...callStack, sequenceName].join(' → ');
+    await debugLog(logPrefix, `Conditional depth limit exceeded: ${chain}`);
+    return {
+      success: false,
+      executed: false,
+      sequenceName,
+      error: `Conditional depth limit (${replayConfig.maxConditionalDepth}) reached: ${chain}. Increase maxConditionalDepth in config if this is intentional.`
+    };
+  }
+
+  // Evaluate the condition
+  const condResult = await evaluateCondition(condition, ctx);
+
+  if (!condResult.met) {
+    // Check if this is an error vs genuine "condition not met"
+    if ('isError' in condResult && condResult.isError) {
+      // This is an ERROR - fail the sequence
+      await debugLog(logPrefix, `Condition evaluation ERROR: ${condResult.reason}`);
+      return {
+        success: false,
+        executed: false,
+        sequenceName,
+        error: `Condition evaluation failed: ${condResult.reason}`
+      };
+    }
+
+    // Genuine "condition not met" - this is success (we correctly evaluated and skipped)
+    if ('reason' in condResult && condResult.reason) {
+      await debugLog(logPrefix, `Condition not met: ${condResult.reason}`);
+    } else {
+      await debugLog(logPrefix, `Condition ${condition} not met, skipping sequence ${sequenceName}`);
+    }
+    return { success: true, executed: false, sequenceName };
+  }
+
+  await debugLog(logPrefix, `Condition ${condition} met, loading sequence: ${sequenceName}`);
+
+  // Load the sequence
+  const loadResult = await loadSequence({ name: sequenceName }, recorder);
+  if (!loadResult.success) {
+    return { success: false, executed: false, sequenceName, error: `Sequence "${sequenceName}" not found: ${loadResult.error}` };
+  }
+
+  const sequence = loadResult.sequence;
+
+  // Filter out launchChrome commands - we already have a connection
+  const filteredCommands = sequence.commands.filter(cmd => cmd.tool !== 'launchChrome');
+  const filteredSequence = { ...sequence, commands: filteredCommands };
+
+  await debugLog(logPrefix, `Executing conditional sequence "${sequence.name}" with ${filteredCommands.length} commands (depth: ${currentDepth + 1})`);
+
+  // Execute the sequence with updated call stack and depth
+  const execResult = await executeSteps({
+    sequence: filteredSequence,
+    startStep: 0,
+    ctx: {
+      ...ctx,
+      conditionalDepth: currentDepth + 1,
+      conditionalCallStack: [...callStack, sequenceName]
+    },
+  });
+
+  // Check for failures
+  const failedStep = execResult.results.find(r => !r.success);
+  if (failedStep) {
+    // Don't wrap errors that are already from nested conditionals - just pass through
+    const isNestedConditionalError = failedStep.tool === 'conditional' ||
+      failedStep.error?.includes('Conditional depth limit') ||
+      failedStep.error?.includes('Condition evaluation failed');
+
+    const error = isNestedConditionalError
+      ? failedStep.error
+      : `Conditional sequence "${sequenceName}" failed at step ${failedStep.step} (${failedStep.tool}): ${failedStep.error}`;
+
+    return {
+      success: false,
+      executed: true,
+      sequenceName,
+      substeps: execResult.results,
+      error,
+      durationMs: execResult.durationMs
+    };
+  }
+
+  await debugLog(logPrefix, `Conditional sequence completed successfully in ${execResult.durationMs}ms`);
+  return {
+    success: true,
+    executed: true,
+    sequenceName,
+    substeps: execResult.results,
+    durationMs: execResult.durationMs
+  };
+}
 
 // =============================================================================
 // Sequence Loading
@@ -764,6 +1047,57 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
           });
           break;
         }
+      }
+
+      // Handle conditional command specially
+      if (cmd.tool === 'conditional') {
+        // Validate required parameters
+        if (!params.if || typeof params.if !== 'string') {
+          results.push({
+            step: i + 1,
+            tool: cmd.tool,
+            success: false,
+            error: 'Conditional command requires "if" parameter with a condition string. Expected format: {{selector:.class}}, {{url:contains:text}}, {{cookie:name}}, or {{localStorage:key}}'
+          });
+          break;
+        }
+        if (!params.then || typeof params.then !== 'string') {
+          results.push({
+            step: i + 1,
+            tool: cmd.tool,
+            success: false,
+            error: 'Conditional command requires "then" parameter with the sequence name to execute when condition is met'
+          });
+          break;
+        }
+
+        const condResult = await executeConditionalFlow(
+          params.if,
+          params.then,
+          ctx,
+          commandRecorder
+        );
+
+        // Build the step result with substeps
+        const stepResult: StepResult = {
+          step: i + 1,
+          tool: cmd.tool,
+          success: condResult.success,
+          sequenceName: condResult.sequenceName,
+          conditionMet: condResult.executed,
+          substeps: condResult.substeps,
+          error: condResult.error
+        };
+
+        results.push(stepResult);
+
+        if (!condResult.success) {
+          break;
+        }
+
+        const substepCount = condResult.substeps?.length || 0;
+        debugLog(logPrefix, `Step ${i + 1} completed: conditional ${condResult.executed ? `ran ${substepCount} substeps` : 'skipped (condition not met)'}`);
+        continue; // Skip the regular execution path
       }
 
       // Execute with retry

@@ -123,7 +123,7 @@
 
 **Solutions:**
 - Variable names are generated as `var_<index>_<selector>`
-- Use `dryRun: true` first to see the variable names
+- Use `replay({ action: 'get', name: '...' })` to see variable names
 - Pass empty `variables: {}` to keep original values explicitly
 
 ## Console/Network Monitoring

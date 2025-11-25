@@ -49,15 +49,45 @@ export function formatExecutionResults(
   if (failed > 0) {
     response += `\n\n**Failed Commands**\n`;
     results.filter(r => !r.success).forEach((r) => {
-      response += `${r.step}. **${r.tool}**\n`;
-      response += `   **Error:** ${r.error}\n\n`;
+      if (r.tool === 'conditional' && r.substeps) {
+        response += `${r.step}. **${r.tool}** (${r.sequenceName})\n`;
+        response += `   **Error:** ${r.error}\n`;
+        // Show substeps - but skip redundant error messages
+        r.substeps.forEach((sub) => {
+          const icon = sub.success ? '✓' : '✗';
+          response += `   ${r.step}.${sub.step}. ${sub.tool} ${icon}`;
+          // Only show substep error if it's different from the parent error
+          if (!sub.success && sub.error && sub.error !== r.error) {
+            response += ` - ${sub.error}`;
+          }
+          response += `\n`;
+        });
+        response += `\n`;
+      } else {
+        response += `${r.step}. **${r.tool}**\n`;
+        response += `   **Error:** ${r.error}\n\n`;
+      }
     });
   }
 
   if (successful > 0) {
     response += `\n\n**Successful Commands**\n`;
     results.filter(r => r.success).forEach((r) => {
-      response += `${r.step}. **${r.tool}** ✓\n`;
+      if (r.tool === 'conditional') {
+        // Format conditional with substeps
+        if (r.conditionMet && r.substeps && r.substeps.length > 0) {
+          response += `${r.step}. **${r.tool}** (${r.sequenceName}) ✓ - ran ${r.substeps.length} substeps\n`;
+          r.substeps.forEach((sub) => {
+            const icon = sub.success ? '✓' : '✗';
+            response += `   ${r.step}.${sub.step}. ${sub.tool} ${icon}\n`;
+          });
+        } else {
+          // Skipped because condition not met (not an error, just false)
+          response += `${r.step}. **${r.tool}** (${r.sequenceName}) ○ - skipped (condition not met)\n`;
+        }
+      } else {
+        response += `${r.step}. **${r.tool}** ✓\n`;
+      }
     });
   }
 
@@ -250,24 +280,6 @@ export function formatVariablePrompt(
   return response;
 }
 
-/**
- * Format dry run preview
- */
-export function formatDryRunPreview(sequenceName: string, commands: RecordedCommand[]): string {
-  let response = getFormattedResponse('REPLAY_DRY_RUN', {
-    sequenceName,
-    commandCount: commands.length
-  });
-
-  response += `\n\n**Commands:**\n`;
-  commands.forEach((cmd, idx) => {
-    response += `${idx + 1}. **${cmd.tool}**\n`;
-    response += `\`\`\`json\n${JSON.stringify(cmd.params, null, 2)}\n\`\`\`\n\n`;
-  });
-  response += `**To execute:** Remove \`dryRun: true\` and provide \`connectionReason\` parameter`;
-  return response;
-}
-
 // =============================================================================
 // History & Sequence Formatting
 // =============================================================================
@@ -407,6 +419,15 @@ export function formatSequenceDetails(sequence: CommandSequence): string {
   }
   response += `\n**Created:** ${new Date(sequence.createdAt).toLocaleString()}`;
 
+  // Show variables if any exist
+  const variables = extractTextVariables(sequence.commands);
+  if (Object.keys(variables).length > 0) {
+    response += `\n\n**Variables (${Object.keys(variables).length}):**\n`;
+    Object.entries(variables).forEach(([varName, data]) => {
+      response += `- \`${varName}\`: "${data.value}"\n`;
+    });
+  }
+
   response += `\n\n**Commands**\n`;
   sequence.commands.forEach((cmd: RecordedCommand, idx: number) => {
     response += `### ${idx + 1}. ${cmd.tool}\n`;
@@ -414,9 +435,7 @@ export function formatSequenceDetails(sequence: CommandSequence): string {
   });
 
   response += `---\n\n`;
-  response += `**Run Options:**\n`;
-  response += `- Execute: \`replay({ action: 'run', sequenceId: '${sequence.id}' })\`\n`;
-  response += `- Dry run: \`replay({ action: 'run', sequenceId: '${sequence.id}', dryRun: true })\``;
+  response += `**Run:** \`replay({ action: 'run', name: '${sequence.name}' })\``;
 
   return response;
 }
