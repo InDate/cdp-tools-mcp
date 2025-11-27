@@ -19,6 +19,8 @@ export interface ClickableElement {
   // Input-specific fields
   label?: string;
   required?: boolean;
+  // Whether element is visually visible (not hidden by CSS, clipping, etc.)
+  visible?: boolean;
 }
 
 interface CacheEntry {

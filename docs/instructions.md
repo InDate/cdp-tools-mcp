@@ -11,7 +11,8 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
    # Navigation automatically caches interactive elements (links, buttons, inputs) for the page
 3. content({ action: 'findInteractive', connectionReason: "your-descriptive-name" })
    # Shows summary of all interactive elements. Use search/types to filter
-4. Use other tools as needed with connectionReason parameter
+4. content({ action: 'extractText', mode: 'outline' })  # Read page content (preferred over screenshot)
+5. Use other tools as needed with connectionReason parameter
 ```
 
 **Alternative (rename later):**
@@ -85,6 +86,12 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 3. `evaluateExpression`
 4. `getDOMSnapshot`
 
+**UI verification:**
+1. `content({ action: 'verify' })` - Run all default checks
+2. Reports: dead buttons, small touch targets, overflow clipping, dead links, viewport issues
+3. Filter checks: `checks: ['handlers', 'touch']` for specific issues
+4. Available checks: `handlers`, `viewport`, `touch`, `overflow`, `clickability`, `links`, `scroll`
+
 ## Important Notes
 
 - **After `launchChrome()`**: You are ALREADY connected. Do NOT call `connectDebugger()`. Use the `reference` parameter when launching, or rename later with `tab({ action: 'rename' })`
@@ -95,7 +102,6 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 - **Source maps**: Auto-handled. Use `loadSourceMaps` for manual
 - **File paths**: Full URLs (`http://localhost:3000/app.js`) or `file://`
 - **Network monitoring**: Must enable with `enableNetworkMonitoring`
-- **Screenshot quality**: Default 30 (full), 50 (element). Adjust for clarity
 
 ## Tool Categories
 
@@ -117,6 +123,8 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 
 **DOM**: `querySelector`, `getElementProperties`, `getDOMSnapshot`
 
+**Content**: `extractText`, `findInteractive`, `verify`
+
 **Screenshot**: `takeScreenshot`, `takeViewportScreenshot`, `takeElementScreenshot`
 
 **Input**: `clickElement`, `typeText`, `pressKey`, `hoverElement`
@@ -124,7 +132,5 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 **Modal**: `detectModals`, `dismissModal`
 
 **Storage**: `getCookies`, `setCookie`, `getLocalStorage`, `setLocalStorage`, `clearStorage`
-
-**Content**: `extractText`, `findInteractive`
 
 **Server**: `server` (actions: start, stop, restart, list, logs, stopAll, setAutoRun, clearLogs, remove, monitorPort, unmonitorPort, listMonitored, acknowledgePort)

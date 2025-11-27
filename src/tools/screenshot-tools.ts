@@ -459,7 +459,7 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
 
   return {
     screenshot: createTool(
-      'Take screenshots or generate PDFs from webpages. Actions: fullPage (full page screenshot), viewport (viewport screenshot), element (element screenshot), pdf (print to PDF with Chrome or WeasyPrint engines)',
+      'Visual verification only. Use extractText for content. Actions: fullPage (full page screenshot), viewport (viewport screenshot), element (element screenshot), pdf (print to PDF with Chrome or WeasyPrint engines)',
       screenshotSchema,
       async (args) => {
         const { action } = args;
