@@ -16,12 +16,16 @@ import path from 'path';
 import type { ClickableCache, ClickableElement } from '../clickable-cache.js';
 import { getOutputPath } from '../helpers/paths.js';
 import { collectInteractiveElements } from '../element-collector.js';
+import { UIVerifier, type UICheckType, type UIIssue } from '../ui-verifier.js';
 
 // All element types for findInteractive
 const elementTypes = ['link', 'button', 'text', 'email', 'password', 'number', 'tel', 'url', 'search', 'textarea', 'select', 'checkbox', 'radio', 'file', 'date', 'other'] as const;
 
+// UI verification check types
+const verifyCheckTypes = ['handlers', 'viewport', 'touch', 'overflow', 'clickability', 'links', 'scroll'] as const;
+
 const contentSchema = z.object({
-  action: z.enum(['extractText', 'findInteractive']).describe('Content action: extractText (extract webpage text), findInteractive (find all interactive elements like links, buttons, inputs)'),
+  action: z.enum(['extractText', 'findInteractive', 'verify']).describe('Content action: extractText (extract webpage text), findInteractive (find all interactive elements), verify (run UI verification checks)'),
   connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 
   // extractText parameters
@@ -36,6 +40,9 @@ const contentSchema = z.object({
   // Shared parameters
   search: z.string().optional().describe('Search term to filter results (for extractText, findInteractive actions)'),
   limit: z.number().optional().describe('Max results to return (for findInteractive action, default: 50)'),
+
+  // verify parameters
+  checks: z.array(z.enum(verifyCheckTypes)).optional().describe('UI checks to run (for verify action): handlers (dead buttons via CDP), viewport (position), touch (target size), overflow (clipping), clickability (z-index blocking - expensive), links (dead hrefs), scroll (horizontal). Default: all except clickability'),
 }).strict();
 
 export function createContentTools(puppeteerManager: PuppeteerManager, cdpManager: CDPManager, connectionManager: ConnectionManager, resolveConnectionFromReason: (connectionReason: string) => Promise<any>, clickableCache: ClickableCache) {
@@ -64,7 +71,7 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
    */
   return {
     content: createTool(
-      'Inspect and extract content from webpages. Actions: extractText (extract webpage text with outline/full/section modes), findInteractive (find all interactive elements like links, buttons, inputs with summary or filtered view)',
+      'Primary tool for page content. Prefer over screenshots. Actions: extractText (extract webpage text with outline/full/section modes), findInteractive (find all interactive elements like links, buttons, inputs with summary or filtered view), verify (run CDP-based UI verification for dead buttons, viewport issues, touch targets, overflow clipping)',
       contentSchema,
       async (args) => {
         const { action } = args;
@@ -328,11 +335,11 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
               elements = result.result.elements as ClickableElement[];
             }
 
-            // Count and filter hidden elements (width/height <= 0)
+            // Count and filter hidden elements (width/height <= 0 or visible === false)
             const showHidden = args.showHidden || false;
-            const hiddenCount = elements.filter((el) => (el.width ?? 0) <= 0 || (el.height ?? 0) <= 0).length;
+            const hiddenCount = elements.filter((el) => (el.width ?? 0) <= 0 || (el.height ?? 0) <= 0 || el.visible === false).length;
             if (!showHidden) {
-              elements = elements.filter((el) => (el.width ?? 0) > 0 && (el.height ?? 0) > 0);
+              elements = elements.filter((el) => (el.width ?? 0) > 0 && (el.height ?? 0) > 0 && el.visible !== false);
             }
 
             const totalCount = elements.length;
@@ -381,16 +388,20 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
                 });
 
                 for (const [type, typeElements] of Object.entries(byType)) {
+                  // Helper to check if element is hidden
+                  const isHidden = (el: ClickableElement) =>
+                    (el.width ?? 0) <= 0 || (el.height ?? 0) <= 0 || el.visible === false;
+
                   if (typeElements.length > 1) {
                     response += `${type} (${typeElements.length}): `;
                     response += typeElements.map((el) => {
-                      const hidden = (el.width ?? 0) <= 0 || (el.height ?? 0) <= 0 ? ' [hidden]' : '';
+                      const hidden = isHidden(el) ? ' [hidden]' : '';
                       return `${el.text || '(no text)'}${hidden}`;
                     }).join(', ');
                     response += `\n`;
                   } else {
                     const el = typeElements[0];
-                    const hidden = (el.width ?? 0) <= 0 || (el.height ?? 0) <= 0 ? ' (hidden)' : '';
+                    const hidden = isHidden(el) ? ' (hidden)' : '';
                     response += `${el.text || '(no text)'} [${el.selector}]${hidden}\n`;
                   }
                 }
@@ -446,18 +457,24 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
 
             response += `Found ${filteredElements.length} matches\n\n`;
 
+            // Helper to check if element is hidden
+            const isHidden = (el: ClickableElement) =>
+              (el.width ?? 0) <= 0 || (el.height ?? 0) <= 0 || el.visible === false;
+
             // Compact pipe-delimited format
             if (showingInputs) {
               response += `type|text|selector|required\n`;
               displayElements.forEach((el) => {
                 const required = el.required ? 'yes' : '';
-                response += `${el.type}|${el.text || '(no text)'}|${el.selector}|${required}\n`;
+                const hidden = showHidden && isHidden(el) ? ' (hidden)' : '';
+                response += `${el.type}|${el.text || '(no text)'}${hidden}|${el.selector}|${required}\n`;
               });
             } else {
               response += `type|text|selector\n`;
               displayElements.forEach((el) => {
                 const href = el.href ? ` → ${el.href.substring(0, 40)}${el.href.length > 40 ? '...' : ''}` : '';
-                response += `${el.type}|${el.text || '(no text)'}${href}|${el.selector}\n`;
+                const hidden = showHidden && isHidden(el) ? ' (hidden)' : '';
+                response += `${el.type}|${el.text || '(no text)'}${hidden}${href}|${el.selector}\n`;
               });
             }
 
@@ -470,10 +487,117 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
             };
           }
 
+          case 'verify': {
+            const page = targetPuppeteerManager.getPage();
+            const title = await page.title();
+
+            // Parse checks parameter
+            const checks = args.checks as UICheckType[] | undefined;
+
+            // Run UI verification
+            const verifier = new UIVerifier(page);
+            const result = await verifier.verify({ checks });
+
+            // Build response in TOON format - grouped by issue type to reduce duplication
+            const toonEscape = (s: string) => s.includes(' ') || s.includes(';') || s.includes(':') || s.includes('|') ? `(${s})` : s;
+
+            // Group issues by type, then by severity
+            const byType = new Map<string, UIIssue[]>();
+            for (const issue of result.issues) {
+              const key = `${issue.severity}:${issue.type}`;
+              if (!byType.has(key)) byType.set(key, []);
+              byType.get(key)!.push(issue);
+            }
+
+            // Format grouped issues - message once, then list selectors with key details
+            const formatGroupedIssues = (issues: UIIssue[]): string => {
+              if (issues.length === 0) return '';
+
+              // Get short description based on type
+              const typeLabels: Record<string, string> = {
+                'small-touch-target': 'min 44x44',
+                'overflow-clipping': issues[0].details.overflowStyleY || 'clipped',
+                'no-click-handler': 'no handler',
+                'dead-link': 'dead href',
+                'not-clickable': 'blocked',
+                'outside-viewport': 'outside',
+                'partially-outside-viewport': 'partial',
+                'horizontal-scroll': 'h-scroll',
+              };
+
+              const label = typeLabels[issues[0].type] || issues[0].type;
+
+              // Format each selector with key details
+              const selectors = issues.map(i => {
+                const d = i.details;
+                // For overflow, include px amount
+                if (d.overflowPixelsY || d.overflowPixelsX) {
+                  const px = d.overflowPixelsY || d.overflowPixelsX;
+                  return `${toonEscape(i.selector)}:${px}px`;
+                }
+                // For touch targets, include size
+                if (d.width && d.height) {
+                  return `${toonEscape(i.selector)}:${d.width}x${d.height}`;
+                }
+                return toonEscape(i.selector);
+              });
+
+              return `(${label})\n    ${selectors.join('\n    ')}`;
+            };
+
+            const parts: string[] = [];
+            if (title) parts.push(`page:${toonEscape(title)}`);
+            parts.push(`scanned:${result.scannedElements}`);
+            parts.push(`checks:[${result.checksPerformed.join('|')}]`);
+            parts.push(`viewport:${result.viewport.width}x${result.viewport.height}`);
+
+            // Output grouped by severity, then by type
+            const severities = ['error', 'warning', 'info'] as const;
+            for (const severity of severities) {
+              const typesForSeverity = Array.from(byType.entries())
+                .filter(([key]) => key.startsWith(severity + ':'))
+                .map(([key, issues]) => {
+                  const type = key.split(':')[1];
+                  return `${type}:${formatGroupedIssues(issues)}`;
+                });
+
+              if (typesForSeverity.length > 0) {
+                parts.push(`${severity}s:\n  ${typesForSeverity.join('\n  ')}`);
+              }
+            }
+
+            if (result.issues.length === 0) {
+              parts.push('issues:none');
+            }
+
+            const response = parts.join('\n');
+
+            return {
+              content: [{ type: 'text', text: response }],
+            };
+          }
+
           default:
             return createErrorResponse('INVALID_ACTION', { action });
         }
       }
     ),
   };
+}
+
+/**
+ * Format issue type for display
+ */
+function formatIssueType(type: string): string {
+  const typeNames: Record<string, string> = {
+    'no-click-handler': 'Element has no click handler',
+    'outside-viewport': 'Element outside viewport',
+    'partially-outside-viewport': 'Element partially outside viewport',
+    'small-touch-target': 'Small touch target',
+    'overflow-clipping': 'Overflow clipping content',
+    'not-clickable': 'Element not clickable (blocked)',
+    'dead-link': 'Dead link',
+    'horizontal-scroll': 'Page has horizontal scroll',
+  };
+  return typeNames[type] || type;
 }
