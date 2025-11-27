@@ -1150,8 +1150,11 @@ function registerToolHandlers(server: Server) {
     }
 
     // Record command if recording is active (but don't record replay tool calls)
+    // Capture the command index for the repeat hint
+    let commandIndex: number | null = null;
     if (toolName !== 'replay') {
       await commandRecorder.recordCommand(toolName, validation.data);
+      commandIndex = commandRecorder.getCurrentHistoryIndex();
     }
 
     // Check for failed monitored ports
@@ -1205,6 +1208,14 @@ function registerToolHandlers(server: Server) {
             statusItems.push({ label: 'Console', value: details.join('/') });
           }
         }
+      }
+
+      // Add replay hint with history index
+      if (commandIndex !== null) {
+        statusItems.push({
+          label: 'Repeat',
+          value: `\`replay({ action: 'repeat', indices: [${commandIndex}] })\``
+        });
       }
 
       // Append all status lines if any

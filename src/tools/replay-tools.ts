@@ -48,9 +48,10 @@ const replaySchema = z.object({
   action: z.enum([
     'history', 'create', 'list', 'get', 'delete',
     'save', 'load', 'listSaved', 'deleteSaved',
-    'run', 'step', 'finish', 'insert', 'status', 'cancel'
+    'run', 'step', 'finish', 'insert', 'status', 'cancel',
+    'repeat'
   ]).describe(
-    'Replay action: history (view command history), create (create sequence from indices), list (list in-memory sequences), get (get sequence details), delete (delete from memory), save (save to disk), load (load from disk), listSaved (list saved files), deleteSaved (delete saved file), run (execute sequence by name or sequenceId), step (execute next N commands in paused sequence), finish (complete remaining commands), insert (insert recorded commands into sequence), status (show active sequence status), cancel (abandon paused sequence)'
+    'Replay action: repeat (immediately execute commands by history indices), history (view command history), create (create sequence from indices), list (list in-memory sequences), get (get sequence details), delete (delete from memory), save (save to disk), load (load from disk), listSaved (list saved files), deleteSaved (delete saved file), run (execute sequence by name or sequenceId), step (execute next N commands in paused sequence), finish (complete remaining commands), insert (insert recorded commands into sequence), status (show active sequence status), cancel (abandon paused sequence)'
   ),
 
   // history parameters
@@ -105,6 +106,94 @@ async function handleHistory(args: ReplayArgs, recorder: CommandRecorder) {
   }
 
   return { content: [{ type: 'text', text: formatHistory(history, stats.historyCount) }] };
+}
+
+async function handleRepeat(
+  args: ReplayArgs,
+  recorder: CommandRecorder,
+  executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>
+) {
+  if (!args.indices || args.indices.length === 0) {
+    return createErrorResponse('MISSING_PARAMETER', {
+      action: 'repeat',
+      missing: 'indices',
+      message: 'The "repeat" action requires an "indices" array with command indices to execute'
+    });
+  }
+
+  // Get commands from history
+  const commands: Array<{ tool: string; params: Record<string, any>; index: number }> = [];
+  for (const idx of args.indices) {
+    const cmd = recorder.getCommand(idx);
+    if (!cmd) {
+      return createErrorResponse('INVALID_INDICES', {
+        message: `Command index ${idx} not found in history. Use replay({ action: "history" }) to see available commands.`
+      });
+    }
+    commands.push({ tool: cmd.tool, params: cmd.params, index: idx });
+  }
+
+  // Determine if we need a connection
+  const needsConnection = commands.some(cmd => TOOLS_NEEDING_CONNECTION.includes(cmd.tool));
+  let connectionReason = args.connectionReason;
+
+  // Try to extract connection from commands if not provided
+  if (!connectionReason && needsConnection) {
+    // Check if any command creates a connection (launchChrome, connectDebugger)
+    const launchCmd = commands.find(c => c.tool === 'launchChrome' || c.tool === 'connectDebugger');
+    if (launchCmd && launchCmd.params.reference) {
+      connectionReason = launchCmd.params.reference;
+    }
+  }
+
+  if (!connectionReason && needsConnection) {
+    return createErrorResponse('MISSING_PARAMETER', {
+      action: 'repeat',
+      missing: 'connectionReason',
+      message: 'These commands require a browser connection. Provide connectionReason parameter.'
+    });
+  }
+
+  // Execute commands
+  const results: Array<{ index: number; tool: string; success: boolean; error?: string }> = [];
+  const startTime = Date.now();
+
+  for (const cmd of commands) {
+    try {
+      // Add connectionReason to params if needed
+      const params = { ...cmd.params };
+      if (connectionReason && TOOLS_NEEDING_CONNECTION.includes(cmd.tool)) {
+        params.connectionReason = connectionReason;
+      }
+
+      await executeToolCall(cmd.tool, params);
+      results.push({ index: cmd.index, tool: cmd.tool, success: true });
+    } catch (error: any) {
+      results.push({ index: cmd.index, tool: cmd.tool, success: false, error: error.message || String(error) });
+      // Stop on first error
+      break;
+    }
+  }
+
+  const durationMs = Date.now() - startTime;
+  const successful = results.filter(r => r.success).length;
+  const failed = results.filter(r => !r.success).length;
+
+  // Format response
+  let response = failed > 0
+    ? `**Repeat failed** at command #${results.find(r => !r.success)?.index}`
+    : `**Repeated ${successful} command${successful !== 1 ? 's' : ''}** in ${(durationMs / 1000).toFixed(1)}s`;
+
+  response += '\n';
+  results.forEach(r => {
+    const icon = r.success ? '✓' : '✗';
+    response += `\n#${r.index}. **${r.tool}** ${icon}`;
+    if (r.error) {
+      response += ` - ${r.error}`;
+    }
+  });
+
+  return { content: [{ type: 'text', text: response }] };
 }
 
 async function handleCreate(args: ReplayArgs, recorder: CommandRecorder) {
@@ -603,7 +692,7 @@ export function createReplayTools(
 ) {
   return {
     replay: createTool(
-      'Record and replay command sequences for testing and automation. Actions: history (view command history), create (create sequence from indices), list (list in-memory sequences), get (get sequence details), delete (delete from memory), save (save sequence to disk), load (load sequence from disk), listSaved (list saved files), deleteSaved (delete saved file), run (load and execute sequence from disk in one step), step (execute next N commands in paused sequence), finish (complete remaining commands), insert (insert recorded commands into sequence), status (show active sequence status)',
+      'Record and replay command sequences for testing and automation. Actions: repeat (immediately execute commands by history indices - use this to repeat recent actions), history (view command history), create (create sequence from indices), list (list in-memory sequences), get (get sequence details), delete (delete from memory), save (save sequence to disk), load (load sequence from disk), listSaved (list saved files), deleteSaved (delete saved file), run (load and execute sequence from disk in one step), step (execute next N commands in paused sequence), finish (complete remaining commands), insert (insert recorded commands into sequence), status (show active sequence status)',
       replaySchema,
       async (args) => {
         switch (args.action) {
@@ -637,6 +726,8 @@ export function createReplayTools(
             return handleInsert(args, commandRecorder);
           case 'cancel':
             return handleCancel(commandRecorder);
+          case 'repeat':
+            return handleRepeat(args, commandRecorder, executeToolCall);
           default:
             return createErrorResponse('INVALID_ACTION', { action: args.action });
         }
