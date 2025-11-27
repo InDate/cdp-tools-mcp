@@ -4,7 +4,7 @@
  */
 
 import CDP from 'chrome-remote-interface';
-import type { BreakpointInfo, CallFrame, DebuggerState, RuntimeType, CDPConsoleMessage, ConsoleMessageCallback } from './types.js';
+import type { BreakpointInfo, CallFrame, DebuggerState, RuntimeType, CDPConsoleMessage, ConsoleMessageCallback, DOMBreakpointInfo, DOMBreakpointType, EventListenerBreakpointInfo, XHRBreakpointInfo } from './types.js';
 import type { SourceMapHandler } from './sourcemap-handler.js';
 
 export class CDPManager {
@@ -29,6 +29,12 @@ export class CDPManager {
     logs: any[];
   } | null = null;
   private consoleMessageCallback: ConsoleMessageCallback | null = null;
+
+  // DOMDebugger state for advanced breakpoints
+  private domBreakpoints: Map<string, DOMBreakpointInfo> = new Map();
+  private eventBreakpoints: Map<string, EventListenerBreakpointInfo> = new Map();
+  private xhrBreakpoints: Map<string, XHRBreakpointInfo> = new Map();
+  private advancedBpCounter = 0;
 
   constructor(sourceMapHandler?: SourceMapHandler) {
     this.sourceMapHandler = sourceMapHandler || null;
@@ -91,11 +97,18 @@ export class CDPManager {
       }
       this.client = await CDP(cdpOptions);
 
-      const { Debugger, Runtime } = this.client;
+      const { Debugger, Runtime, DOM } = this.client;
 
       // Enable the Debugger domain
       await Debugger.enable();
       await Runtime.enable();
+      // Enable DOM domain (required for DOMDebugger breakpoints to work)
+      // Note: DOM domain is not available in Node.js, only in browsers
+      try {
+        await DOM.enable();
+      } catch {
+        // DOM domain not available (e.g., Node.js runtime)
+      }
 
       // Detect runtime type
       this.state.runtimeType = await this.detectRuntimeType();
@@ -191,6 +204,10 @@ export class CDPManager {
       this.state.breakpoints.clear();
       this.scriptIdToUrl.clear();
       this.urlToScriptId.clear();
+      // Clear DOMDebugger state
+      this.domBreakpoints.clear();
+      this.eventBreakpoints.clear();
+      this.xhrBreakpoints.clear();
     }
   }
 
@@ -1546,5 +1563,219 @@ export class CDPManager {
     } catch (error) {
       return null;
     }
+  }
+
+  // ============================================
+  // DOMDebugger Methods (DOM/Event/XHR Breakpoints)
+  // ============================================
+
+  /**
+   * Generate a unique ID for advanced breakpoints
+   */
+  private generateAdvancedBpId(prefix: string): string {
+    return `${prefix}-${++this.advancedBpCounter}`;
+  }
+
+  /**
+   * Resolve a CSS selector to a CDP nodeId
+   * @param selector - CSS selector to resolve
+   * @returns nodeId for the element
+   */
+  async resolveSelector(selector: string): Promise<number> {
+    if (!this.state.connected) {
+      throw new Error('Not connected to debugger');
+    }
+
+    const { DOM } = this.client;
+
+    // Get document root
+    const { root } = await DOM.getDocument();
+
+    // Query selector to get nodeId
+    const { nodeId } = await DOM.querySelector({
+      nodeId: root.nodeId,
+      selector,
+    });
+
+    if (!nodeId || nodeId === 0) {
+      throw new Error(`Element not found: ${selector}`);
+    }
+
+    return nodeId;
+  }
+
+  /**
+   * Set a DOM breakpoint on a node
+   * Pauses execution when the specified DOM mutation occurs
+   * @param nodeId - The node ID from resolveSelector
+   * @param type - Type of DOM change to break on
+   * @param selector - Original CSS selector (for reference/display)
+   */
+  async setDOMBreakpoint(
+    nodeId: number,
+    type: DOMBreakpointType,
+    selector: string
+  ): Promise<DOMBreakpointInfo> {
+    if (!this.state.connected) {
+      throw new Error('Not connected to debugger');
+    }
+
+    const { DOMDebugger } = this.client;
+
+    await DOMDebugger.setDOMBreakpoint({ nodeId, type });
+
+    const id = this.generateAdvancedBpId('dom-bp');
+    const info: DOMBreakpointInfo = {
+      breakpointId: id,
+      type: 'dom',
+      nodeId,
+      domBreakpointType: type,
+      selector,
+    };
+
+    this.domBreakpoints.set(id, info);
+    return info;
+  }
+
+  /**
+   * Remove a DOM breakpoint by its ID
+   */
+  async removeDOMBreakpoint(breakpointId: string): Promise<void> {
+    const bp = this.domBreakpoints.get(breakpointId);
+    if (!bp) {
+      throw new Error(`DOM breakpoint not found: ${breakpointId}`);
+    }
+
+    if (!this.state.connected) {
+      throw new Error('Not connected to debugger');
+    }
+
+    const { DOMDebugger } = this.client;
+
+    await DOMDebugger.removeDOMBreakpoint({
+      nodeId: bp.nodeId,
+      type: bp.domBreakpointType,
+    });
+
+    this.domBreakpoints.delete(breakpointId);
+  }
+
+  /**
+   * Get all DOM breakpoints
+   */
+  getDOMBreakpoints(): DOMBreakpointInfo[] {
+    return Array.from(this.domBreakpoints.values());
+  }
+
+  /**
+   * Set an event listener breakpoint
+   * Pauses execution when the specified event fires
+   * @param eventName - DOM event name (e.g., 'click', 'submit', 'input')
+   * @param targetName - Optional EventTarget interface filter (e.g., 'HTMLInputElement')
+   */
+  async setEventListenerBreakpoint(
+    eventName: string,
+    targetName?: string
+  ): Promise<EventListenerBreakpointInfo> {
+    if (!this.state.connected) {
+      throw new Error('Not connected to debugger');
+    }
+
+    const { DOMDebugger } = this.client;
+
+    await DOMDebugger.setEventListenerBreakpoint({ eventName, targetName });
+
+    const id = this.generateAdvancedBpId('event-bp');
+    const info: EventListenerBreakpointInfo = {
+      breakpointId: id,
+      type: 'event',
+      eventName,
+      targetName,
+    };
+
+    this.eventBreakpoints.set(id, info);
+    return info;
+  }
+
+  /**
+   * Remove an event listener breakpoint by its ID
+   */
+  async removeEventListenerBreakpoint(breakpointId: string): Promise<void> {
+    const bp = this.eventBreakpoints.get(breakpointId);
+    if (!bp) {
+      throw new Error(`Event listener breakpoint not found: ${breakpointId}`);
+    }
+
+    if (!this.state.connected) {
+      throw new Error('Not connected to debugger');
+    }
+
+    const { DOMDebugger } = this.client;
+
+    await DOMDebugger.removeEventListenerBreakpoint({
+      eventName: bp.eventName,
+      targetName: bp.targetName,
+    });
+
+    this.eventBreakpoints.delete(breakpointId);
+  }
+
+  /**
+   * Get all event listener breakpoints
+   */
+  getEventListenerBreakpoints(): EventListenerBreakpointInfo[] {
+    return Array.from(this.eventBreakpoints.values());
+  }
+
+  /**
+   * Set an XHR/Fetch breakpoint
+   * Pauses execution when an XHR or Fetch request URL contains the pattern
+   * @param urlPattern - URL substring to match
+   */
+  async setXHRBreakpoint(urlPattern: string): Promise<XHRBreakpointInfo> {
+    if (!this.state.connected) {
+      throw new Error('Not connected to debugger');
+    }
+
+    const { DOMDebugger } = this.client;
+
+    await DOMDebugger.setXHRBreakpoint({ url: urlPattern });
+
+    const id = this.generateAdvancedBpId('xhr-bp');
+    const info: XHRBreakpointInfo = {
+      breakpointId: id,
+      type: 'xhr',
+      urlPattern,
+    };
+
+    this.xhrBreakpoints.set(id, info);
+    return info;
+  }
+
+  /**
+   * Remove an XHR/Fetch breakpoint by its ID
+   */
+  async removeXHRBreakpoint(breakpointId: string): Promise<void> {
+    const bp = this.xhrBreakpoints.get(breakpointId);
+    if (!bp) {
+      throw new Error(`XHR breakpoint not found: ${breakpointId}`);
+    }
+
+    if (!this.state.connected) {
+      throw new Error('Not connected to debugger');
+    }
+
+    const { DOMDebugger } = this.client;
+
+    await DOMDebugger.removeXHRBreakpoint({ url: bp.urlPattern });
+
+    this.xhrBreakpoints.delete(breakpointId);
+  }
+
+  /**
+   * Get all XHR/Fetch breakpoints
+   */
+  getXHRBreakpoints(): XHRBreakpointInfo[] {
+    return Array.from(this.xhrBreakpoints.values());
   }
 }

@@ -23,6 +23,41 @@ export interface BreakpointInfo {
   status?: 'resolved' | 'pending';
 }
 
+/**
+ * DOM Breakpoint types (from CDP DOMDebugger.DOMBreakpointType)
+ */
+export type DOMBreakpointType = 'subtree-modified' | 'attribute-modified' | 'node-removed';
+
+/**
+ * DOM Breakpoint info - pauses when DOM node is modified
+ */
+export interface DOMBreakpointInfo {
+  breakpointId: string;           // 'dom-bp-{counter}'
+  type: 'dom';
+  nodeId: number;
+  domBreakpointType: DOMBreakpointType;
+  selector: string;               // Original CSS selector for display/reference
+}
+
+/**
+ * Event Listener Breakpoint info - pauses when event fires
+ */
+export interface EventListenerBreakpointInfo {
+  breakpointId: string;           // 'event-bp-{counter}'
+  type: 'event';
+  eventName: string;              // e.g., 'click', 'submit', 'input'
+  targetName?: string;            // Optional EventTarget interface filter
+}
+
+/**
+ * XHR/Fetch Breakpoint info - pauses when network request matches URL
+ */
+export interface XHRBreakpointInfo {
+  breakpointId: string;           // 'xhr-bp-{counter}'
+  type: 'xhr';
+  urlPattern: string;             // URL substring to match
+}
+
 export interface CallFrame {
   callFrameId: string;
   functionName: string;

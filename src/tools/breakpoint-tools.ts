@@ -11,7 +11,10 @@ import { createSuccessResponse, createErrorResponse, getErrorMessage } from '../
 
 // Schema definitions
 const breakpointSchema = z.object({
-  action: z.enum(['set', 'remove', 'list', 'setLogpoint', 'validate', 'resetCounter', 'waitForScript']).describe('Breakpoint action: set (set breakpoint at line), remove (remove breakpoint by ID), list (list active breakpoints), setLogpoint (set logpoint with message), validate (validate logpoint expressions), resetCounter (reset logpoint counter), waitForScript (wait for script to load)'),
+  action: z.enum([
+    'set', 'remove', 'list', 'setLogpoint', 'validate', 'resetCounter', 'waitForScript',
+    'setDOMBreakpoint', 'setEventBreakpoint', 'setXHRBreakpoint'
+  ]).describe('Breakpoint action: set (line breakpoint), remove (remove by ID), list (list all), setLogpoint (log without pausing), validate (test expressions), resetCounter (reset logpoint counter), waitForScript (wait for script load), setDOMBreakpoint (pause on DOM changes), setEventBreakpoint (pause on events), setXHRBreakpoint (pause on network requests)'),
   connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 
   // set/setLogpoint/validate parameters
@@ -31,6 +34,18 @@ const breakpointSchema = z.object({
 
   // remove/resetCounter parameters
   breakpointId: z.string().optional().describe('Breakpoint ID (for remove, resetCounter actions)'),
+
+  // setDOMBreakpoint parameters
+  selector: z.string().optional().describe('CSS selector for the element (for setDOMBreakpoint action)'),
+  domBreakpointType: z.enum(['subtree-modified', 'attribute-modified', 'node-removed']).optional()
+    .describe('Type of DOM change to break on (for setDOMBreakpoint): subtree-modified (child added/removed), attribute-modified (attribute changed), node-removed (element deleted)'),
+
+  // setEventBreakpoint parameters
+  eventName: z.string().optional().describe('DOM event name to break on (for setEventBreakpoint), e.g., "click", "submit", "input", "keydown"'),
+  targetName: z.string().optional().describe('EventTarget interface to filter (for setEventBreakpoint), e.g., "HTMLButtonElement". Default: all targets'),
+
+  // setXHRBreakpoint parameters
+  urlPattern: z.string().optional().describe('URL substring to match (for setXHRBreakpoint). Breaks when XHR/Fetch URL contains this pattern'),
 }).strict();
 
 export function createBreakpointTools(
@@ -47,7 +62,7 @@ export function createBreakpointTools(
 ) {
   return {
     breakpoint: createTool(
-      'Manage breakpoints and logpoints. Actions: set (set breakpoint at line), remove (remove breakpoint by ID), list (list active breakpoints), setLogpoint (set logpoint with message interpolation), validate (validate logpoint expressions), resetCounter (reset logpoint execution counter), waitForScript (wait for a script to load)',
+      'Manage breakpoints and logpoints. Actions: set (line breakpoint), remove (remove by ID), list (list all), setLogpoint (log without pausing), validate (test expressions), resetCounter (reset logpoint counter), waitForScript (wait for script load), setDOMBreakpoint (pause when element changes), setEventBreakpoint (pause when event fires), setXHRBreakpoint (pause on network requests)',
       breakpointSchema,
       async (args) => {
         const { action } = args;
@@ -185,49 +200,91 @@ export function createBreakpointTools(
               return createErrorResponse('INVALID_PARAMS', { message: 'breakpointId is required for remove action' });
             }
 
-            // Unregister from logpoint tracker if it's a logpoint
-            if (logpointTracker) {
-              logpointTracker.unregisterLogpoint(args.breakpointId);
+            const bpId = args.breakpointId;
+
+            // Dispatch to appropriate remove method based on ID prefix
+            if (bpId.startsWith('dom-bp-')) {
+              await targetCdpManager.removeDOMBreakpoint(bpId);
+            } else if (bpId.startsWith('event-bp-')) {
+              await targetCdpManager.removeEventListenerBreakpoint(bpId);
+            } else if (bpId.startsWith('xhr-bp-')) {
+              await targetCdpManager.removeXHRBreakpoint(bpId);
+            } else {
+              // Line breakpoint or logpoint - unregister from tracker first
+              if (logpointTracker) {
+                logpointTracker.unregisterLogpoint(bpId);
+              }
+              await targetCdpManager.removeBreakpoint(bpId);
             }
 
-            await targetCdpManager.removeBreakpoint(args.breakpointId);
-
-            return createSuccessResponse('BREAKPOINT_REMOVE_SUCCESS', { breakpointId: args.breakpointId });
+            return createSuccessResponse('BREAKPOINT_REMOVE_SUCCESS', { breakpointId: bpId });
           }
 
           case 'list': {
             const breakpoints = targetCdpManager.getBreakpoints();
             const counts = targetCdpManager.getBreakpointCounts();
+            const domBreakpoints = targetCdpManager.getDOMBreakpoints();
+            const eventBreakpoints = targetCdpManager.getEventListenerBreakpoints();
+            const xhrBreakpoints = targetCdpManager.getXHRBreakpoints();
 
             // Count pending breakpoints
             const pendingCount = breakpoints.filter(bp => bp.status === 'pending').length;
 
+            // Calculate total across all types
+            const totalAll = counts.total + domBreakpoints.length + eventBreakpoints.length + xhrBreakpoints.length;
+
             // Build markdown response
             let markdown = `## Active Breakpoints\n\n`;
-            markdown += `**Total:** ${counts.total} (${counts.breakpoints} breakpoint${counts.breakpoints !== 1 ? 's' : ''}, ${counts.logpoints} logpoint${counts.logpoints !== 1 ? 's' : ''}`;
-            if (pendingCount > 0) {
-              markdown += `, ${pendingCount} pending`;
+            markdown += `**Total:** ${totalAll}`;
+            if (totalAll > 0) {
+              const parts: string[] = [];
+              if (counts.breakpoints > 0) parts.push(`${counts.breakpoints} line`);
+              if (counts.logpoints > 0) parts.push(`${counts.logpoints} logpoint`);
+              if (domBreakpoints.length > 0) parts.push(`${domBreakpoints.length} DOM`);
+              if (eventBreakpoints.length > 0) parts.push(`${eventBreakpoints.length} event`);
+              if (xhrBreakpoints.length > 0) parts.push(`${xhrBreakpoints.length} XHR`);
+              markdown += ` (${parts.join(', ')}`;
+              if (pendingCount > 0) {
+                markdown += `, ${pendingCount} pending`;
+              }
+              markdown += `)`;
             }
-            markdown += `)\n\n`;
+            markdown += `\n\n`;
 
-            if (breakpoints.length === 0) {
+            if (totalAll === 0) {
               markdown += 'No active breakpoints.\n\n';
-              markdown += '**TIP:** Use `breakpoint({ action: \'set\' })` to set a breakpoint or `breakpoint({ action: \'setLogpoint\' })` to set a logpoint.';
+              markdown += '**TIP:** Use `breakpoint({ action: \'set\' })` to set a line breakpoint, `breakpoint({ action: \'setDOMBreakpoint\' })` for DOM changes, or `breakpoint({ action: \'setEventBreakpoint\' })` for events.';
             } else {
-              markdown += '| ID | Type | Status | Location |\n';
+              markdown += '| ID | Type | Status | Details |\n';
               markdown += '|---|---|---|---|\n';
 
+              // Line breakpoints and logpoints
               breakpoints.forEach(bp => {
-                const type = bp.isLogpoint ? 'logpoint' : 'breakpoint';
+                const type = bp.isLogpoint ? 'logpoint' : 'line';
                 const status = bp.status === 'pending' ? '⏳ pending' : '✓ resolved';
                 let location: string;
                 if (bp.originalLocation) {
                   location = `${bp.originalLocation.url}:${bp.originalLocation.lineNumber}${bp.originalLocation.columnNumber !== undefined ? `:${bp.originalLocation.columnNumber}` : ''}`;
                 } else {
-                  // Fall back to scriptId-based location (CDP internal)
                   location = `scriptId:${bp.location.scriptId}:${bp.location.lineNumber + 1}${bp.location.columnNumber !== undefined ? `:${bp.location.columnNumber + 1}` : ''}`;
                 }
                 markdown += `| \`${bp.breakpointId}\` | ${type} | ${status} | \`${location}\` |\n`;
+              });
+
+              // DOM breakpoints
+              domBreakpoints.forEach(bp => {
+                markdown += `| \`${bp.breakpointId}\` | DOM | ✓ active | \`${bp.selector}\` (${bp.domBreakpointType}) |\n`;
+              });
+
+              // Event breakpoints
+              eventBreakpoints.forEach(bp => {
+                const target = bp.targetName ? ` on ${bp.targetName}` : '';
+                markdown += `| \`${bp.breakpointId}\` | event | ✓ active | ${bp.eventName}${target} |\n`;
+              });
+
+              // XHR breakpoints
+              xhrBreakpoints.forEach(bp => {
+                markdown += `| \`${bp.breakpointId}\` | XHR | ✓ active | URL contains \`${bp.urlPattern}\` |\n`;
               });
 
               if (pendingCount > 0) {
@@ -972,6 +1029,151 @@ export function createBreakpointTools(
                 content: [{
                   type: 'text',
                   text: markdown,
+                }],
+                isError: true,
+              };
+            }
+          }
+
+          case 'setDOMBreakpoint': {
+            if (!args.selector) {
+              return createErrorResponse('INVALID_PARAMS', { message: 'selector is required for setDOMBreakpoint action' });
+            }
+            if (!args.domBreakpointType) {
+              return createErrorResponse('INVALID_PARAMS', { message: 'domBreakpointType is required for setDOMBreakpoint action' });
+            }
+
+            // Check connection
+            if (!targetCdpManager.isConnected()) {
+              return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+            }
+
+            try {
+              // Resolve selector to nodeId
+              const nodeId = await targetCdpManager.resolveSelector(args.selector);
+
+              // Set the DOM breakpoint
+              const breakpoint = await targetCdpManager.setDOMBreakpoint(nodeId, args.domBreakpointType, args.selector);
+
+              // Build success response
+              let markdown = `## DOM Breakpoint Set\n\n`;
+              markdown += `**Breakpoint ID:** \`${breakpoint.breakpointId}\`\n`;
+              markdown += `**Selector:** \`${args.selector}\`\n`;
+              markdown += `**Break on:** ${args.domBreakpointType}\n`;
+              markdown += `**Node ID:** ${nodeId}\n\n`;
+
+              const breakTypeDesc: Record<string, string> = {
+                'subtree-modified': 'Execution will pause when children of this element are added, removed, or modified.',
+                'attribute-modified': 'Execution will pause when any attribute of this element changes (class, style, data-*, etc.).',
+                'node-removed': 'Execution will pause when this element is removed from the DOM.',
+              };
+              markdown += `**Note:** ${breakTypeDesc[args.domBreakpointType]}\n\n`;
+              markdown += `**Warning:** DOM breakpoints use internal nodeIds which are invalidated on page reload. You'll need to re-set this breakpoint after navigating.`;
+
+              return {
+                content: [{
+                  type: 'text',
+                  text: markdown,
+                }],
+              };
+            } catch (error: any) {
+              let markdown = `## Failed to Set DOM Breakpoint\n\n`;
+              markdown += `**Error:** ${error.message}\n\n`;
+              markdown += `**Selector:** \`${args.selector}\`\n`;
+              markdown += `**Break Type:** ${args.domBreakpointType}\n\n`;
+
+              if (error.message.includes('not found')) {
+                markdown += `**Suggestion:** The element was not found. Verify the selector matches an element currently in the DOM.`;
+              } else {
+                markdown += `**Suggestion:** Ensure the page is loaded and the element exists in the DOM.`;
+              }
+
+              return {
+                content: [{
+                  type: 'text',
+                  text: markdown,
+                }],
+                isError: true,
+              };
+            }
+          }
+
+          case 'setEventBreakpoint': {
+            if (!args.eventName) {
+              return createErrorResponse('INVALID_PARAMS', { message: 'eventName is required for setEventBreakpoint action' });
+            }
+
+            // Check connection
+            if (!targetCdpManager.isConnected()) {
+              return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+            }
+
+            try {
+              const breakpoint = await targetCdpManager.setEventListenerBreakpoint(args.eventName, args.targetName);
+
+              // Build success response
+              let markdown = `## Event Listener Breakpoint Set\n\n`;
+              markdown += `**Breakpoint ID:** \`${breakpoint.breakpointId}\`\n`;
+              markdown += `**Event:** \`${args.eventName}\`\n`;
+              if (args.targetName) {
+                markdown += `**Target:** ${args.targetName}\n`;
+              } else {
+                markdown += `**Target:** All elements\n`;
+              }
+              markdown += `\n**Note:** Execution will pause whenever a \`${args.eventName}\` event is dispatched.\n\n`;
+              markdown += `**Common events:** click, submit, input, change, keydown, keyup, mousedown, touchstart, load, DOMContentLoaded`;
+
+              return {
+                content: [{
+                  type: 'text',
+                  text: markdown,
+                }],
+              };
+            } catch (error: any) {
+              return {
+                content: [{
+                  type: 'text',
+                  text: `## Failed to Set Event Breakpoint\n\n**Error:** ${error.message}\n\n**Event:** \`${args.eventName}\``,
+                }],
+                isError: true,
+              };
+            }
+          }
+
+          case 'setXHRBreakpoint': {
+            if (!args.urlPattern) {
+              return createErrorResponse('INVALID_PARAMS', { message: 'urlPattern is required for setXHRBreakpoint action' });
+            }
+
+            // Check connection
+            if (!targetCdpManager.isConnected()) {
+              return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+            }
+
+            try {
+              const breakpoint = await targetCdpManager.setXHRBreakpoint(args.urlPattern);
+
+              // Build success response
+              let markdown = `## XHR/Fetch Breakpoint Set\n\n`;
+              markdown += `**Breakpoint ID:** \`${breakpoint.breakpointId}\`\n`;
+              markdown += `**URL Pattern:** \`${args.urlPattern}\`\n\n`;
+              markdown += `**Note:** Execution will pause when any XHR or Fetch request URL contains \`${args.urlPattern}\`.\n\n`;
+              markdown += `**Examples:** If pattern is \`/api/users\`, it will match:\n`;
+              markdown += `- \`https://example.com/api/users\`\n`;
+              markdown += `- \`https://example.com/api/users/123\`\n`;
+              markdown += `- \`/api/users?page=1\``;
+
+              return {
+                content: [{
+                  type: 'text',
+                  text: markdown,
+                }],
+              };
+            } catch (error: any) {
+              return {
+                content: [{
+                  type: 'text',
+                  text: `## Failed to Set XHR Breakpoint\n\n**Error:** ${error.message}\n\n**URL Pattern:** \`${args.urlPattern}\``,
                 }],
                 isError: true,
               };
