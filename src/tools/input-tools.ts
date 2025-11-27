@@ -14,6 +14,8 @@ import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import { isElementBlocked, detectModals } from '../utils/modal-detector.js';
 import { dismissModalByStrategy, selectDismissalStrategy } from '../utils/modal-dismissal.js';
 import { resolveSelector, isExtendedSelector, cleanupResolvedSelector } from '../utils/selector-resolver.js';
+import { domChangeMonitor, formatDOMChanges } from '../dom-change-monitor.js';
+import { configManager } from '../config.js';
 
 // Consolidated input tool schema
 const inputToolSchema = z.object({
@@ -38,6 +40,10 @@ const inputToolSchema = z.object({
 
   // focusNext/focusPrevious parameters
   count: z.number().optional().describe('Number of times to tab (for focusNext/focusPrevious actions, default: 1)'),
+
+  // Change detection parameters
+  detectChanges: z.boolean().optional().describe('Detect DOM changes from this action (default: from config)'),
+  settleTimeout: z.number().optional().describe('Max time to wait for DOM to settle in ms (default: 2000)'),
 }).strict();
 
 export function createInputTools(
@@ -70,6 +76,16 @@ export function createInputTools(
         }
 
         const page = targetPuppeteerManager.getPage();
+
+        // Determine if change detection is enabled
+        const changeConfig = configManager.getChangeDetectionConfig();
+        const shouldDetectChanges = args.detectChanges ?? changeConfig.enabled;
+        const settleTimeout = args.settleTimeout ?? changeConfig.settleTimeout;
+
+        // Start observing DOM changes before interaction
+        if (shouldDetectChanges && ['click', 'type', 'hover'].includes(action)) {
+          await domChangeMonitor.startObserving(connectionReason, page);
+        }
 
         switch (action) {
           case 'click': {
@@ -184,9 +200,6 @@ export function createInputTools(
                 // Perform the click
                 await page.click(selector, { clickCount });
 
-                // Wait a moment for any UI changes
-                await new Promise((resolve) => setTimeout(resolve, 100));
-
                 // Get post-click state
                 const postClickState = await page.evaluate((clickedSelector: string) => {
                   const focused = (globalThis as any).document.activeElement;
@@ -270,11 +283,22 @@ export function createInputTools(
 
             // If paused at breakpoint, return immediately - don't try any more page interactions
             if (result.pausedAtBreakpoint) {
+              // Stop observing without waiting
+              if (shouldDetectChanges) {
+                await domChangeMonitor.stopObserving(connectionReason, { settleTimeout: 0 });
+              }
               return createSuccessResponse('ACTION_PAUSED_AT_BREAKPOINT', {
                 action: 'click',
                 selector: rawSelector,
                 ...result.pauseInfo,
               });
+            }
+
+            // Collect DOM changes
+            let changesText = '';
+            if (shouldDetectChanges) {
+              const changes = await domChangeMonitor.stopObserving(connectionReason, { settleTimeout });
+              changesText = formatDOMChanges(changes);
             }
 
             // Clean up temporary selector attribute
@@ -328,25 +352,21 @@ export function createInputTools(
                 content: [
                   {
                     type: 'text',
-                    text: `Clicked element \`${rawSelector}\`${postClickInfo}\n\n**Warning:** ${selectorWarning}`,
+                    text: `Clicked element \`${rawSelector}\`${changesText}${postClickInfo}\n\n**Warning:** ${selectorWarning}`,
                   },
                 ],
               };
             }
 
-            // Default success response with post-click info
-            if (postClickInfo) {
-              return {
-                content: [
-                  {
-                    type: 'text',
-                    text: `Clicked element: \`${rawSelector}\`${postClickInfo}`,
-                  },
-                ],
-              };
-            }
-
-            return createSuccessResponse('ELEMENT_CLICK_SUCCESS', { selector: rawSelector });
+            // Default success response with post-click info and changes
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `Clicked element: \`${rawSelector}\`${changesText}${postClickInfo}`,
+                },
+              ],
+            };
           }
 
           case 'type': {
@@ -444,18 +464,37 @@ export function createInputTools(
                 // Type new text
                 await page.type(selector, text, { delay });
 
-                return { selector, text };
+                // Get the actual value after typing
+                const currentValue = await page.$eval(selector, (el: unknown) => {
+                  const element = el as { value?: string; textContent?: string | null };
+                  if ('value' in element && element.value !== undefined) {
+                    return element.value;
+                  }
+                  return element.textContent || '';
+                });
+
+                return { selector, text, currentValue };
               },
               'typeText'
             );
 
             // If paused at breakpoint, return immediately - don't try any more page interactions
             if (result.pausedAtBreakpoint) {
+              if (shouldDetectChanges) {
+                await domChangeMonitor.stopObserving(connectionReason, { settleTimeout: 0 });
+              }
               return createSuccessResponse('ACTION_PAUSED_AT_BREAKPOINT', {
                 action: 'type',
                 selector: rawSelector,
                 ...result.pauseInfo,
               });
+            }
+
+            // Collect DOM changes
+            let changesText = '';
+            if (shouldDetectChanges) {
+              const changes = await domChangeMonitor.stopObserving(connectionReason, { settleTimeout });
+              changesText = formatDOMChanges(changes);
             }
 
             // Clean up temporary selector attribute
@@ -483,16 +522,21 @@ export function createInputTools(
                 content: [
                   {
                     type: 'text',
-                    text: `Typed into element \`${rawSelector}\`\n\n**Warning:** ${selectorWarning}`,
+                    text: `Typed into element \`${rawSelector}\`${changesText}\n\nCurrent value: ${result.result?.currentValue}\n\n**Warning:** ${selectorWarning}`,
                   },
                 ],
               };
             }
 
-            return createSuccessResponse('TEXT_TYPE_SUCCESS', {
-              selector: rawSelector,
-              text
-            });
+            // Default success response with changes
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `Text typed into \`${rawSelector}\`: "${text}"${changesText}`,
+                },
+              ],
+            };
           }
 
           case 'press': {
@@ -606,11 +650,21 @@ export function createInputTools(
 
             // If paused at breakpoint, return immediately - don't try any more page interactions
             if (result.pausedAtBreakpoint) {
+              if (shouldDetectChanges) {
+                await domChangeMonitor.stopObserving(connectionReason, { settleTimeout: 0 });
+              }
               return createSuccessResponse('ACTION_PAUSED_AT_BREAKPOINT', {
                 action: 'hover',
                 selector: rawSelector,
                 ...result.pauseInfo,
               });
+            }
+
+            // Collect DOM changes
+            let changesText = '';
+            if (shouldDetectChanges) {
+              const changes = await domChangeMonitor.stopObserving(connectionReason, { settleTimeout });
+              changesText = formatDOMChanges(changes);
             }
 
             // Clean up temporary selector attribute
@@ -638,15 +692,21 @@ export function createInputTools(
                 content: [
                   {
                     type: 'text',
-                    text: `Hovered over element \`${rawSelector}\`\n\n**Warning:** ${selectorWarning}`,
+                    text: `Hovered over element \`${rawSelector}\`${changesText}\n\n**Warning:** ${selectorWarning}`,
                   },
                 ],
               };
             }
 
-            return createSuccessResponse('ELEMENT_HOVER_SUCCESS', {
-              selector: rawSelector
-            });
+            // Default success response with changes
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `Hovered over element: \`${rawSelector}\`${changesText}`,
+                },
+              ],
+            };
           }
 
           case 'focus': {

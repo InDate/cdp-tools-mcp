@@ -35,6 +35,20 @@ export interface ReplayConfig {
 }
 
 /**
+ * DOM change detection configuration
+ */
+export interface ChangeDetectionConfig {
+  /** Enable automatic change detection on actions (default: true) */
+  enabled: boolean;
+  /** Max time to wait for mutations to settle in ms (default: 2000) */
+  settleTimeout: number;
+  /** Time of no mutations to consider settled in ms (default: 300) */
+  quietPeriod: number;
+  /** Longer timeout for page navigation in ms (default: 3000) */
+  navigationTimeout: number;
+}
+
+/**
  * Root configuration structure
  */
 export interface CdpToolsConfig {
@@ -42,6 +56,7 @@ export interface CdpToolsConfig {
   directoryPath: string;
   portMonitoring: PortMonitoringConfig;
   replay: ReplayConfig;
+  changeDetection: ChangeDetectionConfig;
 }
 
 /**
@@ -60,6 +75,12 @@ const DEFAULT_CONFIG: CdpToolsConfig = {
   replay: {
     maxConditionalDepth: 10,  // Maximum nesting depth for conditional commands
     maxRegexLength: 500,      // Maximum regex pattern length for url:matches
+  },
+  changeDetection: {
+    enabled: true,            // Detect DOM changes by default
+    settleTimeout: 2000,      // Max wait for mutations to settle
+    quietPeriod: 300,         // No mutations for 300ms = settled
+    navigationTimeout: 3000,  // Longer timeout for page loads
   },
 };
 
@@ -131,6 +152,12 @@ export class ConfigManager {
         maxConditionalDepth: loaded.replay?.maxConditionalDepth ?? defaults.replay.maxConditionalDepth,
         maxRegexLength: loaded.replay?.maxRegexLength ?? defaults.replay.maxRegexLength,
       },
+      changeDetection: {
+        enabled: loaded.changeDetection?.enabled ?? defaults.changeDetection.enabled,
+        settleTimeout: loaded.changeDetection?.settleTimeout ?? defaults.changeDetection.settleTimeout,
+        quietPeriod: loaded.changeDetection?.quietPeriod ?? defaults.changeDetection.quietPeriod,
+        navigationTimeout: loaded.changeDetection?.navigationTimeout ?? defaults.changeDetection.navigationTimeout,
+      },
     };
   }
 
@@ -182,6 +209,13 @@ export class ConfigManager {
    */
   getReplayConfig(): ReplayConfig {
     return this.getConfig().replay;
+  }
+
+  /**
+   * Get change detection configuration
+   */
+  getChangeDetectionConfig(): ChangeDetectionConfig {
+    return this.getConfig().changeDetection;
   }
 
   /**
