@@ -54,6 +54,7 @@ Restart and start debugging! Ask Claude to help debug your application.
 
 ### Runtime Debugging
 - **Breakpoint Management**: Set, remove, and list breakpoints (including conditional breakpoints and logpoints)
+- **DOM/Event/XHR Breakpoints**: Pause on DOM mutations, event dispatches, or network requests
 - **Execution Control**: Pause, resume, step over/into/out
 - **Variable Inspection**: Examine call stacks, variables, and scopes at runtime
 - **Source Map Support**: Debug TypeScript code with automatic source map detection
@@ -146,6 +147,8 @@ MIT
 ## What's New
 
 ### Latest
+- **DOM/Event/XHR Breakpoints**: Pause on DOM mutations (`setDOMBreakpoint`), event dispatches (`setEventBreakpoint`), or network requests (`setXHRBreakpoint`) using CDP's DOMDebugger domain
+- **Replay Repeat Action**: Instantly re-execute commands from history with `replay({ action: 'repeat', indices: [0, 1, 2] })` - each tool response now shows its history index for easy repetition
 - **UI Verification**: Detect dead buttons, broken links, small touch targets, and overflow issues with CDP-based verification - no heuristics, just facts
 - **DOM Change Detection**: See exactly what changed after each click, type, or hover - no more guessing what a button did
 - **Port Monitoring**: Detect server failures with `monitorPort` action - configurable levels (inform, error, block) affect tool responses when monitored ports go down

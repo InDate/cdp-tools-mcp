@@ -48,6 +48,16 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 - Prefer `setLogpoint` for loops/high-frequency code
 - Clean up with `removeBreakpoint` or check `listBreakpoints`
 
+**DOM/Event/XHR Breakpoints (Chrome only):**
+- `setDOMBreakpoint`: Pause when element changes
+  - `subtree-modified`: Children added/removed
+  - `attribute-modified`: Attributes changed (class, style, etc.)
+  - `node-removed`: Element deleted from DOM
+- `setEventBreakpoint`: Pause when events fire (click, submit, input, keydown, etc.)
+- `setXHRBreakpoint`: Pause when XHR/Fetch URL contains pattern
+- Example: `breakpoint({ action: 'setDOMBreakpoint', selector: '.todo-list', domBreakpointType: 'subtree-modified' })`
+- Note: DOM breakpoints use nodeIds which are invalidated on page reload
+
 **Code search:**
 - `searchCode`: Find patterns
 - `searchFunctions`: Locate definitions
@@ -107,7 +117,7 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 
 **Connection**: `launchChrome`, `killChrome`, `connectDebugger`, `disconnectDebugger`, `getChromeStatus`, `getDebuggerStatus`, `listConnections`, `switchConnection`
 
-**Breakpoint**: `setBreakpoint`, `removeBreakpoint`, `listBreakpoints`, `setLogpoint`, `validateLogpoint`, `resetLogpointCounter`
+**Breakpoint**: `setBreakpoint`, `removeBreakpoint`, `listBreakpoints`, `setLogpoint`, `validateLogpoint`, `resetLogpointCounter`, `setDOMBreakpoint`, `setEventBreakpoint`, `setXHRBreakpoint`
 
 **Execution**: `pause`, `resume`, `stepOver`, `stepInto`, `stepOut`
 
@@ -134,3 +144,7 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 **Storage**: `getCookies`, `setCookie`, `getLocalStorage`, `setLocalStorage`, `clearStorage`
 
 **Server**: `server` (actions: start, stop, restart, list, logs, stopAll, setAutoRun, clearLogs, remove, monitorPort, unmonitorPort, listMonitored, acknowledgePort)
+
+**Replay**: `replay` (actions: repeat, history, create, list, get, delete, save, load, listSaved, deleteSaved, run, step, finish, insert, status, cancel)
+- `repeat`: Instantly re-execute commands by history index - `replay({ action: 'repeat', indices: [0, 1, 2] })`
+- Each tool response shows its history index in the "Repeat" hint for easy repetition
