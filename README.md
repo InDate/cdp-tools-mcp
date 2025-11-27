@@ -145,7 +145,9 @@ MIT
 
 ## What's New
 
-### Latest (Unreleased)
+### Latest
+- **UI Verification**: Detect dead buttons, broken links, small touch targets, and overflow issues with CDP-based verification - no heuristics, just facts
+- **DOM Change Detection**: See exactly what changed after each click, type, or hover - no more guessing what a button did
 - **Port Monitoring**: Detect server failures with `monitorPort` action - configurable levels (inform, error, block) affect tool responses when monitored ports go down
 - **Docker Support**: Server management now supports Docker containers and Docker Compose stacks alongside native processes
 - **Language-Agnostic Servers**: Generic command execution replaces npm-specific logic - run any command (flask, python, go, etc.)

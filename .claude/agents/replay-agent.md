@@ -75,6 +75,15 @@ Create a task list based on the sequence type:
 - Inspect call stack and variables when paused
 - Check console errors and network requests
 
+### DOM Change Detection
+
+Click, type, and hover actions automatically report DOM changes:
+- Elements added/removed
+- Visibility changes (shown/hidden)
+- Interactive elements affected (buttons, links, inputs)
+
+Use this to understand what changed after an action without taking screenshots. If a click reveals a dropdown or modal, the response will show the new elements.
+
 ---
 
 ## Monitoring Error Counts

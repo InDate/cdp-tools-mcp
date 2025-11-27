@@ -8,10 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **UI Verification** (#26): `content({ action: 'verify' })` detects dead buttons, viewport issues, touch targets, overflow clipping, dead links, horizontal scroll
+- **DOM Change Detection** (#27): Input actions report DOM changes via MutationObserver (added/removed elements, visibility changes)
+- **Replay Agent**: `.claude/agents/replay-agent.md` for building sequences through investigation
 - **Variable Inspection Fallbacks**: `getVariables` gracefully degrades when data exceeds token limits (#20)
-  - Full data → Depth reduced → Names only → Counts only
-  - Actionable messages guide users to use `filter` or `evaluateExpression`
-  - Filter regex validation with helpful error messages
 - **Breakpoint Pause Detection**: Input actions (click, type, hover) now detect and report when they trigger breakpoints
 - **TOON Format**: Token-Oriented Object Notation for compact inspection output (~58% token reduction)
 - **Webpack Eval Support**: Code search (`searchCode`, `searchFunctions`) now extracts actual source lines from webpack eval wrappers instead of showing unhelpful `eval(__webpack_require__...)` lines

@@ -2,6 +2,8 @@
 
 Record and replay command sequences for testing, automation, and debugging workflows.
 
+> **Tip:** Use the `replay-agent` (`.claude/agents/replay-agent.md`) to build sequences through investigation - it records your tool calls automatically.
+
 ## Creating Sequences
 
 ### From Command History
@@ -68,14 +70,14 @@ replay({ action: 'load', filename: 'login-flow-123456.json', intoHistory: true }
 replay({ action: 'deleteSaved', filename: 'login-flow-123456.json' })
 ```
 
-## Replaying Sequences
+## Running Sequences
 
-### Basic Replay
+### Basic Run
 
 ```javascript
-// Replay with connection
+// Run with connection
 replay({
-  action: 'replay',
+  action: 'run',
   sequenceId: 'seq-1234567890',
   connectionReason: 'test-session'
 })
@@ -97,7 +99,7 @@ Replace text inputs with new values during replay:
 ```javascript
 // Original recording had: input({ action: 'type', text: 'original@email.com' })
 replay({
-  action: 'replay',
+  action: 'run',
   sequenceId: 'seq-login-flow',
   connectionReason: 'test-session',
   variables: {
@@ -113,7 +115,7 @@ Control execution timing for slow pages:
 
 ```javascript
 replay({
-  action: 'replay',
+  action: 'run',
   sequenceId: 'seq-slow-flow',
   connectionReason: 'test-session',
   stepTimeout: 60000,    // 60s per step (default: 30s)
@@ -127,7 +129,7 @@ If the sequence starts with `launchChrome`, no connection is needed:
 
 ```javascript
 replay({
-  action: 'replay',
+  action: 'run',
   sequenceId: 'seq-my-flow'
   // connectionReason not required - uses reference from launchChrome
 })
@@ -181,9 +183,8 @@ replay({
 })
 replay({ action: 'save', sequenceId: 'seq-...' })
 
-// Replay anytime to verify
-replay({ action: 'load', filename: 'checkout-test-123456.json' })
-replay({ action: 'replay', sequenceId: 'seq-...', connectionReason: 'test' })
+// Run anytime to verify
+replay({ action: 'run', name: 'checkout-test' })
 ```
 
 ### Debugging Workflows
@@ -198,9 +199,9 @@ replay({
   indices: [0, 1, 2, 3, 4, 5]
 })
 
-// Replay to debug
-replay({ action: 'replay', sequenceId: 'seq-...' })
-// Debug state shown automatically after replay
+// Run to debug
+replay({ action: 'run', name: 'debug-auth-bug' })
+// Debug state shown automatically after run
 ```
 
 ### Automation
@@ -216,7 +217,7 @@ replay({
 })
 
 // Run anytime
-replay({ action: 'replay', sequenceId: 'seq-daily-smoke-test' })
+replay({ action: 'run', name: 'daily-smoke-test' })
 ```
 
 ## Notes
