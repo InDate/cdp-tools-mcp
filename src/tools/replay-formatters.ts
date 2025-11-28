@@ -166,6 +166,11 @@ export function formatClickValidationFailure(
   for (const warn of failure.warnings) {
     response += `- ⚠️ ${warn}\n`;
   }
+  if (failure.info?.length > 0) {
+    for (const infoMsg of failure.info) {
+      response += `- ℹ️ ${infoMsg}\n`;
+    }
+  }
 
   response += `\n**Completed Steps**\n`;
   results.filter(r => r.success).forEach((r) => {

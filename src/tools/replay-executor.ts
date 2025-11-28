@@ -47,6 +47,7 @@ export interface ClickValidationFailure {
   selector: string;
   errors: string[];
   warnings: string[];
+  info: string[];
 }
 
 export interface ExecutionResult {
@@ -895,6 +896,8 @@ export async function validateTypedText(
 
 export interface PreClickState {
   consoleErrorCount: number;
+  consoleWarnCount: number;
+  consoleTotalCount: number;
   networkRequestCount: number;
   url: string;
 }
@@ -903,6 +906,7 @@ export interface ClickValidationResult {
   valid: boolean;
   errors: string[];
   warnings: string[];
+  info: string[];
 }
 
 /**
@@ -912,15 +916,19 @@ export async function capturePreClickState(ctx: ExecutionContext): Promise<PreCl
   const { executeToolCall, connectionReason, logPrefix = 'executor' } = ctx;
 
   let consoleErrorCount = 0;
+  let consoleWarnCount = 0;
+  let consoleTotalCount = 0;
   let networkRequestCount = 0;
   let url = '';
 
   try {
-    // Get console error count via _meta
+    // Get console counts via _meta
     const consoleResult = await executeToolCall('console', {
-      action: 'list', type: 'error', limit: 1, connectionReason
+      action: 'list', limit: 1, connectionReason
     });
-    consoleErrorCount = consoleResult?._meta?.console?.totalCount || 0;
+    consoleErrorCount = consoleResult?._meta?.console?.errorCount || 0;
+    consoleWarnCount = consoleResult?._meta?.console?.warnCount || 0;
+    consoleTotalCount = consoleResult?._meta?.console?.totalCount || 0;
   } catch {
     debugLog(logPrefix, 'Warning: Could not get pre-click console state');
   }
@@ -945,7 +953,7 @@ export async function capturePreClickState(ctx: ExecutionContext): Promise<PreCl
     debugLog(logPrefix, 'Warning: Could not get pre-click URL');
   }
 
-  return { consoleErrorCount, networkRequestCount, url };
+  return { consoleErrorCount, consoleWarnCount, consoleTotalCount, networkRequestCount, url };
 }
 
 /**
@@ -960,6 +968,7 @@ export async function validateClickAction(
   const { executeToolCall, connectionReason, logPrefix = 'executor' } = ctx;
   const errors: string[] = [];
   const warnings: string[] = [];
+  const info: string[] = [];
 
   // Get structured data from _meta
   const clickMeta: ClickActionMeta | undefined = clickResult?._meta?.click;
@@ -989,25 +998,40 @@ export async function validateClickAction(
     }
   }
 
-  // 3. Check for new console errors
-  if (config.failOnConsoleErrors) {
-    try {
-      const consoleResult = await executeToolCall('console', {
-        action: 'list', type: 'error', limit: 10, connectionReason
-      });
-      const newCount = consoleResult?._meta?.console?.totalCount || 0;
-      if (newCount > preState.consoleErrorCount) {
-        const diff = newCount - preState.consoleErrorCount;
-        const msg = `${diff} new console error(s) after click`;
-        if (config.consoleErrorsFailMode === 'error') {
-          errors.push(msg);
-        } else {
-          warnings.push(msg);
-        }
+  // 3. Check for new console messages
+  try {
+    const consoleResult = await executeToolCall('console', {
+      action: 'list', limit: 1, connectionReason
+    });
+    const newErrorCount = consoleResult?._meta?.console?.errorCount || 0;
+    const newWarnCount = consoleResult?._meta?.console?.warnCount || 0;
+    const newTotalCount = consoleResult?._meta?.console?.totalCount || 0;
+
+    // Report new errors (respecting failOnConsoleErrors config)
+    if (config.failOnConsoleErrors && newErrorCount > preState.consoleErrorCount) {
+      const diff = newErrorCount - preState.consoleErrorCount;
+      const msg = `${diff} new console error(s) after click`;
+      if (config.consoleErrorsFailMode === 'error') {
+        errors.push(msg);
+      } else {
+        warnings.push(msg);
       }
-    } catch {
-      debugLog(logPrefix, 'Warning: Could not check console errors after click');
     }
+
+    // Report new warnings as info
+    if (newWarnCount > preState.consoleWarnCount) {
+      const diff = newWarnCount - preState.consoleWarnCount;
+      info.push(`${diff} new console warning(s)`);
+    }
+
+    // Report other new messages (log/info) as info
+    const newLogInfoCount = (newTotalCount - newErrorCount - newWarnCount) -
+                            (preState.consoleTotalCount - preState.consoleErrorCount - preState.consoleWarnCount);
+    if (newLogInfoCount > 0) {
+      info.push(`${newLogInfoCount} new console log(s)`);
+    }
+  } catch {
+    debugLog(logPrefix, 'Warning: Could not check console after click');
   }
 
   // 4. Check for network request failures
@@ -1047,7 +1071,8 @@ export async function validateClickAction(
   return {
     valid: errors.length === 0,
     errors,
-    warnings
+    warnings,
+    info
   };
 }
 
@@ -1351,6 +1376,11 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
       if (cmd.tool === 'input' && params.action === 'click' && connectionReason && preClickState && clickConfig.enabled) {
         const clickValidation = await validateClickAction(ctx, preClickState, execResult.result, clickConfig);
 
+        // Log info messages (console activity)
+        for (const infoMsg of clickValidation.info) {
+          debugLog(logPrefix, `Click info: ${infoMsg}`);
+        }
+
         // Log warnings
         for (const warn of clickValidation.warnings) {
           debugLog(logPrefix, `Click warning: ${warn}`);
@@ -1378,6 +1408,7 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
               selector: params.selector || 'unknown',
               errors: clickValidation.errors,
               warnings: clickValidation.warnings,
+              info: clickValidation.info,
             }
           };
         }
