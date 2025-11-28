@@ -839,9 +839,18 @@ export async function validateTypedText(
   try {
     await new Promise(resolve => setTimeout(resolve, 100));
 
+    // Check .value for inputs/textareas, fall back to .innerText for contenteditable elements (e.g., ProseMirror)
     const evalResult = await executeToolCall('inspect', {
       action: 'evaluateExpression',
-      expression: `document.querySelector('${selector.replace(/'/g, "\\'")}')?.value || ''`,
+      expression: `(() => {
+        const el = document.querySelector('${selector.replace(/'/g, "\\'")}');
+        if (!el) return '';
+        // For input/textarea, use .value
+        if (el.value !== undefined && el.value !== '') return el.value;
+        // For contenteditable (ProseMirror, etc.), use innerText
+        if (el.isContentEditable || el.contentEditable === 'true') return el.innerText?.trim() || '';
+        return el.value || '';
+      })()`,
       connectionReason
     });
 
