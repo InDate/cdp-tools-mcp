@@ -6,28 +6,273 @@ import { z } from 'zod';
 import { PuppeteerManager } from '../puppeteer-manager.js';
 import { ConsoleMonitor, StoredConsoleMessage } from '../console-monitor.js';
 import { createTool } from '../validation-helpers.js';
-import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
+import { createSuccessResponse, createErrorResponse } from '../messages.js';
+import {
+  DEFAULT_SUMMARY_TOKEN_BUDGET,
+  estimateTokens,
+  createMessagePreview,
+  createMessageSummary,
+  formatPreviewsWithStats,
+  buildListResponseText,
+  generateSummaryHints,
+  extractTextPortion,
+  extractArgByIndex,
+  formatSummaryAsToon,
+  formatMessageDetailAsToon,
+} from '../formatters/console-formatter.js';
 
-// Consolidated schema for console tools
+// =============================================================================
+// Schema
+// =============================================================================
+
 const consoleSchema = z.object({
-  action: z.enum(['list', 'get', 'recent', 'search', 'clear', 'setObjectDepth']).describe('Console action: list (list messages), get (get by ID), recent (get recent messages), search (search by pattern), clear (clear console), setObjectDepth (set max depth for object expansion in console output)'),
-  connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
-  // Parameters for 'list' action
-  type: z.string().optional().describe('Message type filter (log, error, warn, etc.)'),
-  limit: z.number().optional().describe('Maximum number of messages to return (default: 100 for list, 50 for search/recent)'),
-  offset: z.number().optional().describe('Number of messages to skip (for list action, default: 0)'),
-  // Parameters for 'get' action
-  id: z.string().optional().describe('Console message ID (required for get action)'),
-  // Parameters for 'search' action
-  pattern: z.string().optional().describe('Regex pattern to search for (required for search action)'),
-  flags: z.string().optional().describe('Regex flags (for search action, default: "")'),
-  // Parameters for 'recent' action
-  count: z.number().optional().describe('Number of recent messages to retrieve (for recent action, default: 50)'),
-  // Parameters for 'clear' action
-  reason: z.string().optional().describe('Why the console needs to be cleared (required for clear action)'),
-  // Parameters for 'setObjectDepth' action
-  depth: z.number().optional().describe('Max depth for object expansion in console messages (1-10, default: 2). Higher values show more nested object details but increase processing time.'),
+  action: z.enum(['list', 'get', 'recent', 'search', 'clear', 'setObjectDepth'])
+    .describe('Console action: list, get, recent, search, clear, setObjectDepth'),
+  connectionReason: z.string()
+    .describe('Connection reference (e.g., "unnamed-connection-default" or your renamed tab)'),
+
+  // Shared filters
+  type: z.string().optional()
+    .describe('Message type filter (log, error, warn, etc.)'),
+  limit: z.number().optional()
+    .describe('Max messages to return (default: 100 for list, 50 for search/recent)'),
+
+  // list-specific
+  offset: z.number().optional()
+    .describe('Messages to skip (for list action, default: 0)'),
+
+  // get-specific
+  id: z.string().optional()
+    .describe('Message ID (required for get)'),
+  full: z.boolean().optional()
+    .describe('Return full message without smart truncation (default: false)'),
+  textOffset: z.number().optional()
+    .describe('Character offset for text extraction'),
+  textLimit: z.number().optional()
+    .describe('Max characters to return from text'),
+  argsIndex: z.number().optional()
+    .describe('Specific args array index to return'),
+
+  // search-specific
+  pattern: z.string().optional()
+    .describe('Regex pattern (required for search)'),
+  flags: z.string().optional()
+    .describe('Regex flags (default: "")'),
+
+  // recent-specific
+  count: z.number().optional()
+    .describe('Number of recent messages (default: 50)'),
+
+  // clear-specific
+  reason: z.string().optional()
+    .describe('Why console needs clearing (required for clear)'),
+
+  // setObjectDepth-specific
+  depth: z.number().optional()
+    .describe('Object expansion depth 1-10 (default: 2)'),
 }).strict();
+
+type ConsoleArgs = z.infer<typeof consoleSchema>;
+
+// =============================================================================
+// Validation
+// =============================================================================
+
+const REQUIRED_PARAMS: Record<string, { param: keyof ConsoleArgs; message: string }> = {
+  get: { param: 'id', message: 'The "get" action requires an "id" parameter' },
+  search: { param: 'pattern', message: 'The "search" action requires a "pattern" parameter' },
+  clear: { param: 'reason', message: 'The "clear" action requires a "reason" parameter' },
+  setObjectDepth: { param: 'depth', message: 'The "setObjectDepth" action requires a "depth" parameter (1-10)' },
+};
+
+function validateRequiredParams(args: ConsoleArgs): ReturnType<typeof createErrorResponse> | null {
+  const requirement = REQUIRED_PARAMS[args.action];
+  if (requirement && args[requirement.param] === undefined) {
+    return createErrorResponse('MISSING_PARAMETER', {
+      action: args.action,
+      missing: requirement.param,
+      message: requirement.message,
+    });
+  }
+  return null;
+}
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+function ensureMonitoring(monitor: ConsoleMonitor, manager: PuppeteerManager): void {
+  if (!monitor.isActive() && manager.isConnected()) {
+    monitor.startMonitoring(manager.getPage());
+  }
+}
+
+function buildListResponse(
+  messages: StoredConsoleMessage[],
+  headerText: string,
+  action: string,
+  monitor: ConsoleMonitor
+) {
+  const previews = messages.map(createMessagePreview);
+  const { csv, truncatedCount, totalTokens } = formatPreviewsWithStats(previews);
+
+  return {
+    content: [{ type: 'text' as const, text: buildListResponseText(headerText, csv, truncatedCount, totalTokens) }],
+    _meta: {
+      tool: 'console',
+      action,
+      timestamp: Date.now(),
+      console: {
+        totalCount: monitor.getCount(),
+        matchCount: messages.length,
+        errorCount: monitor.getCount('error'),
+        warnCount: monitor.getCount('warn'),
+        truncatedCount,
+        totalTokens,
+      },
+    },
+  };
+}
+
+// =============================================================================
+// Action Handlers
+// =============================================================================
+
+function handleList(monitor: ConsoleMonitor, manager: PuppeteerManager, args: ConsoleArgs) {
+  ensureMonitoring(monitor, manager);
+
+  const messages = monitor.getMessages({
+    type: args.type,
+    limit: args.limit ?? 100,
+    offset: args.offset ?? 0,
+  });
+
+  const totalCount = monitor.getCount(args.type);
+  const typeInfo = args.type ? ` (type: ${args.type})` : '';
+  const header = `Console Messages: ${messages.length} of ${totalCount}${typeInfo}`;
+
+  return buildListResponse(messages, header, 'list', monitor);
+}
+
+function handleRecent(monitor: ConsoleMonitor, manager: PuppeteerManager, args: ConsoleArgs) {
+  ensureMonitoring(monitor, manager);
+
+  const requestedCount = args.count ?? 50;
+  const messages = monitor.getRecentMessages(requestedCount, args.type);
+
+  const totalCount = monitor.getCount(args.type);
+  const typeInfo = args.type ? ` (type: ${args.type})` : '';
+  const header = `Recent Console Messages: ${messages.length} of ${requestedCount} requested (${totalCount} total)${typeInfo}`;
+
+  return buildListResponse(messages, header, 'recent', monitor);
+}
+
+function handleSearch(monitor: ConsoleMonitor, manager: PuppeteerManager, args: ConsoleArgs) {
+  ensureMonitoring(monitor, manager);
+
+  let regex: RegExp;
+  try {
+    regex = new RegExp(args.pattern!, args.flags ?? '');
+  } catch (error) {
+    return createErrorResponse('INVALID_PATTERN', { message: `Invalid regex: ${error}` });
+  }
+
+  const allMessages = monitor.getMessages({ type: args.type });
+  const matches = allMessages
+    .filter((msg: StoredConsoleMessage) => regex.test(msg.text))
+    .slice(0, args.limit ?? 50);
+
+  const typeInfo = args.type ? ` (type: ${args.type})` : '';
+  const header = `Console Search: ${matches.length} matches for /${args.pattern}/${args.flags ?? ''} (searched ${allMessages.length})${typeInfo}`;
+
+  return buildListResponse(matches, header, 'search', monitor);
+}
+
+function handleGet(monitor: ConsoleMonitor, args: ConsoleArgs) {
+  const message = monitor.getMessage(args.id!);
+  if (!message) {
+    return createErrorResponse('NOT_FOUND', {
+      message: `Console message ${args.id} not found. Use action "list" to see available messages.`,
+    });
+  }
+
+  const hasExtractionParams = args.textOffset !== undefined || args.textLimit !== undefined || args.argsIndex !== undefined;
+  const wantsFull = args.full === true;
+  const fullTokens = estimateTokens({ text: message.text, args: message.args, stackTrace: message.stackTrace });
+
+  // Smart summary mode: large message without explicit extraction or full flag
+  if (!hasExtractionParams && !wantsFull && fullTokens > DEFAULT_SUMMARY_TOKEN_BUDGET) {
+    const summary = createMessageSummary(message, DEFAULT_SUMMARY_TOKEN_BUDGET);
+    const hints = generateSummaryHints(summary);
+    const toon = formatSummaryAsToon(summary);
+
+    return {
+      content: [{
+        type: 'text' as const,
+        text: `Console [${message.id}] ${message.type} - ${summary._tokens.returned}/${summary._tokens.full} tokens${hints}\n\n\`\`\`toon\n${toon}\n\`\`\``,
+      }],
+    };
+  }
+
+  // Full/extraction mode
+  const textResult = extractTextPortion(message.text, args.textOffset, args.textLimit);
+
+  let argsData = message.args;
+  let argsExtraction: { index: number; total: number } | undefined;
+
+  if (args.argsIndex !== undefined) {
+    const argResult = extractArgByIndex(message.args, args.argsIndex);
+    if ('error' in argResult) {
+      return createErrorResponse('INVALID_PARAMETER', { message: argResult.error });
+    }
+    argsData = argResult.args;
+    argsExtraction = argResult.extraction;
+  }
+
+  const data = {
+    id: message.id,
+    type: message.type,
+    text: textResult.text,
+    args: argsData,
+    location: message.location,
+    stackTrace: message.stackTrace,
+    timestamp: message.timestamp,
+    _tokens: { full: fullTokens, returned: estimateTokens({ text: textResult.text, args: argsData }) },
+    _textExtraction: textResult.extraction,
+    _argsExtraction: argsExtraction,
+  };
+
+  const toon = formatMessageDetailAsToon(data);
+
+  return {
+    content: [{
+      type: 'text' as const,
+      text: `Console [${message.id}] ${message.type} - ${data._tokens.returned}/${data._tokens.full} tokens\n\n\`\`\`toon\n${toon}\n\`\`\``,
+    }],
+  };
+}
+
+function handleClear(monitor: ConsoleMonitor, connectionReason: string, reason: string) {
+  console.error(`[cdp-tools] clearConsole - Reason: ${reason}, Connection: ${connectionReason}`);
+  const count = monitor.getCount();
+  monitor.clear();
+  return createSuccessResponse('CONSOLE_CLEARED', { count });
+}
+
+function handleSetObjectDepth(monitor: ConsoleMonitor, depth: number) {
+  const oldDepth = monitor.getConsoleObjectDepth();
+  monitor.setConsoleObjectDepth(depth);
+  return {
+    content: [{
+      type: 'text' as const,
+      text: `Console object depth: ${oldDepth} → ${monitor.getConsoleObjectDepth()}`,
+    }],
+  };
+}
+
+// =============================================================================
+// Tool Export
+// =============================================================================
 
 export function createConsoleTools(
   puppeteerManager: PuppeteerManager,
@@ -36,213 +281,33 @@ export function createConsoleTools(
 ) {
   return {
     console: createTool(
-      'Monitor and manage console messages. Actions: list (list messages with optional type filter and pagination), get (get specific message by ID), recent (get N most recent messages), search (search messages by regex pattern), clear (clear all console messages)',
+      'Monitor and manage console messages. Actions: list, get, recent, search, clear, setObjectDepth',
       consoleSchema,
-      async (args) => {
-        const { action, connectionReason } = args;
+      async (args: ConsoleArgs) => {
+        // Validate required params
+        const validationError = validateRequiredParams(args);
+        if (validationError) return validationError;
 
-        // Validate required parameters for each action
-        if (action === 'get' && !args.id) {
-          return createErrorResponse('MISSING_PARAMETER', {
-            action: 'get',
-            missing: 'id',
-            message: 'The "get" action requires an "id" parameter'
-          });
-        }
-        if (action === 'search' && !args.pattern) {
-          return createErrorResponse('MISSING_PARAMETER', {
-            action: 'search',
-            missing: 'pattern',
-            message: 'The "search" action requires a "pattern" parameter'
-          });
-        }
-        if (action === 'clear' && !args.reason) {
-          return createErrorResponse('MISSING_PARAMETER', {
-            action: 'clear',
-            missing: 'reason',
-            message: 'The "clear" action requires a "reason" parameter'
-          });
-        }
-        if (action === 'setObjectDepth' && args.depth === undefined) {
-          return createErrorResponse('MISSING_PARAMETER', {
-            action: 'setObjectDepth',
-            missing: 'depth',
-            message: 'The "setObjectDepth" action requires a "depth" parameter (1-10)'
-          });
-        }
-
-        // Resolve connection from reason
-        const resolved = await resolveConnectionFromReason(connectionReason);
+        // Resolve connection
+        const resolved = await resolveConnectionFromReason(args.connectionReason);
         if (!resolved) {
           return createErrorResponse('CONNECTION_NOT_FOUND', {
-            message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
+            message: 'No Chrome browser available. Use `launchChrome` first.',
           });
         }
 
-        const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
-        const targetConsoleMonitor = resolved.consoleMonitor || consoleMonitor;
+        const monitor = resolved.consoleMonitor || consoleMonitor;
+        const manager = resolved.puppeteerManager || puppeteerManager;
 
-        // Handle each action
-        switch (action) {
-          case 'list': {
-            // Start monitoring if not already active
-            if (!targetConsoleMonitor.isActive() && targetPuppeteerManager.isConnected()) {
-              const page = targetPuppeteerManager.getPage();
-              targetConsoleMonitor.startMonitoring(page);
-            }
-
-            const messages = targetConsoleMonitor.getMessages({
-              type: args.type,
-              limit: args.limit ?? 100,
-              offset: args.offset ?? 0,
-            });
-
-            const messageList = messages.map((msg: StoredConsoleMessage) => ({
-              id: msg.id,
-              type: msg.type,
-              text: msg.text,
-              args: msg.args,
-              location: msg.location,
-              timestamp: msg.timestamp,
-            }));
-
-            return createSuccessResponse('CONSOLE_MESSAGES_LIST', {
-              count: messages.length,
-              totalCount: targetConsoleMonitor.getCount(args.type),
-              type: args.type
-            }, messageList);
-          }
-
-          case 'get': {
-            const message = targetConsoleMonitor.getMessage(args.id!);
-
-            if (!message) {
-              return {
-                content: [
-                  {
-                    type: 'text',
-                    text: `## Error\n\nConsole message ${args.id} not found\n\n**Suggestion:** Use action "list" to see all available console messages.`,
-                  },
-                ],
-                isError: true,
-              };
-            }
-
-            const data = {
-              id: message.id,
-              type: message.type,
-              text: message.text,
-              args: message.args,
-              location: message.location,
-              stackTrace: message.stackTrace,
-              timestamp: message.timestamp,
-            };
-
-            return createSuccessResponse('CONSOLE_MESSAGE_DETAIL', {
-              id: message.id,
-              type: message.type,
-              text: message.text,
-              timestamp: message.timestamp
-            }, data);
-          }
-
-          case 'recent': {
-            // Start monitoring if not already active
-            if (!targetConsoleMonitor.isActive() && targetPuppeteerManager.isConnected()) {
-              const page = targetPuppeteerManager.getPage();
-              targetConsoleMonitor.startMonitoring(page);
-            }
-
-            const messages = targetConsoleMonitor.getRecentMessages(args.count ?? 50, args.type);
-
-            const messageList = messages.map((msg: StoredConsoleMessage) => ({
-              id: msg.id,
-              type: msg.type,
-              text: msg.text,
-              args: msg.args,
-              location: msg.location,
-              timestamp: msg.timestamp,
-            }));
-
-            return createSuccessResponse('CONSOLE_MESSAGES_RECENT', {
-              count: messages.length,
-              requestedCount: args.count ?? 50,
-              totalCount: targetConsoleMonitor.getCount(args.type),
-              type: args.type
-            }, messageList);
-          }
-
-          case 'search': {
-            // Start monitoring if not already active
-            if (!targetConsoleMonitor.isActive() && targetPuppeteerManager.isConnected()) {
-              const page = targetPuppeteerManager.getPage();
-              targetConsoleMonitor.startMonitoring(page);
-            }
-
-            let regex: RegExp;
-            try {
-              regex = new RegExp(args.pattern!, args.flags ?? '');
-            } catch (error) {
-              return {
-                content: [
-                  {
-                    type: 'text',
-                    text: `## Error\n\nInvalid regex pattern: ${error}\n\n**Suggestion:** Check your regex syntax and try again.`,
-                  },
-                ],
-                isError: true,
-              };
-            }
-
-            // Get all messages and filter
-            const allMessages = targetConsoleMonitor.getMessages({ type: args.type });
-            const matchingMessages = allMessages
-              .filter((msg: StoredConsoleMessage) => regex.test(msg.text))
-              .slice(0, args.limit ?? 50);
-
-            const matches = matchingMessages.map((msg: StoredConsoleMessage) => ({
-              id: msg.id,
-              type: msg.type,
-              text: msg.text,
-              args: msg.args,
-              location: msg.location,
-              timestamp: msg.timestamp,
-            }));
-
-            return createSuccessResponse('CONSOLE_SEARCH_RESULTS', {
-              pattern: args.pattern,
-              flags: args.flags ?? '',
-              type: args.type,
-              matchCount: matchingMessages.length,
-              totalSearched: allMessages.length
-            }, matches);
-          }
-
-          case 'clear': {
-            // Log the reason for audit purposes
-            console.error(`[cdp-tools] clearConsole called - Reason: ${args.reason}, Connection: ${connectionReason}`);
-
-            const count = targetConsoleMonitor.getCount();
-            targetConsoleMonitor.clear();
-
-            return createSuccessResponse('CONSOLE_CLEARED', { count });
-          }
-
-          case 'setObjectDepth': {
-            const oldDepth = targetConsoleMonitor.getConsoleObjectDepth();
-            targetConsoleMonitor.setConsoleObjectDepth(args.depth!);
-            const newDepth = targetConsoleMonitor.getConsoleObjectDepth();
-
-            return {
-              content: [{
-                type: 'text',
-                text: `Console object expansion depth changed from ${oldDepth} to ${newDepth}\n\nThis affects how deeply nested objects are expanded in console messages. Higher values show more detail but may increase processing time.`
-              }]
-            };
-          }
-
-          default:
-            return createErrorResponse('INVALID_ACTION', { action });
+        // Dispatch
+        switch (args.action) {
+          case 'list': return handleList(monitor, manager, args);
+          case 'recent': return handleRecent(monitor, manager, args);
+          case 'search': return handleSearch(monitor, manager, args);
+          case 'get': return handleGet(monitor, args);
+          case 'clear': return handleClear(monitor, args.connectionReason, args.reason!);
+          case 'setObjectDepth': return handleSetObjectDepth(monitor, args.depth!);
+          default: return createErrorResponse('INVALID_ACTION', { action: args.action });
         }
       }
     ),
