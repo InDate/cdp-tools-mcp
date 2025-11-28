@@ -165,26 +165,65 @@ screenshot({
 
 ## Console Monitoring
 
+Console output uses compact formats to reduce token usage:
+
+- **list/recent/search**: CSV format with token counts per message
+- **get**: TOON format with smart truncation for large messages
+
 ```javascript
-// List console messages
+// List console messages (CSV output)
 console({
   action: 'list',
   type: 'error',
   limit: 50,
   connectionReason: 'test-session'
 })
+// Output: id,type,preview,tokens,truncated
+// cm-1,error,"Failed to fetch user data",25,false
 
-// Get recent messages
+// Get recent messages (CSV output)
 console({
   action: 'recent',
   count: 20,
   connectionReason: 'test-session'
 })
 
-// Search console
+// Search console (CSV output)
 console({
   action: 'search',
   pattern: 'API.*failed',
+  connectionReason: 'test-session'
+})
+
+// Get full message details (TOON format with smart truncation)
+console({
+  action: 'get',
+  id: 'cm-1',
+  connectionReason: 'test-session'
+})
+// For messages >100 tokens, shows summary with extraction helpers
+
+// Extract specific portion of large message
+console({
+  action: 'get',
+  id: 'cm-1',
+  textOffset: 0,
+  textLimit: 500,
+  connectionReason: 'test-session'
+})
+
+// Get specific args index
+console({
+  action: 'get',
+  id: 'cm-1',
+  argsIndex: 0,
+  connectionReason: 'test-session'
+})
+
+// Set object expansion depth (1-10, default: 2)
+console({
+  action: 'setObjectDepth',
+  depth: 4,
   connectionReason: 'test-session'
 })
 

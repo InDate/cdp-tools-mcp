@@ -45,7 +45,7 @@ Each MCP server instance automatically uses a unique debugging port to prevent c
 
 **Port Configuration:**
 - **Auto-assigned**: Ports auto-assigned starting from 9222
-- **Manual override**: Set `MCP_DEBUG_PORT` environment variable
+- **Manual override**: Set `MCP_DEBUG_PORT` environment variable or configure in config file
 - **Valid range**: 1024-65535
 
 ### Environment Variables
@@ -54,6 +54,20 @@ Each MCP server instance automatically uses a unique debugging port to prevent c
 # Set specific debug port
 export MCP_DEBUG_PORT=9223
 ```
+
+### Config File
+
+Create `.cdp-tools/config.json` to customize settings:
+
+```json
+{
+  "chrome": {
+    "defaultDebugPort": 9222
+  }
+}
+```
+
+The `defaultDebugPort` sets the starting port for Chrome debugging. If the port is in use, the next available port is used automatically.
 
 ### Debug Logging
 

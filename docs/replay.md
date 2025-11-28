@@ -123,6 +123,19 @@ replay({
 })
 ```
 
+### Start From a Specific Step
+
+Skip early steps and begin from a specific step number (useful for resuming or debugging):
+
+```javascript
+replay({
+  action: 'run',
+  name: 'login-flow',
+  connectionReason: 'test-session',
+  startFrom: 5  // Skip steps 1-4, start at step 5
+})
+```
+
 ### Auto-Launch Chrome
 
 If the sequence starts with `launchChrome`, no connection is needed:
@@ -165,6 +178,49 @@ After successful replay, if breakpoints are active or execution is paused, repla
 🔴 **1 active breakpoint**
 - List breakpoints: `breakpoint({ action: 'list', connectionReason: '...' })`
 ```
+
+## Click Validation
+
+Click actions in replay sequences automatically validate their effects. When validation fails, the sequence pauses for inspection rather than failing outright.
+
+### What Gets Validated
+
+- **Console errors**: New errors after click (default: enabled)
+- **Navigation**: URL change success (default: enabled)
+- **DOM mutations**: Checks if click caused DOM changes (default: disabled)
+- **Network requests**: Checks for failed network requests (default: disabled)
+
+### Pause on Failure
+
+When validation fails, you can:
+- Inspect the error state
+- Retry the step: `replay({ action: 'step', stepCount: 1 })`
+- Skip and continue: `replay({ action: 'step', stepCount: 1 })`
+- Cancel the sequence: `replay({ action: 'cancel' })`
+
+### Configuration
+
+Configure in `.cdp-tools/config.json`:
+
+```json
+{
+  "clickValidation": {
+    "enabled": true,
+    "validateNavigation": true,
+    "requireDomChanges": false,
+    "domChangesFailMode": "warn",
+    "failOnConsoleErrors": true,
+    "consoleErrorsFailMode": "error",
+    "validateNetworkPayload": false,
+    "networkFailMode": "warn",
+    "postClickDelayMs": 100
+  }
+}
+```
+
+**Fail modes:**
+- `error`: Pauses the sequence for inspection
+- `warn`: Logs a warning and continues
 
 ## Use Cases
 
