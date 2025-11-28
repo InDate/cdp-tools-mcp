@@ -3,7 +3,7 @@
  */
 
 import { z } from 'zod';
-import type { CommandRecorder } from '../command-recorder.js';
+import type { CommandRecorder, ActiveSequenceState } from '../command-recorder.js';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
 
@@ -27,6 +27,7 @@ import {
   formatPausedResponse,
   formatDebugState,
   formatBreakpointHit,
+  formatClickValidationFailure,
   extractTextVariables,
   formatVariablePrompt,
   formatHistory,
@@ -79,6 +80,7 @@ const replaySchema = z.object({
   totalTimeout: z.number().optional().describe('Total timeout in milliseconds for entire run (for run action, default: 300000)'),
 
   // step-through parameters
+  startFrom: z.number().optional().describe('Start execution from this step number (1-indexed), skipping earlier steps (for run action)'),
   stepTo: z.number().optional().describe('Execute sequence up to this step number (1-indexed), then pause (for run action)'),
   stepCount: z.number().optional().describe('Number of commands to execute (for step action, default: 1)'),
 
@@ -422,10 +424,20 @@ async function handleRun(
     });
   }
 
+  // Calculate start step (convert 1-indexed to 0-indexed)
+  const startStep = args.startFrom ? Math.max(0, args.startFrom - 1) : 0;
+
+  // Validate startFrom
+  if (args.startFrom && args.startFrom > sequence.commands.length) {
+    return createErrorResponse('INVALID_START_FROM', {
+      message: `startFrom (${args.startFrom}) exceeds sequence length (${sequence.commands.length})`
+    });
+  }
+
   // Execute the sequence
   const execResult = await executeSequenceWithPause({
     sequence,
-    startStep: 0,
+    startStep,
     ctx,
     variables: args.variables,
     record: args.record,
@@ -443,6 +455,30 @@ async function handleRun(
       execResult.totalCommands,
       execResult.durationMs,
       execResult.breakpointHit,
+      connectionReason
+    ) }] };
+  }
+
+  // Handle click validation failure (pause for inspection/retry)
+  if (execResult.clickValidationFailure && connectionReason) {
+    // Set active sequence state so user can retry/continue
+    const activeState: ActiveSequenceState = {
+      sequenceId: sequence.id,
+      sequenceName: sequence.name,
+      currentStep: execResult.pausedAtStep! - 1, // Back to failed step for retry
+      totalSteps: sequence.commands.length,
+      pausedAt: Date.now(),
+      historyIndexAtPause: recorder.getHistory().length,
+      connectionReason,
+    };
+    recorder.setActiveSequence(activeState);
+
+    return { content: [{ type: 'text', text: formatClickValidationFailure(
+      sequence,
+      execResult.results,
+      execResult.pausedAtStep!,
+      execResult.durationMs,
+      execResult.clickValidationFailure,
       connectionReason
     ) }] };
   }

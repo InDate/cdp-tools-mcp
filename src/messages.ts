@@ -578,12 +578,16 @@ export function formatList(items: string[]): string {
   return messages.formatList(items);
 }
 
+import type { ToolResponseMeta } from './tool-response.js';
+
 /**
  * MCP Response type
  */
 interface MCPResponse {
   content: Array<{ type: 'text'; text: string }>;
   isError?: boolean;
+  /** Structured metadata for programmatic use (validation, replay). Decoupled from text output. */
+  _meta?: ToolResponseMeta;
 }
 
 /**
@@ -643,3 +647,6 @@ export function formatToolError(code: string, message: string, data?: any): MCPR
     isError: true,
   };
 }
+
+// Console-specific formatting functions have been moved to:
+// src/formatters/console-formatter.ts

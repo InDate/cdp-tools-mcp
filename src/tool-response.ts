@@ -14,12 +14,93 @@ export interface ContentItem {
   [key: string]: unknown;
 }
 
+// =============================================================================
+// Structured Metadata Types (for programmatic use, separate from text output)
+// =============================================================================
+
+/**
+ * Click action metadata
+ */
+export interface ClickActionMeta {
+  selector: string;
+  preClickUrl: string;
+  postClickUrl: string;
+  navigationOccurred: boolean;
+  hasClickHandler: boolean;
+  domChanges: {
+    mutationCount: number;
+    added: number;
+    removed: number;
+    shown: number;
+    hidden: number;
+  } | null;
+}
+
+/**
+ * Type action metadata
+ */
+export interface TypeActionMeta {
+  selector: string;
+  text: string;
+  actualValue: string;
+}
+
+/**
+ * Navigate action metadata
+ */
+export interface NavigateActionMeta {
+  url: string;
+  title: string;
+  action: string;
+}
+
+/**
+ * Console tool metadata
+ */
+export interface ConsoleToolMeta {
+  totalCount: number;
+  matchCount?: number;
+  errorCount?: number;
+  warnCount?: number;
+  /** Number of messages that were truncated */
+  truncatedCount?: number;
+  /** Total estimated tokens for all full messages */
+  totalTokens?: number;
+}
+
+/**
+ * Network tool metadata
+ */
+export interface NetworkToolMeta {
+  totalCount: number;
+  matchCount?: number;
+}
+
+/**
+ * Root metadata structure for tool responses
+ * This provides structured data for programmatic use (validation, replay)
+ * while keeping text content free to evolve for human/LLM display
+ */
+export interface ToolResponseMeta {
+  tool: string;
+  action?: string;
+  timestamp: number;
+  // Action-specific structured data
+  click?: ClickActionMeta;
+  type?: TypeActionMeta;
+  navigate?: NavigateActionMeta;
+  console?: ConsoleToolMeta;
+  network?: NetworkToolMeta;
+}
+
 /**
  * Tool response structure
  */
 export interface ToolResponse {
   content: ContentItem[];
   isError?: boolean;
+  /** Structured metadata for programmatic use (validation, replay). Decoupled from text output. */
+  _meta?: ToolResponseMeta;
 }
 
 /**

@@ -3,7 +3,7 @@
  */
 
 import type { RecordedCommand, CommandSequence, ActiveSequenceState } from '../command-recorder.js';
-import type { StepResult, DebugState, BreakpointHitInfo } from './replay-executor.js';
+import type { StepResult, DebugState, BreakpointHitInfo, ClickValidationFailure } from './replay-executor.js';
 import { getFormattedResponse } from '../messages.js';
 
 // =============================================================================
@@ -134,6 +134,50 @@ export function formatPausedResponse(
   response += `- Finish all: \`replay({ action: 'finish' })\`\n`;
   response += `- Check status: \`replay({ action: 'status' })\`\n`;
   response += `- Insert commands: \`replay({ action: 'insert' })\`\n`;
+
+  return response;
+}
+
+/**
+ * Format click validation failure response (paused for inspection/retry)
+ */
+export function formatClickValidationFailure(
+  sequence: CommandSequence,
+  results: StepResult[],
+  pausedAtStep: number,
+  durationMs: number,
+  failure: ClickValidationFailure,
+  connectionReason: string
+): string {
+  const commands = sequence.commands;
+  const successful = results.filter(r => r.success).length;
+  const remaining = commands.length - pausedAtStep;
+
+  let response = `**Click Validation Failed**\n`;
+  response += `${sequence.name}: Paused at step ${pausedAtStep} of ${commands.length}, ${remaining} remaining\n\n`;
+
+  response += `**Executed:** ${successful} commands in ${(durationMs / 1000).toFixed(1)}s\n\n`;
+
+  response += `**Validation Error at Step ${failure.step}**\n`;
+  response += `- Selector: \`${failure.selector}\`\n`;
+  for (const err of failure.errors) {
+    response += `- ❌ ${err}\n`;
+  }
+  for (const warn of failure.warnings) {
+    response += `- ⚠️ ${warn}\n`;
+  }
+
+  response += `\n**Completed Steps**\n`;
+  results.filter(r => r.success).forEach((r) => {
+    response += `${r.step}. **${r.tool}** ✓\n`;
+  });
+
+  response += `\n---\n\n**Actions**\n`;
+  response += `- Inspect error: \`console({ action: 'list', type: 'error', connectionReason: '${connectionReason}' })\`\n`;
+  response += `- Retry step: \`replay({ action: 'step' })\`\n`;
+  response += `- Skip and continue: \`replay({ action: 'step', stepCount: 2 })\`\n`;
+  response += `- Finish remaining: \`replay({ action: 'finish' })\`\n`;
+  response += `- Cancel: \`replay({ action: 'cancel' })\`\n`;
 
   return response;
 }

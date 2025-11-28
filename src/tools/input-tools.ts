@@ -14,8 +14,9 @@ import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import { isElementBlocked, detectModals } from '../utils/modal-detector.js';
 import { dismissModalByStrategy, selectDismissalStrategy } from '../utils/modal-dismissal.js';
 import { resolveSelector, isExtendedSelector, cleanupResolvedSelector } from '../utils/selector-resolver.js';
-import { domChangeMonitor, formatDOMChanges } from '../dom-change-monitor.js';
+import { domChangeMonitor, formatDOMChanges, DOMChanges } from '../dom-change-monitor.js';
 import { configManager } from '../config.js';
+import type { ToolResponseMeta, ClickActionMeta } from '../tool-response.js';
 
 // Consolidated input tool schema
 const inputToolSchema = z.object({
@@ -102,6 +103,9 @@ export function createInputTools(
                 isError: true,
               };
             }
+
+            // Capture pre-click URL for validation metadata
+            const preClickUrl = page.url();
 
             // Resolve extended selectors (like :has-text())
             let selector = rawSelector;
@@ -296,8 +300,9 @@ export function createInputTools(
 
             // Collect DOM changes
             let changesText = '';
+            let changes: DOMChanges | null = null;
             if (shouldDetectChanges) {
-              const changes = await domChangeMonitor.stopObserving(connectionReason, { settleTimeout });
+              changes = await domChangeMonitor.stopObserving(connectionReason, { settleTimeout });
               changesText = formatDOMChanges(changes);
             }
 
@@ -341,9 +346,33 @@ export function createInputTools(
               postClickInfo += `\n**Contains:** ${postClick.childInteractive.join(', ')}`;
             }
 
+            // Build _meta for click validation
+            const postClickUrl = postClick?.url || page.url();
+            const clickMeta: ToolResponseMeta = {
+              tool: 'input',
+              action: 'click',
+              timestamp: Date.now(),
+              click: {
+                selector: rawSelector,
+                preClickUrl,
+                postClickUrl,
+                navigationOccurred: preClickUrl !== postClickUrl,
+                hasClickHandler: result.result.hasClickHandler ?? false,
+                domChanges: changes ? {
+                  mutationCount: changes.mutationCount,
+                  added: changes.added?.length || 0,
+                  removed: changes.removed?.length || 0,
+                  shown: changes.shown?.length || 0,
+                  hidden: changes.hidden?.length || 0,
+                } : null,
+              },
+            };
+
             // Return success with warning if no click handler detected
             if (result.result.warning) {
-              return createSuccessResponse('ELEMENT_CLICK_WARNING', { selector: rawSelector, warning: selectorWarning });
+              const response = createSuccessResponse('ELEMENT_CLICK_WARNING', { selector: rawSelector, warning: selectorWarning });
+              response._meta = clickMeta;
+              return response;
             }
 
             // Include warning about multiple matches if applicable
@@ -355,6 +384,7 @@ export function createInputTools(
                     text: `Clicked element \`${rawSelector}\`${changesText}${postClickInfo}\n\n**Warning:** ${selectorWarning}`,
                   },
                 ],
+                _meta: clickMeta,
               };
             }
 
@@ -366,6 +396,7 @@ export function createInputTools(
                   text: `Clicked element: \`${rawSelector}\`${changesText}${postClickInfo}`,
                 },
               ],
+              _meta: clickMeta,
             };
           }
 

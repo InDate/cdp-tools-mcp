@@ -49,6 +49,30 @@ export interface ChangeDetectionConfig {
 }
 
 /**
+ * Click validation configuration for replay sequences
+ */
+export interface ClickValidationConfig {
+  /** Enable click validation in replay sequences (default: true) */
+  enabled: boolean;
+  /** Validate navigation success if click caused URL change (default: true) */
+  validateNavigation: boolean;
+  /** Require DOM mutations after click (default: false) */
+  requireDomChanges: boolean;
+  /** Failure mode for DOM changes check: 'error' stops sequence, 'warn' logs and continues (default: 'warn') */
+  domChangesFailMode: 'error' | 'warn';
+  /** Check for new console errors after click (default: true) */
+  failOnConsoleErrors: boolean;
+  /** Failure mode for console errors: 'error' stops sequence, 'warn' logs and continues (default: 'error') */
+  consoleErrorsFailMode: 'error' | 'warn';
+  /** Validate network requests triggered by click (default: false) */
+  validateNetworkPayload: boolean;
+  /** Failure mode for network failures: 'error' stops sequence, 'warn' logs and continues (default: 'warn') */
+  networkFailMode: 'error' | 'warn';
+  /** Delay before validation checks in ms (default: 100) */
+  postClickDelayMs: number;
+}
+
+/**
  * Root configuration structure
  */
 export interface CdpToolsConfig {
@@ -57,6 +81,7 @@ export interface CdpToolsConfig {
   portMonitoring: PortMonitoringConfig;
   replay: ReplayConfig;
   changeDetection: ChangeDetectionConfig;
+  clickValidation: ClickValidationConfig;
 }
 
 /**
@@ -81,6 +106,17 @@ const DEFAULT_CONFIG: CdpToolsConfig = {
     settleTimeout: 2000,      // Max wait for mutations to settle
     quietPeriod: 300,         // No mutations for 300ms = settled
     navigationTimeout: 3000,  // Longer timeout for page loads
+  },
+  clickValidation: {
+    enabled: true,                 // Enable click validation in replay
+    validateNavigation: true,      // Check navigation success
+    requireDomChanges: false,      // Don't require DOM mutations by default
+    domChangesFailMode: 'warn',    // Just warn if no DOM changes
+    failOnConsoleErrors: true,     // Check for console errors
+    consoleErrorsFailMode: 'error',// Fail on console errors
+    validateNetworkPayload: false, // Don't validate network by default
+    networkFailMode: 'warn',       // Just warn on network failures
+    postClickDelayMs: 100,         // Small delay before validation
   },
 };
 
@@ -158,6 +194,17 @@ export class ConfigManager {
         quietPeriod: loaded.changeDetection?.quietPeriod ?? defaults.changeDetection.quietPeriod,
         navigationTimeout: loaded.changeDetection?.navigationTimeout ?? defaults.changeDetection.navigationTimeout,
       },
+      clickValidation: {
+        enabled: loaded.clickValidation?.enabled ?? defaults.clickValidation.enabled,
+        validateNavigation: loaded.clickValidation?.validateNavigation ?? defaults.clickValidation.validateNavigation,
+        requireDomChanges: loaded.clickValidation?.requireDomChanges ?? defaults.clickValidation.requireDomChanges,
+        domChangesFailMode: loaded.clickValidation?.domChangesFailMode ?? defaults.clickValidation.domChangesFailMode,
+        failOnConsoleErrors: loaded.clickValidation?.failOnConsoleErrors ?? defaults.clickValidation.failOnConsoleErrors,
+        consoleErrorsFailMode: loaded.clickValidation?.consoleErrorsFailMode ?? defaults.clickValidation.consoleErrorsFailMode,
+        validateNetworkPayload: loaded.clickValidation?.validateNetworkPayload ?? defaults.clickValidation.validateNetworkPayload,
+        networkFailMode: loaded.clickValidation?.networkFailMode ?? defaults.clickValidation.networkFailMode,
+        postClickDelayMs: loaded.clickValidation?.postClickDelayMs ?? defaults.clickValidation.postClickDelayMs,
+      },
     };
   }
 
@@ -216,6 +263,13 @@ export class ConfigManager {
    */
   getChangeDetectionConfig(): ChangeDetectionConfig {
     return this.getConfig().changeDetection;
+  }
+
+  /**
+   * Get click validation configuration for replay sequences
+   */
+  getClickValidationConfig(): ClickValidationConfig {
+    return this.getConfig().clickValidation;
   }
 
   /**

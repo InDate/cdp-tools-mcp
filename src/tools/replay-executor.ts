@@ -6,7 +6,8 @@ import type { CommandRecorder, RecordedCommand, CommandSequence, ActiveSequenceS
 import { debugLog } from '../debug-logger.js';
 import { sanitizeReference } from '../reference-validator.js';
 import { checkUrlPort } from '../utils/port-check.js';
-import { configManager } from '../config.js';
+import { configManager, ClickValidationConfig } from '../config.js';
+import type { ClickActionMeta, ConsoleToolMeta, NetworkToolMeta } from '../tool-response.js';
 
 // =============================================================================
 // Types
@@ -41,6 +42,13 @@ export interface BreakpointHitInfo {
   functionName?: string;
 }
 
+export interface ClickValidationFailure {
+  step: number;
+  selector: string;
+  errors: string[];
+  warnings: string[];
+}
+
 export interface ExecutionResult {
   results: StepResult[];
   totalCommands: number;
@@ -48,6 +56,8 @@ export interface ExecutionResult {
   pausedAtStep?: number;
   activeSequenceState?: ActiveSequenceState;
   breakpointHit?: BreakpointHitInfo;
+  /** Click validation failure - sequence paused for inspection/retry */
+  clickValidationFailure?: ClickValidationFailure;
 }
 
 export interface ConnectionAnalysis {
@@ -879,6 +889,168 @@ export async function validateTypedText(
   }
 }
 
+// =============================================================================
+// Click Validation
+// =============================================================================
+
+export interface PreClickState {
+  consoleErrorCount: number;
+  networkRequestCount: number;
+  url: string;
+}
+
+export interface ClickValidationResult {
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+}
+
+/**
+ * Capture pre-click state for delta comparison
+ */
+export async function capturePreClickState(ctx: ExecutionContext): Promise<PreClickState> {
+  const { executeToolCall, connectionReason, logPrefix = 'executor' } = ctx;
+
+  let consoleErrorCount = 0;
+  let networkRequestCount = 0;
+  let url = '';
+
+  try {
+    // Get console error count via _meta
+    const consoleResult = await executeToolCall('console', {
+      action: 'list', type: 'error', limit: 1, connectionReason
+    });
+    consoleErrorCount = consoleResult?._meta?.console?.totalCount || 0;
+  } catch {
+    debugLog(logPrefix, 'Warning: Could not get pre-click console state');
+  }
+
+  try {
+    // Get network request count via _meta
+    const networkResult = await executeToolCall('network', {
+      action: 'list', limit: 1, connectionReason
+    });
+    networkRequestCount = networkResult?._meta?.network?.totalCount || 0;
+  } catch {
+    debugLog(logPrefix, 'Warning: Could not get pre-click network state');
+  }
+
+  try {
+    // Get current URL via _meta
+    const pageResult = await executeToolCall('navigate', {
+      action: 'info', connectionReason
+    });
+    url = pageResult?._meta?.navigate?.url || '';
+  } catch {
+    debugLog(logPrefix, 'Warning: Could not get pre-click URL');
+  }
+
+  return { consoleErrorCount, networkRequestCount, url };
+}
+
+/**
+ * Validate click action results
+ */
+export async function validateClickAction(
+  ctx: ExecutionContext,
+  preState: PreClickState,
+  clickResult: any,
+  config: ClickValidationConfig
+): Promise<ClickValidationResult> {
+  const { executeToolCall, connectionReason, logPrefix = 'executor' } = ctx;
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  // Get structured data from _meta
+  const clickMeta: ClickActionMeta | undefined = clickResult?._meta?.click;
+
+  // Small delay before validation
+  if (config.postClickDelayMs > 0) {
+    await new Promise(r => setTimeout(r, config.postClickDelayMs));
+  }
+
+  // 1. Check if click had any effect (DOM changes)
+  if (config.requireDomChanges && clickMeta?.domChanges) {
+    if (clickMeta.domChanges.mutationCount === 0) {
+      const msg = 'Click had no DOM effect (0 mutations)';
+      if (config.domChangesFailMode === 'error') {
+        errors.push(msg);
+      } else {
+        warnings.push(msg);
+      }
+    }
+  }
+
+  // 2. Check for navigation and validate it
+  if (config.validateNavigation && clickMeta?.navigationOccurred) {
+    const navResult = await validateNavigation(ctx);
+    if (!navResult.success) {
+      errors.push(`Navigation failed: ${navResult.error}`);
+    }
+  }
+
+  // 3. Check for new console errors
+  if (config.failOnConsoleErrors) {
+    try {
+      const consoleResult = await executeToolCall('console', {
+        action: 'list', type: 'error', limit: 10, connectionReason
+      });
+      const newCount = consoleResult?._meta?.console?.totalCount || 0;
+      if (newCount > preState.consoleErrorCount) {
+        const diff = newCount - preState.consoleErrorCount;
+        const msg = `${diff} new console error(s) after click`;
+        if (config.consoleErrorsFailMode === 'error') {
+          errors.push(msg);
+        } else {
+          warnings.push(msg);
+        }
+      }
+    } catch {
+      debugLog(logPrefix, 'Warning: Could not check console errors after click');
+    }
+  }
+
+  // 4. Check for network request failures
+  if (config.validateNetworkPayload) {
+    try {
+      const networkResult = await executeToolCall('network', {
+        action: 'list', connectionReason
+      });
+      const newCount = networkResult?._meta?.network?.totalCount || 0;
+      if (newCount > preState.networkRequestCount) {
+        // Check for failed POST requests
+        const failedResult = await executeToolCall('network', {
+          action: 'search', method: 'POST', statusCode: '4', connectionReason
+        });
+        const failedCount = failedResult?._meta?.network?.matchCount || 0;
+        if (failedCount > 0) {
+          const msg = 'POST request returned 4xx error';
+          if (config.networkFailMode === 'error') {
+            errors.push(msg);
+          } else {
+            warnings.push(msg);
+          }
+        }
+      }
+    } catch {
+      debugLog(logPrefix, 'Warning: Could not check network after click');
+    }
+  }
+
+  // Log validation result
+  if (errors.length > 0) {
+    debugLog(logPrefix, `Click validation failed: ${errors.join('; ')}`);
+  } else if (warnings.length > 0) {
+    debugLog(logPrefix, `Click validation warnings: ${warnings.join('; ')}`);
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    warnings
+  };
+}
+
 /**
  * Gather diagnostic information after a failure
  */
@@ -1109,6 +1281,13 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
         continue; // Skip the regular execution path
       }
 
+      // Capture pre-click state for validation
+      let preClickState: PreClickState | null = null;
+      const clickConfig = configManager.getClickValidationConfig();
+      if (cmd.tool === 'input' && params.action === 'click' && connectionReason && clickConfig.enabled) {
+        preClickState = await capturePreClickState(ctx);
+      }
+
       // Execute with retry
       const execResult = await executeCommandWithRetry(executeToolCall, cmd.tool, params, logPrefix);
 
@@ -1165,6 +1344,42 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
         const navValidation = await validateNavigation(ctx, expectedUrl);
         if (!navValidation.success) {
           throw new Error(navValidation.error || 'Navigation failed');
+        }
+      }
+
+      // Click validation (after successful execution)
+      if (cmd.tool === 'input' && params.action === 'click' && connectionReason && preClickState && clickConfig.enabled) {
+        const clickValidation = await validateClickAction(ctx, preClickState, execResult.result, clickConfig);
+
+        // Log warnings
+        for (const warn of clickValidation.warnings) {
+          debugLog(logPrefix, `Click warning: ${warn}`);
+        }
+
+        // Handle errors - pause sequence for inspection/retry instead of failing
+        if (!clickValidation.valid) {
+          debugLog(logPrefix, `Click validation failed at step ${i + 1}, pausing for inspection`);
+
+          // Mark this step as failed but allow retry
+          results.push({
+            step: i + 1,
+            tool: cmd.tool,
+            success: false,
+            error: `Click validation: ${clickValidation.errors.join('; ')}`
+          });
+
+          return {
+            results,
+            totalCommands: commands.length,
+            durationMs: Date.now() - startTime,
+            pausedAtStep: i + 1,
+            clickValidationFailure: {
+              step: i + 1,
+              selector: params.selector || 'unknown',
+              errors: clickValidation.errors,
+              warnings: clickValidation.warnings,
+            }
+          };
         }
       }
 

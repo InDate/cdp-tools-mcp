@@ -15,6 +15,7 @@ import { getConfiguredDebugPort } from '../port-config.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
 import type { ClickableCache, ClickableElement } from '../clickable-cache.js';
 import { collectInteractiveElements } from '../element-collector.js';
+import type { ToolResponseMeta, NavigateActionMeta } from '../tool-response.js';
 
 // =============================================================================
 // Types
@@ -313,10 +314,24 @@ export function createPageTools(
             }
 
             const pageInfo = result.result;
-            return createSuccessResponse('PAGE_INFO_SUCCESS', {
+            const response = createSuccessResponse('PAGE_INFO_SUCCESS', {
               url: pageInfo.url,
               title: pageInfo.title
             });
+
+            // Add structured metadata for programmatic use
+            response._meta = {
+              tool: 'navigate',
+              action: 'info',
+              timestamp: Date.now(),
+              navigate: {
+                url: pageInfo.url,
+                title: pageInfo.title,
+                action: 'info',
+              },
+            };
+
+            return response;
           }
 
           default:

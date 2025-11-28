@@ -11,6 +11,7 @@ import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
 import type { Page } from 'puppeteer-core';
 import { getHomeOutputPath } from '../helpers/paths.js';
+import type { ToolResponseMeta, NetworkToolMeta } from '../tool-response.js';
 
 // Consolidated network tool schema
 const networkToolSchema = z.object({
@@ -94,11 +95,26 @@ export function createNetworkTools(
               errorText: req.errorText,
             }));
 
-            return createSuccessResponse('NETWORK_REQUESTS_LIST', {
+            const totalCount = targetNetworkMonitor.getCount(resourceType);
+
+            const response = createSuccessResponse('NETWORK_REQUESTS_LIST', {
               count: requests.length,
-              totalCount: targetNetworkMonitor.getCount(resourceType),
+              totalCount,
               resourceType
             }, requestList);
+
+            // Add structured metadata for programmatic use
+            response._meta = {
+              tool: 'network',
+              action: 'list',
+              timestamp: Date.now(),
+              network: {
+                totalCount,
+                matchCount: requests.length,
+              },
+            };
+
+            return response;
           }
 
           case 'get': {
@@ -325,13 +341,26 @@ export function createNetworkTools(
             if (method) filters.push(`Method: ${method}`);
             if (statusCode) filters.push(`Status: ${statusCode}`);
 
-            return createSuccessResponse('NETWORK_SEARCH_RESULTS', {
+            const response = createSuccessResponse('NETWORK_SEARCH_RESULTS', {
               pattern,
               flags,
               filtersText: filters.length > 0 ? filters.join(', ') : undefined,
               matchCount: matchingRequests.length,
               totalSearched: allRequests.length
             }, matches);
+
+            // Add structured metadata for programmatic use
+            response._meta = {
+              tool: 'network',
+              action: 'search',
+              timestamp: Date.now(),
+              network: {
+                totalCount: allRequests.length,
+                matchCount: matchingRequests.length,
+              },
+            };
+
+            return response;
           }
 
           case 'setConditions': {
