@@ -58,7 +58,6 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { debugLog, enableDebugLogging, disableDebugLogging, isDebugEnabled, setStartupMetrics } from './debug-logger.js';
 import { validateReference, UNNAMED_CONNECTION } from './reference-validator.js';
-import { getConfiguredDebugPort, getReservedPort, setDebugPort, setReservedPort } from './port-config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -90,26 +89,23 @@ async function findAvailablePort(startPort: number): Promise<number> {
 }
 
 /**
- * Get the debug port from environment variable or auto-assign
+ * Find starting port from environment variable or auto-assign
  */
-async function getDebugPort(): Promise<number> {
+async function findStartingPort(): Promise<number> {
   const envPort = process.env.MCP_DEBUG_PORT;
+  const defaultPort = configManager.getChromeConfig().defaultDebugPort;
 
   if (envPort) {
     const port = parseInt(envPort, 10);
     if (isNaN(port) || port < 1024 || port > 65535) {
       console.error(`Invalid MCP_DEBUG_PORT: ${envPort}. Using auto-assigned port.`);
-      return findAvailablePort(9222);
+      return findAvailablePort(defaultPort);
     }
     return port;
   }
 
-  // Auto-assign starting from 9222
-  return findAvailablePort(9222);
+  return findAvailablePort(defaultPort);
 }
-
-// Re-export port config functions for backward compatibility
-export { getConfiguredDebugPort, getReservedPort } from './port-config.js';
 
 /**
  * Load instructions from docs/instructions.md
@@ -136,6 +132,35 @@ const serverManager = new ServerManager();
 
 // Configure connection manager to kill Chrome when last connection closes
 connectionManager.setChromeLauncher(chromeLauncher);
+
+// Set up Chrome exit callback to clean up connections and reserve a new port
+chromeLauncher.setOnExitCallback(async (event) => {
+  const { port } = event;
+  await debugLog('index', `Chrome exited on port ${port} (reason: ${event.reason})`);
+
+  // Clean up all connections for the dead Chrome instance
+  // Note: ChromeLauncher only launches on localhost, so this is always correct
+  const connectionsToClose = connectionManager.getConnectionsForBrowser('localhost', port);
+  for (const conn of connectionsToClose) {
+    try {
+      await connectionManager.closeConnection(conn.id);
+      await debugLog('index', `Closed connection ${conn.id} after Chrome exit`);
+    } catch (closeError) {
+      await debugLog('index', `Failed to close connection ${conn.id}: ${closeError}`);
+    }
+  }
+
+  // Reserve a new port for future launches
+  try {
+    const defaultPort = configManager.getChromeConfig().defaultDebugPort;
+    const newPort = await findAvailablePort(defaultPort);
+    await portReserver.reserve(newPort);
+    configManager.setCurrentPort(newPort);
+    await debugLog('index', `Reserved new port ${newPort}`);
+  } catch (error) {
+    await debugLog('index', `Failed to reserve new port after Chrome exit: ${error}`);
+  }
+});
 
 /**
  * Create and configure the MCP server with instructions
@@ -242,8 +267,8 @@ const connectionTools = {
       }
 
       // Use reserved port unless explicitly specified
-      const port = args.port || getReservedPort();
-      await debugLog('index', `launchChrome called: port=${port}, requested=${args.port}, reserved=${getReservedPort()}, url=${args.url}, autoConnect=${args.autoConnect}, reference=${args.reference}`);
+      const port = args.port || configManager.getCurrentPort();
+      await debugLog('index', `launchChrome called: port=${port}, requested=${args.port}, reserved=${configManager.getCurrentPort()}, url=${args.url}, autoConnect=${args.autoConnect}, reference=${args.reference}`);
       const url = args.url;
       const autoConnect = args.autoConnect ?? true;
 
@@ -484,11 +509,9 @@ const connectionTools = {
     async (args) => {
       try {
         const port = args.port;
+        await debugLog('index', `killChrome called - reason: ${args.reason}, port: ${port ?? 'all'}`);
 
-        // Log the reason for audit purposes
-        console.error(`[cdp-tools] killChrome called - Reason: ${args.reason}, Port: ${port || 'all'}`);
-
-        // Set the close reason before killing
+        // Set the close reason before killing (used for close event tracking)
         if (port !== undefined) {
           chromeLauncher.setPendingCloseReason(port, 'manual');
         } else {
@@ -497,49 +520,15 @@ const connectionTools = {
           }
         }
 
-        // Kill the Chrome instance(s)
+        // Kill Chrome - the exit callback handles connection cleanup and port re-reservation
         await chromeLauncher.kill(port);
 
-        // Clean up connections
-        if (port !== undefined) {
-          // Kill specific instance - close connections for that port
-          const connectionsToClose = connectionManager.getConnectionsForBrowser('localhost', port);
-          for (const conn of connectionsToClose) {
-            await connectionManager.closeConnection(conn.id);
-            console.error(`[cdp-tools] Closed connection ${conn.id} after killing Chrome on port ${port}`);
-          }
-
-          // Re-reserve if it was the reserved port
-          if (port === getReservedPort()) {
-            try {
-              await portReserver.reserve(port);
-              console.error(`[cdp-tools] Re-reserved port ${port} after killing Chrome`);
-            } catch (reserveError) {
-              console.error(`[cdp-tools] Warning: Failed to re-reserve port ${port}: ${reserveError}`);
-            }
-          }
-
-          return createSuccessResponse('CHROME_KILLED', { port, reason: args.reason });
-        } else {
-          // Kill all instances - close all connections
-          const allConnections = connectionManager.listConnections();
-          for (const conn of allConnections) {
-            await connectionManager.closeConnection(conn.id);
-            console.error(`[cdp-tools] Closed connection ${conn.id} after killing all Chrome instances`);
-          }
-
-          // Re-reserve the reserved port
-          try {
-            await portReserver.reserve(getReservedPort());
-            console.error(`[cdp-tools] Re-reserved port ${getReservedPort()} after killing all Chrome instances`);
-          } catch (reserveError) {
-            console.error(`[cdp-tools] Warning: Failed to re-reserve port ${getReservedPort()}: ${reserveError}`);
-          }
-
-          return createSuccessResponse('CHROME_KILLED', { port: 'all', reason: args.reason });
-        }
+        return createSuccessResponse('CHROME_KILLED', {
+          port: port ?? 'all',
+          reason: args.reason
+        });
       } catch (error) {
-        return createErrorResponse('CHROME_SPAWN_FAILED', { error: `${error}` });
+        return createErrorResponse('CHROME_KILL_FAILED', { error: `${error}` });
       }
     }
   ),
@@ -645,8 +634,8 @@ const connectionTools = {
       }
 
       const host = args.host || 'localhost';
-      const port = args.port || getConfiguredDebugPort();
-      const defaultPort = getConfiguredDebugPort();
+      const port = args.port || configManager.getCurrentPort();
+      const defaultPort = configManager.getCurrentPort();
       const isDefaultPort = port === defaultPort;
 
       await debugLog('index', `connectDebugger called: host=${host}, port=${port}, defaultPort=${defaultPort}`);
@@ -1257,18 +1246,17 @@ async function main() {
   const maxAttempts = 10;
 
   while (!reservationSucceeded && attempts < maxAttempts) {
-    const debugPort = await getDebugPort();
-    setDebugPort(debugPort);
-    setReservedPort(debugPort);
+    const port = await findStartingPort();
+    configManager.setCurrentPort(port);
 
     // Reserve the port by binding a socket to it
     try {
-      await portReserver.reserve(getReservedPort());
-      console.error(`[cdp-tools] Reserved debug port: ${getReservedPort()}`);
+      await portReserver.reserve(port);
+      console.error(`[cdp-tools] Reserved debug port: ${port}`);
       reservationSucceeded = true;
     } catch (error) {
       attempts++;
-      console.error(`[cdp-tools] Port ${getReservedPort()} reservation failed (attempt ${attempts}/${maxAttempts}), trying next port...`);
+      console.error(`[cdp-tools] Port ${port} reservation failed (attempt ${attempts}/${maxAttempts}), trying next port...`);
 
       if (attempts >= maxAttempts) {
         console.error(`[cdp-tools] Failed to reserve a port after ${maxAttempts} attempts`);
@@ -1276,7 +1264,7 @@ async function main() {
       }
 
       // Try the next port
-      process.env.MCP_DEBUG_PORT = String(getReservedPort() + 1);
+      process.env.MCP_DEBUG_PORT = String(port + 1);
     }
   }
 

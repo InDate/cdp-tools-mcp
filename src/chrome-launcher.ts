@@ -23,13 +23,23 @@ export interface ChromeCloseEvent {
   signal?: string | null;
 }
 
+export type ChromeExitCallback = (event: ChromeCloseEvent) => void | Promise<void>;
+
 export class ChromeLauncher {
   private chromeProcesses: Map<number, ChildProcess> = new Map();
-  private debugPort: number = 9222;
   private launchLocks: Map<number, Promise<{ port: number; pid: number }>> = new Map();
   private lastCloseEvents: ChromeCloseEvent[] = [];
   private maxCloseEvents: number = 10; // Keep last 10 close events
   private pendingCloseReason: Map<number, ChromeCloseReason> = new Map(); // Track reason before kill
+  private onExitCallback: ChromeExitCallback | null = null;
+
+  /**
+   * Set a callback to be invoked when any Chrome process exits.
+   * Used for cleanup (closing stale connections) and port re-reservation.
+   */
+  setOnExitCallback(callback: ChromeExitCallback): void {
+    this.onExitCallback = callback;
+  }
 
   /**
    * Get the Chrome executable path for the current platform
@@ -247,7 +257,6 @@ export class ChromeLauncher {
       await debugLog('ChromeLauncher', `Port ${port} is free and not reserved, proceeding with launch`);
     }
 
-    this.debugPort = port;
     const chromePath = this.getChromePath();
     const userDataDir = path.join(os.tmpdir(), `chrome-debug-profile-${Date.now()}`);
 
@@ -330,7 +339,16 @@ export class ChromeLauncher {
           reason = 'external'; // Closed externally (user closed browser, etc.)
         }
 
-        this.recordCloseEvent(port, pid || -1, reason, code, signal);
+        const closeEvent = this.recordCloseEvent(port, pid || -1, reason, code, signal);
+
+        // Invoke the exit callback if set (for port re-reservation)
+        if (this.onExitCallback) {
+          debugLog('ChromeLauncher', `Invoking onExit callback for port ${port}`);
+          // Don't await - fire and forget to avoid blocking exit handler
+          Promise.resolve(this.onExitCallback(closeEvent)).catch((err) => {
+            debugLog('ChromeLauncher', `onExit callback error: ${err}`);
+          });
+        }
       });
 
       // Handle process errors and unexpected exits
@@ -459,13 +477,6 @@ export class ChromeLauncher {
   }
 
   /**
-   * Get the debug port (returns the last launched port for backwards compatibility)
-   */
-  getDebugPort(): number {
-    return this.debugPort;
-  }
-
-  /**
    * Get all running Chrome ports
    */
   getRunningPorts(): number[] {
@@ -563,7 +574,7 @@ export class ChromeLauncher {
   /**
    * Record a Chrome close event
    */
-  private recordCloseEvent(port: number, pid: number, reason: ChromeCloseReason, exitCode?: number | null, signal?: string | null): void {
+  private recordCloseEvent(port: number, pid: number, reason: ChromeCloseReason, exitCode?: number | null, signal?: string | null): ChromeCloseEvent {
     const event: ChromeCloseEvent = {
       port,
       pid,
@@ -581,6 +592,7 @@ export class ChromeLauncher {
     }
 
     debugLog('ChromeLauncher', `Recorded close event: port=${port}, pid=${pid}, reason=${reason}, exitCode=${exitCode}, signal=${signal}`);
+    return event;
   }
 
   /**

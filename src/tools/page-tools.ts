@@ -11,7 +11,7 @@ import type { ConnectionManager } from '../connection-manager.js';
 import { executeWithPauseDetection, formatActionResult } from '../debugger-aware-wrapper.js';
 import { checkBrowserAutomation } from '../error-helpers.js';
 import { createTool } from '../validation-helpers.js';
-import { getConfiguredDebugPort } from '../port-config.js';
+import { configManager } from '../config.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
 import type { ClickableCache, ClickableElement } from '../clickable-cache.js';
 import { collectInteractiveElements } from '../element-collector.js';
@@ -190,7 +190,7 @@ export function createPageTools(
         const targetConsoleMonitor = resolved.consoleMonitor || consoleMonitor;
         const targetNetworkMonitor = resolved.networkMonitor || networkMonitor;
 
-        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, `navigate.${action}`, getConfiguredDebugPort());
+        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, `navigate.${action}`, configManager.getCurrentPort());
         if (error) {
           return error;
         }

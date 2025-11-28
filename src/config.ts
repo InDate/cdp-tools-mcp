@@ -73,11 +73,20 @@ export interface ClickValidationConfig {
 }
 
 /**
+ * Chrome configuration
+ */
+export interface ChromeConfig {
+  /** Default starting port for Chrome debugging (default: 9222) */
+  defaultDebugPort: number;
+}
+
+/**
  * Root configuration structure
  */
 export interface CdpToolsConfig {
   version: number;
   directoryPath: string;
+  chrome: ChromeConfig;
   portMonitoring: PortMonitoringConfig;
   replay: ReplayConfig;
   changeDetection: ChangeDetectionConfig;
@@ -90,6 +99,9 @@ export interface CdpToolsConfig {
 const DEFAULT_CONFIG: CdpToolsConfig = {
   version: 1,
   directoryPath: '.cdp-tools',
+  chrome: {
+    defaultDebugPort: 9222,
+  },
   portMonitoring: {
     portMonitoringFreqMs: {
       block: 1000,   // Fast detection for blocking
@@ -123,10 +135,14 @@ const DEFAULT_CONFIG: CdpToolsConfig = {
 /**
  * Configuration Manager
  * Loads and saves configuration from .cdp-tools/config.json
+ * Also tracks runtime port state
  */
 export class ConfigManager {
   private config: CdpToolsConfig = { ...DEFAULT_CONFIG };
   private loaded = false;
+
+  // Runtime port state (not persisted to config file)
+  private currentPort: number = DEFAULT_CONFIG.chrome.defaultDebugPort;
 
   /**
    * Get the config file path (always in default .cdp-tools directory)
@@ -177,6 +193,9 @@ export class ConfigManager {
     return {
       version: loaded.version ?? defaults.version,
       directoryPath: loaded.directoryPath ?? defaults.directoryPath,
+      chrome: {
+        defaultDebugPort: loaded.chrome?.defaultDebugPort ?? defaults.chrome.defaultDebugPort,
+      },
       portMonitoring: {
         portMonitoringFreqMs: {
           block: loaded.portMonitoring?.portMonitoringFreqMs?.block ?? defaults.portMonitoring.portMonitoringFreqMs.block,
@@ -252,6 +271,13 @@ export class ConfigManager {
   }
 
   /**
+   * Get Chrome configuration
+   */
+  getChromeConfig(): ChromeConfig {
+    return this.getConfig().chrome;
+  }
+
+  /**
    * Get replay system configuration
    */
   getReplayConfig(): ReplayConfig {
@@ -281,6 +307,22 @@ export class ConfigManager {
       ...updates,
     };
     await this.save();
+  }
+
+  // Runtime port state methods (not persisted)
+
+  /**
+   * Get the current port in use (runtime state)
+   */
+  getCurrentPort(): number {
+    return this.currentPort;
+  }
+
+  /**
+   * Set the current port (runtime state)
+   */
+  setCurrentPort(port: number): void {
+    this.currentPort = port;
   }
 }
 

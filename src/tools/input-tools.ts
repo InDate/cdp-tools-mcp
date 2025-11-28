@@ -9,13 +9,12 @@ import type { ConnectionManager } from '../connection-manager.js';
 import { executeWithPauseDetection, formatActionResult } from '../debugger-aware-wrapper.js';
 import { checkBrowserAutomation } from '../error-helpers.js';
 import { createTool } from '../validation-helpers.js';
-import { getConfiguredDebugPort } from '../port-config.js';
+import { configManager } from '../config.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import { isElementBlocked, detectModals } from '../utils/modal-detector.js';
 import { dismissModalByStrategy, selectDismissalStrategy } from '../utils/modal-dismissal.js';
 import { resolveSelector, isExtendedSelector, cleanupResolvedSelector } from '../utils/selector-resolver.js';
 import { domChangeMonitor, formatDOMChanges, DOMChanges } from '../dom-change-monitor.js';
-import { configManager } from '../config.js';
 import type { ToolResponseMeta, ClickActionMeta } from '../tool-response.js';
 
 // Consolidated input tool schema
@@ -71,7 +70,7 @@ export function createInputTools(
         const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
         const targetCdpManager = resolved.cdpManager;
 
-        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, action, getConfiguredDebugPort());
+        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, action, configManager.getCurrentPort());
         if (error) {
           return error;
         }
