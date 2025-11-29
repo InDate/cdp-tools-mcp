@@ -58,6 +58,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { debugLog, enableDebugLogging, disableDebugLogging, isDebugEnabled, setStartupMetrics } from './debug-logger.js';
 import { validateReference, UNNAMED_CONNECTION } from './reference-validator.js';
+import { initializePaths } from './helpers/paths.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1235,6 +1236,10 @@ function registerToolHandlers(server: Server) {
 // Start the server
 async function main() {
   console.error(`[cdp-tools] main() called (PID: ${process.pid})`);
+
+  // Initialize path configuration early (before any file operations)
+  const pathConfig = initializePaths();
+  console.error(`[cdp-tools] Path config: global=${pathConfig.globalBase}, workingDir=${pathConfig.workingDirBase ?? 'none (using global fallback)'}`);
 
   // Capture import time (time from script start to main() being called)
   const importTime = performance.now() - STARTUP_TIME;

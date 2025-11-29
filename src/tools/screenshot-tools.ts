@@ -16,7 +16,7 @@ import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import { spawn } from 'child_process';
 import { resolveSelector, isExtendedSelector, cleanupResolvedSelector } from '../utils/selector-resolver.js';
 import { randomBytes } from 'crypto';
-import { getOutputPath } from '../helpers/paths.js';
+import { getOutputPath, getTempPath } from '../helpers/paths.js';
 
 // WeasyPrint availability cache
 let weasyPrintCache: { available: boolean; version?: string; error?: string; checkedAt: number } | null = null;
@@ -199,7 +199,7 @@ async function generatePDFWithWeasyPrint(
 
   // Inject A4 page size via CSS to match Chrome default (WeasyPrint has no --page-size flag)
   // Create temporary CSS file with @page rule
-  const tempCssPath = getOutputPath('temp', `a4-page-${Date.now()}.css`);
+  const tempCssPath = getTempPath(`a4-page-${Date.now()}.css`);
   await fs.mkdir(path.dirname(tempCssPath), { recursive: true });
   await fs.writeFile(tempCssPath, '@page { size: A4; margin: 1cm; }');
   wpArgs.push('--stylesheet', tempCssPath);

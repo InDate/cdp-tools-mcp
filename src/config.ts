@@ -4,8 +4,8 @@
  */
 
 import * as fs from 'fs';
-import { join } from 'path';
-import { getOutputPath, setOutputDir } from './helpers/paths.js';
+import { dirname } from 'path';
+import { getConfigPath, getConfigSavePath } from './helpers/paths.js';
 import { debugLog } from './debug-logger.js';
 
 /**
@@ -85,7 +85,6 @@ export interface ChromeConfig {
  */
 export interface CdpToolsConfig {
   version: number;
-  directoryPath: string;
   chrome: ChromeConfig;
   portMonitoring: PortMonitoringConfig;
   replay: ReplayConfig;
@@ -98,7 +97,6 @@ export interface CdpToolsConfig {
  */
 const DEFAULT_CONFIG: CdpToolsConfig = {
   version: 1,
-  directoryPath: '.cdp-tools',
   chrome: {
     defaultDebugPort: 9222,
   },
@@ -145,21 +143,12 @@ export class ConfigManager {
   private currentPort: number = DEFAULT_CONFIG.chrome.defaultDebugPort;
 
   /**
-   * Get the config file path (always in default .cdp-tools directory)
-   * Config file location is fixed - directoryPath only affects other files
-   */
-  private getConfigPath(): string {
-    return join(process.cwd(), '.cdp-tools', 'config.json');
-  }
-
-  /**
    * Load configuration from disk
-   * Merges with defaults to handle missing fields
-   * Note: Config is always loaded from .cdp-tools/config.json
-   * The directoryPath setting affects where other files are stored
+   * Checks cwd/.cdp-tools/config.json first (for backwards compatibility),
+   * then falls back to ~/.cdp-tools/config.json
    */
   async load(): Promise<void> {
-    const configPath = this.getConfigPath();
+    const configPath = getConfigPath();
 
     try {
       if (fs.existsSync(configPath)) {
@@ -170,18 +159,16 @@ export class ConfigManager {
         this.config = this.mergeConfig(DEFAULT_CONFIG, loaded);
         await debugLog('ConfigManager', `Loaded config from ${configPath}`);
       } else {
-        // Create default config file
+        // Create default config file in global location
         this.config = { ...DEFAULT_CONFIG };
         await this.save();
-        await debugLog('ConfigManager', `Created default config at ${configPath}`);
+        const savePath = getConfigSavePath();
+        await debugLog('ConfigManager', `Created default config at ${savePath}`);
       }
     } catch (err) {
       await debugLog('ConfigManager', `Failed to load config: ${err}, using defaults`);
       this.config = { ...DEFAULT_CONFIG };
     }
-
-    // Apply directoryPath to the paths helper
-    setOutputDir(this.config.directoryPath);
 
     this.loaded = true;
   }
@@ -192,7 +179,6 @@ export class ConfigManager {
   private mergeConfig(defaults: CdpToolsConfig, loaded: Partial<CdpToolsConfig>): CdpToolsConfig {
     return {
       version: loaded.version ?? defaults.version,
-      directoryPath: loaded.directoryPath ?? defaults.directoryPath,
       chrome: {
         defaultDebugPort: loaded.chrome?.defaultDebugPort ?? defaults.chrome.defaultDebugPort,
       },
@@ -228,11 +214,11 @@ export class ConfigManager {
   }
 
   /**
-   * Save configuration to disk
+   * Save configuration to disk (always to global location)
    */
   async save(): Promise<void> {
-    const configPath = this.getConfigPath();
-    const dir = getOutputPath();
+    const configPath = getConfigSavePath();
+    const dir = dirname(configPath);
 
     if (!fs.existsSync(dir)) {
       await fs.promises.mkdir(dir, { recursive: true });
