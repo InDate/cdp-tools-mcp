@@ -5,7 +5,7 @@
 
 import * as fs from 'fs';
 import { dirname } from 'path';
-import { getConfigPath, getConfigSavePath } from './helpers/paths.js';
+import { getConfigPath, getConfigSavePath, getWorkingDirPath } from './helpers/paths.js';
 import { debugLog } from './debug-logger.js';
 
 /**
@@ -76,8 +76,12 @@ export interface ClickValidationConfig {
  * Chrome configuration
  */
 export interface ChromeConfig {
-  /** Default starting port for Chrome debugging (default: 9222) */
-  defaultDebugPort: number;
+  /** Starting port for Chrome debugging - will find next available if in use (default: 9222) */
+  startingDebugPort: number;
+  /** Inactivity timeout in minutes before closing connections and Chrome (default: 5, set to 0 to disable) */
+  inactivityTimeoutMinutes: number;
+  /** Polling interval in minutes for inactivity checks (default: 2) */
+  inactivityPollingMinutes: number;
 }
 
 /**
@@ -109,7 +113,9 @@ export interface CdpToolsConfig {
 const DEFAULT_CONFIG: CdpToolsConfig = {
   version: 1,
   chrome: {
-    defaultDebugPort: 9222,
+    startingDebugPort: 9222,
+    inactivityTimeoutMinutes: 5,
+    inactivityPollingMinutes: 2,
   },
   portMonitoring: {
     portMonitoringFreqMs: {
@@ -156,7 +162,30 @@ export class ConfigManager {
   private loadedFromPath: string | null = null;
 
   // Runtime port state (not persisted to config file)
-  private currentPort: number = DEFAULT_CONFIG.chrome.defaultDebugPort;
+  private currentPort: number = DEFAULT_CONFIG.chrome.startingDebugPort;
+
+  /**
+   * Get preferred path for creating new config
+   * Prefers working directory if .cdp-tools folder exists or can be created
+   */
+  private getPreferredConfigPath(): string {
+    try {
+      const wdConfigPath = getWorkingDirPath('config.json');
+      const wdBase = dirname(wdConfigPath);
+
+      // If .cdp-tools dir exists in working directory, use it
+      if (fs.existsSync(wdBase)) {
+        return wdConfigPath;
+      }
+
+      // Try to create .cdp-tools dir in working directory
+      fs.mkdirSync(wdBase, { recursive: true });
+      return wdConfigPath;
+    } catch {
+      // Fall back to global if working directory is not writable
+      return getConfigSavePath();
+    }
+  }
 
   /**
    * Load configuration from disk
@@ -179,12 +208,11 @@ export class ConfigManager {
         // Save back to the same location to ensure any new default settings are written
         await this.save();
       } else {
-        // Create default config file in global location
+        // Create default config file - prefer working directory if possible
         this.config = { ...DEFAULT_CONFIG };
-        this.loadedFromPath = null; // Will use default save path
+        this.loadedFromPath = this.getPreferredConfigPath();
         await this.save();
-        const savePath = getConfigSavePath();
-        await debugLog('ConfigManager', `Created default config at ${savePath}`);
+        await debugLog('ConfigManager', `Created default config at ${this.loadedFromPath}`);
       }
     } catch (err) {
       await debugLog('ConfigManager', `Failed to load config: ${err}, using defaults`);
@@ -202,7 +230,9 @@ export class ConfigManager {
     return {
       version: loaded.version ?? defaults.version,
       chrome: {
-        defaultDebugPort: loaded.chrome?.defaultDebugPort ?? defaults.chrome.defaultDebugPort,
+        startingDebugPort: loaded.chrome?.startingDebugPort ?? defaults.chrome.startingDebugPort,
+        inactivityTimeoutMinutes: loaded.chrome?.inactivityTimeoutMinutes ?? defaults.chrome.inactivityTimeoutMinutes,
+        inactivityPollingMinutes: loaded.chrome?.inactivityPollingMinutes ?? defaults.chrome.inactivityPollingMinutes,
       },
       portMonitoring: {
         portMonitoringFreqMs: {

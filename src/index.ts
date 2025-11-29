@@ -94,18 +94,18 @@ async function findAvailablePort(startPort: number): Promise<number> {
  */
 async function findStartingPort(): Promise<number> {
   const envPort = process.env.MCP_DEBUG_PORT;
-  const defaultPort = configManager.getChromeConfig().defaultDebugPort;
+  const startingPort = configManager.getChromeConfig().startingDebugPort;
 
   if (envPort) {
     const port = parseInt(envPort, 10);
     if (isNaN(port) || port < 1024 || port > 65535) {
       console.error(`Invalid MCP_DEBUG_PORT: ${envPort}. Using auto-assigned port.`);
-      return findAvailablePort(defaultPort);
+      return findAvailablePort(startingPort);
     }
     return port;
   }
 
-  return findAvailablePort(defaultPort);
+  return findAvailablePort(startingPort);
 }
 
 /**
@@ -153,8 +153,8 @@ chromeLauncher.setOnExitCallback(async (event) => {
 
   // Reserve a new port for future launches
   try {
-    const defaultPort = configManager.getChromeConfig().defaultDebugPort;
-    const newPort = await findAvailablePort(defaultPort);
+    const startingPort = configManager.getChromeConfig().startingDebugPort;
+    const newPort = await findAvailablePort(startingPort);
     await portReserver.reserve(newPort);
     configManager.setCurrentPort(newPort);
     await debugLog('index', `Reserved new port ${newPort}`);
@@ -1332,10 +1332,13 @@ async function main() {
     capturedAt: new Date().toISOString(),
   });
 
-  // Start periodic cleanup of inactive connections (every 2 minutes)
-  const CLEANUP_INTERVAL = 2 * 60 * 1000; // 2 minutes
-  const INACTIVITY_THRESHOLD = 5 * 60 * 1000; // 5 minutes
-  const cleanupInterval = setInterval(async () => {
+  // Start periodic cleanup of inactive connections
+  const chromeConfig = configManager.getChromeConfig();
+  const CLEANUP_INTERVAL = chromeConfig.inactivityPollingMinutes * 60 * 1000;
+  const INACTIVITY_THRESHOLD = chromeConfig.inactivityTimeoutMinutes * 60 * 1000;
+
+  // Only start cleanup interval if inactivity timeout is enabled (> 0)
+  const cleanupInterval = INACTIVITY_THRESHOLD > 0 ? setInterval(async () => {
     try {
       const inactiveConnections = connectionManager.getInactiveConnections(INACTIVITY_THRESHOLD);
       if (inactiveConnections.length > 0) {
@@ -1369,7 +1372,7 @@ async function main() {
       console.error(`[cdp-tools] Error during cleanup: ${error}`);
       await debugLog('index', `Error during inactivity cleanup: ${error}`);
     }
-  }, CLEANUP_INTERVAL);
+  }, CLEANUP_INTERVAL) : null;
 
   // Cleanup function for graceful shutdown
   let isCleaningUp = false;
@@ -1382,7 +1385,7 @@ async function main() {
     console.error(`[cdp-tools] Received ${signal}, cleaning up...`);
 
     try {
-      clearInterval(cleanupInterval); // Stop periodic cleanup
+      if (cleanupInterval) clearInterval(cleanupInterval); // Stop periodic cleanup
       await connectionManager.closeAll();
       sourceMapHandler.clear();
       await chromeLauncher.kill();
