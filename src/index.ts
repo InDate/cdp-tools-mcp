@@ -56,7 +56,7 @@ import { createServer } from 'net';
 import { readFile } from 'fs/promises';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { debugLog, enableDebugLogging, disableDebugLogging, isDebugEnabled, setStartupMetrics } from './debug-logger.js';
+import { debugLog, enableDebugLogging, disableDebugLogging, isDebugEnabled, enableHistoryLogging, disableHistoryLogging, setStartupMetrics } from './debug-logger.js';
 import { validateReference, UNNAMED_CONNECTION } from './reference-validator.js';
 import { initializePaths } from './helpers/paths.js';
 
@@ -1295,6 +1295,15 @@ async function main() {
 
   // Load configuration
   await configManager.load();
+
+  // Apply debug config from configuration file
+  const debugConfig = configManager.getDebugConfig();
+  if (debugConfig.enabled) {
+    await enableDebugLogging();
+  }
+  if (debugConfig.historyLogEnabled) {
+    enableHistoryLogging();
+  }
 
   // Initialize server manager - recover running servers and start auto-run servers
   const serverInitResult = await serverManager.initialize();

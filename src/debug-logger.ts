@@ -9,9 +9,12 @@ import { getOutputPath } from './helpers/paths.js';
 
 const LOG_DIR = getOutputPath('logs');
 const LOG_FILE = join(LOG_DIR, 'debug.log');
+const HISTORY_FILE = join(LOG_DIR, 'history.log');
 
-// Global debug state - can be toggled via MCP tool
+// Global debug state - can be toggled via MCP tool or config
 let debugEnabled = false;
+// History log state - can be enabled separately from debug logging
+let historyLogEnabled = false;
 
 // Startup metrics storage - captured during startup, logged when debug is enabled
 interface StartupMetrics {
@@ -76,6 +79,29 @@ export function isDebugEnabled(): boolean {
 }
 
 /**
+ * Enable history logging (can be enabled independently of debug logging)
+ */
+export function enableHistoryLogging(): void {
+  historyLogEnabled = true;
+  console.error('[DebugLogger] History logging enabled');
+}
+
+/**
+ * Disable history logging
+ */
+export function disableHistoryLogging(): void {
+  historyLogEnabled = false;
+  console.error('[DebugLogger] History logging disabled');
+}
+
+/**
+ * Check if history logging is enabled
+ */
+export function isHistoryLogEnabled(): boolean {
+  return historyLogEnabled;
+}
+
+/**
  * Write a debug log entry (only if debug logging is enabled)
  * Format: [TIMESTAMP] [MODULE] message
  */
@@ -100,4 +126,93 @@ export async function debugLog(module: string, message: string): Promise<void> {
     // Don't let logging failures crash the server
     console.error(`[DebugLogger] Failed to write log: ${error}`);
   }
+}
+
+/**
+ * Write a command to history.log in replay-compatible format (only if history logging is enabled)
+ * Each line is a JSON object matching RecordedCommand: { tool, params }
+ * New commands are prepended (newest first) so line 1 is always the most recent command
+ */
+export async function logToHistoryFile(entry: string): Promise<void> {
+  if (!historyLogEnabled) {
+    return;
+  }
+
+  try {
+    await fs.mkdir(LOG_DIR, { recursive: true });
+
+    // Read existing content and prepend new entry
+    let existingContent = '';
+    try {
+      existingContent = await fs.readFile(HISTORY_FILE, 'utf-8');
+    } catch {
+      // File doesn't exist yet, that's fine
+    }
+
+    await fs.writeFile(HISTORY_FILE, entry + '\n' + existingContent);
+  } catch (error) {
+    console.error(`[DebugLogger] Failed to write history: ${error}`);
+  }
+}
+
+/**
+ * Get the path to the history log file
+ */
+export function getHistoryFilePath(): string {
+  return HISTORY_FILE;
+}
+
+/**
+ * Read a specific line from the history log file (1-indexed)
+ * Returns the parsed command or null if line doesn't exist
+ */
+export async function readHistoryLine(lineNumber: number): Promise<{ tool: string; params: Record<string, any> } | null> {
+  if (lineNumber < 1) {
+    return null;
+  }
+
+  try {
+    const content = await fs.readFile(HISTORY_FILE, 'utf-8');
+    const lines = content.split('\n').filter(line => line.trim());
+
+    if (lineNumber > lines.length) {
+      return null;
+    }
+
+    const line = lines[lineNumber - 1];
+    return JSON.parse(line);
+  } catch (error) {
+    return null;
+  }
+}
+
+/**
+ * Read multiple lines from the history log file (1-indexed)
+ * Returns array of parsed commands
+ */
+export async function readHistoryLines(lineNumbers: number[]): Promise<Array<{ line: number; tool: string; params: Record<string, any> } | { line: number; error: string }>> {
+  const results: Array<{ line: number; tool: string; params: Record<string, any> } | { line: number; error: string }> = [];
+
+  try {
+    const content = await fs.readFile(HISTORY_FILE, 'utf-8');
+    const lines = content.split('\n').filter(line => line.trim());
+
+    for (const lineNum of lineNumbers) {
+      if (lineNum < 1 || lineNum > lines.length) {
+        results.push({ line: lineNum, error: `Line ${lineNum} does not exist (file has ${lines.length} lines)` });
+        continue;
+      }
+
+      try {
+        const parsed = JSON.parse(lines[lineNum - 1]);
+        results.push({ line: lineNum, tool: parsed.tool, params: parsed.params });
+      } catch {
+        results.push({ line: lineNum, error: 'Invalid JSON on this line' });
+      }
+    }
+  } catch (error) {
+    return lineNumbers.map(n => ({ line: n, error: 'Could not read history file' }));
+  }
+
+  return results;
 }

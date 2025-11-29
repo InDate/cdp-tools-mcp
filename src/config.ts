@@ -81,6 +81,16 @@ export interface ChromeConfig {
 }
 
 /**
+ * Debug configuration
+ */
+export interface DebugConfig {
+  /** Enable debug logging to debug.log on startup (default: false) */
+  enabled: boolean;
+  /** Enable history log file - records all commands in replay-compatible format (default: false) */
+  historyLogEnabled: boolean;
+}
+
+/**
  * Root configuration structure
  */
 export interface CdpToolsConfig {
@@ -90,6 +100,7 @@ export interface CdpToolsConfig {
   replay: ReplayConfig;
   changeDetection: ChangeDetectionConfig;
   clickValidation: ClickValidationConfig;
+  debug: DebugConfig;
 }
 
 /**
@@ -128,6 +139,10 @@ const DEFAULT_CONFIG: CdpToolsConfig = {
     networkFailMode: 'warn',       // Just warn on network failures
     postClickDelayMs: 100,         // Small delay before validation
   },
+  debug: {
+    enabled: false,               // Debug logging disabled by default
+    historyLogEnabled: false,     // History log disabled by default
+  },
 };
 
 /**
@@ -138,6 +153,7 @@ const DEFAULT_CONFIG: CdpToolsConfig = {
 export class ConfigManager {
   private config: CdpToolsConfig = { ...DEFAULT_CONFIG };
   private loaded = false;
+  private loadedFromPath: string | null = null;
 
   // Runtime port state (not persisted to config file)
   private currentPort: number = DEFAULT_CONFIG.chrome.defaultDebugPort;
@@ -157,10 +173,15 @@ export class ConfigManager {
 
         // Deep merge with defaults
         this.config = this.mergeConfig(DEFAULT_CONFIG, loaded);
+        this.loadedFromPath = configPath;
         await debugLog('ConfigManager', `Loaded config from ${configPath}`);
+
+        // Save back to the same location to ensure any new default settings are written
+        await this.save();
       } else {
         // Create default config file in global location
         this.config = { ...DEFAULT_CONFIG };
+        this.loadedFromPath = null; // Will use default save path
         await this.save();
         const savePath = getConfigSavePath();
         await debugLog('ConfigManager', `Created default config at ${savePath}`);
@@ -168,6 +189,7 @@ export class ConfigManager {
     } catch (err) {
       await debugLog('ConfigManager', `Failed to load config: ${err}, using defaults`);
       this.config = { ...DEFAULT_CONFIG };
+      this.loadedFromPath = null;
     }
 
     this.loaded = true;
@@ -210,14 +232,19 @@ export class ConfigManager {
         networkFailMode: loaded.clickValidation?.networkFailMode ?? defaults.clickValidation.networkFailMode,
         postClickDelayMs: loaded.clickValidation?.postClickDelayMs ?? defaults.clickValidation.postClickDelayMs,
       },
+      debug: {
+        enabled: loaded.debug?.enabled ?? defaults.debug.enabled,
+        historyLogEnabled: loaded.debug?.historyLogEnabled ?? defaults.debug.historyLogEnabled,
+      },
     };
   }
 
   /**
-   * Save configuration to disk (always to global location)
+   * Save configuration to disk
+   * Saves to the same location it was loaded from, or global if new
    */
   async save(): Promise<void> {
-    const configPath = getConfigSavePath();
+    const configPath = this.loadedFromPath || getConfigSavePath();
     const dir = dirname(configPath);
 
     if (!fs.existsSync(dir)) {
@@ -282,6 +309,13 @@ export class ConfigManager {
    */
   getClickValidationConfig(): ClickValidationConfig {
     return this.getConfig().clickValidation;
+  }
+
+  /**
+   * Get debug configuration
+   */
+  getDebugConfig(): DebugConfig {
+    return this.getConfig().debug;
   }
 
   /**
