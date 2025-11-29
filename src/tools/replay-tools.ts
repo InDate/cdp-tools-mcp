@@ -41,6 +41,8 @@ import {
   formatInsertResult,
 } from './replay-formatters.js';
 
+import { readHistoryLines, getHistoryFilePath } from '../debug-logger.js';
+
 // =============================================================================
 // Schema Definition
 // =============================================================================
@@ -50,9 +52,9 @@ const replaySchema = z.object({
     'history', 'create', 'list', 'get', 'delete',
     'save', 'load', 'listSaved', 'deleteSaved',
     'run', 'step', 'finish', 'insert', 'status', 'cancel',
-    'repeat'
+    'repeat', 'runFromLog'
   ]).describe(
-    'Replay action: repeat (immediately execute commands by history indices), history (view command history), create (create sequence from indices), list (list in-memory sequences), get (get sequence details), delete (delete from memory), save (save to disk), load (load from disk), listSaved (list saved files), deleteSaved (delete saved file), run (execute sequence by name or sequenceId), step (execute next N commands in paused sequence), finish (complete remaining commands), insert (insert recorded commands into sequence), status (show active sequence status), cancel (abandon paused sequence)'
+    'Replay action: repeat (immediately execute commands by history indices), runFromLog (execute commands by line number from history.log file - line 1 is most recent), history (view command history), create (create sequence from indices), list (list in-memory sequences), get (get sequence details), delete (delete from memory), save (save to disk), load (load from disk), listSaved (list saved files), deleteSaved (delete saved file), run (execute sequence by name or sequenceId), step (execute next N commands in paused sequence), finish (complete remaining commands), insert (insert recorded commands into sequence), status (show active sequence status), cancel (abandon paused sequence)'
   ),
 
   // history parameters
@@ -64,9 +66,11 @@ const replaySchema = z.object({
   expectedOutcome: z.string().optional().describe('Expected outcome when the sequence runs successfully (for create action)'),
   startUrl: z.string().optional().describe('Starting URL for the sequence (for create action). Auto-extracted from first navigate goto if not provided.'),
   indices: z.array(z.number()).optional().describe('Command indices to include in sequence (for create action)'),
+  lines: z.array(z.number()).optional().describe('Line numbers from history.log to execute (for runFromLog action, 1-indexed, line 1 is most recent)'),
 
   // get/delete/run/save parameters
   sequenceId: z.string().optional().describe('Sequence ID (for get, delete, run, save actions)'),
+  global: z.boolean().optional().describe('Save to global ~/.cdp-tools/sequences/ instead of working directory (for save action, default: false)'),
 
   // load/deleteSaved parameters
   filename: z.string().optional().describe('Filename (for load, deleteSaved actions)'),
@@ -198,6 +202,91 @@ async function handleRepeat(
   return { content: [{ type: 'text', text: response }] };
 }
 
+async function handleRunFromLog(
+  args: ReplayArgs,
+  executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>
+) {
+  if (!args.lines || args.lines.length === 0) {
+    return createErrorResponse('MISSING_PARAMETER', {
+      action: 'runFromLog',
+      missing: 'lines',
+      message: `The "runFromLog" action requires a "lines" array with line numbers to execute from history.log (1-indexed, line 1 is most recent). File: ${getHistoryFilePath()}`
+    });
+  }
+
+  // Read commands from history.log file
+  const lineResults = await readHistoryLines(args.lines);
+
+  // Check for errors
+  const errors = lineResults.filter((r): r is { line: number; error: string } => 'error' in r);
+  if (errors.length > 0) {
+    return createErrorResponse('INVALID_LINES', {
+      message: `Some lines could not be read from history.log:\n${errors.map(e => `  Line ${e.line}: ${e.error}`).join('\n')}`,
+      file: getHistoryFilePath()
+    });
+  }
+
+  const commands = lineResults as Array<{ line: number; tool: string; params: Record<string, any> }>;
+
+  // Determine if we need a connection
+  const needsConnection = commands.some(cmd => TOOLS_NEEDING_CONNECTION.includes(cmd.tool));
+  let connectionReason = args.connectionReason;
+
+  // Try to extract connection from commands if not provided
+  if (!connectionReason && needsConnection) {
+    const launchCmd = commands.find(c => c.tool === 'launchChrome' || c.tool === 'connectDebugger');
+    if (launchCmd && launchCmd.params.reference) {
+      connectionReason = launchCmd.params.reference;
+    }
+  }
+
+  if (!connectionReason && needsConnection) {
+    return createErrorResponse('MISSING_PARAMETER', {
+      action: 'runFromLog',
+      missing: 'connectionReason',
+      message: 'These commands require a browser connection. Provide connectionReason parameter.'
+    });
+  }
+
+  // Execute commands
+  const results: Array<{ line: number; tool: string; success: boolean; error?: string }> = [];
+  const startTime = Date.now();
+
+  for (const cmd of commands) {
+    try {
+      const params = { ...cmd.params };
+      if (connectionReason && TOOLS_NEEDING_CONNECTION.includes(cmd.tool)) {
+        params.connectionReason = connectionReason;
+      }
+
+      await executeToolCall(cmd.tool, params);
+      results.push({ line: cmd.line, tool: cmd.tool, success: true });
+    } catch (error: any) {
+      results.push({ line: cmd.line, tool: cmd.tool, success: false, error: error.message || String(error) });
+      break;
+    }
+  }
+
+  const durationMs = Date.now() - startTime;
+  const successful = results.filter(r => r.success).length;
+  const failed = results.filter(r => !r.success).length;
+
+  let response = failed > 0
+    ? `**runFromLog failed** at line ${results.find(r => !r.success)?.line}`
+    : `**Executed ${successful} command${successful !== 1 ? 's' : ''} from history.log** in ${(durationMs / 1000).toFixed(1)}s`;
+
+  response += '\n';
+  results.forEach(r => {
+    const icon = r.success ? '✓' : '✗';
+    response += `\nL${r.line}. **${r.tool}** ${icon}`;
+    if (r.error) {
+      response += ` - ${r.error}`;
+    }
+  });
+
+  return { content: [{ type: 'text', text: response }] };
+}
+
 async function handleCreate(args: ReplayArgs, recorder: CommandRecorder) {
   if (!args.name) {
     return createErrorResponse('MISSING_PARAMETER', {
@@ -277,7 +366,7 @@ async function handleSave(args: ReplayArgs, recorder: CommandRecorder) {
     });
   }
 
-  const filepath = await recorder.saveSequenceToDisk(args.sequenceId);
+  const filepath = await recorder.saveSequenceToDisk(args.sequenceId, args.global ?? false);
   if (!filepath) {
     return createErrorResponse('SAVE_FAILED', {
       sequenceId: args.sequenceId,
@@ -285,10 +374,12 @@ async function handleSave(args: ReplayArgs, recorder: CommandRecorder) {
     });
   }
 
+  const location = args.global ? 'global (~/.cdp-tools/sequences/)' : 'working directory';
   return createSuccessResponse('SEQUENCE_SAVED_TO_DISK', {
     sequenceId: args.sequenceId,
     filename: filepath,
-    message: `Sequence saved to: ${filepath}`
+    location,
+    message: `Sequence saved to ${location}: ${filepath}`
   });
 }
 
@@ -764,6 +855,8 @@ export function createReplayTools(
             return handleCancel(commandRecorder);
           case 'repeat':
             return handleRepeat(args, commandRecorder, executeToolCall);
+          case 'runFromLog':
+            return handleRunFromLog(args, executeToolCall);
           default:
             return createErrorResponse('INVALID_ACTION', { action: args.action });
         }

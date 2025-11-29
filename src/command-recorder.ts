@@ -7,9 +7,9 @@
 
 import { promises as fs } from 'fs';
 import { join } from 'path';
-import { debugLog } from './debug-logger.js';
+import { debugLog, isHistoryLogEnabled, logToHistoryFile } from './debug-logger.js';
 import { sanitizeReference } from './reference-validator.js';
-import { getGlobalPath } from './helpers/paths.js';
+import { getWorkingDirPath, getGlobalPath } from './helpers/paths.js';
 
 export interface RecordedCommand {
   tool: string;
@@ -53,7 +53,14 @@ export class CommandRecorder {
   private historyViewedWhilePaused: boolean = false;
 
   constructor() {
-    this.sequencesDir = getGlobalPath('sequences');
+    this.sequencesDir = getWorkingDirPath('sequences');
+  }
+
+  /**
+   * Get the sequences directory for a specific scope
+   */
+  getSequencesDir(global: boolean = false): string {
+    return global ? getGlobalPath('sequences') : getWorkingDirPath('sequences');
   }
 
   /**
@@ -156,6 +163,12 @@ export class CommandRecorder {
     }
 
     await debugLog('command-recorder', `Recorded #${command.index}: ${tool}`);
+
+    // Write to history.log in replay-compatible format when history logging is enabled
+    if (isHistoryLogEnabled()) {
+      const historyEntry: RecordedCommand = { tool, params: paramsClone };
+      await logToHistoryFile(JSON.stringify(historyEntry));
+    }
   }
 
   /**
@@ -280,23 +293,27 @@ export class CommandRecorder {
 
   /**
    * Save a sequence to disk
+   * @param sequenceId - ID of the sequence to save
+   * @param global - If true, save to global ~/.cdp-tools/sequences/, otherwise working directory
    */
-  async saveSequenceToDisk(sequenceId: string): Promise<string | null> {
+  async saveSequenceToDisk(sequenceId: string, global: boolean = false): Promise<string | null> {
     const sequence = this.getSequence(sequenceId);
     if (!sequence) {
       await debugLog('command-recorder', `Sequence ${sequenceId} not found`);
       return null;
     }
 
+    const targetDir = this.getSequencesDir(global);
+
     try {
       // Ensure directory exists
-      await fs.mkdir(this.sequencesDir, { recursive: true });
+      await fs.mkdir(targetDir, { recursive: true });
 
       // Sanitize filename - use name + short timestamp
       const safeFilename = sequence.name.replace(/[^a-z0-9-_]/gi, '-').toLowerCase();
       const shortId = Date.now().toString().slice(-6); // Last 6 digits of timestamp
       const filename = `${safeFilename}-${shortId}.json`;
-      const filepath = join(this.sequencesDir, filename);
+      const filepath = join(targetDir, filename);
 
       // Add usage comment to exported file
       const exportData = {
@@ -313,10 +330,11 @@ export class CommandRecorder {
   }
 
   /**
-   * Find best matching filename from saved sequences
+   * Find best matching filename from saved sequences (searches both working dir and global)
    * Supports: exact match, with/without .json, name prefix (returns latest by timestamp)
+   * Returns the full path to the matched file
    */
-  async findMatchingFilename(searchTerm: string): Promise<{ filename: string; matchType: string } | null> {
+  async findMatchingFilename(searchTerm: string): Promise<{ filename: string; fullPath: string; matchType: string; location: string } | null> {
     const savedSequences = await this.listSavedSequencesOnDisk();
     if (savedSequences.length === 0) return null;
 
@@ -329,13 +347,13 @@ export class CommandRecorder {
       s.filename.toLowerCase() === termWithoutJson + '.json'
     );
     if (exactMatch) {
-      return { filename: exactMatch.filename, matchType: 'exact' };
+      return { filename: exactMatch.filename, fullPath: exactMatch.fullPath, matchType: 'exact', location: exactMatch.location };
     }
 
     // 2. Exact name match
     const nameMatch = savedSequences.find(s => s.name.toLowerCase() === termWithoutJson);
     if (nameMatch) {
-      return { filename: nameMatch.filename, matchType: 'name' };
+      return { filename: nameMatch.filename, fullPath: nameMatch.fullPath, matchType: 'name', location: nameMatch.location };
     }
 
     // 3. Filename starts with search term (gets latest by sorting)
@@ -345,7 +363,7 @@ export class CommandRecorder {
     if (prefixMatches.length > 0) {
       // Sort by filename descending to get latest timestamp
       prefixMatches.sort((a, b) => b.filename.localeCompare(a.filename));
-      return { filename: prefixMatches[0].filename, matchType: 'prefix' };
+      return { filename: prefixMatches[0].filename, fullPath: prefixMatches[0].fullPath, matchType: 'prefix', location: prefixMatches[0].location };
     }
 
     // 4. Name starts with search term
@@ -354,7 +372,7 @@ export class CommandRecorder {
     );
     if (namePrefixMatches.length > 0) {
       namePrefixMatches.sort((a, b) => b.filename.localeCompare(a.filename));
-      return { filename: namePrefixMatches[0].filename, matchType: 'name-prefix' };
+      return { filename: namePrefixMatches[0].filename, fullPath: namePrefixMatches[0].fullPath, matchType: 'name-prefix', location: namePrefixMatches[0].location };
     }
 
     // 5. Name contains search term
@@ -363,7 +381,7 @@ export class CommandRecorder {
     );
     if (containsMatches.length > 0) {
       containsMatches.sort((a, b) => b.filename.localeCompare(a.filename));
-      return { filename: containsMatches[0].filename, matchType: 'contains' };
+      return { filename: containsMatches[0].filename, fullPath: containsMatches[0].fullPath, matchType: 'contains', location: containsMatches[0].location };
     }
 
     return null;
@@ -408,21 +426,19 @@ export class CommandRecorder {
   }
 
   /**
-   * List saved sequences on disk
+   * List saved sequences on disk from a specific directory
    */
-  async listSavedSequencesOnDisk(): Promise<Array<{ filename: string; name: string; id: string; commandCount: number; description?: string; expectedOutcome?: string; startUrl?: string }>> {
+  private async listSequencesFromDir(dir: string, location: 'working-dir' | 'global'): Promise<Array<{ filename: string; name: string; id: string; commandCount: number; description?: string; expectedOutcome?: string; startUrl?: string; location: string; fullPath: string }>> {
+    const sequences: Array<{ filename: string; name: string; id: string; commandCount: number; description?: string; expectedOutcome?: string; startUrl?: string; location: string; fullPath: string }> = [];
+
     try {
-      // Ensure directory exists
-      await fs.mkdir(this.sequencesDir, { recursive: true });
-
-      const files = await fs.readdir(this.sequencesDir);
+      await fs.mkdir(dir, { recursive: true });
+      const files = await fs.readdir(dir);
       const jsonFiles = files.filter(f => f.endsWith('.json'));
-
-      const sequences: Array<{ filename: string; name: string; id: string; commandCount: number; description?: string; expectedOutcome?: string; startUrl?: string }> = [];
 
       for (const file of jsonFiles) {
         try {
-          const filepath = join(this.sequencesDir, file);
+          const filepath = join(dir, file);
           const content = await fs.readFile(filepath, 'utf-8');
           const sequence: CommandSequence = JSON.parse(content);
           sequences.push({
@@ -430,6 +446,8 @@ export class CommandRecorder {
             name: sequence.name,
             id: sequence.id,
             commandCount: sequence.commands?.length || 0,
+            location,
+            fullPath: filepath,
             ...(sequence.description && { description: sequence.description }),
             ...(sequence.expectedOutcome && { expectedOutcome: sequence.expectedOutcome }),
             ...(sequence.startUrl && { startUrl: sequence.startUrl }),
@@ -438,12 +456,30 @@ export class CommandRecorder {
           await debugLog('command-recorder', `Failed to parse ${file}: ${error}`);
         }
       }
-
-      return sequences;
     } catch (error: any) {
-      await debugLog('command-recorder', `Failed to list saved sequences: ${error}`);
-      return [];
+      await debugLog('command-recorder', `Failed to list sequences from ${dir}: ${error}`);
     }
+
+    return sequences;
+  }
+
+  /**
+   * List saved sequences on disk (checks both working directory and global)
+   */
+  async listSavedSequencesOnDisk(): Promise<Array<{ filename: string; name: string; id: string; commandCount: number; description?: string; expectedOutcome?: string; startUrl?: string; location: string; fullPath: string }>> {
+    const workingDir = this.getSequencesDir(false);
+    const globalDir = this.getSequencesDir(true);
+
+    // Get sequences from both locations
+    const workingDirSequences = await this.listSequencesFromDir(workingDir, 'working-dir');
+    const globalSequences = await this.listSequencesFromDir(globalDir, 'global');
+
+    // If working dir and global are the same (fallback case), avoid duplicates
+    if (workingDir === globalDir) {
+      return workingDirSequences;
+    }
+
+    return [...workingDirSequences, ...globalSequences];
   }
 
   /**

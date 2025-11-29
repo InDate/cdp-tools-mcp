@@ -493,7 +493,7 @@ export function formatSequenceDetails(sequence: CommandSequence): string {
  * Format saved sequences on disk listing
  */
 export function formatSavedSequencesList(
-  sequences: Array<{ filename: string; name: string; id: string; commandCount: number; description?: string; expectedOutcome?: string; startUrl?: string }>
+  sequences: Array<{ filename: string; name: string; id: string; commandCount: number; description?: string; expectedOutcome?: string; startUrl?: string; location?: string; fullPath?: string }>
 ): string {
   if (sequences.length === 0) {
     return getFormattedResponse('REPLAY_SAVED_EMPTY', {});
@@ -501,8 +501,8 @@ export function formatSavedSequencesList(
 
   // Sort by ID timestamp (oldest first) - ID format is "seq-{timestamp}"
   const sorted = [...sequences].sort((a, b) => {
-    const tsA = parseInt(a.id.replace('seq-', ''), 10) || 0;
-    const tsB = parseInt(b.id.replace('seq-', ''), 10) || 0;
+    const tsA = parseInt((a.id || '').replace('seq-', ''), 10) || 0;
+    const tsB = parseInt((b.id || '').replace('seq-', ''), 10) || 0;
     return tsA - tsB;
   });
 
@@ -514,7 +514,8 @@ export function formatSavedSequencesList(
   response += '\n';
 
   sorted.forEach((seq, idx) => {
-    response += `${idx + 1}. ${seq.name} (${seq.commandCount})\n`;
+    const locationTag = seq.location === 'global' ? ' [global]' : '';
+    response += `${idx + 1}. ${seq.name} (${seq.commandCount})${locationTag}\n`;
   });
 
   response += `\nRun: \`replay({ action: 'run', name: '<name>' })\``;
