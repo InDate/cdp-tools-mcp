@@ -122,6 +122,8 @@ export interface PersistedRunnerState {
   autoRun: boolean;
   startedAt: string;
   monitorPort?: boolean;
+  /** Whether this server is stored in global ~/.cdp-tools/ */
+  global?: boolean;
 }
 
 /**

@@ -30,9 +30,17 @@ export class NativeRunner implements Runner {
   private port: number | null = null;
   private startedAt: Date | null = null;
   private logCursor = { stdout: 0, stderr: 0 };
+  private global: boolean = false;
 
   constructor(id: string) {
     this.id = id;
+  }
+
+  /**
+   * Set whether this runner uses global storage
+   */
+  setGlobal(global: boolean): void {
+    this.global = global;
   }
 
   /**
@@ -44,11 +52,12 @@ export class NativeRunner implements Runner {
     this.pid = data.pid;
     this.port = data.port ?? null;
     this.startedAt = new Date(data.startedAt);
+    this.global = data.global ?? false;
     this.process = null; // Attached, not owned
   }
 
   private getLogDir(): string {
-    return getOutputPath('logs', this.id);
+    return getOutputPath('logs', this.id, { global: this.global });
   }
 
   private getStdoutLogPath(): string {

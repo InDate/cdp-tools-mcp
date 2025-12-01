@@ -59,6 +59,7 @@ export interface ServerStatus {
   running: boolean;
   autoRun: boolean;
   runnerType: RunnerType;
+  global: boolean;
 }
 
 export interface StartServerOptions {
@@ -72,6 +73,8 @@ export interface StartServerOptions {
   runner?: RunnerType;
   /** If true, auto-add detected port to monitoredPorts with default level 'block' */
   monitorPort?: boolean;
+  /** If true, store server state in global ~/.cdp-tools/ instead of project directory */
+  global?: boolean;
 }
 
 export interface LogStats {
@@ -85,6 +88,7 @@ interface ManagedServer {
   runner: Runner;
   autoRun: boolean;
   monitorPort?: boolean;
+  global?: boolean; // Whether this server is stored in global ~/.cdp-tools/
 }
 
 // ============================================================================
@@ -411,12 +415,13 @@ export class ServerManager {
     return this.portMonitor;
   }
 
-  private getServersFilePath(): string {
-    return getOutputPath('servers.json');
+  private getServersFilePath(global?: boolean): string {
+    return getOutputPath('servers.json', { global: global ?? false });
   }
 
   /**
    * Initialize - load state and recover/start auto-run servers
+   * Loads from both local (project) and global (~/.cdp-tools/) storage
    */
   async initialize(): Promise<{ recovered: string[]; started: string[]; failed: string[]; monitoredPorts: number[] }> {
     const recovered: string[] = [];
@@ -424,16 +429,24 @@ export class ServerManager {
     const failed: string[] = [];
     const monitoredPorts: number[] = [];
 
-    const persisted = await this.loadState();
+    // Load from both local and global storage
+    const localPersisted = await this.loadState(false);
+    const globalPersisted = await this.loadState(true);
 
-    // Restore monitored ports first
-    if (persisted.monitoredPorts.length > 0) {
-      await this.getPortMonitor().restoreFromState(persisted.monitoredPorts);
-      monitoredPorts.push(...persisted.monitoredPorts.map(p => p.port));
+    // Combine servers from both sources (local servers marked with global=false, global with global=true)
+    const allServers = [
+      ...localPersisted.servers.map(s => ({ ...s, global: false })),
+      ...globalPersisted.servers.map(s => ({ ...s, global: true })),
+    ];
+
+    // Restore monitored ports from local config
+    if (localPersisted.monitoredPorts.length > 0) {
+      await this.getPortMonitor().restoreFromState(localPersisted.monitoredPorts);
+      monitoredPorts.push(...localPersisted.monitoredPorts.map(p => p.port));
       await debugLog('ServerManager', `Restored ${monitoredPorts.length} monitored ports`);
     }
 
-    for (const server of persisted.servers) {
+    for (const server of allServers) {
       const runnerType = server.type || 'native';
       const runner = createRunner(runnerType, server.id);
 
@@ -448,6 +461,7 @@ export class ServerManager {
           runner,
           autoRun: server.autoRun,
           monitorPort: server.monitorPort,
+          global: server.global,
         });
 
         // For native runner, init cursor to EOF (native-specific method)
@@ -456,7 +470,7 @@ export class ServerManager {
         }
 
         recovered.push(server.id);
-        await debugLog('ServerManager', `Recovered running server: ${server.id} (${runnerType})`);
+        await debugLog('ServerManager', `Recovered running server: ${server.id} (${runnerType}, global=${server.global})`);
       } else if (server.autoRun) {
         // Not running but autoRun - restart
         let success = false;
@@ -475,6 +489,7 @@ export class ServerManager {
               autoRun: true,
               runner: runnerType,
               monitorPort: server.monitorPort,
+              global: server.global,
             });
             started.push(server.id);
             success = true;
@@ -497,6 +512,7 @@ export class ServerManager {
           runner,
           autoRun: false,
           monitorPort: server.monitorPort,
+          global: server.global,
         });
       }
     }
@@ -505,8 +521,8 @@ export class ServerManager {
     return { recovered, started, failed, monitoredPorts };
   }
 
-  private async loadState(): Promise<{ servers: PersistedRunnerState[]; monitoredPorts: PersistedMonitoredPort[] }> {
-    const filePath = this.getServersFilePath();
+  private async loadState(global?: boolean): Promise<{ servers: PersistedRunnerState[]; monitoredPorts: PersistedMonitoredPort[] }> {
+    const filePath = this.getServersFilePath(global);
 
     try {
       if (fs.existsSync(filePath)) {
@@ -517,6 +533,7 @@ export class ServerManager {
         const servers = (data.servers || []).map((s: any) => ({
           ...s,
           type: s.type || 'native',
+          global: global ?? false,
         }));
 
         return {
@@ -525,19 +542,16 @@ export class ServerManager {
         };
       }
     } catch (err) {
-      await debugLog('ServerManager', `Failed to load state: ${err}`);
+      await debugLog('ServerManager', `Failed to load state from ${filePath}: ${err}`);
     }
 
     return { servers: [], monitoredPorts: [] };
   }
 
   async saveState(): Promise<void> {
-    const dir = path.dirname(this.getServersFilePath());
-    if (!fs.existsSync(dir)) {
-      await fs.promises.mkdir(dir, { recursive: true });
-    }
-
-    const servers: PersistedRunnerState[] = [];
+    // Split servers by global flag
+    const localServers: PersistedRunnerState[] = [];
+    const globalServers: PersistedRunnerState[] = [];
 
     for (const [id, managed] of this.servers) {
       const runner = managed.runner;
@@ -548,7 +562,7 @@ export class ServerManager {
         containerId = runner.getContainerId() ?? undefined;
       }
 
-      servers.push({
+      const serverData: PersistedRunnerState = {
         type: runner.type,
         id,
         command: this.getRunnerCommand(runner),
@@ -559,21 +573,48 @@ export class ServerManager {
         autoRun: managed.autoRun,
         startedAt: status.startedAt?.toISOString() ?? new Date().toISOString(),
         monitorPort: managed.monitorPort,
-      });
+      };
+
+      if (managed.global) {
+        globalServers.push(serverData);
+      } else {
+        localServers.push(serverData);
+      }
     }
 
     const monitoredPorts = this.getPortMonitor().getPersistedState();
 
-    const data = {
-      version: 4,
-      updatedAt: new Date().toISOString(),
-      servers,
-      monitoredPorts,
-    };
-
+    // Save local servers to project directory
+    const localPath = this.getServersFilePath(false);
+    const localDir = path.dirname(localPath);
+    if (!fs.existsSync(localDir)) {
+      await fs.promises.mkdir(localDir, { recursive: true });
+    }
     await fs.promises.writeFile(
-      this.getServersFilePath(),
-      JSON.stringify(data, null, 2),
+      localPath,
+      JSON.stringify({
+        version: 4,
+        updatedAt: new Date().toISOString(),
+        servers: localServers,
+        monitoredPorts, // Port monitoring stays in local config
+      }, null, 2),
+      'utf-8'
+    );
+
+    // Save global servers to ~/.cdp-tools/
+    const globalPath = this.getServersFilePath(true);
+    const globalDir = path.dirname(globalPath);
+    if (!fs.existsSync(globalDir)) {
+      await fs.promises.mkdir(globalDir, { recursive: true });
+    }
+    await fs.promises.writeFile(
+      globalPath,
+      JSON.stringify({
+        version: 4,
+        updatedAt: new Date().toISOString(),
+        servers: globalServers,
+        monitoredPorts: [], // Global doesn't track port monitoring
+      }, null, 2),
       'utf-8'
     );
   }
@@ -637,7 +678,7 @@ export class ServerManager {
    * Start a server
    */
   async startServer(options: StartServerOptions): Promise<{ id: string; pid: number; runnerType: RunnerType; containerId?: string }> {
-    const { command, cwd, id: serverId, autoRun, env, port, monitorPort } = options;
+    const { command, cwd, id: serverId, autoRun, env, port, monitorPort, global: isGlobal } = options;
 
     // Validate server ID for security (prevents command injection via container names)
     validateServerId(serverId);
@@ -670,10 +711,16 @@ export class ServerManager {
       }
     }
 
-    await debugLog('ServerManager', `Starting server: ${command} (runner: ${runnerType})`);
+    await debugLog('ServerManager', `Starting server: ${command} (runner: ${runnerType}, global: ${isGlobal ?? false})`);
 
     // Create and start runner
     const runner = createRunner(runnerType, serverId);
+
+    // Set global flag on native runner for log storage location
+    if (runner instanceof NativeRunner) {
+      runner.setGlobal(isGlobal ?? false);
+    }
+
     const result = await runner.start({ command, cwd, id: serverId, env, port });
 
     this.servers.set(serverId, {
@@ -681,6 +728,7 @@ export class ServerManager {
       runner,
       autoRun: autoRun ?? false,
       monitorPort,
+      global: isGlobal ?? false,
     });
 
     // Start port detection in background
@@ -841,6 +889,7 @@ export class ServerManager {
         running: status.running,
         autoRun: managed.autoRun,
         runnerType: managed.runner.type,
+        global: managed.global ?? false,
       };
     };
 

@@ -43,6 +43,8 @@ const serverSchema = z.object({
     .describe('Description for the monitored port (for monitorPort action)'),
   interval: z.number().optional()
     .describe('Custom check interval in milliseconds (for monitorPort action). Overrides level-based defaults from config. Default: block=1000ms, error=2000ms, inform=5000ms'),
+  global: z.boolean().optional()
+    .describe('If true, store/lookup server state in global ~/.cdp-tools/ instead of project directory. Use this when running MCP from a different directory than where the server was started.'),
 }).strict();
 
 type ServerArgs = z.infer<typeof serverSchema>;
@@ -66,30 +68,33 @@ function formatLogStatusLine(stats: LogStats[]): string {
 
 
 /**
- * Format server list for response
+ * Format server list as CSV
  */
 function formatServerList(servers: ServerStatus[]): string {
-  let output = '';
-  for (const s of servers) {
-    const status = s.running ? '🟢' : '🔴';
-    const autoRunBadge = s.autoRun ? ' ⚡' : '';
-    const runnerBadge = s.runnerType !== 'native' ? ` 🐳` : '';
-    output += `### ${status} ${s.id}${autoRunBadge}${runnerBadge}\n`;
-    output += `- **Command:** \`${s.command}\`\n`;
-    output += `- **CWD:** \`${s.cwd}\`\n`;
-    output += `- **Runner:** ${s.runnerType}`;
-    if (s.runnerType === 'native') {
-      output += ` | **PID:** ${s.pid}`;
-    } else if (s.containerId) {
-      output += ` | **Container:** ${s.containerId}`;
+  const escapeCSV = (val: string | number | boolean | undefined): string => {
+    if (val === undefined) return '';
+    const str = String(val);
+    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+      return `"${str.replace(/"/g, '""')}"`;
     }
-    if (s.port) {
-      output += ` | **Port:** ${s.port}`;
-    }
-    output += '\n';
-    output += `- **Uptime:** ${s.uptime}${s.autoRun ? ' | **Auto-run:** enabled' : ''}\n\n`;
-  }
-  return output.trim();
+    return str;
+  };
+
+  const headers = ['status', 'id', 'storage', 'port', 'runner', 'pid', 'uptime', 'autoRun', 'cwd', 'command'];
+  const rows = servers.map(s => [
+    s.running ? 'running' : 'stopped',
+    s.id,
+    s.global ? 'global' : 'local',
+    s.port ?? '',
+    s.runnerType,
+    s.runnerType === 'native' ? s.pid : (s.containerId ?? ''),
+    s.uptime,
+    s.autoRun ? 'yes' : 'no',
+    s.cwd,
+    s.command,
+  ].map(escapeCSV).join(','));
+
+  return [headers.join(','), ...rows].join('\n');
 }
 
 /**
@@ -158,6 +163,7 @@ export function createServerTools(serverManager: ServerManager) {
                 env: args.env,
                 runner: args.runner as RunnerType | undefined,
                 monitorPort: args.monitorPort,
+                global: args.global,
               });
 
               // Wait briefly for port detection
