@@ -1,18 +1,21 @@
 /**
  * Centralized path configuration for cdp-tools output directories
  *
- * Path hierarchy:
- * - CDP_TOOLS_DIR env var → overrides both global and working directory base
- * - Global: ~/.cdp-tools/ (servers.json, sequences, network-bodies)
- * - Working Directory: <cwd>/.cdp-tools/ if valid, else falls back to global
- * - Temp: system temp directory for ephemeral data
+ * All data defaults to working directory (<cwd>/.cdp-tools/).
+ * Use global: true to save to ~/.cdp-tools/ instead.
+ * If cwd is invalid (e.g., "/"), falls back to global automatically.
  */
 
 import { join } from 'path';
 import { homedir, tmpdir } from 'os';
 import { existsSync, accessSync, constants } from 'fs';
+import { z } from 'zod';
 
 const OUTPUT_DIR = '.cdp-tools';
+
+const pathOptionsSchema = z.object({
+  global: z.boolean().optional(),
+}).strict();
 
 interface PathConfig {
   globalBase: string;
@@ -58,27 +61,40 @@ export function initializePaths(): PathConfig {
 }
 
 /**
- * Get path for user-global data (servers.json, sequences).
- * Always uses home directory or CDP_TOOLS_DIR override.
- *
- * @param segments - Path segments to join (e.g., 'servers.json')
- * @returns Full path like ~/.cdp-tools/servers.json
- */
-export function getGlobalPath(...segments: string[]): string {
-  if (!pathConfig) initializePaths();
-  return join(pathConfig!.globalBase, ...segments);
-}
-
-/**
- * Get path for working-directory-specific data (logs, screenshots, downloads).
- * Uses cwd/.cdp-tools if cwd is valid, otherwise falls back to global.
+ * Get path for cdp-tools data.
+ * Defaults to working directory, use global: true for ~/.cdp-tools/
  *
  * @param segments - Path segments to join (e.g., 'logs', 'debug.log')
- * @returns Full path like /project/.cdp-tools/logs/debug.log or ~/.cdp-tools/logs/debug.log
+ * @param options - { global: true } to use ~/.cdp-tools/ instead of cwd
+ * @returns Full path like /project/.cdp-tools/logs/debug.log
  */
-export function getWorkingDirPath(...segments: string[]): string {
+export function getOutputPath(
+  ...args: [...string[]] | [...string[], z.infer<typeof pathOptionsSchema>]
+): string {
   if (!pathConfig) initializePaths();
-  const base = pathConfig!.workingDirBase ?? pathConfig!.globalBase;
+
+  // Parse arguments - last arg might be options object
+  let segments: string[];
+  let global = false;
+
+  const lastArg = args[args.length - 1];
+  if (lastArg && typeof lastArg === 'object' && !Array.isArray(lastArg)) {
+    // Validate options with Zod - throws on invalid/unknown properties
+    const options = pathOptionsSchema.parse(lastArg);
+    segments = args.slice(0, -1) as string[];
+    global = options.global ?? false;
+  } else {
+    segments = args as string[];
+  }
+
+  // Determine base path
+  let base: string;
+  if (global) {
+    base = pathConfig!.globalBase;
+  } else {
+    base = pathConfig!.workingDirBase ?? pathConfig!.globalBase;
+  }
+
   return join(base, ...segments);
 }
 
@@ -104,13 +120,21 @@ export function getConfigPath(): string {
 }
 
 /**
- * Get path for saving new config (always global for new configs).
+ * Get path for saving new config.
  *
- * @returns Path to global config.json
+ * @param options - { global: true } to save to ~/.cdp-tools/ (default: working directory)
+ * @returns Path to config.json
  */
-export function getConfigSavePath(): string {
+export function getConfigSavePath(options?: { global?: boolean }): string {
   if (!pathConfig) initializePaths();
-  return join(pathConfig!.globalBase, 'config.json');
+  const global = options?.global ?? false;
+
+  if (global) {
+    return join(pathConfig!.globalBase, 'config.json');
+  }
+
+  const base = pathConfig!.workingDirBase ?? pathConfig!.globalBase;
+  return join(base, 'config.json');
 }
 
 /**
@@ -134,7 +158,15 @@ export function hasWorkingDirStorage(): boolean {
 }
 
 // Deprecated aliases for backwards compatibility
-/** @deprecated Use getWorkingDirPath() */
-export const getOutputPath = getWorkingDirPath;
-/** @deprecated Use getGlobalPath() */
+/** @deprecated Use getOutputPath() */
+export function getWorkingDirPath(...segments: string[]): string {
+  return getOutputPath(...segments);
+}
+
+/** @deprecated Use getOutputPath(...segments, { global: true }) */
+export function getGlobalPath(...segments: string[]): string {
+  return getOutputPath(...segments, { global: true });
+}
+
+/** @deprecated Use getOutputPath() */
 export const getHomeOutputPath = getGlobalPath;

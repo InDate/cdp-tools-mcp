@@ -10,7 +10,7 @@ import { NetworkMonitor, StoredNetworkRequest } from '../network-monitor.js';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
 import type { Page } from 'puppeteer-core';
-import { getHomeOutputPath } from '../helpers/paths.js';
+import { getOutputPath } from '../helpers/paths.js';
 import type { ToolResponseMeta, NetworkToolMeta } from '../tool-response.js';
 
 // Consolidated network tool schema
@@ -156,7 +156,7 @@ export function createNetworkTools(
 
             if (includeBody && request.response?.body) {
               // Save body to disk and return path instead of inline body
-              const networkBodiesDir = getHomeOutputPath('network-bodies');
+              const networkBodiesDir = getOutputPath('network-bodies');
               await fs.mkdir(networkBodiesDir, { recursive: true });
 
               // Create filename based on request ID and sanitized URL

@@ -9,7 +9,7 @@ import { promises as fs } from 'fs';
 import { join } from 'path';
 import { debugLog, isHistoryLogEnabled, logToHistoryFile } from './debug-logger.js';
 import { sanitizeReference } from './reference-validator.js';
-import { getWorkingDirPath, getGlobalPath } from './helpers/paths.js';
+import { getOutputPath } from './helpers/paths.js';
 
 export interface RecordedCommand {
   tool: string;
@@ -53,14 +53,14 @@ export class CommandRecorder {
   private historyViewedWhilePaused: boolean = false;
 
   constructor() {
-    this.sequencesDir = getWorkingDirPath('sequences');
+    this.sequencesDir = getOutputPath('sequences');
   }
 
   /**
    * Get the sequences directory for a specific scope
    */
   getSequencesDir(global: boolean = false): string {
-    return global ? getGlobalPath('sequences') : getWorkingDirPath('sequences');
+    return getOutputPath('sequences', { global });
   }
 
   /**

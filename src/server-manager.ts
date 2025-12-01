@@ -10,7 +10,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as net from 'net';
 import { debugLog } from './debug-logger.js';
-import { getGlobalPath } from './helpers/paths.js';
+import { getOutputPath } from './helpers/paths.js';
 import { configManager } from './config.js';
 import {
   type Runner,
@@ -412,7 +412,7 @@ export class ServerManager {
   }
 
   private getServersFilePath(): string {
-    return getGlobalPath('servers.json');
+    return getOutputPath('servers.json');
   }
 
   /**

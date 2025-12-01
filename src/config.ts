@@ -5,7 +5,7 @@
 
 import * as fs from 'fs';
 import { dirname } from 'path';
-import { getConfigPath, getConfigSavePath, getWorkingDirPath } from './helpers/paths.js';
+import { getConfigPath, getConfigSavePath, getOutputPath } from './helpers/paths.js';
 import { debugLog } from './debug-logger.js';
 
 /**
@@ -170,7 +170,7 @@ export class ConfigManager {
    */
   private getPreferredConfigPath(): string {
     try {
-      const wdConfigPath = getWorkingDirPath('config.json');
+      const wdConfigPath = getOutputPath('config.json');
       const wdBase = dirname(wdConfigPath);
 
       // If .cdp-tools dir exists in working directory, use it
