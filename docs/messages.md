@@ -2242,3 +2242,96 @@ Cannot acknowledge port {{port}}. Either the port is not being monitored, or it 
 Use `server({ action: 'listMonitored' })` to check the current status of monitored ports.
 
 ---
+
+## Config Messages
+
+## CONFIG_STATUS
+
+**Type:** info
+**Summary:** Config status
+
+**Loaded from:** {{loadedFrom}}
+**Location:** {{location}}
+
+| Path | Exists |
+|------|--------|
+| Local: {{localPath}} | {{localExists}} |
+| Global: {{globalPath}} | {{globalExists}} |
+
+---
+
+## CONFIG_USE_LOCAL_SUCCESS
+
+**Type:** success
+**Summary:** Switched to local config
+
+Now using local config at {{path}}.{{#seeded}}
+
+Config was seeded from global settings.{{/seeded}}
+
+---
+
+## CONFIG_USE_GLOBAL_SUCCESS
+
+**Type:** success
+**Summary:** Switched to global config
+
+Now using global config at {{path}}.
+
+---
+
+## CONFIG_RESET_SUCCESS
+
+**Type:** success
+**Summary:** Config reset to defaults
+
+Configuration has been reset to defaults and saved.
+
+---
+
+## CONFIG_BACKUP_SUCCESS
+
+**Type:** success
+**Summary:** Config backed up
+
+Backup created at {{path}}.
+
+---
+
+## CONFIG_BACKUP_FAILED
+
+**Type:** error
+**Code:** BACKUP_FAILED
+
+No config file to backup. Load a config first.
+
+---
+
+## CONFIG_CLONE_SUCCESS
+
+**Type:** success
+**Summary:** Cloned global config to local
+
+Created local config at {{path}} from global settings.
+
+---
+
+## CONFIG_CLONE_NO_GLOBAL
+
+**Type:** error
+**Code:** NO_GLOBAL_CONFIG
+
+No global config exists to clone from.
+
+---
+
+## CONFIG_SHOW
+
+**Type:** info
+**Summary:** Current configuration
+
+```json
+{{config}}
+```
+
+---

@@ -4,8 +4,9 @@
  */
 
 import * as fs from 'fs';
-import { dirname } from 'path';
-import { getConfigPath, getConfigSavePath, getOutputPath } from './helpers/paths.js';
+import { dirname, join } from 'path';
+import { homedir } from 'os';
+import { getConfigSavePath, getOutputPath } from './helpers/paths.js';
 import { debugLog } from './debug-logger.js';
 
 /**
@@ -99,6 +100,7 @@ export interface DebugConfig {
  */
 export interface CdpToolsConfig {
   version: number;
+  configLocation: 'local' | 'global';  // Where to load config from on startup
   chrome: ChromeConfig;
   portMonitoring: PortMonitoringConfig;
   replay: ReplayConfig;
@@ -112,6 +114,7 @@ export interface CdpToolsConfig {
  */
 const DEFAULT_CONFIG: CdpToolsConfig = {
   version: 1,
+  configLocation: 'local',
   chrome: {
     startingDebugPort: 9222,
     inactivityTimeoutMinutes: 5,
@@ -189,30 +192,59 @@ export class ConfigManager {
 
   /**
    * Load configuration from disk
-   * Checks cwd/.cdp-tools/config.json first (for backwards compatibility),
-   * then falls back to ~/.cdp-tools/config.json
+   * Checks local config first for configLocation preference.
+   * If configLocation is 'global', uses global config.
+   * Otherwise creates/uses local config (seeding from global if available).
    */
   async load(): Promise<void> {
-    const configPath = getConfigPath();
+    const localConfigPath = getOutputPath('config.json');
+    const globalConfigPath = join(homedir(), '.cdp-tools', 'config.json');
 
     try {
-      if (fs.existsSync(configPath)) {
-        const content = await fs.promises.readFile(configPath, 'utf-8');
+      // Check if local config exists and has configLocation preference
+      if (fs.existsSync(localConfigPath)) {
+        const content = await fs.promises.readFile(localConfigPath, 'utf-8');
         const loaded = JSON.parse(content);
 
-        // Deep merge with defaults
-        this.config = this.mergeConfig(DEFAULT_CONFIG, loaded);
-        this.loadedFromPath = configPath;
-        await debugLog('ConfigManager', `Loaded config from ${configPath}`);
+        // If local config says to use global, switch to global
+        if (loaded.configLocation === 'global' && fs.existsSync(globalConfigPath)) {
+          const globalContent = await fs.promises.readFile(globalConfigPath, 'utf-8');
+          const globalLoaded = JSON.parse(globalContent);
+          this.config = this.mergeConfig(DEFAULT_CONFIG, globalLoaded);
+          this.loadedFromPath = globalConfigPath;
+          await debugLog('ConfigManager', `Using global config (per local configLocation setting)`);
 
-        // Save back to the same location to ensure any new default settings are written
+          // Clean up local config to just have the pointer
+          await fs.promises.writeFile(
+            localConfigPath,
+            JSON.stringify({ configLocation: 'global' }, null, 2),
+            'utf-8'
+          );
+
+          await this.save();
+          return;
+        }
+
+        // Use local config
+        this.config = this.mergeConfig(DEFAULT_CONFIG, loaded);
+        this.loadedFromPath = localConfigPath;
+        await debugLog('ConfigManager', `Loaded config from ${localConfigPath}`);
         await this.save();
       } else {
-        // Create default config file - prefer working directory if possible
-        this.config = { ...DEFAULT_CONFIG };
+        // No local config - create one
+        // Seed from global if it exists, otherwise use defaults
+        if (fs.existsSync(globalConfigPath)) {
+          const content = await fs.promises.readFile(globalConfigPath, 'utf-8');
+          const loaded = JSON.parse(content);
+          this.config = this.mergeConfig(DEFAULT_CONFIG, loaded);
+          await debugLog('ConfigManager', `Seeding local config from global ${globalConfigPath}`);
+        } else {
+          this.config = { ...DEFAULT_CONFIG };
+        }
+        // Save to local (getPreferredConfigPath will fall back to global if local not writable)
         this.loadedFromPath = this.getPreferredConfigPath();
         await this.save();
-        await debugLog('ConfigManager', `Created default config at ${this.loadedFromPath}`);
+        await debugLog('ConfigManager', `Created config at ${this.loadedFromPath}`);
       }
     } catch (err) {
       await debugLog('ConfigManager', `Failed to load config: ${err}, using defaults`);
@@ -229,6 +261,7 @@ export class ConfigManager {
   private mergeConfig(defaults: CdpToolsConfig, loaded: Partial<CdpToolsConfig>): CdpToolsConfig {
     return {
       version: loaded.version ?? defaults.version,
+      configLocation: loaded.configLocation ?? defaults.configLocation,
       chrome: {
         startingDebugPort: loaded.chrome?.startingDebugPort ?? defaults.chrome.startingDebugPort,
         inactivityTimeoutMinutes: loaded.chrome?.inactivityTimeoutMinutes ?? defaults.chrome.inactivityTimeoutMinutes,
@@ -373,6 +406,148 @@ export class ConfigManager {
    */
   setCurrentPort(port: number): void {
     this.currentPort = port;
+  }
+
+  // Config management methods
+
+  /**
+   * Get info about current config location and status
+   */
+  getStatus(): {
+    loadedFrom: string | null;
+    isLocal: boolean;
+    localPath: string;
+    globalPath: string;
+    localExists: boolean;
+    globalExists: boolean;
+  } {
+    const localPath = getOutputPath('config.json');
+    const globalPath = join(homedir(), '.cdp-tools', 'config.json');
+    return {
+      loadedFrom: this.loadedFromPath,
+      isLocal: this.loadedFromPath === localPath,
+      localPath,
+      globalPath,
+      localExists: fs.existsSync(localPath),
+      globalExists: fs.existsSync(globalPath),
+    };
+  }
+
+  /**
+   * Switch to using local config (creates if needed, optionally seeds from global)
+   */
+  async useLocal(seedFromGlobal: boolean = true): Promise<{ path: string; seeded: boolean }> {
+    const localPath = getOutputPath('config.json');
+    const globalPath = join(homedir(), '.cdp-tools', 'config.json');
+    const localDir = dirname(localPath);
+
+    // Create directory if needed
+    if (!fs.existsSync(localDir)) {
+      await fs.promises.mkdir(localDir, { recursive: true });
+    }
+
+    let seeded = false;
+    if (!fs.existsSync(localPath) && seedFromGlobal && fs.existsSync(globalPath)) {
+      // Seed from global
+      const content = await fs.promises.readFile(globalPath, 'utf-8');
+      const loaded = JSON.parse(content);
+      this.config = this.mergeConfig(DEFAULT_CONFIG, loaded);
+      seeded = true;
+    }
+
+    // Set configLocation to local explicitly
+    this.config.configLocation = 'local';
+    this.loadedFromPath = localPath;
+    await this.save();
+    return { path: localPath, seeded };
+  }
+
+  /**
+   * Switch to using global config
+   * Writes a minimal local config with just configLocation: 'global'
+   */
+  async useGlobal(): Promise<{ path: string }> {
+    const localPath = getOutputPath('config.json');
+    const globalPath = join(homedir(), '.cdp-tools', 'config.json');
+    const localDir = dirname(localPath);
+    const globalDir = dirname(globalPath);
+
+    // Ensure directories exist
+    if (!fs.existsSync(localDir)) {
+      await fs.promises.mkdir(localDir, { recursive: true });
+    }
+    if (!fs.existsSync(globalDir)) {
+      await fs.promises.mkdir(globalDir, { recursive: true });
+    }
+
+    // Write minimal local config with just the preference
+    const minimalConfig = { configLocation: 'global' as const };
+    await fs.promises.writeFile(
+      localPath,
+      JSON.stringify(minimalConfig, null, 2),
+      'utf-8'
+    );
+
+    // Load and use global config
+    if (fs.existsSync(globalPath)) {
+      const content = await fs.promises.readFile(globalPath, 'utf-8');
+      const loaded = JSON.parse(content);
+      this.config = this.mergeConfig(DEFAULT_CONFIG, loaded);
+    } else {
+      this.config = { ...DEFAULT_CONFIG };
+    }
+
+    this.loadedFromPath = globalPath;
+    await this.save();
+    return { path: globalPath };
+  }
+
+  /**
+   * Reset config to defaults
+   */
+  async reset(): Promise<void> {
+    this.config = { ...DEFAULT_CONFIG };
+    await this.save();
+  }
+
+  /**
+   * Create a backup of current config
+   */
+  async backup(): Promise<{ path: string } | null> {
+    if (!this.loadedFromPath || !fs.existsSync(this.loadedFromPath)) {
+      return null;
+    }
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupPath = this.loadedFromPath.replace('.json', `.backup-${timestamp}.json`);
+    await fs.promises.copyFile(this.loadedFromPath, backupPath);
+    return { path: backupPath };
+  }
+
+  /**
+   * Clone global config to local
+   */
+  async cloneFromGlobal(): Promise<{ path: string } | { error: string }> {
+    const globalPath = join(homedir(), '.cdp-tools', 'config.json');
+
+    if (!fs.existsSync(globalPath)) {
+      return { error: 'No global config exists to clone from' };
+    }
+
+    const content = await fs.promises.readFile(globalPath, 'utf-8');
+    const loaded = JSON.parse(content);
+    this.config = this.mergeConfig(DEFAULT_CONFIG, loaded);
+
+    const localPath = getOutputPath('config.json');
+    const localDir = dirname(localPath);
+
+    if (!fs.existsSync(localDir)) {
+      await fs.promises.mkdir(localDir, { recursive: true });
+    }
+
+    this.loadedFromPath = localPath;
+    await this.save();
+    return { path: localPath };
   }
 }
 

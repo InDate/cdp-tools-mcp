@@ -48,6 +48,7 @@ import { createDownloadTools } from './tools/download-tools.js';
 import { createModalTools } from './tools/modal-tools.js';
 import { createReplayTools } from './tools/replay-tools.js';
 import { createServerTools } from './tools/server-tools.js';
+import { createConfigTools } from './tools/config-tools.js';
 import { ServerManager } from './server-manager.js';
 import { configManager } from './config.js';
 import { checkPortFailures, prependToResponse, appendToResponse, buildStatusSuffix, type StatusLineItem } from './tool-response.js';
@@ -1083,6 +1084,8 @@ const allTools = {
   ...createReplayTools(commandRecorder, executeToolCall),
   // Server management tools
   ...createServerTools(serverManager),
+  // Config management tools
+  ...createConfigTools(),
 };
 
 /**
