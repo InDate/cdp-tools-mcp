@@ -5,6 +5,14 @@
 
 > Enable AI assistants like Claude to debug your JavaScript/TypeScript applications in real-time using Chrome DevTools Protocol
 
+**Context:** We have limited Context Window and overly optimistic LLM's. Exposing the full callstack is not possible and reading all the code at once is impossible. So I wanted a tool that can help LLMS be smarter without burning through tokens with no results.  
+
+**The problem:** Static code analysis catches some complex runtime bugs, but can't observe the actual execution flow and state changes. We need to see what's actually happening—variable values, network responses, console errors—when code runs. And when bugs are found, reliably reproducing those actions with conditions e.g. sign in first, before attempting the problematic action. This isn't possible without writing Puppeteer tests, having massive zips after recording everything, or arguing with AI about which button to click. And then once changes are made, LLM's love to randomly kill processes and clear cache after cache because it can't believe it didn't fix the issue the first time. I wanted a better solution. 
+
+**This tool is for:** Developers building web applications who want AI to debug from runtime behavior, not just read code. Recreate a click sequence once the LLM has found the issue, then have it replay exactly the same way every time afterwards. This doesn't use tokens and gets to the bug, every time. No more guessing, no more token waste.
+
+**This tool is NOT for:** Users unfamiliar with breakpoints, logpoints, browser DevTools, or basic debugging concepts. You need to understand what you're asking the AI to do.
+
 ```bash
 claude mcp add --transport stdio cdp-tools npx cdp-tools-mcp@latest
 ```
@@ -18,8 +26,7 @@ An MCP (Model Context Protocol) server that gives AI assistants the ability to:
 - 🌐 **Automate browser interactions** with smart element discovery
 - 🔄 **Debug both Chrome and Node.js** applications simultaneously
 - 🤖 **Multi-agent support**: Nested Claude agents can each manage their own browser tabs
-
-**Perfect for:** Debugging complex issues with AI assistance, automated testing, runtime code analysis, and understanding unfamiliar codebases.
+- 🎯 **Targeted Server Management**: MCP that monitors ports and manages server processes automatically. If something fails, all tools are blocked until the LLM fixes the issue. 
 
 ## Quick Start
 
@@ -147,6 +154,8 @@ MIT
 ## What's New
 
 ### Latest
+- **Config Management**: New `config` tool to manage settings - switch between local/global config, backup, reset, and view current configuration
+- **Cross-Directory Server Access**: Use `global: true` flag to access servers started from a different working directory
 - **DOM/Event/XHR Breakpoints**: Pause on DOM mutations (`setDOMBreakpoint`), event dispatches (`setEventBreakpoint`), or network requests (`setXHRBreakpoint`) using CDP's DOMDebugger domain
 - **Replay Repeat Action**: Instantly re-execute commands from history with `replay({ action: 'repeat', indices: [0, 1, 2] })` - each tool response now shows its history index for easy repetition
 - **UI Verification**: Detect dead buttons, broken links, small touch targets, and overflow issues with CDP-based verification - no heuristics, just facts

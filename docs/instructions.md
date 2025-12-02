@@ -144,7 +144,18 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 **Storage**: `getCookies`, `setCookie`, `getLocalStorage`, `setLocalStorage`, `clearStorage`
 
 **Server**: `server` (actions: start, stop, restart, list, logs, stopAll, setAutoRun, clearLogs, remove, monitorPort, unmonitorPort, listMonitored, acknowledgePort)
+- Use `global: true` to access servers started from a different working directory
 
 **Replay**: `replay` (actions: repeat, history, create, list, get, delete, save, load, listSaved, deleteSaved, run, step, finish, insert, status, cancel)
 - `repeat`: Instantly re-execute commands by history index - `replay({ action: 'repeat', indices: [0, 1, 2] })`
 - Each tool response shows its history index in the "Repeat" hint for easy repetition
+- Use `global: true` with `save` action to save to ~/.cdp-tools/sequences/ instead of working directory
+
+**Config**: `config` (actions: status, useLocal, useGlobal, reset, backup, cloneFromGlobal, show)
+- `status`: Show where config is loaded from (local vs global)
+- `useLocal`: Switch to project-local config (.cdp-tools/config.json)
+- `useGlobal`: Switch to global config (~/.cdp-tools/config.json)
+- `reset`: Reset config to defaults
+- `backup`: Create timestamped backup
+- `cloneFromGlobal`: Copy global config to local project
+- `show`: Display current configuration

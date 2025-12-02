@@ -53,9 +53,13 @@ replay({ action: 'delete', sequenceId: 'seq-1234567890' })
 ## Saving and Loading
 
 ```javascript
-// Save sequence to disk
+// Save sequence to disk (working directory)
 replay({ action: 'save', sequenceId: 'seq-1234567890' })
 // Saves to: .cdp-tools/sequences/<name>-<id>.json
+
+// Save to global location (accessible from any directory)
+replay({ action: 'save', sequenceId: 'seq-1234567890', global: true })
+// Saves to: ~/.cdp-tools/sequences/<name>-<id>.json
 
 // List saved sequences on disk
 replay({ action: 'listSaved' })

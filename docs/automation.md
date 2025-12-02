@@ -487,6 +487,51 @@ server({
 })
 ```
 
+### Cross-Directory Access
+
+When running MCP from a different directory than where the server was started:
+
+```javascript
+// Access servers using global state
+server({ action: 'list', global: true })
+server({ action: 'logs', serverId: 'my-app', global: true })
+server({ action: 'stop', serverId: 'my-app', global: true })
+```
+
+## Configuration Management
+
+Manage cdp-tools configuration across projects:
+
+```javascript
+// Check where config is loaded from
+config({ action: 'status' })
+
+// View current configuration
+config({ action: 'show' })
+
+// Switch to project-local config
+config({ action: 'useLocal' })
+
+// Switch to global config (~/.cdp-tools/config.json)
+config({ action: 'useGlobal' })
+
+// Reset config to defaults
+config({ action: 'reset' })
+
+// Create a timestamped backup
+config({ action: 'backup' })
+
+// Copy global config to local project
+config({ action: 'cloneFromGlobal' })
+```
+
+### Configuration Locations
+
+- **Local**: `.cdp-tools/config.json` in the working directory
+- **Global**: `~/.cdp-tools/config.json` in your home directory
+
+When a local config doesn't exist, it's automatically seeded from global settings. The `configLocation` setting persists your preference.
+
 ## Performance Investigation Pattern
 
 1. **Enable network monitoring**
