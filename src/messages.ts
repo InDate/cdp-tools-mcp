@@ -177,6 +177,13 @@ class MessageManager {
       content: 'Not connected to debugger',
     });
 
+    this.messages.set('CHROME_NOT_RUNNING', {
+      id: 'CHROME_NOT_RUNNING',
+      type: 'error',
+      code: 'CHROME_NOT_RUNNING',
+      content: '{{message}}',
+    });
+
     this.loaded = true;
   }
 

@@ -504,6 +504,14 @@ export class ServerManager {
 
         if (!success) {
           failed.push(server.id);
+          // Still add to map so it can be manually restarted
+          this.servers.set(server.id, {
+            id: server.id,
+            runner,
+            autoRun: server.autoRun,
+            monitorPort: server.monitorPort,
+            global: server.global,
+          });
         }
       } else {
         // Not running and not autoRun - keep config for manual restart
@@ -655,6 +663,85 @@ export class ServerManager {
 
       socket.connect(port, 'localhost');
     });
+  }
+
+  /**
+   * Find PIDs of processes listening on a port using lsof
+   */
+  private async findProcessesOnPort(port: number): Promise<number[]> {
+    return new Promise((resolve) => {
+      const { exec } = require('child_process');
+      exec(`lsof -ti :${port}`, (error: any, stdout: string) => {
+        if (error || !stdout.trim()) {
+          resolve([]);
+          return;
+        }
+        const pids = stdout.trim().split('\n').map(p => parseInt(p, 10)).filter(p => !isNaN(p) && p > 0);
+        resolve(pids);
+      });
+    });
+  }
+
+  /**
+   * Get the working directory of a process by PID
+   */
+  private async getProcessCwd(pid: number): Promise<string | null> {
+    return new Promise((resolve) => {
+      const { exec } = require('child_process');
+      // Use lsof to get the cwd of the process (works on macOS and Linux)
+      exec(`lsof -p ${pid} | grep cwd | awk '{print $NF}'`, (error: any, stdout: string) => {
+        if (error || !stdout.trim()) {
+          resolve(null);
+          return;
+        }
+        resolve(stdout.trim());
+      });
+    });
+  }
+
+  /**
+   * Kill orphan processes holding a port, but only if they're in the expected directory
+   * Returns: { killed: PIDs killed, foreign: PIDs that are from a different directory }
+   */
+  private async killOrphanProcessesOnPort(port: number, expectedCwd: string, expectedPid?: number): Promise<{ killed: number[]; foreign: number[] }> {
+    const pids = await this.findProcessesOnPort(port);
+    const killed: number[] = [];
+    const foreign: number[] = [];
+
+    for (const pid of pids) {
+      // Skip if this is the expected process
+      if (expectedPid && pid === expectedPid) continue;
+
+      // Check if process is running from the expected directory
+      const processCwd = await this.getProcessCwd(pid);
+
+      if (!processCwd || !processCwd.startsWith(expectedCwd)) {
+        // Process is from a different directory - don't kill it
+        await debugLog('ServerManager', `Process ${pid} on port ${port} is from different directory (${processCwd}), not killing`);
+        foreign.push(pid);
+        continue;
+      }
+
+      try {
+        await debugLog('ServerManager', `Killing orphan process ${pid} on port ${port} (cwd: ${processCwd})`);
+        process.kill(pid, 'SIGTERM');
+        killed.push(pid);
+
+        // Wait briefly then force kill if needed
+        await new Promise(resolve => setTimeout(resolve, 500));
+        try {
+          process.kill(pid, 0); // Check if still alive
+          process.kill(pid, 'SIGKILL');
+          await debugLog('ServerManager', `Force killed orphan process ${pid}`);
+        } catch {
+          // Process already dead
+        }
+      } catch (err) {
+        await debugLog('ServerManager', `Failed to kill process ${pid}: ${err}`);
+      }
+    }
+
+    return { killed, foreign };
   }
 
   private async waitForPortRelease(port: number, maxAttempts: number = 10): Promise<boolean> {
@@ -815,6 +902,7 @@ export class ServerManager {
 
   /**
    * Restart a server
+   * Reloads config from persisted state to pick up any manual edits (e.g., port changes)
    */
   async restartServer(serverId: string): Promise<{ id: string; pid: number; runnerType: RunnerType; containerId?: string }> {
     const managed = this.servers.get(serverId);
@@ -822,20 +910,57 @@ export class ServerManager {
       throw new Error(`Server "${serverId}" not found.`);
     }
 
-    const status = await managed.runner.getStatus();
-    const command = this.getRunnerCommand(managed.runner);
-    const cwd = this.getRunnerCwd(managed.runner);
-    const { autoRun, monitorPort } = managed;
+    // Reload config from persisted state to pick up any manual edits
+    const persistedConfig = await this.reloadServerConfig(serverId);
+
+    // Use persisted config values if available, otherwise fall back to in-memory
+    const command = persistedConfig?.command ?? this.getRunnerCommand(managed.runner);
+    const cwd = persistedConfig?.cwd ?? this.getRunnerCwd(managed.runner);
+    const port = persistedConfig?.port;
+    const autoRun = persistedConfig?.autoRun ?? managed.autoRun;
+    const monitorPort = persistedConfig?.monitorPort ?? managed.monitorPort;
+    const runnerType = persistedConfig?.type ?? managed.runner.type;
+
+    // Get current status for the old port (to clean up if different from new port)
+    const currentStatus = await managed.runner.getStatus();
+    const oldPort = currentStatus.port;
 
     await this.stopServer(serverId);
 
-    if (status.port) {
-      const released = await this.waitForPortRelease(status.port);
+    // Wait for old port to be released (if server was running)
+    if (oldPort) {
+      let released = await this.waitForPortRelease(oldPort, 3);
+
       if (!released) {
-        throw new Error(`Port ${status.port} is still in use after stopping server.`);
+        // Kill any orphan processes holding the port, but only if they're from the same directory
+        const { killed, foreign } = await this.killOrphanProcessesOnPort(oldPort, cwd, currentStatus.pid);
+
+        if (foreign.length > 0 && oldPort === port) {
+          // Foreign process on the port we want to use - error
+          throw new Error(`Port ${oldPort} is in use by another application (PID: ${foreign.join(', ')}). Stop that process first or use a different port.`);
+        }
+
+        if (killed.length > 0) {
+          await debugLog('ServerManager', `Killed ${killed.length} orphan process(es) on port ${oldPort}: ${killed.join(', ')}`);
+          released = await this.waitForPortRelease(oldPort, 5);
+        }
+      }
+
+      // Only error if we couldn't release the port AND it's the same port we want to use
+      if (!released && oldPort === port) {
+        throw new Error(`Port ${oldPort} is still in use after stopping server.`);
       }
     } else {
       await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
+    // Check if new port (from config) is available
+    if (port && port !== oldPort) {
+      const newPortInUse = await this.isPortInUse(port);
+      if (newPortInUse) {
+        const pids = await this.findProcessesOnPort(port);
+        throw new Error(`Port ${port} is already in use (PID: ${pids.join(', ')}). Choose a different port.`);
+      }
     }
 
     return await this.startServer({
@@ -843,7 +968,7 @@ export class ServerManager {
       cwd,
       id: serverId,
       autoRun,
-      runner: managed.runner.type,
+      runner: runnerType,
       monitorPort,
     });
   }
@@ -1010,22 +1135,27 @@ export class ServerManager {
   }
 
   /**
-   * Cleanup dead servers
+   * Cleanup - refresh status of all servers (no longer removes stopped servers)
+   * Stopped servers remain in config and can be manually restarted
    */
   async cleanup(): Promise<number> {
-    let cleaned = 0;
+    // Just refresh status, don't remove anything
+    // Servers are only removed via the explicit 'remove' action
+    return 0;
+  }
 
-    for (const [id, managed] of this.servers) {
-      const isRunning = await managed.runner.isRunning();
-      if (!isRunning && !managed.autoRun) {
-        this.servers.delete(id);
-        cleaned++;
-      }
-    }
+  /**
+   * Reload a server's config from persisted state (for picking up manual edits)
+   */
+  private async reloadServerConfig(serverId: string): Promise<PersistedRunnerState | null> {
+    const localPersisted = await this.loadState(false);
+    const globalPersisted = await this.loadState(true);
 
-    if (cleaned > 0) {
-      await this.saveState();
-    }
-    return cleaned;
+    const allServers = [
+      ...localPersisted.servers.map(s => ({ ...s, global: false })),
+      ...globalPersisted.servers.map(s => ({ ...s, global: true })),
+    ];
+
+    return allServers.find(s => s.id === serverId) || null;
   }
 }

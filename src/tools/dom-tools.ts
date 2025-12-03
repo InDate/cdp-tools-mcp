@@ -9,7 +9,6 @@ import type { ConnectionManager } from '../connection-manager.js';
 import { executeWithPauseDetection, formatActionResult } from '../debugger-aware-wrapper.js';
 import { checkBrowserAutomation } from '../error-helpers.js';
 import { createTool } from '../validation-helpers.js';
-import { configManager } from '../config.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
 import { resolveSelector, isExtendedSelector, cleanupResolvedSelector } from '../utils/selector-resolver.js';
 
@@ -56,7 +55,7 @@ export function createDOMTools(
         const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
         const targetCdpManager = resolved.cdpManager;
 
-        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, `dom.${action}`, configManager.getCurrentPort());
+        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, `dom.${action}`, resolved.connection.port);
         if (error) {
           return error;
         }

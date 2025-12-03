@@ -298,14 +298,14 @@ export class NativeRunner implements Runner {
   }
 
   async detectPort(): Promise<number | null> {
-    if (this.port) return this.port;
-
-    // Check logs for port
+    // Always scan logs for the latest port (in case server picked a different port on restart)
     for (const logPath of [this.getStdoutLogPath(), this.getStderrLogPath()]) {
       try {
         if (fs.existsSync(logPath)) {
           const content = await fs.promises.readFile(logPath, 'utf-8');
-          for (const line of content.split('\n')) {
+          // Scan from the end to find the most recent port
+          const lines = content.split('\n').reverse();
+          for (const line of lines) {
             const port = this.detectPortFromLine(line);
             if (port) {
               this.port = port;
@@ -318,7 +318,7 @@ export class NativeRunner implements Runner {
       }
     }
 
-    return null;
+    return this.port;
   }
 
   async cleanup(): Promise<void> {

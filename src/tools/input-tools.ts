@@ -70,7 +70,7 @@ export function createInputTools(
         const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
         const targetCdpManager = resolved.cdpManager;
 
-        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, action, configManager.getCurrentPort());
+        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, action, resolved.connection.port);
         if (error) {
           return error;
         }

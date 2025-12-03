@@ -53,6 +53,7 @@ import { ServerManager } from './server-manager.js';
 import { configManager } from './config.js';
 import { checkPortFailures, prependToResponse, appendToResponse, buildStatusSuffix, type StatusLineItem } from './tool-response.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock, getMessage, getFormattedResponse } from './messages.js';
+import { setChromeLauncher } from './error-helpers.js';
 import { createServer } from 'net';
 import { readFile } from 'fs/promises';
 import { join, dirname } from 'path';
@@ -134,6 +135,9 @@ const serverManager = new ServerManager();
 
 // Configure connection manager to kill Chrome when last connection closes
 connectionManager.setChromeLauncher(chromeLauncher);
+
+// Set ChromeLauncher reference for error-helpers (used to verify Chrome is running)
+setChromeLauncher(chromeLauncher);
 
 // Set up Chrome exit callback to clean up connections and reserve a new port
 chromeLauncher.setOnExitCallback(async (event) => {

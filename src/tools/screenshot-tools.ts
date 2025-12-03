@@ -9,7 +9,6 @@ import type { ConnectionManager } from '../connection-manager.js';
 import { executeWithPauseDetection, formatActionResult } from '../debugger-aware-wrapper.js';
 import { checkBrowserAutomation } from '../error-helpers.js';
 import { createTool } from '../validation-helpers.js';
-import { configManager } from '../config.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
@@ -474,7 +473,7 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
         const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
         const targetCdpManager = resolved.cdpManager;
 
-        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, action, configManager.getCurrentPort(), true);
+        const error = checkBrowserAutomation(targetCdpManager, targetPuppeteerManager, action, resolved.connection.port, true);
         if (error) {
           return error;
         }

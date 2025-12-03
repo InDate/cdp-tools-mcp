@@ -5,7 +5,19 @@
 
 import type { CDPManager } from './cdp-manager.js';
 import type { PuppeteerManager } from './puppeteer-manager.js';
+import type { ChromeLauncher } from './chrome-launcher.js';
 import { createErrorResponse } from './messages.js';
+
+// Module-level reference to ChromeLauncher (set via setChromeLauncher)
+let chromeLauncherRef: ChromeLauncher | null = null;
+
+/**
+ * Set the ChromeLauncher reference for process liveness checks
+ * Called once during initialization from index.ts
+ */
+export function setChromeLauncher(launcher: ChromeLauncher): void {
+  chromeLauncherRef = launcher;
+}
 
 /**
  * Check if browser automation is available and return error if not
@@ -18,6 +30,16 @@ export function checkBrowserAutomation(
   debugPort?: number,
   requirePageLoad?: boolean
 ): { content: Array<{ type: 'text'; text: string }>; isError?: boolean } | null {
+  // First, verify Chrome process is actually running (handles external kills)
+  if (chromeLauncherRef && debugPort !== undefined) {
+    if (!chromeLauncherRef.isRunning(debugPort)) {
+      return createErrorResponse('CHROME_NOT_RUNNING', {
+        port: debugPort,
+        message: `Chrome is not running on port ${debugPort}. Use \`launchChrome\` to start a browser.`
+      });
+    }
+  }
+
   if (!cdpManager.isConnected()) {
     return createErrorResponse('DEBUGGER_NOT_CONNECTED');
   }
