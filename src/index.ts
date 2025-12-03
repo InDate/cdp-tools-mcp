@@ -1360,19 +1360,41 @@ async function main() {
         console.error(`[cdp-tools] Closed ${closedCount} inactive connection(s)`);
         await debugLog('index', `Closed ${closedCount} inactive connection(s)`);
 
-        // If no connections remain and Chrome is running, kill Chrome due to inactivity
+        // If no connections remain and Chrome is running, check for browser activity before killing
         if (!connectionManager.hasConnections() && chromeLauncher.isRunning()) {
-          const runningPorts = chromeLauncher.getRunningPorts();
-          console.error('[cdp-tools] No active connections, killing Chrome due to inactivity...');
-          await debugLog('index', `No active connections remain, killing Chrome on ports: ${runningPorts.join(', ')} due to inactivity`);
+          // Check if there's been recent browser activity (network requests, console messages)
+          // This prevents killing Chrome when user is actively browsing
+          let hasBrowserActivity = false;
 
-          // Set the close reason before killing
-          for (const port of runningPorts) {
-            chromeLauncher.setPendingCloseReason(port, 'inactivity');
-            await debugLog('index', `Set pending close reason 'inactivity' for port ${port}`);
+          // Check all connections for recent activity
+          for (const conn of connectionManager.getAllConnections()) {
+            if (conn.networkMonitor?.hasRecentActivity(INACTIVITY_THRESHOLD)) {
+              hasBrowserActivity = true;
+              await debugLog('index', `Connection ${conn.id} has recent network activity, skipping Chrome kill`);
+              break;
+            }
+            if (conn.consoleMonitor?.hasRecentActivity(INACTIVITY_THRESHOLD)) {
+              hasBrowserActivity = true;
+              await debugLog('index', `Connection ${conn.id} has recent console activity, skipping Chrome kill`);
+              break;
+            }
           }
-          await chromeLauncher.kill();
-          await debugLog('index', `Chrome killed due to inactivity`);
+
+          if (hasBrowserActivity) {
+            await debugLog('index', `Browser has recent activity, not killing Chrome`);
+          } else {
+            const runningPorts = chromeLauncher.getRunningPorts();
+            console.error('[cdp-tools] No active connections or browser activity, killing Chrome due to inactivity...');
+            await debugLog('index', `No active connections or browser activity, killing Chrome on ports: ${runningPorts.join(', ')} due to inactivity`);
+
+            // Set the close reason before killing
+            for (const port of runningPorts) {
+              chromeLauncher.setPendingCloseReason(port, 'inactivity');
+              await debugLog('index', `Set pending close reason 'inactivity' for port ${port}`);
+            }
+            await chromeLauncher.kill();
+            await debugLog('index', `Chrome killed due to inactivity`);
+          }
         }
       }
     } catch (error) {

@@ -123,6 +123,13 @@ export class ConnectionManager {
   }
 
   /**
+   * Get all connections
+   */
+  getAllConnections(): Connection[] {
+    return Array.from(this.connections.values());
+  }
+
+  /**
    * Update tab reference for a connection
    */
   updateReference(connectionId: string, reference: string): boolean {

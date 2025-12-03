@@ -35,6 +35,7 @@ export class NetworkMonitor {
   private requestIdCounter = 0;
   private maxRequests = 1000;
   private isMonitoring = false;
+  private lastActivityTime: number = Date.now();
 
   /**
    * Start monitoring network requests on a page
@@ -76,6 +77,7 @@ export class NetworkMonitor {
    */
   private onRequest(request: HTTPRequest): void {
     const id = `network-${this.requestIdCounter++}`;
+    this.lastActivityTime = Date.now();
 
     const storedRequest: StoredNetworkRequest = {
       id,
@@ -227,5 +229,20 @@ export class NetworkMonitor {
    */
   isActive(): boolean {
     return this.isMonitoring;
+  }
+
+  /**
+   * Get the timestamp of the last network activity
+   */
+  getLastActivityTime(): number {
+    return this.lastActivityTime;
+  }
+
+  /**
+   * Check if there has been network activity within the specified duration
+   * @param withinMs - Duration in milliseconds to check for activity
+   */
+  hasRecentActivity(withinMs: number): boolean {
+    return Date.now() - this.lastActivityTime < withinMs;
   }
 }

@@ -44,6 +44,7 @@ export class ConsoleMonitor {
   private valueExpander: ValueExpander | null = null;
   private consoleObjectDepth: number = 2; // Default depth for console object expansion
   private lastSeenCount = 0; // Cursor for tracking new messages since last check
+  private lastActivityTime: number = Date.now();
 
   /**
    * Set a function to expand object values using Runtime.getProperties
@@ -114,6 +115,7 @@ export class ConsoleMonitor {
     };
 
     this.messages.push(storedMessage);
+    this.lastActivityTime = Date.now();
 
     // Keep only last N messages
     if (this.messages.length > this.maxMessages) {
@@ -210,6 +212,7 @@ export class ConsoleMonitor {
     };
 
     this.messages.push(storedMessage);
+    this.lastActivityTime = Date.now();
 
     // Keep only last N messages
     if (this.messages.length > this.maxMessages) {
@@ -382,6 +385,7 @@ export class ConsoleMonitor {
     };
 
     this.messages.push(storedMessage);
+    this.lastActivityTime = Date.now();
 
     // Keep only last N messages
     if (this.messages.length > this.maxMessages) {
@@ -524,5 +528,20 @@ export class ConsoleMonitor {
     if (index !== -1) {
       this.messageCallbacks.splice(index, 1);
     }
+  }
+
+  /**
+   * Get the timestamp of the last console activity
+   */
+  getLastActivityTime(): number {
+    return this.lastActivityTime;
+  }
+
+  /**
+   * Check if there has been console activity within the specified duration
+   * @param withinMs - Duration in milliseconds to check for activity
+   */
+  hasRecentActivity(withinMs: number): boolean {
+    return Date.now() - this.lastActivityTime < withinMs;
   }
 }
