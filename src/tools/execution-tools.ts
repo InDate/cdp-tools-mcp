@@ -6,10 +6,11 @@ import { z } from 'zod';
 import { CDPManager } from '../cdp-manager.js';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
+import type { ConnectionManager } from '../connection-manager.js';
 
 // Consolidated schema with action parameter
 const executionSchema = z.object({
-  action: z.enum(['pause', 'resume', 'stepOver', 'stepInto', 'stepOut']).describe('Execution control action to perform'),
+  action: z.enum(['pause', 'resume', 'stepOver', 'stepInto', 'stepOut', 'acknowledge']).describe('Execution control action to perform'),
   connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 }).strict();
 
@@ -21,24 +22,39 @@ export function createExecutionTools(
     puppeteerManager: any;
     consoleMonitor: any;
     networkMonitor: any;
-  } | null>
+  } | null>,
+  connectionManager?: ConnectionManager
 ) {
   return {
     execution: createTool(
-      'Control execution flow when paused at breakpoints. Actions: pause (pause execution), resume (resume execution), stepOver (step to next line), stepInto (step into function call), stepOut (step out of current function)',
+      'Control execution flow when paused at breakpoints. Actions: pause (pause execution), resume (resume execution), stepOver (step to next line), stepInto (step into function call), stepOut (step out of current function), acknowledge (acknowledge breakpoint pause to allow other tools to run while paused)',
       executionSchema,
       async (args) => {
         const { action, connectionReason } = args;
 
         // Resolve connection if connectionReason is provided
         let targetCdpManager = cdpManager;
+        let resolvedConnection: any = null;
         if (connectionReason && resolveConnectionFromReason) {
           const resolved = await resolveConnectionFromReason(connectionReason);
           if (!resolved) {
             return createErrorResponse('CONNECTION_NOT_FOUND');
           }
           targetCdpManager = resolved.cdpManager;
+          resolvedConnection = resolved.connection;
         }
+
+        // Helper to clear acknowledged flag when execution moves
+        const clearAcknowledgedFlag = () => {
+          if (resolvedConnection) {
+            resolvedConnection.breakpointPauseAcknowledged = false;
+          } else if (connectionManager) {
+            // Clear for all connections when no specific connection is specified
+            for (const conn of connectionManager.getAllConnections()) {
+              conn.breakpointPauseAcknowledged = false;
+            }
+          }
+        };
 
         // Handle each action
         switch (action) {
@@ -64,22 +80,55 @@ export function createExecutionTools(
               });
             }
 
+            // Clear acknowledged flag when resuming (auto-unblock)
+            clearAcknowledgedFlag();
+
             // Normal resume
             await targetCdpManager.resume();
             return createSuccessResponse('EXECUTION_RESUMED');
           }
 
           case 'stepOver':
+            clearAcknowledgedFlag();
             await targetCdpManager.stepOver();
             return createSuccessResponse('EXECUTION_STEP_OVER');
 
           case 'stepInto':
+            clearAcknowledgedFlag();
             await targetCdpManager.stepInto();
             return createSuccessResponse('EXECUTION_STEP_INTO');
 
           case 'stepOut':
+            clearAcknowledgedFlag();
             await targetCdpManager.stepOut();
             return createSuccessResponse('EXECUTION_STEP_OUT');
+
+          case 'acknowledge': {
+            // Acknowledge the breakpoint pause to allow other tools to run
+            if (!targetCdpManager.isPaused()) {
+              return createErrorResponse('NOT_PAUSED');
+            }
+
+            if (resolvedConnection) {
+              resolvedConnection.breakpointPauseAcknowledged = true;
+            } else if (connectionManager) {
+              // Acknowledge all paused connections
+              for (const conn of connectionManager.getAllConnections()) {
+                if (conn.cdpManager.isPaused()) {
+                  conn.breakpointPauseAcknowledged = true;
+                }
+              }
+            }
+
+            const pauseInfo = targetCdpManager.getPausedInfo();
+            const location = pauseInfo.location
+              ? `${pauseInfo.location.url}:${pauseInfo.location.lineNumber}`
+              : 'unknown location';
+
+            return createSuccessResponse('BREAKPOINT_ACKNOWLEDGED', {
+              location,
+            });
+          }
 
           default:
             return createErrorResponse('INVALID_ACTION', { action });

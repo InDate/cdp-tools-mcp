@@ -49,8 +49,12 @@ export class CDPManager {
   }
 
   /**
-   * Find script IDs by URL, with fallback to base URL matching (strips query params)
-   * This allows breakpoints to work across page reloads when cache-busting params change
+   * Find script IDs by URL, with fallback matching strategies:
+   * 1. Exact match
+   * 2. Base URL match (strips query params)
+   * 3. Filename/path suffix match (e.g., "click.js" matches "/controls/click.js")
+   *
+   * This allows breakpoints to work with partial URLs and across page reloads
    * Returns the most recently loaded script (highest scriptId) when multiple matches exist
    */
   private findScriptIds(url: string): { scriptIds: string[]; matchedUrl: string } | null {
@@ -74,6 +78,27 @@ export class CDPManager {
         if (maxId > highestScriptId) {
           highestScriptId = maxId;
           bestMatch = { scriptIds, matchedUrl: loadedUrl };
+        }
+      }
+    }
+
+    if (bestMatch) {
+      return bestMatch;
+    }
+
+    // Third, try filename/path suffix match
+    // This handles cases like "click.js" matching "http://localhost/controls/click.js"
+    // or "controls/click.js" matching "http://localhost/controls/click.js"
+    for (const [loadedUrl, scriptIds] of this.urlToScriptId.entries()) {
+      const loadedBaseUrl = loadedUrl.split('?')[0];
+      // Check if the loaded URL ends with the provided URL (after stripping protocol/host)
+      if (loadedBaseUrl.endsWith('/' + baseUrl) || loadedBaseUrl.endsWith(baseUrl)) {
+        if (scriptIds.length > 0) {
+          const maxId = Math.max(...scriptIds.map(id => parseInt(id, 10) || 0));
+          if (maxId > highestScriptId) {
+            highestScriptId = maxId;
+            bestMatch = { scriptIds, matchedUrl: loadedUrl };
+          }
         }
       }
     }
@@ -1187,11 +1212,12 @@ export class CDPManager {
 
     const { Debugger } = this.client;
 
-    // Find the script IDs for this URL (may be multiple for inline HTML)
-    const scriptIds = this.urlToScriptId.get(url);
-    if (!scriptIds || scriptIds.length === 0) {
+    // Find the script IDs for this URL (with fallback matching for partial URLs)
+    const match = this.findScriptIds(url);
+    if (!match) {
       throw new Error(`Script not found for URL: ${url}. Make sure the script has been loaded/parsed.`);
     }
+    const scriptIds = match.scriptIds;
 
     // If multiple scripts, find the one containing the requested line range
     let scriptId: string;

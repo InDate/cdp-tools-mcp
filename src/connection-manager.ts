@@ -23,6 +23,7 @@ export interface Connection {
   lastActivityAt: number; // Last time this connection was used
   reference?: string; // User-provided tab reference (e.g., "agent1-wikipedia")
   pageIndex?: number; // Index of the page/tab in the browser
+  breakpointPauseAcknowledged?: boolean; // Whether the current breakpoint pause has been acknowledged
 }
 
 // Browser instance tracking (multiple connections can share one browser)

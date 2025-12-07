@@ -51,7 +51,7 @@ import { createServerTools } from './tools/server-tools.js';
 import { createConfigTools } from './tools/config-tools.js';
 import { ServerManager } from './server-manager.js';
 import { configManager } from './config.js';
-import { checkPortFailures, prependToResponse, appendToResponse, buildStatusSuffix, type StatusLineItem } from './tool-response.js';
+import { checkPortFailures, checkBreakpointPause, prependToResponse, appendToResponse, buildStatusSuffix, type StatusLineItem } from './tool-response.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock, getMessage, getFormattedResponse } from './messages.js';
 import { setChromeLauncher } from './error-helpers.js';
 import { createServer } from 'net';
@@ -1069,7 +1069,7 @@ const allTools = {
   ...createTabTools(connectionManager, sourceMapHandler, updateActiveManagers, logpointTracker),
   // CDP Debugging tools
   ...createBreakpointTools(proxyCdpManager, sourceMapHandler, logpointTracker, resolveConnectionFromReason),
-  ...createExecutionTools(proxyCdpManager, resolveConnectionFromReason),
+  ...createExecutionTools(proxyCdpManager, resolveConnectionFromReason, connectionManager),
   ...createInspectionTools(proxyCdpManager, sourceMapHandler, resolveConnectionFromReason),
   ...createSourceTools(proxyCdpManager, sourceMapHandler, resolveConnectionFromReason),
   // Browser Automation tools
@@ -1163,6 +1163,14 @@ function registerToolHandlers(server: Server) {
       return portCheck.response;
     }
 
+    // Check for breakpoint pauses (block tools until acknowledged or resumed)
+    const allConnections = connectionManager.getAllConnections();
+    const breakpointCheck = checkBreakpointPause(allConnections, toolName);
+
+    if (breakpointCheck.blocked) {
+      return breakpointCheck.response;
+    }
+
     // Pass validated data to handler
     try {
       const result = await tool.handler(validation.data);
@@ -1173,6 +1181,11 @@ function registerToolHandlers(server: Server) {
         if (portCheck.markAsError) {
           result.isError = true;
         }
+      }
+
+      // Prepend breakpoint pause prefix if any (for allowed tools when paused)
+      if (breakpointCheck.prefix) {
+        prependToResponse(result, breakpointCheck.prefix);
       }
 
       // Collect status lines to append to response

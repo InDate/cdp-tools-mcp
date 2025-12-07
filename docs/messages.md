@@ -609,6 +609,16 @@ Not currently paused at a breakpoint
 
 ---
 
+## BREAKPOINT_ACKNOWLEDGED
+
+**Type:** success
+
+Breakpoint pause acknowledged at {{location}}
+
+Other tools are now unblocked while execution remains paused. Use `execution({ action: 'resume' })` to continue execution.
+
+---
+
 ## TIMEOUT_WAITING_FOR_PAUSE
 
 **Type:** error

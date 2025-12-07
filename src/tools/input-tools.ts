@@ -203,6 +203,18 @@ export function createInputTools(
                 // Perform the click
                 await page.click(selector, { clickCount });
 
+                // Check if breakpoint was hit during click - if so, skip post-click evaluation
+                // which would hang because page JS is paused
+                if (targetCdpManager.isPaused()) {
+                  return {
+                    selector,
+                    clickCount,
+                    hasClickHandler,
+                    postClickState: null,
+                    pausedDuringClick: true,
+                  };
+                }
+
                 // Get post-click state
                 const postClickState = await page.evaluate((clickedSelector: string) => {
                   const focused = (globalThis as any).document.activeElement;
@@ -285,15 +297,25 @@ export function createInputTools(
             );
 
             // If paused at breakpoint, return immediately - don't try any more page interactions
-            if (result.pausedAtBreakpoint) {
+            if (result.pausedAtBreakpoint || result.result?.pausedDuringClick) {
               // Stop observing without waiting
               if (shouldDetectChanges) {
                 await domChangeMonitor.stopObserving(connectionReason, { settleTimeout: 0 });
               }
+
+              // Get pause info if we detected pause inside the action
+              const pauseInfo = result.pauseInfo || (result.result?.pausedDuringClick ? (() => {
+                const info = targetCdpManager.getPausedInfo();
+                return info.location ? {
+                  url: info.location.url,
+                  lineNumber: info.location.lineNumber,
+                } : undefined;
+              })() : undefined);
+
               return createSuccessResponse('ACTION_PAUSED_AT_BREAKPOINT', {
                 action: 'click',
                 selector: rawSelector,
-                ...result.pauseInfo,
+                ...pauseInfo,
               });
             }
 

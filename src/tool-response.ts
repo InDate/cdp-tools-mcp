@@ -4,6 +4,7 @@
  */
 
 import type { PortFailureInfo } from './server-manager.js';
+import type { Connection } from './connection-manager.js';
 
 /**
  * Tool response content item
@@ -175,6 +176,107 @@ export function checkPortFailures(
     blocked: false,
     prefix,
     markAsError: errorPorts.length > 0
+  };
+}
+
+/**
+ * Information about a paused breakpoint
+ */
+export interface BreakpointPauseInfo {
+  reference: string;
+  location?: {
+    url: string;
+    lineNumber: number;
+  };
+}
+
+/**
+ * Tools that are allowed to execute when blocked due to breakpoint pause
+ * These are tools needed to inspect the paused state or resume execution
+ */
+const BREAKPOINT_ALLOWED_TOOLS = new Set([
+  'execution',    // Resume, step, pause operations
+  'inspect',      // Get call stack, variables, evaluate expression
+  'breakpoint',   // Manage breakpoints
+  'console',      // View console logs
+]);
+
+/**
+ * Check for breakpoint pauses and determine pre-execution behavior
+ * Similar to checkPortFailures, but for breakpoint blocking
+ */
+export function checkBreakpointPause(
+  connections: Connection[],
+  toolName: string
+): PreExecutionResult {
+  // Find connections that are paused and not acknowledged
+  const pausedConnections: BreakpointPauseInfo[] = [];
+
+  for (const conn of connections) {
+    if (conn.cdpManager.isPaused() && !conn.breakpointPauseAcknowledged) {
+      const pauseInfo = conn.cdpManager.getPausedInfo();
+      pausedConnections.push({
+        reference: conn.reference || conn.id,
+        location: pauseInfo.location,
+      });
+    }
+  }
+
+  // No paused connections, allow execution
+  if (pausedConnections.length === 0) {
+    return {
+      blocked: false,
+      prefix: '',
+      markAsError: false
+    };
+  }
+
+  // Check if tool is allowed when paused
+  if (BREAKPOINT_ALLOWED_TOOLS.has(toolName)) {
+    // Allow but prepend info about paused state
+    const pauseList = pausedConnections.map(p => {
+      const loc = p.location
+        ? ` at ${p.location.url}:${p.location.lineNumber}`
+        : '';
+      return `"${p.reference}"${loc}`;
+    }).join(', ');
+
+    return {
+      blocked: false,
+      prefix: `**Paused at breakpoint:** ${pauseList}\n\n`,
+      markAsError: false
+    };
+  }
+
+  // Block other tools
+  const pauseDetails = pausedConnections.map(p => {
+    const loc = p.location
+      ? `\n  Location: ${p.location.url}:${p.location.lineNumber}`
+      : '';
+    return `- "${p.reference}"${loc}`;
+  }).join('\n');
+
+  return {
+    blocked: true,
+    response: {
+      content: [
+        {
+          type: 'text',
+          text: `**BLOCKED: Execution paused at breakpoint**
+
+The following connection(s) are paused at a breakpoint:
+${pauseDetails}
+
+**To continue:**
+- Use \`execution({ action: 'resume' })\` to resume execution
+- Use \`execution({ action: 'acknowledge' })\` to acknowledge and continue using other tools while paused
+- Use \`inspect({ action: 'getCallStack' })\` or \`inspect({ action: 'getVariables' })\` to examine state
+
+Other tools are blocked until execution is resumed or acknowledged.`,
+        },
+      ],
+      isError: true
+    }
   };
 }
 
