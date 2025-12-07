@@ -1265,11 +1265,19 @@ export class CDPManager {
     // Extract the requested lines (convert to 0-indexed)
     const extractedLines = lines.slice(start - 1, end);
 
-    // Format with line numbers
+    // Format with line numbers, truncating source map lines
     const formattedCode = extractedLines
       .map((line: string, index: number) => {
         const lineNum = start + index;
-        return `${String(lineNum).padStart(4, ' ')} | ${line}`;
+        let displayLine = line;
+
+        // Detect and truncate inline source maps (they can be huge)
+        if (line.startsWith('//# sourceMappingURL=data:')) {
+          const truncateAt = 60;
+          displayLine = line.substring(0, truncateAt) + `... [source map truncated, ${Math.round(line.length / 1024)}kb]`;
+        }
+
+        return `${String(lineNum).padStart(4, ' ')} | ${displayLine}`;
       })
       .join('\n');
 
