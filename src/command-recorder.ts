@@ -14,6 +14,8 @@ import { getOutputPath } from './helpers/paths.js';
 export interface RecordedCommand {
   tool: string;
   params: Record<string, any>;
+  delay?: number;  // ms to wait before executing this command
+  comment?: string;  // user comment describing expected behavior
 }
 
 export interface CommandSequence {
@@ -129,7 +131,7 @@ export class CommandRecorder {
   /**
    * Record a command (always-on, automatic)
    */
-  async recordCommand(tool: string, params: Record<string, any>): Promise<void> {
+  async recordCommand(tool: string, params: Record<string, any>, options?: { delay?: number; comment?: string }): Promise<void> {
     // Reset history viewed flag when any command is recorded
     // (user must view history again before inserting)
     this.historyViewedWhilePaused = false;
@@ -153,6 +155,8 @@ export class CommandRecorder {
       timestamp: Date.now(),
       tool,
       params: paramsClone,
+      ...(options?.delay !== undefined && { delay: options.delay }),
+      ...(options?.comment && { comment: options.comment }),
     };
 
     this.history.push(command);
@@ -201,10 +205,12 @@ export class CommandRecorder {
         await debugLog('command-recorder', `Invalid command index: ${idx}`);
         return null;
       }
-      // Strip index and timestamp for the sequence
+      // Strip index and timestamp for the sequence, but keep delay and comment
       commands.push({
         tool: cmd.tool,
         params: cmd.params,
+        ...(cmd.delay !== undefined && { delay: cmd.delay }),
+        ...(cmd.comment && { comment: cmd.comment }),
       });
     }
 
@@ -233,6 +239,50 @@ export class CommandRecorder {
     this.sequences.set(sequence.id, sequence);
     await debugLog('command-recorder', `Created sequence "${name}" with ${commands.length} commands${startUrl ? `, startUrl: ${startUrl}` : ''}`);
     return sequence;
+  }
+
+  /**
+   * Create a sequence directly from commands (not from history)
+   */
+  async createSequenceFromCommands(
+    name: string,
+    commands: RecordedCommand[],
+    options?: { description?: string; expectedOutcome?: string; startUrl?: string }
+  ): Promise<CommandSequence> {
+    // Extract startUrl from commands if not explicitly provided
+    let startUrl = options?.startUrl;
+    if (!startUrl) {
+      for (const cmd of commands) {
+        if (cmd.tool === 'navigate' && cmd.params.action === 'goto' && cmd.params.url) {
+          startUrl = cmd.params.url;
+          break;
+        }
+      }
+    }
+
+    const sequence: CommandSequence = {
+      id: `seq-${Date.now()}`,
+      name,
+      ...(options?.description && { description: options.description }),
+      ...(options?.expectedOutcome && { expectedOutcome: options.expectedOutcome }),
+      ...(startUrl && { startUrl }),
+      commands,
+      createdAt: Date.now(),
+    };
+
+    this.sequences.set(sequence.id, sequence);
+    await debugLog('command-recorder', `Created sequence "${name}" from commands with ${commands.length} commands${startUrl ? `, startUrl: ${startUrl}` : ''}`);
+    return sequence;
+  }
+
+  /**
+   * Check if a sequence with the given name exists
+   */
+  sequenceNameExists(name: string): boolean {
+    for (const seq of this.sequences.values()) {
+      if (seq.name === name) return true;
+    }
+    return false;
   }
 
   /**
@@ -296,7 +346,11 @@ export class CommandRecorder {
    * @param sequenceId - ID of the sequence to save
    * @param global - If true, save to global ~/.cdp-tools/sequences/, otherwise working directory
    */
-  async saveSequenceToDisk(sequenceId: string, global: boolean = false): Promise<string | null> {
+  async saveSequenceToDisk(
+    sequenceId: string,
+    global: boolean = false,
+    overwrite: boolean = false
+  ): Promise<{ success: true; filepath: string } | { success: false; error: string; conflict?: boolean; filepath?: string } | null> {
     const sequence = this.getSequence(sequenceId);
     if (!sequence) {
       await debugLog('command-recorder', `Sequence ${sequenceId} not found`);
@@ -309,11 +363,21 @@ export class CommandRecorder {
       // Ensure directory exists
       await fs.mkdir(targetDir, { recursive: true });
 
-      // Sanitize filename - use name + short timestamp
+      // Sanitize filename - use name directly
       const safeFilename = sequence.name.replace(/[^a-z0-9-_]/gi, '-').toLowerCase();
-      const shortId = Date.now().toString().slice(-6); // Last 6 digits of timestamp
-      const filename = `${safeFilename}-${shortId}.json`;
+      const filename = `${safeFilename}.json`;
       const filepath = join(targetDir, filename);
+
+      // Check for conflict
+      try {
+        await fs.access(filepath);
+        // File exists
+        if (!overwrite) {
+          return { success: false, error: 'File already exists', conflict: true, filepath };
+        }
+      } catch {
+        // File doesn't exist, proceed
+      }
 
       // Add usage comment to exported file
       const exportData = {
@@ -322,10 +386,10 @@ export class CommandRecorder {
       };
       await fs.writeFile(filepath, JSON.stringify(exportData, null, 2));
       await debugLog('command-recorder', `Saved sequence "${sequence.name}" to ${filepath}`);
-      return filepath;
+      return { success: true, filepath };
     } catch (error: any) {
       await debugLog('command-recorder', `Failed to save sequence: ${error}`);
-      return null;
+      return { success: false, error: error.message || String(error) };
     }
   }
 

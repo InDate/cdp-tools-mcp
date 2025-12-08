@@ -3,7 +3,7 @@
  */
 
 import { z } from 'zod';
-import type { CommandRecorder, ActiveSequenceState } from '../command-recorder.js';
+import type { CommandRecorder, ActiveSequenceState, CommandSequence } from '../command-recorder.js';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
 
@@ -16,8 +16,12 @@ import {
   navigateToStartUrl,
   executeSteps,
   executeSequenceWithPause,
-  executeCommandWithRetry,
   getDebugState,
+  setReplayCursorCallbacks,
+  injectReplayCursor,
+  showClickEffect,
+  showKeyPress,
+  removeReplayCursor,
   TOOLS_NEEDING_CONNECTION,
   type ExecutionContext,
 } from './replay-executor.js';
@@ -42,6 +46,22 @@ import {
 } from './replay-formatters.js';
 
 import { readHistoryLines, getHistoryFilePath } from '../debug-logger.js';
+import {
+  startRecording,
+  stopRecording,
+  getRecording,
+  listRecordings,
+  clearRecording,
+  clearAllRecordings,
+  getRecordingStatus,
+  simplifyEvents,
+  eventsToCommands,
+  formatEventsForReview,
+  formatEventsAsCSV,
+  type CommandConversionOptions,
+} from '../interaction-recorder.js';
+
+import { configManager } from '../config.js';
 
 // =============================================================================
 // Schema Definition
@@ -50,49 +70,45 @@ import { readHistoryLines, getHistoryFilePath } from '../debug-logger.js';
 const replaySchema = z.object({
   action: z.enum([
     'history', 'create', 'list', 'get', 'delete',
-    'save', 'load', 'listSaved', 'deleteSaved',
+    'export', 'load', 'listSaved', 'deleteSaved',
     'run', 'step', 'finish', 'insert', 'status', 'cancel',
-    'repeat', 'runFromLog'
+    'repeat', 'runFromLog',
+    'startMouseRecording', 'stopMouseRecording', 'mouseRecordingStatus',
+    'recordInteraction', 'stopInteraction', 'listInteractions', 'getInteraction', 'clearInteraction', 'replayInteraction'
   ]).describe(
-    'Replay action: repeat (immediately execute commands by history indices), runFromLog (execute commands by line number from history.log file - line 1 is most recent), history (view command history), create (create sequence from indices), list (list in-memory sequences), get (get sequence details), delete (delete from memory), save (save to disk), load (load from disk), listSaved (list saved files), deleteSaved (delete saved file), run (execute sequence by name or sequenceId), step (execute next N commands in paused sequence), finish (complete remaining commands), insert (insert recorded commands into sequence), status (show active sequence status), cancel (abandon paused sequence)'
+    'history,create,list,get,delete,export,load,listSaved,deleteSaved,run,step,finish,insert,status,cancel,repeat,runFromLog,recordInteraction,stopInteraction,listInteractions,getInteraction,clearInteraction,replayInteraction'
   ),
-
-  // history parameters
-  limit: z.number().optional().describe('Number of recent commands to show (for history action, default: 50)'),
-
-  // create/run parameters
-  name: z.string().optional().describe('Name for the sequence (for create action), or sequence name to run (for run action)'),
-  description: z.string().optional().describe('Description of what the sequence does (for create action)'),
-  expectedOutcome: z.string().optional().describe('Expected outcome when the sequence runs successfully (for create action)'),
-  startUrl: z.string().optional().describe('Starting URL for the sequence (for create action). Auto-extracted from first navigate goto if not provided.'),
-  indices: z.array(z.number()).optional().describe('Command indices to include in sequence (for create action)'),
-  lines: z.array(z.number()).optional().describe('Line numbers from history.log to execute (for runFromLog action, 1-indexed, line 1 is most recent)'),
-
-  // get/delete/run/save parameters
-  sequenceId: z.string().optional().describe('Sequence ID (for get, delete, run, save actions)'),
-  global: z.boolean().optional().describe('Save to global ~/.cdp-tools/sequences/ instead of working directory (for save action, default: false)'),
-
-  // load/deleteSaved parameters
-  filename: z.string().optional().describe('Filename (for load, deleteSaved actions)'),
-  intoHistory: z.boolean().optional().describe('Load sequence commands into history without executing (for load action, default: false)'),
-
-  // run parameters
-  connectionReason: z.string().optional().describe('Connection reference to use for all commands in replay'),
-  record: z.boolean().optional().describe('Record replayed commands into current recording session (for run action, default: false)'),
-  variables: z.record(z.string()).optional().describe('Variable substitutions for text parameters (for run action). Keys are variable names, values are replacement text. Empty object means keep original values.'),
-  stepTimeout: z.number().optional().describe('Timeout in milliseconds for each step (for run action, default: 30000)'),
-  totalTimeout: z.number().optional().describe('Total timeout in milliseconds for entire run (for run action, default: 300000)'),
-
-  // step-through parameters
-  startFrom: z.number().optional().describe('Start execution from this step number (1-indexed), skipping earlier steps (for run action)'),
-  stepTo: z.number().optional().describe('Execute sequence up to this step number (1-indexed), then pause (for run action)'),
-  stepCount: z.number().optional().describe('Number of commands to execute (for step action, default: 1)'),
-
-  // insert parameters
-  insertIndices: z.array(z.number()).optional().describe('History indices of commands to insert (for insert action)'),
-  insertAfterStep: z.number().optional().describe('Insert commands after this step number in sequence (for insert action)'),
-  overwrite: z.boolean().optional().describe('Overwrite existing sequence instead of creating new (for insert action, default: false)'),
-  newName: z.string().optional().describe('Name for new sequence when not overwriting (for insert action)'),
+  limit: z.number().optional().describe('Max commands to show (history, default:50)'),
+  name: z.string().optional().describe('Sequence name'),
+  description: z.string().optional().describe('Sequence description'),
+  expectedOutcome: z.string().optional().describe('Expected result'),
+  startUrl: z.string().optional().describe('Starting URL (auto-extracted if not set)'),
+  indices: z.array(z.number()).optional().describe('Command indices (create)'),
+  lines: z.array(z.number()).optional().describe('History.log line numbers (runFromLog)'),
+  sequenceId: z.string().optional().describe('Sequence ID'),
+  global: z.boolean().optional().describe('Save to ~/.cdp-tools/ (default:false)'),
+  format: z.enum(['sequence', 'playwright', 'puppeteer']).optional().describe('Export format (default:sequence)'),
+  filename: z.string().optional().describe('Filename (load/deleteSaved)'),
+  intoHistory: z.boolean().optional().describe('Load into history only (default:false)'),
+  connectionReason: z.string().optional().describe('Browser connection reference'),
+  record: z.boolean().optional().describe('Record commands during run (default:false)'),
+  variables: z.record(z.string()).optional().describe('Variable substitutions {key:value}'),
+  stepTimeout: z.number().optional().describe('Per-step timeout ms (default:30000)'),
+  totalTimeout: z.number().optional().describe('Total timeout ms (default:300000)'),
+  startFrom: z.number().optional().describe('Start from step N (1-indexed)'),
+  stepTo: z.number().optional().describe('Pause after step N'),
+  stepCount: z.number().optional().describe('Commands to execute (step, default:1)'),
+  insertIndices: z.array(z.number()).optional().describe('History indices to insert'),
+  insertAfterStep: z.number().optional().describe('Insert after step N'),
+  overwrite: z.boolean().optional().describe('Overwrite existing (default:false)'),
+  newName: z.string().optional().describe('New name when not overwriting'),
+  showOverlay: z.boolean().optional().describe('Show recording overlay (default:true)'),
+  simplifyEvents: z.boolean().optional().describe('Remove redundant movements (default:true)'),
+  includeHovers: z.boolean().optional().describe('Include mousemove (default:false)'),
+  outputFormat: z.enum(['events', 'commands', 'puppeteer', 'playwright', 'review', 'csv']).optional().describe('Output format'),
+  preferCoordinates: z.boolean().optional().describe('Use x,y for clicks (canvas/3D)'),
+  preferSelectors: z.boolean().optional().describe('Use selectors for clicks (DOM)'),
+  recordingId: z.number().optional().describe('Recording ID'),
 }).strict();
 
 // =============================================================================
@@ -331,7 +347,28 @@ async function handleGet(args: ReplayArgs, recorder: CommandRecorder) {
     return createErrorResponse(loadResult.errorCode, { message: loadResult.error });
   }
 
-  return { content: [{ type: 'text', text: formatSequenceDetails(loadResult.sequence) }] };
+  const sequence = loadResult.sequence;
+
+  // Check if output format is specified for code export
+  if (args.outputFormat === 'playwright') {
+    const code = generatePlaywrightCode(sequence.commands, sequence.startUrl);
+    let output = `**${sequence.name} - Playwright Code**\n\n`;
+    output += '```typescript\n';
+    output += code;
+    output += '\n```';
+    return { content: [{ type: 'text', text: output }] };
+  }
+
+  if (args.outputFormat === 'puppeteer') {
+    const code = generatePuppeteerCode(sequence.commands, sequence.startUrl);
+    let output = `**${sequence.name} - Puppeteer Code**\n\n`;
+    output += '```javascript\n';
+    output += code;
+    output += '\n```';
+    return { content: [{ type: 'text', text: output }] };
+  }
+
+  return { content: [{ type: 'text', text: formatSequenceDetails(sequence) }] };
 }
 
 async function handleDelete(args: ReplayArgs, recorder: CommandRecorder) {
@@ -357,29 +394,83 @@ async function handleDelete(args: ReplayArgs, recorder: CommandRecorder) {
   });
 }
 
-async function handleSave(args: ReplayArgs, recorder: CommandRecorder) {
-  if (!args.sequenceId) {
+async function handleExport(args: ReplayArgs, recorder: CommandRecorder) {
+  if (!args.sequenceId && !args.name) {
     return createErrorResponse('MISSING_PARAMETER', {
-      action: 'save',
-      missing: 'sequenceId',
-      message: 'The "save" action requires a "sequenceId" parameter'
+      action: 'export',
+      missing: 'sequenceId or name',
+      message: 'The "export" action requires a "sequenceId" or "name" parameter'
     });
   }
 
-  const filepath = await recorder.saveSequenceToDisk(args.sequenceId, args.global ?? false);
-  if (!filepath) {
-    return createErrorResponse('SAVE_FAILED', {
-      sequenceId: args.sequenceId,
-      message: 'Failed to save sequence to disk. Sequence may not exist.'
+  const loadResult = await loadSequence({ name: args.name, sequenceId: args.sequenceId }, recorder);
+  if (!loadResult.success) {
+    return createErrorResponse(loadResult.errorCode, { message: loadResult.error });
+  }
+
+  const sequence = loadResult.sequence;
+  const format = args.format || 'sequence';
+  const overwrite = args.overwrite ?? false;
+
+  // Always save sequence file first (for all formats)
+  const sequenceResult = await recorder.saveSequenceToDisk(sequence.id, args.global ?? false, overwrite);
+  if (!sequenceResult) {
+    return createErrorResponse('EXPORT_FAILED', { message: 'Sequence not found.' });
+  }
+  if (!sequenceResult.success) {
+    if (sequenceResult.conflict) {
+      return createSuccessResponse('EXPORT_CONFLICT', {
+        filepath: sequenceResult.filepath,
+        sequenceName: sequence.name,
+        format
+      });
+    }
+    return createErrorResponse('EXPORT_FAILED', { message: sequenceResult.error });
+  }
+
+  // If only exporting sequence JSON, we're done
+  if (format === 'sequence') {
+    const location = args.global ? 'global (~/.cdp-tools/sequences/)' : 'working directory';
+    return createSuccessResponse('EXPORT_SEQUENCE_SUCCESS', {
+      filename: sequenceResult.filepath,
+      location
     });
   }
 
-  const location = args.global ? 'global (~/.cdp-tools/sequences/)' : 'working directory';
-  return createSuccessResponse('SEQUENCE_SAVED_TO_DISK', {
-    sequenceId: args.sequenceId,
-    filename: filepath,
-    location,
-    message: `Sequence saved to ${location}: ${filepath}`
+  // Export as Playwright or Puppeteer test
+  const replayConfig = configManager.getReplayConfig();
+  const isPlaywright = format === 'playwright';
+  const code = isPlaywright
+    ? generatePlaywrightCode(sequence.commands, sequence.startUrl)
+    : generatePuppeteerCode(sequence.commands, sequence.startUrl);
+  const exportPath = isPlaywright ? replayConfig.playwrightExportPath : replayConfig.puppeteerExportPath;
+  const extension = isPlaywright ? '.spec.ts' : '.test.js';
+
+  const fs = await import('fs');
+  const path = await import('path');
+  const sanitizedName = sequence.name.replace(/[^a-zA-Z0-9-_]/g, '-');
+  const fullPath = path.resolve(exportPath, `${sanitizedName}${extension}`);
+
+  // Check for test file conflict
+  if (fs.existsSync(fullPath) && !overwrite) {
+    return createSuccessResponse('EXPORT_CONFLICT', {
+      filepath: fullPath,
+      sequenceName: sequence.name,
+      format
+    });
+  }
+
+  // Write the test file
+  const dir = path.dirname(fullPath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  fs.writeFileSync(fullPath, code, 'utf-8');
+
+  return createSuccessResponse('EXPORT_SUCCESS', {
+    testFile: fullPath,
+    sequenceFile: sequenceResult.filepath,
+    format
   });
 }
 
@@ -455,7 +546,8 @@ async function handleDeleteSaved(args: ReplayArgs, recorder: CommandRecorder) {
 async function handleRun(
   args: ReplayArgs,
   recorder: CommandRecorder,
-  executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>
+  executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>,
+  getPageForConnection: (connectionReason: string) => Promise<any>
 ) {
   // Load sequence
   const loadResult = await loadSequence({ name: args.name, sequenceId: args.sequenceId }, recorder);
@@ -513,6 +605,23 @@ async function handleRun(
       message: navResult.error,
       startUrl: sequence.startUrl
     });
+  }
+
+  // Inject cursor if enabled in config
+  let cursorPage: any = null;
+  if (configManager.getReplayConfig().showCursor && connectionReason) {
+    cursorPage = await getPageForConnection(connectionReason);
+    if (cursorPage) {
+      await injectReplayCursor(cursorPage);
+      setReplayCursorCallbacks({
+        onClickBefore: async (x: number, y: number, isRightClick: boolean) => {
+          await showClickEffect(cursorPage, x, y, isRightClick);
+        },
+        onKeyPress: async (key: string) => {
+          await showKeyPress(cursorPage, key);
+        }
+      });
+    }
   }
 
   // Calculate start step (convert 1-indexed to 0-indexed)
@@ -578,6 +687,12 @@ async function handleRun(
   if (execResult.pausedAtStep && execResult.activeSequenceState) {
     recorder.setActiveSequence(execResult.activeSequenceState);
     return { content: [{ type: 'text', text: formatPausedResponse(sequence, execResult.results, execResult.pausedAtStep, execResult.durationMs) }] };
+  }
+
+  // Clean up cursor
+  if (cursorPage) {
+    await removeReplayCursor(cursorPage);
+    setReplayCursorCallbacks({});
   }
 
   // Format results
@@ -810,16 +925,685 @@ async function handleInsert(args: ReplayArgs, recorder: CommandRecorder) {
 }
 
 // =============================================================================
+// Interaction Recording Handlers
+// =============================================================================
+
+async function handleRecordInteraction(
+  args: ReplayArgs,
+  getPageForConnection?: (connectionReason: string) => Promise<any>
+) {
+  if (!args.connectionReason) {
+    return createErrorResponse('MISSING_PARAMETER', {
+      action: 'recordInteraction',
+      missing: 'connectionReason',
+      message: 'The "recordInteraction" action requires a "connectionReason" to identify the browser tab'
+    });
+  }
+
+  if (!getPageForConnection) {
+    return createErrorResponse('NOT_SUPPORTED', {
+      message: 'Interaction recording is not supported in this context'
+    });
+  }
+
+  const page = await getPageForConnection(args.connectionReason);
+  if (!page) {
+    return createErrorResponse('CONNECTION_NOT_FOUND', {
+      connectionReason: args.connectionReason,
+      message: 'No browser connection found. Use launchChrome first.'
+    });
+  }
+
+  const showOverlay = args.showOverlay !== false;
+  const result = await startRecording(page, args.connectionReason, { showOverlay });
+
+  if (!result.success) {
+    return createErrorResponse('RECORDING_FAILED', { message: result.error });
+  }
+
+  let message = `**Recording started** (ID: ${result.id}) for \`${args.connectionReason}\`\n\n`;
+  if (showOverlay) {
+    message += `Overlay controls: **⏸** Pause | **↺** Reset | **✓** Complete\n\n`;
+  }
+  message += `Recording: mouse, keyboard, and navigation events.\n`;
+  message += `Use \`stopInteraction\` when done - recording will be stored in memory.`;
+
+  return {
+    content: [{
+      type: 'text',
+      text: message
+    }]
+  };
+}
+
+async function handleStopInteraction(
+  args: ReplayArgs,
+  recorder: CommandRecorder,
+  getPageForConnection?: (connectionReason: string) => Promise<any>
+) {
+  if (!args.connectionReason) {
+    return createErrorResponse('MISSING_PARAMETER', {
+      action: 'stopInteraction',
+      missing: 'connectionReason',
+      message: 'The "stopInteraction" action requires a "connectionReason" to identify the browser tab'
+    });
+  }
+
+  if (!getPageForConnection) {
+    return createErrorResponse('NOT_SUPPORTED', {
+      message: 'Interaction recording is not supported in this context'
+    });
+  }
+
+  const page = await getPageForConnection(args.connectionReason);
+  if (!page) {
+    return createErrorResponse('CONNECTION_NOT_FOUND', {
+      connectionReason: args.connectionReason,
+      message: 'No browser connection found.'
+    });
+  }
+
+  const result = await stopRecording(page, args.connectionReason);
+
+  if (!result.success) {
+    return createErrorResponse('RECORDING_FAILED', { message: result.error });
+  }
+
+  const recording = result.recording!;
+  const summary = recording.summary;
+
+  // Convert events to commands and create a sequence
+  const sequenceName = args.name || args.connectionReason;
+  const commands = eventsToCommands(recording.events, {
+    simplify: true,
+    includeDelays: true,
+    preferCoordinates: false,
+    preferSelectors: false,
+  });
+
+  // Check if sequence name already exists
+  if (recorder.sequenceNameExists(sequenceName) && !args.overwrite) {
+    return createSuccessResponse('RECORDING_NAME_CONFLICT', {
+      sequenceName,
+      connectionReason: args.connectionReason
+    });
+  }
+
+  // If overwriting, delete the existing sequence first
+  if (args.overwrite && recorder.sequenceNameExists(sequenceName)) {
+    const existingSeq = recorder.listSequences().find(s => s.name === sequenceName);
+    if (existingSeq) {
+      recorder.deleteSequence(existingSeq.id);
+    }
+  }
+
+  const sequence = await recorder.createSequenceFromCommands(sequenceName, commands, {
+    startUrl: recording.startUrl,
+    description: `Recorded from ${args.connectionReason}`,
+  });
+
+  return createSuccessResponse('RECORDING_STOPPED', {
+    name: sequence.name,
+    sequenceId: sequence.id,
+    duration: (recording.duration / 1000).toFixed(1),
+    startUrl: recording.startUrl,
+    commandCount: commands.length,
+    clicks: summary.clicks,
+    drags: summary.drags,
+    scrolls: summary.scrolls,
+    keyPresses: summary.keyPresses,
+    navigations: summary.navigations > 0 ? summary.navigations : null,
+    comments: summary.comments > 0 ? summary.comments : null
+  });
+}
+
+function handleListInteractions() {
+  const recordings = listRecordings();
+
+  if (recordings.length === 0) {
+    return {
+      content: [{
+        type: 'text',
+        text: '**No stored recordings**\n\nUse `recordInteraction` to start recording.'
+      }]
+    };
+  }
+
+  let output = `**Stored Recordings** (${recordings.length})\n\n`;
+  for (const r of recordings) {
+    const date = new Date(r.startTime).toLocaleTimeString();
+    output += `### Recording ${r.id}\n`;
+    output += `- **Time:** ${date} (${(r.duration / 1000).toFixed(1)}s)\n`;
+    output += `- **URL:** ${r.startUrl}\n`;
+    output += `- **Events:** ${r.events.length} (${r.summary.clicks} clicks, ${r.summary.keyPresses} keys)\n\n`;
+  }
+
+  return { content: [{ type: 'text', text: output }] };
+}
+
+function handleGetInteraction(args: ReplayArgs) {
+  if (args.recordingId === undefined) {
+    return createErrorResponse('MISSING_PARAMETER', {
+      action: 'getInteraction',
+      missing: 'recordingId',
+      message: 'The "getInteraction" action requires a "recordingId"'
+    });
+  }
+
+  const recording = getRecording(args.recordingId);
+  if (!recording) {
+    return createErrorResponse('NOT_FOUND', {
+      recordingId: args.recordingId,
+      message: `Recording ${args.recordingId} not found. Use listInteractions to see available recordings.`
+    });
+  }
+
+  const simplify = args.simplifyEvents !== false;
+  const outputFormat = args.outputFormat || 'csv';
+  const processedEvents = simplify ? simplifyEvents(recording.events) : recording.events;
+
+  const conversionOptions: CommandConversionOptions = {
+    simplify: false,
+    includeHovers: args.includeHovers,
+    preferCoordinates: args.preferCoordinates,
+    preferSelectors: args.preferSelectors,
+  };
+
+  let output: string;
+
+  if (outputFormat === 'review') {
+    output = `**Recording ${recording.id}**\n\n`;
+    output += `## Summary\n`;
+    output += `- **Duration:** ${(recording.duration / 1000).toFixed(1)}s\n`;
+    output += `- **Start URL:** ${recording.startUrl}\n`;
+    output += `- **Events:** ${recording.events.length}${simplify ? ` (simplified to ${processedEvents.length})` : ''}\n`;
+    output += `- **Clicks:** ${recording.summary.clicks}\n`;
+    output += `- **Drags:** ${recording.summary.drags}\n`;
+    output += `- **Scrolls:** ${recording.summary.scrolls}\n`;
+    output += `- **Key presses:** ${recording.summary.keyPresses}\n`;
+    if (recording.summary.navigations > 0) {
+      output += `- **Navigations:** ${recording.summary.navigations}\n`;
+    }
+    if (recording.summary.comments > 0) {
+      output += `- **Comments:** ${recording.summary.comments}\n`;
+    }
+    output += `\n## Events\n\n`;
+    output += formatEventsForReview(processedEvents, recording.startTime);
+    output += `\n---\n`;
+    output += `**Export options:**\n`;
+    output += `- \`getInteraction({ recordingId: ${recording.id}, outputFormat: "commands" })\`\n`;
+    output += `- \`getInteraction({ recordingId: ${recording.id}, outputFormat: "puppeteer" })\`\n`;
+    output += `- \`getInteraction({ recordingId: ${recording.id}, outputFormat: "playwright" })\`\n`;
+  } else if (outputFormat === 'events') {
+    output = `**Recording ${recording.id} - Raw Events**\n\n`;
+    output += '```json\n';
+    output += JSON.stringify(processedEvents.slice(0, 50), null, 2);
+    if (processedEvents.length > 50) {
+      output += `\n// ... and ${processedEvents.length - 50} more events`;
+    }
+    output += '\n```';
+  } else if (outputFormat === 'puppeteer') {
+    const commands = eventsToCommands(processedEvents, { ...conversionOptions, includeDelays: true });
+    output = `**Recording ${recording.id} - Puppeteer Code**\n\n`;
+    output += '```javascript\n';
+    output += generatePuppeteerCode(commands, recording.startUrl);
+    output += '\n```';
+  } else if (outputFormat === 'playwright') {
+    const commands = eventsToCommands(processedEvents, { ...conversionOptions, includeDelays: true });
+    output = `**Recording ${recording.id} - Playwright Code**\n\n`;
+    output += '```typescript\n';
+    output += generatePlaywrightCode(commands, recording.startUrl);
+    output += '\n```';
+  } else if (outputFormat === 'commands') {
+    const commands = eventsToCommands(processedEvents, conversionOptions);
+    output = `**Recording ${recording.id} - Commands**\n\n`;
+    output += '```json\n';
+    output += JSON.stringify(commands, null, 2);
+    output += '\n```';
+  } else {
+    // Default: CSV
+    output = formatEventsAsCSV(processedEvents, recording.startTime);
+  }
+
+  return { content: [{ type: 'text', text: output }] };
+}
+
+function handleClearInteraction(args: ReplayArgs) {
+  if (args.recordingId === undefined) {
+    // Clear all
+    const count = clearAllRecordings();
+    return {
+      content: [{
+        type: 'text',
+        text: `**Cleared ${count} recording${count !== 1 ? 's' : ''}**`
+      }]
+    };
+  }
+
+  const success = clearRecording(args.recordingId);
+  if (!success) {
+    return createErrorResponse('NOT_FOUND', {
+      recordingId: args.recordingId,
+      message: `Recording ${args.recordingId} not found`
+    });
+  }
+
+  return {
+    content: [{
+      type: 'text',
+      text: `**Recording ${args.recordingId} cleared**`
+    }]
+  };
+}
+
+async function handleReplayInteraction(
+  args: ReplayArgs,
+  commandRecorder: CommandRecorder,
+  executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>,
+  getPageForConnection?: (connectionReason: string) => Promise<any>
+) {
+  if (args.recordingId === undefined) {
+    return createErrorResponse('MISSING_PARAMETER', {
+      action: 'replayInteraction',
+      missing: 'recordingId',
+      message: 'The "replayInteraction" action requires a "recordingId" parameter'
+    });
+  }
+
+  if (!args.connectionReason) {
+    return createErrorResponse('MISSING_PARAMETER', {
+      action: 'replayInteraction',
+      missing: 'connectionReason',
+      message: 'The "replayInteraction" action requires a "connectionReason" parameter'
+    });
+  }
+
+  const recording = getRecording(args.recordingId);
+  if (!recording) {
+    return createErrorResponse('NOT_FOUND', {
+      recordingId: args.recordingId,
+      message: `Recording ${args.recordingId} not found. Use listInteractions to see available recordings.`
+    });
+  }
+
+  // Convert events to commands with delays
+  const commands = eventsToCommands(recording.events, {
+    simplify: args.simplifyEvents !== false,
+    includeHovers: args.includeHovers,
+    preferCoordinates: args.preferCoordinates,
+    preferSelectors: args.preferSelectors,
+    includeDelays: true,
+    startTime: recording.startTime,
+  });
+
+  if (commands.length === 0) {
+    return {
+      content: [{
+        type: 'text',
+        text: `**Recording ${args.recordingId} has no replayable commands**`
+      }]
+    };
+  }
+
+  // Create a temporary sequence
+  const sequence: CommandSequence = {
+    id: `interaction-${args.recordingId}`,
+    name: `Interaction Recording ${args.recordingId}`,
+    description: `Replay of interaction recording ${args.recordingId}`,
+    startUrl: recording.startUrl,
+    commands,
+    createdAt: Date.now(),
+  };
+
+  // Build execution context
+  const ctx: ExecutionContext = {
+    executeToolCall,
+    commandRecorder,
+    connectionReason: args.connectionReason,
+    logPrefix: 'replayInteraction'
+  };
+
+  // Navigate to startUrl first
+  if (recording.startUrl) {
+    const navResult = await executeToolCall('navigate', {
+      action: 'goto',
+      connectionReason: args.connectionReason,
+      url: recording.startUrl,
+    });
+    if (navResult?.isError) {
+      return createErrorResponse('NAVIGATION_FAILED', {
+        message: `Failed to navigate to ${recording.startUrl}`,
+        startUrl: recording.startUrl
+      });
+    }
+  }
+
+  // Inject replay cursor if page is available
+  let page: any = null;
+  if (getPageForConnection) {
+    try {
+      page = await getPageForConnection(args.connectionReason);
+      if (page) {
+        await injectReplayCursor(page);
+        // Set up cursor callbacks
+        setReplayCursorCallbacks({
+          onClickBefore: async (x: number, y: number, isRightClick: boolean) => {
+            if (page) await showClickEffect(page, x, y, isRightClick);
+          },
+          onKeyPress: async (key: string) => {
+            if (page) await showKeyPress(page, key);
+          }
+        });
+      }
+    } catch (e) {
+      // Cursor injection is optional - continue without it
+    }
+  }
+
+  // Execute the sequence
+  const execResult = await executeSequenceWithPause({
+    sequence,
+    startStep: 0,
+    ctx,
+    record: true,
+    stepTimeout: args.stepTimeout || 30000,
+    totalTimeout: args.totalTimeout || 300000,
+  });
+
+  // Format results
+  const successful = execResult.results.filter(r => r.success).length;
+  const failed = execResult.results.filter(r => !r.success).length;
+  const duration = (execResult.durationMs / 1000).toFixed(1);
+
+  let output = `**Replay completed**\n\n`;
+  output += `- **Recording:** ${args.recordingId}\n`;
+  output += `- **Commands:** ${commands.length}\n`;
+  output += `- **Successful:** ${successful}\n`;
+  if (failed > 0) {
+    output += `- **Failed:** ${failed}\n`;
+  }
+  output += `- **Duration:** ${duration}s\n`;
+
+  if (failed > 0) {
+    output += `\n**Failed steps:**\n`;
+    for (const r of execResult.results.filter(r => !r.success)) {
+      output += `- Step ${r.step}: ${r.error}\n`;
+    }
+  }
+
+  // Clean up cursor
+  if (page) {
+    try {
+      await removeReplayCursor(page);
+      setReplayCursorCallbacks({});
+    } catch (e) {
+      // Ignore cleanup errors
+    }
+  }
+
+  return { content: [{ type: 'text', text: output }] };
+}
+
+// Legacy handlers - delegate to new ones
+async function handleStartMouseRecording(
+  args: ReplayArgs,
+  getPageForConnection?: (connectionReason: string) => Promise<any>
+) {
+  return handleRecordInteraction(args, getPageForConnection);
+}
+
+async function handleStopMouseRecording(
+  args: ReplayArgs,
+  recorder: CommandRecorder,
+  getPageForConnection?: (connectionReason: string) => Promise<any>
+) {
+  // Legacy - stop and immediately return results (old behavior)
+  // Use the new stopInteraction to store in memory instead
+  return handleStopInteraction(args, recorder, getPageForConnection);
+}
+
+async function handleMouseRecordingStatus(
+  args: ReplayArgs,
+  getPageForConnection?: (connectionReason: string) => Promise<any>
+) {
+  if (!args.connectionReason) {
+    return createErrorResponse('MISSING_PARAMETER', {
+      action: 'mouseRecordingStatus',
+      missing: 'connectionReason',
+      message: 'The "mouseRecordingStatus" action requires a "connectionReason" to identify the browser tab'
+    });
+  }
+
+  if (!getPageForConnection) {
+    return createErrorResponse('NOT_SUPPORTED', {
+      message: 'Mouse recording is not supported in this context'
+    });
+  }
+
+  const page = await getPageForConnection(args.connectionReason);
+  if (!page) {
+    return createErrorResponse('CONNECTION_NOT_FOUND', {
+      connectionReason: args.connectionReason,
+      message: 'No browser connection found.'
+    });
+  }
+
+  const status = await getRecordingStatus(page, args.connectionReason);
+
+  if (!status.isRecording) {
+    return {
+      content: [{
+        type: 'text',
+        text: `**No active mouse recording** for \`${args.connectionReason}\`\n\nUse \`startMouseRecording\` to begin recording.`
+      }]
+    };
+  }
+
+  return {
+    content: [{
+      type: 'text',
+      text: `**Mouse recording active** for \`${args.connectionReason}\`\n\n**Duration:** ${((status.duration || 0) / 1000).toFixed(1)}s\n**Events captured:** ${status.eventCount || 'unknown'}`
+    }]
+  };
+}
+
+/**
+ * Generate Puppeteer test code from sequence commands
+ */
+function generatePuppeteerCode(commands: Array<{ tool: string; params: Record<string, any> }>, startUrl?: string): string {
+  const lines: string[] = [
+    '// Generated from cdp-tools interaction recording',
+    'const puppeteer = require(\'puppeteer\');',
+    '',
+    'async function runTest() {',
+    '  const browser = await puppeteer.launch({ headless: false });',
+    '  const page = await browser.newPage();',
+    '',
+  ];
+
+  if (startUrl) {
+    lines.push(`  await page.goto('${startUrl}');`);
+    lines.push('');
+  }
+
+  for (const cmd of commands) {
+    if (cmd.tool === 'navigate') {
+      const { action, ...params } = cmd.params;
+      if (action === 'goto' && params.url) {
+        lines.push(`  await page.goto('${params.url}');`);
+        lines.push('');
+      } else if (action === 'reload') {
+        lines.push(`  await page.reload();`);
+        lines.push('');
+      }
+    } else if (cmd.tool === 'input') {
+      const { action, ...params } = cmd.params;
+
+      switch (action) {
+        case 'drag':
+          lines.push(`  // Drag from (${params.from.x}, ${params.from.y}) to (${params.to.x}, ${params.to.y})`);
+          lines.push(`  await page.mouse.move(${params.from.x}, ${params.from.y});`);
+          lines.push(`  await page.mouse.down();`);
+          lines.push(`  await page.mouse.move(${params.to.x}, ${params.to.y});`);
+          lines.push(`  await page.mouse.up();`);
+          lines.push('');
+          break;
+
+        case 'scroll':
+          lines.push(`  // Scroll at (${params.x}, ${params.y})`);
+          if (params.x !== undefined && params.y !== undefined) {
+            lines.push(`  await page.mouse.move(${params.x}, ${params.y});`);
+          }
+          lines.push(`  await page.mouse.wheel({ deltaX: ${params.deltaX || 0}, deltaY: ${params.deltaY || 0} });`);
+          lines.push('');
+          break;
+
+        case 'mousemove':
+          lines.push(`  await page.mouse.move(${params.x}, ${params.y});`);
+          break;
+
+        case 'click':
+          if (typeof params.x === 'number' && typeof params.y === 'number') {
+            lines.push(`  await page.mouse.click(${params.x}, ${params.y});`);
+          } else if (params.selector) {
+            lines.push(`  await page.click('${params.selector}');`);
+          }
+          lines.push('');
+          break;
+
+        case 'type':
+          lines.push(`  await page.keyboard.type('${params.text}');`);
+          lines.push('');
+          break;
+
+        case 'press':
+          lines.push(`  await page.keyboard.press('${params.key}');`);
+          lines.push('');
+          break;
+      }
+    }
+  }
+
+  lines.push('  await browser.close();');
+  lines.push('}');
+  lines.push('');
+  lines.push('runTest().catch(console.error);');
+
+  return lines.join('\n');
+}
+
+function generatePlaywrightCode(commands: Array<{ tool: string; params: Record<string, any>; delay?: number; comment?: string }>, startUrl?: string): string {
+  const lines: string[] = [
+    '// Generated from cdp-tools interaction recording',
+    "import { test, expect } from '@playwright/test';",
+    '',
+    "test('recorded interaction', async ({ page }) => {",
+  ];
+
+  if (startUrl) {
+    lines.push(`  await page.goto('${startUrl}');`);
+    lines.push('');
+  }
+
+  for (const cmd of commands) {
+    // Add comment if present
+    if (cmd.comment) {
+      lines.push(`  // ${cmd.comment}`);
+    }
+
+    // Add delay if present
+    if (cmd.delay && cmd.delay > 100) {
+      lines.push(`  await page.waitForTimeout(${cmd.delay});`);
+    }
+
+    if (cmd.tool === 'navigate') {
+      const { action, ...params } = cmd.params;
+      if (action === 'goto' && params.url) {
+        lines.push(`  await page.goto('${params.url}');`);
+        lines.push('');
+      } else if (action === 'reload') {
+        lines.push(`  await page.reload();`);
+        lines.push('');
+      } else if (action === 'back') {
+        lines.push(`  await page.goBack();`);
+        lines.push('');
+      } else if (action === 'forward') {
+        lines.push(`  await page.goForward();`);
+        lines.push('');
+      }
+    } else if (cmd.tool === 'input') {
+      const { action, ...params } = cmd.params;
+
+      switch (action) {
+        case 'drag':
+          lines.push(`  // Drag from (${params.from.x}, ${params.from.y}) to (${params.to.x}, ${params.to.y})`);
+          lines.push(`  await page.mouse.move(${params.from.x}, ${params.from.y});`);
+          lines.push(`  await page.mouse.down();`);
+          lines.push(`  await page.mouse.move(${params.to.x}, ${params.to.y});`);
+          lines.push(`  await page.mouse.up();`);
+          lines.push('');
+          break;
+
+        case 'scroll':
+          lines.push(`  // Scroll at (${params.x || 0}, ${params.y || 0})`);
+          if (params.x !== undefined && params.y !== undefined) {
+            lines.push(`  await page.mouse.move(${params.x}, ${params.y});`);
+          }
+          lines.push(`  await page.mouse.wheel(${params.deltaX || 0}, ${params.deltaY || 0});`);
+          lines.push('');
+          break;
+
+        case 'mousemove':
+          lines.push(`  await page.mouse.move(${params.x}, ${params.y});`);
+          break;
+
+        case 'click':
+          if (typeof params.x === 'number' && typeof params.y === 'number') {
+            lines.push(`  await page.mouse.click(${params.x}, ${params.y});`);
+          } else if (params.selector) {
+            lines.push(`  await page.click('${params.selector}');`);
+          }
+          lines.push('');
+          break;
+
+        case 'type':
+          // Playwright uses type() for key-by-key typing, fill() for setting value directly
+          lines.push(`  await page.keyboard.type('${params.text}');`);
+          lines.push('');
+          break;
+
+        case 'press':
+          lines.push(`  await page.keyboard.press('${params.key}');`);
+          lines.push('');
+          break;
+
+        case 'hover':
+          if (params.selector) {
+            lines.push(`  await page.hover('${params.selector}');`);
+          }
+          lines.push('');
+          break;
+      }
+    }
+  }
+
+  lines.push('});');
+
+  return lines.join('\n');
+}
+
+// =============================================================================
 // Tool Export
 // =============================================================================
 
 export function createReplayTools(
   commandRecorder: CommandRecorder,
-  executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>
+  executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>,
+  getPageForConnection?: (connectionReason: string) => Promise<any>
 ) {
   return {
     replay: createTool(
-      'Record and replay command sequences for testing and automation. Actions: repeat (immediately execute commands by history indices - use this to repeat recent actions), history (view command history), create (create sequence from indices), list (list in-memory sequences), get (get sequence details), delete (delete from memory), save (save sequence to disk), load (load sequence from disk), listSaved (list saved files), deleteSaved (delete saved file), run (load and execute sequence from disk in one step), step (execute next N commands in paused sequence), finish (complete remaining commands), insert (insert recorded commands into sequence), status (show active sequence status)',
+      'Record and replay command sequences for testing and automation. Actions: repeat (immediately execute commands by history indices - use this to repeat recent actions), history (view command history), create (create sequence from indices), list (list in-memory sequences), get (get sequence details), delete (delete from memory), save (save sequence to disk), load (load sequence from disk), listSaved (list saved files), deleteSaved (delete saved file), run (load and execute sequence from disk in one step), step (execute next N commands in paused sequence), finish (complete remaining commands), insert (insert recorded commands into sequence), status (show active sequence status), startMouseRecording (start recording mouse events), stopMouseRecording (stop recording and get events), mouseRecordingStatus (check recording status)',
       replaySchema,
       async (args) => {
         switch (args.action) {
@@ -833,8 +1617,8 @@ export function createReplayTools(
             return handleGet(args, commandRecorder);
           case 'delete':
             return handleDelete(args, commandRecorder);
-          case 'save':
-            return handleSave(args, commandRecorder);
+          case 'export':
+            return handleExport(args, commandRecorder);
           case 'load':
             return handleLoad(args, commandRecorder);
           case 'listSaved':
@@ -842,7 +1626,7 @@ export function createReplayTools(
           case 'deleteSaved':
             return handleDeleteSaved(args, commandRecorder);
           case 'run':
-            return handleRun(args, commandRecorder, executeToolCall);
+            return handleRun(args, commandRecorder, executeToolCall, getPageForConnection!);
           case 'status':
             return handleStatus(commandRecorder);
           case 'step':
@@ -857,6 +1641,24 @@ export function createReplayTools(
             return handleRepeat(args, commandRecorder, executeToolCall);
           case 'runFromLog':
             return handleRunFromLog(args, executeToolCall);
+          case 'startMouseRecording':
+            return handleStartMouseRecording(args, getPageForConnection);
+          case 'stopMouseRecording':
+            return handleStopMouseRecording(args, commandRecorder, getPageForConnection);
+          case 'mouseRecordingStatus':
+            return handleMouseRecordingStatus(args, getPageForConnection);
+          case 'recordInteraction':
+            return handleRecordInteraction(args, getPageForConnection);
+          case 'stopInteraction':
+            return handleStopInteraction(args, commandRecorder, getPageForConnection);
+          case 'listInteractions':
+            return handleListInteractions();
+          case 'getInteraction':
+            return handleGetInteraction(args);
+          case 'clearInteraction':
+            return handleClearInteraction(args);
+          case 'replayInteraction':
+            return handleReplayInteraction(args, commandRecorder, executeToolCall, getPageForConnection);
           default:
             return createErrorResponse('INVALID_ACTION', { action: args.action });
         }

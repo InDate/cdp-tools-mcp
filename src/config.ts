@@ -33,6 +33,12 @@ export interface ReplayConfig {
   maxConditionalDepth: number;
   /** Maximum regex pattern length for url:matches conditions (default: 500) */
   maxRegexLength: number;
+  /** Show visual cursor during replay (default: true) */
+  showCursor: boolean;
+  /** Export path for Playwright tests (default: ./tests/e2e) */
+  playwrightExportPath: string;
+  /** Export path for Puppeteer tests (default: ./tests/puppeteer) */
+  puppeteerExportPath: string;
 }
 
 /**
@@ -130,6 +136,9 @@ const DEFAULT_CONFIG: CdpToolsConfig = {
   replay: {
     maxConditionalDepth: 10,  // Maximum nesting depth for conditional commands
     maxRegexLength: 500,      // Maximum regex pattern length for url:matches
+    showCursor: true,         // Show visual cursor during replay
+    playwrightExportPath: './tests/e2e',      // Export path for Playwright tests
+    puppeteerExportPath: './tests/puppeteer', // Export path for Puppeteer tests
   },
   changeDetection: {
     enabled: true,            // Detect DOM changes by default
@@ -277,6 +286,9 @@ export class ConfigManager {
       replay: {
         maxConditionalDepth: loaded.replay?.maxConditionalDepth ?? defaults.replay.maxConditionalDepth,
         maxRegexLength: loaded.replay?.maxRegexLength ?? defaults.replay.maxRegexLength,
+        showCursor: loaded.replay?.showCursor ?? defaults.replay.showCursor,
+        playwrightExportPath: loaded.replay?.playwrightExportPath ?? defaults.replay.playwrightExportPath,
+        puppeteerExportPath: loaded.replay?.puppeteerExportPath ?? defaults.replay.puppeteerExportPath,
       },
       changeDetection: {
         enabled: loaded.changeDetection?.enabled ?? defaults.changeDetection.enabled,

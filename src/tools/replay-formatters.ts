@@ -337,6 +337,8 @@ interface HistoryCommand {
   index: number;
   tool: string;
   params: Record<string, any>;
+  delay?: number;
+  comment?: string;
 }
 
 /**
@@ -359,7 +361,13 @@ export function formatHistory(
   history.forEach((cmd) => {
     const paramStr = JSON.stringify(cmd.params);
     const truncatedParams = paramStr.length > 60 ? paramStr.slice(0, 60) + '...' : paramStr;
-    response += `\n${cmd.index}. **${cmd.tool}** - ${truncatedParams}`;
+    let line = `\n${cmd.index}. **${cmd.tool}** - ${truncatedParams}`;
+    // Show delay and comment if present
+    const extras: string[] = [];
+    if (cmd.delay) extras.push(`delay:${cmd.delay}ms`);
+    if (cmd.comment) extras.push(`"${cmd.comment.length > 30 ? cmd.comment.slice(0, 30) + '...' : cmd.comment}"`);
+    if (extras.length > 0) line += ` *(${extras.join(', ')})*`;
+    response += line;
   });
 
   response += `\n\n---\n\nCreate sequence: \`replay({ action: 'create', name: '...', indices: [${history.slice(0, 3).map(c => c.index).join(', ')}] })\``;

@@ -1885,6 +1885,66 @@ Sequence file "{{filename}}" deleted successfully.
 
 ---
 
+## EXPORT_SUCCESS
+
+**Type:** success
+**Summary:** Exported
+
+Test: `{{testFile}}`
+{{#sequenceFile}}Sequence: `{{sequenceFile}}`{{/sequenceFile}}
+Format: {{format}}
+
+---
+
+## EXPORT_SEQUENCE_SUCCESS
+
+**Type:** success
+**Summary:** Sequence exported
+
+`{{filename}}` ({{location}})
+
+---
+
+## EXPORT_CONFLICT
+
+**Type:** warning
+**Summary:** File exists
+
+`{{filepath}}` exists. Use `overwrite: true` or rename sequence.
+
+---
+
+## EXPORT_FAILED
+
+**Type:** error
+**Code:** EXPORT_FAILED
+
+{{message}}
+
+---
+
+## RECORDING_STOPPED
+
+**Type:** success
+**Summary:** Sequence created
+
+{{name}} ({{sequenceId}})
+{{duration}}s, {{commandCount}} commands, {{startUrl}}
+clicks:{{clicks}}, drags:{{drags}}, scrolls:{{scrolls}}, keys:{{keyPresses}}{{#navigations}}, nav:{{navigations}}{{/navigations}}{{#comments}}, comments:{{comments}}{{/comments}}
+
+Next: `get/run/export({ name: "{{name}}" })`
+
+---
+
+## RECORDING_NAME_CONFLICT
+
+**Type:** warning
+**Summary:** Name exists
+
+"{{sequenceName}}" exists. Use `name: "new-name"` or `overwrite: true`.
+
+---
+
 ## MISSING_CONNECTION
 
 **Type:** error

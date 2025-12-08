@@ -9,6 +9,24 @@ import { checkUrlPort } from '../utils/port-check.js';
 import { configManager, ClickValidationConfig } from '../config.js';
 import type { ClickActionMeta, ConsoleToolMeta, NetworkToolMeta } from '../tool-response.js';
 
+// Re-export replay cursor functions
+export { injectReplayCursor, showClickEffect, showKeyPress, removeReplayCursor } from '../replay-cursor.js';
+
+// =============================================================================
+// Replay Cursor Callbacks
+// =============================================================================
+
+interface ReplayCursorCallbacks {
+  onClickBefore?: (x: number, y: number, isRightClick: boolean) => Promise<void>;
+  onKeyPress?: (key: string) => Promise<void>;
+}
+
+let replayCursorCallbacks: ReplayCursorCallbacks = {};
+
+export function setReplayCursorCallbacks(callbacks: ReplayCursorCallbacks): void {
+  replayCursorCallbacks = callbacks;
+}
+
 // =============================================================================
 // Types
 // =============================================================================
@@ -387,12 +405,23 @@ export async function loadSequence(
   }
 
   if (args.name) {
-    // loadSequenceFromDisk has fuzzy matching built in
+    // Check memory first
+    const memorySequences = recorder.listSequences();
+    const memoryMatch = memorySequences.find(s => s.name === args.name);
+    if (memoryMatch) {
+      await debugLog('executor', `Found sequence "${memoryMatch.name}" in memory`);
+      return { success: true, sequence: memoryMatch };
+    }
+
+    // Then check disk (loadSequenceFromDisk has fuzzy matching built in)
     const sequence = await recorder.loadSequenceFromDisk(args.name);
 
     if (!sequence) {
       const savedSequences = await recorder.listSavedSequencesOnDisk();
-      const availableNames = savedSequences.map(s => s.name).join(', ');
+      const availableNames = [
+        ...memorySequences.map(s => s.name),
+        ...savedSequences.map(s => s.name)
+      ].join(', ');
       return {
         success: false,
         error: `No sequence found matching "${args.name}". Available: ${availableNames || 'none'}`,
@@ -1198,7 +1227,17 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
     const remainingTotal = totalTimeout - elapsed;
     const effectiveStepTimeout = Math.min(stepTimeout, remainingTotal);
 
+    // Wait for delay if specified (for recorded interactions)
+    if (cmd.delay && cmd.delay > 0) {
+      debugLog(logPrefix, `Waiting ${cmd.delay}ms before step ${i + 1}`);
+      await new Promise(resolve => setTimeout(resolve, cmd.delay));
+    }
+
     try {
+      // Log comment if present
+      if (cmd.comment) {
+        debugLog(logPrefix, `Comment: ${cmd.comment}`);
+      }
       debugLog(logPrefix, `Executing step ${i + 1}/${commands.length}: ${cmd.tool}`);
 
       // Build params
@@ -1252,6 +1291,21 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
             error: portCheck.error
           });
           break;
+        }
+      }
+
+      // Replay cursor visual feedback
+      if (cmd.tool === 'input') {
+        if (params.action === 'click' && typeof params.x === 'number' && typeof params.y === 'number') {
+          // Coordinate-based click - show cursor effect
+          if (replayCursorCallbacks.onClickBefore) {
+            await replayCursorCallbacks.onClickBefore(params.x, params.y, false);
+          }
+        } else if (params.action === 'press' && params.key) {
+          // Key press - show key indicator
+          if (replayCursorCallbacks.onKeyPress) {
+            await replayCursorCallbacks.onKeyPress(params.key);
+          }
         }
       }
 
@@ -1414,9 +1468,12 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
         }
       }
 
-      // Record command if enabled
+      // Record command if enabled (preserve delay and comment)
       if (record) {
-        commandRecorder.recordCommand(cmd.tool, params);
+        commandRecorder.recordCommand(cmd.tool, params, {
+          delay: cmd.delay,
+          comment: cmd.comment
+        });
       }
 
       results.push({ step: i + 1, tool: cmd.tool, success: true });

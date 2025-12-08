@@ -1085,7 +1085,11 @@ const allTools = {
   // Download tools
   ...createDownloadTools(),
   // Replay tools
-  ...createReplayTools(commandRecorder, executeToolCall),
+  ...createReplayTools(commandRecorder, executeToolCall, async (connectionReason: string) => {
+    const resolved = await resolveConnectionFromReason(connectionReason);
+    if (!resolved?.puppeteerManager) return null;
+    return resolved.puppeteerManager.getPage();
+  }),
   // Server management tools
   ...createServerTools(serverManager),
   // Config management tools

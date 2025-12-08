@@ -17,10 +17,16 @@ import { resolveSelector, isExtendedSelector, cleanupResolvedSelector } from '..
 import { domChangeMonitor, formatDOMChanges, DOMChanges } from '../dom-change-monitor.js';
 import type { ToolResponseMeta, ClickActionMeta } from '../tool-response.js';
 
+// Coordinate schema for mouse actions
+const coordinateSchema = z.object({
+  x: z.number().describe('X coordinate in CSS pixels from viewport left'),
+  y: z.number().describe('Y coordinate in CSS pixels from viewport top'),
+});
+
 // Consolidated input tool schema
 const inputToolSchema = z.object({
-  action: z.enum(['click', 'type', 'press', 'hover', 'focus', 'focusNext', 'focusPrevious'])
-    .describe('Input action: click (click element), type (type text into element), press (press keyboard key), hover (hover over element), focus (focus element by selector), focusNext (Tab to next focusable element), focusPrevious (Shift+Tab to previous focusable element)'),
+  action: z.enum(['click', 'type', 'press', 'hover', 'focus', 'focusNext', 'focusPrevious', 'drag', 'scroll', 'mousemove', 'pinch'])
+    .describe('Input action: click (click element), type (type text into element), press (press keyboard key), hover (hover over element), focus (focus element by selector), focusNext (Tab to next focusable element), focusPrevious (Shift+Tab to previous focusable element), drag (drag from one point to another), scroll (scroll wheel at position), mousemove (move mouse to position), pinch (pinch zoom gesture)'),
   connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 
   // click, type, hover, focus parameters
@@ -41,6 +47,20 @@ const inputToolSchema = z.object({
   // focusNext/focusPrevious parameters
   count: z.number().optional().describe('Number of times to tab (for focusNext/focusPrevious actions, default: 1)'),
 
+  // drag parameters
+  from: coordinateSchema.optional().describe('Starting coordinates for drag action (required for drag)'),
+  to: coordinateSchema.optional().describe('Ending coordinates for drag action (required for drag)'),
+  steps: z.number().optional().describe('Number of intermediate points for drag action (default: 10). More steps = smoother drag'),
+
+  // scroll parameters
+  deltaX: z.number().optional().describe('Horizontal scroll amount in pixels (for scroll action, default: 0). Positive = scroll right'),
+  deltaY: z.number().optional().describe('Vertical scroll amount in pixels (for scroll action, default: 0). Positive = scroll down'),
+  x: z.number().optional().describe('X coordinate for click/scroll/mousemove/pinch action. For click: clicks at coordinates instead of using selector'),
+  y: z.number().optional().describe('Y coordinate for click/scroll/mousemove/pinch action. For click: clicks at coordinates instead of using selector'),
+
+  // pinch parameters
+  scaleFactor: z.number().optional().describe('Scale factor for pinch gesture (for pinch action). >1 = zoom in, <1 = zoom out. Example: 2.0 doubles zoom, 0.5 halves zoom'),
+
   // Change detection parameters
   detectChanges: z.boolean().optional().describe('Detect DOM changes from this action (default: from config)'),
   settleTimeout: z.number().optional().describe('Max time to wait for DOM to settle in ms (default: 2000)'),
@@ -54,7 +74,7 @@ export function createInputTools(
 ) {
   return {
     input: createTool(
-      'Perform browser input actions. Actions: click (click element), type (type text into element), press (press keyboard key), hover (hover over element)',
+      'Perform browser input actions. Actions: click (click element), type (type text into element), press (press keyboard key), hover (hover over element), focus (focus element by selector), focusNext (Tab to next focusable element), focusPrevious (Shift+Tab to previous focusable element), drag (drag from one point to another), scroll (scroll wheel at position), mousemove (move mouse to position), pinch (pinch zoom gesture)',
       inputToolSchema,
       async (args) => {
         const { action, connectionReason } = args;
@@ -89,14 +109,25 @@ export function createInputTools(
 
         switch (action) {
           case 'click': {
-            const { selector: rawSelector, clickCount = 1, handleModals = false, dismissStrategy = 'auto' } = args;
+            const { selector: rawSelector, clickCount = 1, handleModals = false, dismissStrategy = 'auto', x, y } = args;
+
+            // Coordinate-based click (for canvas/3D apps)
+            if (typeof x === 'number' && typeof y === 'number') {
+              await page.mouse.click(x, y, { clickCount });
+              return {
+                content: [{
+                  type: 'text',
+                  text: `Clicked at coordinates (${x}, ${y})`
+                }]
+              };
+            }
 
             if (!rawSelector) {
               return {
                 content: [
                   {
                     type: 'text',
-                    text: `## Error\n\nMissing required parameter: \`selector\`\n\n**Action:** click\n\n**Suggestion:** Provide a CSS selector for the element to click.`,
+                    text: `## Error\n\nMissing required parameter: \`selector\` or coordinates (\`x\`, \`y\`)\n\n**Action:** click\n\n**Suggestion:** Provide a CSS selector for the element to click, or x/y coordinates for coordinate-based clicking.`,
                   },
                 ],
                 isError: true,
@@ -894,10 +925,286 @@ export function createInputTools(
             });
           }
 
+          case 'drag': {
+            const { from, to, steps = 10 } = args;
+
+            if (!from || !to) {
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: `## Error\n\nMissing required parameters: \`from\` and \`to\`\n\n**Action:** drag\n\n**Suggestion:** Provide starting and ending coordinates. Example: from: {x: 100, y: 100}, to: {x: 200, y: 200}`,
+                  },
+                ],
+                isError: true,
+              };
+            }
+
+            const result = await executeWithPauseDetection(
+              targetCdpManager,
+              async () => {
+                const mouse = page.mouse;
+
+                // Move to start position
+                await mouse.move(from.x, from.y);
+
+                // Press mouse button
+                await mouse.down();
+
+                // Calculate intermediate steps for smooth drag
+                const deltaX = (to.x - from.x) / steps;
+                const deltaY = (to.y - from.y) / steps;
+
+                for (let i = 1; i <= steps; i++) {
+                  const currentX = from.x + deltaX * i;
+                  const currentY = from.y + deltaY * i;
+                  await mouse.move(currentX, currentY);
+                  // Small delay for smoother drag
+                  await new Promise(resolve => setTimeout(resolve, 10));
+                }
+
+                // Release mouse button
+                await mouse.up();
+
+                return {
+                  from,
+                  to,
+                  steps,
+                  distance: Math.sqrt(Math.pow(to.x - from.x, 2) + Math.pow(to.y - from.y, 2)),
+                };
+              },
+              'drag'
+            );
+
+            if (result.pausedAtBreakpoint) {
+              return createSuccessResponse('ACTION_PAUSED_AT_BREAKPOINT', {
+                action: 'drag',
+                ...result.pauseInfo,
+              });
+            }
+
+            const dragResult = result.result;
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `Dragged from (${dragResult?.from.x}, ${dragResult?.from.y}) to (${dragResult?.to.x}, ${dragResult?.to.y})\n**Distance:** ${dragResult?.distance.toFixed(1)}px over ${dragResult?.steps} steps`,
+                },
+              ],
+            };
+          }
+
+          case 'scroll': {
+            const { deltaX = 0, deltaY = 0, x, y } = args;
+
+            if (deltaX === 0 && deltaY === 0) {
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: `## Error\n\nAt least one of \`deltaX\` or \`deltaY\` must be non-zero\n\n**Action:** scroll\n\n**Suggestion:** Provide scroll amounts. Example: deltaY: 300 (scroll down), deltaY: -300 (scroll up)`,
+                  },
+                ],
+                isError: true,
+              };
+            }
+
+            const result = await executeWithPauseDetection(
+              targetCdpManager,
+              async () => {
+                const mouse = page.mouse;
+
+                // If coordinates provided, move to that position first
+                if (x !== undefined && y !== undefined) {
+                  await mouse.move(x, y);
+                }
+
+                // Perform scroll
+                await mouse.wheel({ deltaX, deltaY });
+
+                // Get current scroll position
+                const scrollPosition = await page.evaluate(() => ({
+                  scrollX: (globalThis as any).window.scrollX,
+                  scrollY: (globalThis as any).window.scrollY,
+                  maxScrollX: (globalThis as any).document.documentElement.scrollWidth - (globalThis as any).window.innerWidth,
+                  maxScrollY: (globalThis as any).document.documentElement.scrollHeight - (globalThis as any).window.innerHeight,
+                }));
+
+                return {
+                  deltaX,
+                  deltaY,
+                  position: x !== undefined && y !== undefined ? { x, y } : undefined,
+                  scrollPosition,
+                };
+              },
+              'scroll'
+            );
+
+            if (result.pausedAtBreakpoint) {
+              return createSuccessResponse('ACTION_PAUSED_AT_BREAKPOINT', {
+                action: 'scroll',
+                ...result.pauseInfo,
+              });
+            }
+
+            const scrollResult = result.result;
+            const directionParts: string[] = [];
+            if (deltaY > 0) directionParts.push(`down ${deltaY}px`);
+            if (deltaY < 0) directionParts.push(`up ${Math.abs(deltaY)}px`);
+            if (deltaX > 0) directionParts.push(`right ${deltaX}px`);
+            if (deltaX < 0) directionParts.push(`left ${Math.abs(deltaX)}px`);
+
+            const positionInfo = scrollResult?.position
+              ? ` at (${scrollResult.position.x}, ${scrollResult.position.y})`
+              : '';
+
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `Scrolled ${directionParts.join(' and ')}${positionInfo}\n**Page position:** (${scrollResult?.scrollPosition.scrollX}, ${scrollResult?.scrollPosition.scrollY}) of (${scrollResult?.scrollPosition.maxScrollX}, ${scrollResult?.scrollPosition.maxScrollY})`,
+                },
+              ],
+            };
+          }
+
+          case 'mousemove': {
+            const { x, y } = args;
+
+            if (x === undefined || y === undefined) {
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: `## Error\n\nMissing required parameters: \`x\` and \`y\`\n\n**Action:** mousemove\n\n**Suggestion:** Provide coordinates. Example: x: 100, y: 200`,
+                  },
+                ],
+                isError: true,
+              };
+            }
+
+            const result = await executeWithPauseDetection(
+              targetCdpManager,
+              async () => {
+                await page.mouse.move(x, y);
+
+                // Get element at the mouse position
+                const elementInfo = await page.evaluate((mouseX: number, mouseY: number) => {
+                  const el = (globalThis as any).document.elementFromPoint(mouseX, mouseY);
+                  if (!el) return null;
+
+                  const tag = el.tagName.toLowerCase();
+                  const text = el.textContent?.trim().substring(0, 30) || '';
+                  const id = el.id ? `#${el.id}` : '';
+                  const className = el.className && typeof el.className === 'string'
+                    ? `.${el.className.trim().split(/\s+/).slice(0, 2).join('.')}`
+                    : '';
+
+                  return {
+                    tag,
+                    text: text || undefined,
+                    selector: id || className || tag,
+                  };
+                }, x, y);
+
+                return { x, y, elementInfo };
+              },
+              'mousemove'
+            );
+
+            if (result.pausedAtBreakpoint) {
+              return createSuccessResponse('ACTION_PAUSED_AT_BREAKPOINT', {
+                action: 'mousemove',
+                ...result.pauseInfo,
+              });
+            }
+
+            const moveResult = result.result;
+            const elementDesc = moveResult?.elementInfo
+              ? `\n**Element at position:** \`${moveResult.elementInfo.selector}\`${moveResult.elementInfo.text ? ` "${moveResult.elementInfo.text}"` : ''}`
+              : '';
+
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `Mouse moved to (${moveResult?.x}, ${moveResult?.y})${elementDesc}`,
+                },
+              ],
+            };
+          }
+
+          case 'pinch': {
+            const { x, y, scaleFactor } = args;
+
+            if (scaleFactor === undefined) {
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: `## Error\n\nMissing required parameter: \`scaleFactor\`\n\n**Action:** pinch\n\n**Suggestion:** Provide a scale factor. Example: scaleFactor: 2.0 (zoom in 2x), scaleFactor: 0.5 (zoom out 50%)`,
+                  },
+                ],
+                isError: true,
+              };
+            }
+
+            const result = await executeWithPauseDetection(
+              targetCdpManager,
+              async () => {
+                // Get viewport center if coordinates not provided
+                const viewport = page.viewport();
+                const centerX = x ?? (viewport?.width ?? 800) / 2;
+                const centerY = y ?? (viewport?.height ?? 600) / 2;
+
+                // Create CDP session for synthesizePinchGesture
+                const client = await page.createCDPSession();
+
+                try {
+                  // Use CDP's synthesizePinchGesture (experimental but widely supported)
+                  await client.send('Input.synthesizePinchGesture', {
+                    x: centerX,
+                    y: centerY,
+                    scaleFactor,
+                    relativeSpeed: 300, // pixels per second
+                    gestureSourceType: 'touch',
+                  });
+
+                  return {
+                    x: centerX,
+                    y: centerY,
+                    scaleFactor,
+                    action: scaleFactor > 1 ? 'zoom in' : 'zoom out',
+                  };
+                } finally {
+                  await client.detach();
+                }
+              },
+              'pinch'
+            );
+
+            if (result.pausedAtBreakpoint) {
+              return createSuccessResponse('ACTION_PAUSED_AT_BREAKPOINT', {
+                action: 'pinch',
+                ...result.pauseInfo,
+              });
+            }
+
+            const pinchResult = result.result;
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `Pinch ${pinchResult?.action} at (${pinchResult?.x}, ${pinchResult?.y}) with scale factor ${pinchResult?.scaleFactor}`,
+                },
+              ],
+            };
+          }
+
           default:
             return createErrorResponse('INVALID_ACTION', {
               action,
-              validActions: 'click, type, press, hover, focus, focusNext, focusPrevious'
+              validActions: 'click, type, press, hover, focus, focusNext, focusPrevious, drag, scroll, mousemove, pinch'
             });
         }
       }
