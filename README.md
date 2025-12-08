@@ -74,6 +74,8 @@ Restart and start debugging! Ask Claude to help debug your application.
 - **User Interaction**: Click, type, hover, press keys
 - **Console & Network Monitoring**: Track logs and HTTP requests with deep serialization
 - **Storage Access**: Inspect and modify localStorage, sessionStorage, cookies
+- **Interaction Recording**: Record mouse, keyboard, and navigation events with visual overlay
+- **Test Export**: Export recordings as Playwright or Puppeteer tests
 
 ### Multi-Agent Support
 - **Tab Management**: Nested Claude agents can each create and manage their own browser tabs within the same Chrome instance
@@ -154,6 +156,9 @@ MIT
 ## What's New
 
 ### Latest
+- **Interaction Recording**: Record mouse clicks, drags, scrolls, keyboard input, and navigation events with a visual overlay - add comments during recording with Ctrl+Shift+C
+- **Visual Replay Cursor**: See exactly where clicks happen during replay with animated cursor and ripple effects
+- **Test Export**: Export recordings as Playwright (.spec.ts) or Puppeteer (.test.js) tests with `export({ name: "my-test", format: "playwright" })`
 - **Config Management**: New `config` tool to manage settings - switch between local/global config, backup, reset, and view current configuration
 - **Cross-Directory Server Access**: Use `global: true` flag to access servers started from a different working directory
 - **DOM/Event/XHR Breakpoints**: Pause on DOM mutations (`setDOMBreakpoint`), event dispatches (`setEventBreakpoint`), or network requests (`setXHRBreakpoint`) using CDP's DOMDebugger domain

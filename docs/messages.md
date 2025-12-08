@@ -1757,15 +1757,15 @@ Command recording started. All tool calls will be recorded until you stop.
 
 **Type:** success
 
-Recording stopped with {{commandCount}} commands (not saved). Provide sequenceName to save.
+Recording stopped with {{commandCount}} commands. Use `export` to save to disk.
 
 ---
 
-## SEQUENCE_SAVED
+## SEQUENCE_EXPORTED
 
 **Type:** success
 
-Sequence "{{name}}" saved successfully!
+Sequence "{{name}}" exported successfully!
 
 **Sequence ID:** `{{sequenceId}}`
 **Commands:** {{commandCount}}
@@ -1827,11 +1827,11 @@ No commands matched the provided IDs.
 
 ---
 
-## SEQUENCE_SAVED_TO_DISK
+## SEQUENCE_EXPORTED_TO_DISK
 
 **Type:** success
 
-Sequence saved to disk successfully!
+Sequence exported to disk successfully!
 
 **Filename:** `{{filename}}`
 **Location:** `.cdp-tools/sequences/`

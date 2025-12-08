@@ -4,7 +4,109 @@ Record and replay command sequences for testing, automation, and debugging workf
 
 > **Tip:** Use the `replay-agent` (`.claude/agents/replay-agent.md`) to build sequences through investigation - it records your tool calls automatically.
 
-## Creating Sequences
+## Recording Interactions
+
+The easiest way to create sequences is by recording your interactions directly in the browser.
+
+### Start Recording
+
+```javascript
+// Launch Chrome with a meaningful name (becomes the sequence name)
+launchChrome({ reference: "my signup test" })
+
+// Start recording
+replay({ action: 'recordInteraction', connectionReason: 'my-signup-test' })
+```
+
+A visual overlay appears showing:
+- Recording status (REC/PAUSED)
+- Event count and duration
+- Coordinates and element info
+- Buttons: 💬 Comment | ⏸ Pause | ↺ Reset | ✓ Complete
+
+### Add Comments
+
+During recording, add comments to document expected behavior:
+- Click the 💬 button in the overlay
+- Or press **Ctrl+Shift+C** (Cmd+Shift+C on Mac)
+- Type your comment and save
+
+Comments are attached to the previous action and appear in exported tests.
+
+### Stop Recording
+
+```javascript
+replay({ action: 'stopInteraction', connectionReason: 'my-signup-test' })
+```
+
+This creates a sequence named after your connectionReason (e.g., "my-signup-test").
+
+If a sequence with that name already exists, you'll be prompted to:
+- Use a different name: `stopInteraction({ ..., name: "new-name" })`
+- Overwrite: `stopInteraction({ ..., overwrite: true })`
+
+## Exporting Tests
+
+Export sequences as Playwright or Puppeteer tests:
+
+```javascript
+// Export as Playwright test
+replay({ action: 'export', name: 'my-signup-test', format: 'playwright' })
+// Creates: tests/e2e/my-signup-test.spec.ts
+// Also saves: .cdp-tools/sequences/my-signup-test.json
+
+// Export as Puppeteer test
+replay({ action: 'export', name: 'my-signup-test', format: 'puppeteer' })
+// Creates: tests/puppeteer/my-signup-test.test.js
+
+// Export sequence JSON only
+replay({ action: 'export', name: 'my-signup-test', format: 'sequence' })
+// Creates: .cdp-tools/sequences/my-signup-test.json
+```
+
+### Configure Export Paths
+
+In `.cdp-tools/config.json`:
+
+```json
+{
+  "replay": {
+    "playwrightExportPath": "./tests/e2e",
+    "puppeteerExportPath": "./tests/puppeteer"
+  }
+}
+```
+
+### Preview Before Export
+
+```javascript
+// Preview as Playwright code
+replay({ action: 'get', name: 'my-signup-test', outputFormat: 'playwright' })
+
+// Preview as Puppeteer code
+replay({ action: 'get', name: 'my-signup-test', outputFormat: 'puppeteer' })
+```
+
+## Visual Replay Cursor
+
+When replaying sequences, a visual cursor shows exactly where clicks happen:
+
+- **Animated cursor** moves to click position before clicking
+- **Green ripple** on left clicks
+- **Red ripple** on right clicks
+- **Key press toast** shows keyboard input
+
+Configure in `.cdp-tools/config.json`:
+
+```json
+{
+  "replay": {
+    "showCursor": true
+  }
+}
+```
+
+## Creating Sequences from History
 
 ### From Command History
 
@@ -53,25 +155,25 @@ replay({ action: 'delete', sequenceId: 'seq-1234567890' })
 ## Saving and Loading
 
 ```javascript
-// Save sequence to disk (working directory)
-replay({ action: 'save', sequenceId: 'seq-1234567890' })
-// Saves to: .cdp-tools/sequences/<name>-<id>.json
+// Export sequence to disk (working directory)
+replay({ action: 'export', sequenceId: 'seq-1234567890', format: 'sequence' })
+// Saves to: .cdp-tools/sequences/<name>.json
 
-// Save to global location (accessible from any directory)
-replay({ action: 'save', sequenceId: 'seq-1234567890', global: true })
-// Saves to: ~/.cdp-tools/sequences/<name>-<id>.json
+// Export to global location (accessible from any directory)
+replay({ action: 'export', sequenceId: 'seq-1234567890', format: 'sequence', global: true })
+// Saves to: ~/.cdp-tools/sequences/<name>.json
 
 // List saved sequences on disk
 replay({ action: 'listSaved' })
 
 // Load sequence from disk
-replay({ action: 'load', filename: 'login-flow-123456.json' })
+replay({ action: 'load', filename: 'login-flow.json' })
 
 // Load into history (for editing)
-replay({ action: 'load', filename: 'login-flow-123456.json', intoHistory: true })
+replay({ action: 'load', filename: 'login-flow.json', intoHistory: true })
 
 // Delete saved file
-replay({ action: 'deleteSaved', filename: 'login-flow-123456.json' })
+replay({ action: 'deleteSaved', filename: 'login-flow.json' })
 ```
 
 ## Running Sequences
@@ -231,20 +333,17 @@ Configure in `.cdp-tools/config.json`:
 ### Regression Testing
 
 ```javascript
-// Record once
-replay({ action: 'history' })
-// ... perform test workflow ...
-replay({
-  action: 'create',
-  name: 'checkout-test',
-  description: 'Complete checkout flow with test product',
-  expectedOutcome: 'Order confirmation page displayed',
-  indices: [0, 1, 2, 3, 4]
-})
-replay({ action: 'save', sequenceId: 'seq-...' })
+// Record interactions directly
+launchChrome({ reference: "checkout test" })
+replay({ action: 'recordInteraction', connectionReason: 'checkout-test' })
+// ... perform test workflow in browser, click ✓ when done ...
+replay({ action: 'stopInteraction', connectionReason: 'checkout-test' })
+
+// Export as Playwright test
+replay({ action: 'export', name: 'checkout-test', format: 'playwright' })
 
 // Run anytime to verify
-replay({ action: 'run', name: 'checkout-test' })
+replay({ action: 'run', name: 'checkout-test', connectionReason: 'test-run' })
 ```
 
 ### Debugging Workflows
@@ -267,7 +366,7 @@ replay({ action: 'run', name: 'debug-auth-bug' })
 ### Automation
 
 ```javascript
-// Save common workflows as sequences
+// Record common workflows as sequences
 replay({
   action: 'create',
   name: 'daily-smoke-test',
@@ -285,7 +384,7 @@ replay({ action: 'run', name: 'daily-smoke-test' })
 - **Recording:** Only tool calls are recorded, not responses
 - **Replay:** Commands execute sequentially in recorded order
 - **Dry Run:** Preview execution without actually running commands
-- **Persistence:** Sequences are kept in memory (cleared on restart); use save/load for disk persistence
+- **Persistence:** Sequences are kept in memory (cleared on restart); use export/load for disk persistence
 - **Connection Stripping:** `connectionReason` is automatically removed when recording for portability
 - **Element Validation:** After navigation/click, replay waits for the next element to exist
 - **Debug-Aware:** Stale `callFrameId` values are automatically replaced with fresh ones during replay
