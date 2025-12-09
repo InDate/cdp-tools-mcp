@@ -12,7 +12,7 @@ import { executeWithPauseDetection, formatActionResult } from '../debugger-aware
 import { checkBrowserAutomation } from '../error-helpers.js';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
-import { validateReference } from '../reference-validator.js';
+import { autoLaunchChrome } from './replay-executor.js';
 import type { ClickableCache, ClickableElement } from '../clickable-cache.js';
 import { collectInteractiveElements } from '../element-collector.js';
 import type { ToolResponseMeta, NavigateActionMeta } from '../tool-response.js';
@@ -183,20 +183,11 @@ export function createPageTools(
 
         // Auto-launch Chrome for 'goto' action if no connection found
         if (!resolved && action === 'goto' && executeToolCall) {
-          // Validate connectionReason before auto-launch (must be valid 3-word reference)
-          const validation = validateReference(connectionReason);
-          if (!validation.valid) {
-            return createErrorResponse('INVALID_REFERENCE', {
+          const launchResult = await autoLaunchChrome(executeToolCall, connectionReason, 'navigate.goto');
+          if (!launchResult.success) {
+            return createErrorResponse(launchResult.errorType, {
               reference: connectionReason,
-              error: validation.error
-            });
-          }
-
-          const launchResult = await executeToolCall('launchChrome', { reference: connectionReason });
-          if (launchResult?.isError) {
-            return createErrorResponse('LAUNCH_FAILED', {
-              connectionReason,
-              message: `Failed to auto-launch Chrome: ${launchResult?.content?.[0]?.text || 'Unknown error'}`
+              error: launchResult.error
             });
           }
           // Try resolving again after launch

@@ -6,7 +6,6 @@ import { z } from 'zod';
 import type { CommandRecorder, ActiveSequenceState, CommandSequence } from '../command-recorder.js';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
-import { validateReference } from '../reference-validator.js';
 
 import {
   loadSequence,
@@ -23,9 +22,22 @@ import {
   showClickEffect,
   showKeyPress,
   removeReplayCursor,
+  autoLaunchChrome,
   TOOLS_NEEDING_CONNECTION,
   type ExecutionContext,
+  type LoadSequenceResult,
 } from './replay-executor.js';
+
+/**
+ * Handle loadSequence error result - creates proper error response with template variables
+ */
+function handleLoadSequenceError(result: Extract<LoadSequenceResult, { success: false }>, action: string) {
+  return createErrorResponse(result.errorCode, {
+    action,
+    message: result.error,
+    ...result.templateVars
+  });
+}
 
 import {
   formatExecutionResults,
@@ -345,7 +357,7 @@ async function handleGet(args: ReplayArgs, recorder: CommandRecorder) {
   // Use loadSequence to support both name (disk) and sequenceId (memory)
   const loadResult = await loadSequence({ name: args.name, sequenceId: args.sequenceId }, recorder);
   if (!loadResult.success) {
-    return createErrorResponse(loadResult.errorCode, { message: loadResult.error });
+    return handleLoadSequenceError(loadResult, 'get');
   }
 
   const sequence = loadResult.sequence;
@@ -373,40 +385,32 @@ async function handleGet(args: ReplayArgs, recorder: CommandRecorder) {
 }
 
 async function handleDelete(args: ReplayArgs, recorder: CommandRecorder) {
-  if (!args.sequenceId) {
-    return createErrorResponse('MISSING_PARAMETER', {
-      action: 'delete',
-      missing: 'sequenceId',
-      message: 'The "delete" action requires a "sequenceId" parameter'
-    });
+  // Use loadSequence to support both name and sequenceId
+  const loadResult = await loadSequence({ name: args.name, sequenceId: args.sequenceId }, recorder);
+  if (!loadResult.success) {
+    return handleLoadSequenceError(loadResult, 'delete');
   }
 
-  const deleted = recorder.deleteSequence(args.sequenceId);
+  const sequence = loadResult.sequence;
+  const deleted = recorder.deleteSequence(sequence.id);
   if (!deleted) {
     return createErrorResponse('SEQUENCE_NOT_FOUND', {
-      sequenceId: args.sequenceId,
-      message: `Sequence "${args.sequenceId}" not found.`
+      sequenceId: sequence.id,
+      message: `Sequence "${sequence.name}" not found.`
     });
   }
 
   return createSuccessResponse('SEQUENCE_DELETED', {
-    sequenceId: args.sequenceId,
-    message: 'Sequence deleted successfully.'
+    sequenceId: sequence.id,
+    name: sequence.name,
+    message: `Sequence "${sequence.name}" deleted successfully.`
   });
 }
 
 async function handleExport(args: ReplayArgs, recorder: CommandRecorder) {
-  if (!args.sequenceId && !args.name) {
-    return createErrorResponse('MISSING_PARAMETER', {
-      action: 'export',
-      missing: 'sequenceId or name',
-      message: 'The "export" action requires a "sequenceId" or "name" parameter'
-    });
-  }
-
   const loadResult = await loadSequence({ name: args.name, sequenceId: args.sequenceId }, recorder);
   if (!loadResult.success) {
-    return createErrorResponse(loadResult.errorCode, { message: loadResult.error });
+    return handleLoadSequenceError(loadResult, 'export');
   }
 
   const sequence = loadResult.sequence;
@@ -553,7 +557,7 @@ async function handleRun(
   // Load sequence
   const loadResult = await loadSequence({ name: args.name, sequenceId: args.sequenceId }, recorder);
   if (!loadResult.success) {
-    return createErrorResponse(loadResult.errorCode, { message: loadResult.error });
+    return handleLoadSequenceError(loadResult, 'run');
   }
 
   const sequence = loadResult.sequence;
@@ -961,20 +965,11 @@ async function handleRecordInteraction(
       });
     }
 
-    // Validate connectionReason before auto-launch (must be valid 3-word reference)
-    const validation = validateReference(args.connectionReason);
-    if (!validation.valid) {
-      return createErrorResponse('INVALID_REFERENCE', {
+    const launchResult = await autoLaunchChrome(executeToolCall, args.connectionReason, 'recordInteraction');
+    if (!launchResult.success) {
+      return createErrorResponse(launchResult.errorType, {
         reference: args.connectionReason,
-        error: validation.error
-      });
-    }
-
-    const launchResult = await executeToolCall('launchChrome', { reference: args.connectionReason });
-    if (launchResult?.isError) {
-      return createErrorResponse('LAUNCH_FAILED', {
-        connectionReason: args.connectionReason,
-        message: `Failed to auto-launch Chrome: ${launchResult?.content?.[0]?.text || 'Unknown error'}`
+        error: launchResult.error
       });
     }
 

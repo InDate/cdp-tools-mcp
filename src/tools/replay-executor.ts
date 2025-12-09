@@ -4,7 +4,7 @@
 
 import type { CommandRecorder, RecordedCommand, CommandSequence, ActiveSequenceState } from '../command-recorder.js';
 import { debugLog } from '../debug-logger.js';
-import { sanitizeReference } from '../reference-validator.js';
+import { sanitizeReference, validateReference } from '../reference-validator.js';
 import { checkUrlPort } from '../utils/port-check.js';
 import { configManager, ClickValidationConfig } from '../config.js';
 import type { ClickActionMeta, ConsoleToolMeta, NetworkToolMeta } from '../tool-response.js';
@@ -383,6 +383,8 @@ export type LoadSequenceResult = {
   success: false;
   error: string;
   errorCode: string;
+  /** Template variables for error response (e.g., action, missing for MISSING_PARAMETER) */
+  templateVars?: Record<string, string>;
 };
 
 /**
@@ -436,7 +438,8 @@ export async function loadSequence(
   return {
     success: false,
     error: 'Either "name" or "sequenceId" parameter is required.',
-    errorCode: 'MISSING_PARAMETER'
+    errorCode: 'MISSING_PARAMETER',
+    templateVars: { missing: 'name or sequenceId' }
   };
 }
 
@@ -572,6 +575,53 @@ export async function resumeIfPaused(
   }
 }
 
+// =============================================================================
+// Auto-Launch Helper
+// =============================================================================
+
+export type AutoLaunchResult = {
+  success: true;
+} | {
+  success: false;
+  error: string;
+  errorType: 'INVALID_REFERENCE' | 'LAUNCH_FAILED';
+};
+
+/**
+ * Validate reference and auto-launch Chrome if needed.
+ * This is the shared helper for all auto-launch scenarios.
+ */
+export async function autoLaunchChrome(
+  executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>,
+  connectionReason: string,
+  logPrefix: string = 'auto-launch'
+): Promise<AutoLaunchResult> {
+  // Validate connectionReason before launch (must be valid 3-word reference)
+  const validation = validateReference(connectionReason);
+  if (!validation.valid) {
+    return {
+      success: false,
+      error: validation.error!,
+      errorType: 'INVALID_REFERENCE'
+    };
+  }
+
+  await debugLog(logPrefix, `Auto-launching Chrome with reference: ${connectionReason}`);
+  const launchResult = await executeToolCall('launchChrome', { reference: connectionReason });
+
+  if (launchResult?.isError) {
+    const errorText = launchResult?.content?.[0]?.text || 'Unknown error';
+    return {
+      success: false,
+      error: `Failed to auto-launch Chrome: ${errorText}`,
+      errorType: 'LAUNCH_FAILED'
+    };
+  }
+
+  await debugLog(logPrefix, `Chrome launched successfully with reference: ${connectionReason}`);
+  return { success: true };
+}
+
 /**
  * Ensure a connection is available, auto-launching Chrome if needed
  */
@@ -601,24 +651,11 @@ export async function ensureConnection(
     return { success: true };
   } catch {
     await debugLog(logPrefix, `Connection ${connectionReason} not active, launching Chrome...`);
-    try {
-      const launchResult = await executeToolCall('launchChrome', { reference: connectionReason });
-      // Check if launchChrome returned an error response (doesn't throw, returns isError: true)
-      if (launchResult?.isError) {
-        const errorText = launchResult?.content?.[0]?.text || 'Unknown error';
-        return {
-          success: false,
-          error: `Failed to auto-launch Chrome: ${errorText}`
-        };
-      }
-      await debugLog(logPrefix, `Chrome launched with reference: ${connectionReason}`);
-      return { success: true };
-    } catch (launchError: any) {
-      return {
-        success: false,
-        error: `Failed to auto-launch Chrome: ${launchError.message}`
-      };
+    const launchResult = await autoLaunchChrome(executeToolCall, connectionReason, logPrefix);
+    if (!launchResult.success) {
+      return { success: false, error: launchResult.error };
     }
+    return { success: true };
   }
 }
 
