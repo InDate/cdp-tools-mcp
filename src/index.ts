@@ -258,6 +258,8 @@ const connectionTools = {
       port: z.number().optional().describe('The debugging port (optional, defaults to this session\'s reserved port). Use this to launch multiple Chrome instances on different ports.'),
       headless: z.boolean().optional().default(false).describe('Launch in headless mode (no visible window, prevents focus stealing). Default: false'),
       reference: z.string().optional().describe('Connection reference name (3 descriptive words). If not provided, defaults to "unnamed-connection-default". Use this to identify the connection when calling other tools.'),
+      width: z.number().optional().describe('Viewport width in pixels (optional). If set, the browser viewport will be resized after launch.'),
+      height: z.number().optional().describe('Viewport height in pixels (optional). If set, the browser viewport will be resized after launch.'),
     }).strict(),
     async (args) => {
       // Validate reference FIRST, before launching Chrome
@@ -332,6 +334,7 @@ const connectionTools = {
         let title = 'New Tab';
         let pageUrl = 'about:blank';
         let consoleStats = '';
+        let viewportSet: { width: number; height: number } | undefined;
 
         if (autoConnect) {
           try {
@@ -401,6 +404,18 @@ const connectionTools = {
               consoleMonitor.onMessage((message) => {
                 logpointTracker.handleConsoleMessage(message);
               });
+
+              // Set viewport dimensions if specified
+              if (args.width !== undefined || args.height !== undefined) {
+                const currentViewport = page.viewport() || { width: 800, height: 600 };
+                const newViewport = {
+                  width: args.width ?? currentViewport.width,
+                  height: args.height ?? currentViewport.height,
+                };
+                await page.setViewport(newViewport);
+                viewportSet = newViewport;
+                await debugLog('index', `Set viewport to ${newViewport.width}x${newViewport.height}`);
+              }
 
               // Navigate to URL if provided
               if (url) {
@@ -495,7 +510,8 @@ const connectionTools = {
             title: title || '(no title)',
             url: pageUrl,
             consoleStats: consoleStats || undefined,
-            hasUserReference: !!userReference
+            hasUserReference: !!userReference,
+            viewport: viewportSet,
           });
         } else {
           return createSuccessResponse('CHROME_LAUNCH_NO_CONNECT', { port: port.toString() }, { port, isNewBrowser });

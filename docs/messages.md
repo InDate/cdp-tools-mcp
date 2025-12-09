@@ -49,7 +49,7 @@ Chrome is already running. You can either:
 **Type:** success
 **Summary:** Chrome launched and connected
 
-Title: {{title}}, URL: {{url}}{{#consoleStats}}
+Title: {{title}}, URL: {{url}}{{#viewport}}, Viewport: {{viewport.width}}x{{viewport.height}}{{/viewport}}{{#consoleStats}}
 
 Console: {{consoleStats}}{{/consoleStats}}
 
