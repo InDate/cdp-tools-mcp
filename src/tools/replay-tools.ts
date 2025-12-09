@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { CommandRecorder, ActiveSequenceState, CommandSequence } from '../command-recorder.js';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
+import { validateReference } from '../reference-validator.js';
 
 import {
   loadSequence,
@@ -930,6 +931,7 @@ async function handleInsert(args: ReplayArgs, recorder: CommandRecorder) {
 
 async function handleRecordInteraction(
   args: ReplayArgs,
+  executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>,
   getPageForConnection?: (connectionReason: string) => Promise<any>
 ) {
   if (!args.connectionReason) {
@@ -946,12 +948,58 @@ async function handleRecordInteraction(
     });
   }
 
-  const page = await getPageForConnection(args.connectionReason);
+  let page = await getPageForConnection(args.connectionReason);
+  let didAutoLaunch = false;
+
+  // Auto-launch Chrome if no connection found (requires startUrl)
   if (!page) {
-    return createErrorResponse('CONNECTION_NOT_FOUND', {
+    if (!args.startUrl) {
+      return createErrorResponse('MISSING_PARAMETER', {
+        action: 'recordInteraction',
+        missing: 'startUrl',
+        message: 'Chrome is not running. Provide a "startUrl" to auto-launch Chrome and navigate before recording.'
+      });
+    }
+
+    // Validate connectionReason before auto-launch (must be valid 3-word reference)
+    const validation = validateReference(args.connectionReason);
+    if (!validation.valid) {
+      return createErrorResponse('INVALID_REFERENCE', {
+        reference: args.connectionReason,
+        error: validation.error
+      });
+    }
+
+    const launchResult = await executeToolCall('launchChrome', { reference: args.connectionReason });
+    if (launchResult?.isError) {
+      return createErrorResponse('LAUNCH_FAILED', {
+        connectionReason: args.connectionReason,
+        message: `Failed to auto-launch Chrome: ${launchResult?.content?.[0]?.text || 'Unknown error'}`
+      });
+    }
+
+    // Navigate to the startUrl
+    const navResult = await executeToolCall('navigate', {
+      action: 'goto',
       connectionReason: args.connectionReason,
-      message: 'No browser connection found. Use launchChrome first.'
+      url: args.startUrl
     });
+    if (navResult?.isError) {
+      return createErrorResponse('NAVIGATION_FAILED', {
+        url: args.startUrl,
+        message: `Failed to navigate to startUrl: ${navResult?.content?.[0]?.text || 'Unknown error'}`
+      });
+    }
+
+    // Try getting the page again after launch
+    page = await getPageForConnection(args.connectionReason);
+    if (!page) {
+      return createErrorResponse('CONNECTION_NOT_FOUND', {
+        connectionReason: args.connectionReason,
+        message: 'Failed to connect to Chrome after auto-launch'
+      });
+    }
+    didAutoLaunch = true;
   }
 
   const showOverlay = args.showOverlay !== false;
@@ -961,7 +1009,11 @@ async function handleRecordInteraction(
     return createErrorResponse('RECORDING_FAILED', { message: result.error });
   }
 
-  let message = `**Recording started** (ID: ${result.id}) for \`${args.connectionReason}\`\n\n`;
+  let message = `**Recording started** (ID: ${result.id}) for \`${args.connectionReason}\`\n`;
+  if (didAutoLaunch) {
+    message += `Auto-launched Chrome and navigated to ${args.startUrl}\n`;
+  }
+  message += '\n';
   if (showOverlay) {
     message += `Overlay controls: **⏸** Pause | **↺** Reset | **✓** Complete\n\n`;
   }
@@ -1347,9 +1399,10 @@ async function handleReplayInteraction(
 // Legacy handlers - delegate to new ones
 async function handleStartMouseRecording(
   args: ReplayArgs,
+  executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>,
   getPageForConnection?: (connectionReason: string) => Promise<any>
 ) {
-  return handleRecordInteraction(args, getPageForConnection);
+  return handleRecordInteraction(args, executeToolCall, getPageForConnection);
 }
 
 async function handleStopMouseRecording(
@@ -1642,13 +1695,13 @@ export function createReplayTools(
           case 'runFromLog':
             return handleRunFromLog(args, executeToolCall);
           case 'startMouseRecording':
-            return handleStartMouseRecording(args, getPageForConnection);
+            return handleStartMouseRecording(args, executeToolCall, getPageForConnection);
           case 'stopMouseRecording':
             return handleStopMouseRecording(args, commandRecorder, getPageForConnection);
           case 'mouseRecordingStatus':
             return handleMouseRecordingStatus(args, getPageForConnection);
           case 'recordInteraction':
-            return handleRecordInteraction(args, getPageForConnection);
+            return handleRecordInteraction(args, executeToolCall, getPageForConnection);
           case 'stopInteraction':
             return handleStopInteraction(args, commandRecorder, getPageForConnection);
           case 'listInteractions':

@@ -1075,7 +1075,7 @@ const allTools = {
   // Browser Automation tools
   ...createConsoleTools(proxyPuppeteerManager, proxyConsoleMonitor, resolveConnectionFromReason),
   ...createNetworkTools(proxyPuppeteerManager, proxyNetworkMonitor, resolveConnectionFromReason),
-  ...createPageTools(proxyPuppeteerManager, proxyCdpManager, proxyConsoleMonitor, proxyNetworkMonitor, connectionManager, resolveConnectionFromReason, clickableCache),
+  ...createPageTools(proxyPuppeteerManager, proxyCdpManager, proxyConsoleMonitor, proxyNetworkMonitor, connectionManager, resolveConnectionFromReason, clickableCache, executeToolCall),
   ...createDOMTools(proxyPuppeteerManager, proxyCdpManager, connectionManager, resolveConnectionFromReason),
   ...createScreenshotTools(proxyPuppeteerManager, proxyCdpManager, connectionManager, resolveConnectionFromReason),
   ...createInputTools(proxyPuppeteerManager, proxyCdpManager, connectionManager, resolveConnectionFromReason),

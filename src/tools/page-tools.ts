@@ -12,6 +12,7 @@ import { executeWithPauseDetection, formatActionResult } from '../debugger-aware
 import { checkBrowserAutomation } from '../error-helpers.js';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
+import { validateReference } from '../reference-validator.js';
 import type { ClickableCache, ClickableElement } from '../clickable-cache.js';
 import { collectInteractiveElements } from '../element-collector.js';
 import type { ToolResponseMeta, NavigateActionMeta } from '../tool-response.js';
@@ -145,7 +146,8 @@ export function createPageTools(
   networkMonitor: NetworkMonitor,
   connectionManager: ConnectionManager,
   resolveConnectionFromReason: (connectionReason: string) => Promise<any>,
-  clickableCache: ClickableCache
+  clickableCache: ClickableCache,
+  executeToolCall?: (toolName: string, params: Record<string, any>) => Promise<any>
 ) {
   /**
    * Auto-restart console and network monitoring after navigation
@@ -177,7 +179,30 @@ export function createPageTools(
         }
 
         // Resolve connection from reason
-        const resolved = await resolveConnectionFromReason(connectionReason);
+        let resolved = await resolveConnectionFromReason(connectionReason);
+
+        // Auto-launch Chrome for 'goto' action if no connection found
+        if (!resolved && action === 'goto' && executeToolCall) {
+          // Validate connectionReason before auto-launch (must be valid 3-word reference)
+          const validation = validateReference(connectionReason);
+          if (!validation.valid) {
+            return createErrorResponse('INVALID_REFERENCE', {
+              reference: connectionReason,
+              error: validation.error
+            });
+          }
+
+          const launchResult = await executeToolCall('launchChrome', { reference: connectionReason });
+          if (launchResult?.isError) {
+            return createErrorResponse('LAUNCH_FAILED', {
+              connectionReason,
+              message: `Failed to auto-launch Chrome: ${launchResult?.content?.[0]?.text || 'Unknown error'}`
+            });
+          }
+          // Try resolving again after launch
+          resolved = await resolveConnectionFromReason(connectionReason);
+        }
+
         if (!resolved) {
           return createErrorResponse('CONNECTION_NOT_FOUND', {
             message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
