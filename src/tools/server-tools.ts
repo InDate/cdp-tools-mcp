@@ -10,8 +10,8 @@ import { type RunnerType } from '../runners/index.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
 
 const serverSchema = z.object({
-  action: z.enum(['start', 'stop', 'restart', 'list', 'logs', 'stopAll', 'setAutoRun', 'clearLogs', 'remove', 'monitorPort', 'unmonitorPort', 'listMonitored', 'acknowledgePort'])
-    .describe('Server action: start (start a server), stop (stop a server), restart (restart a server), list (list servers), logs (get server logs), stopAll (stop all servers), setAutoRun (enable/disable auto-start on MCP startup), clearLogs (clear log files for a server), remove (remove server from config), monitorPort (start monitoring a port), unmonitorPort (stop monitoring a port), listMonitored (list monitored ports), acknowledgePort (acknowledge a port failure)'),
+  action: z.enum(['start', 'stop', 'restart', 'list', 'logs', 'stopAll', 'setAutoRun', 'clearLogs', 'remove', 'monitorPort', 'unmonitorPort', 'listMonitored', 'acknowledgePort', 'acknowledgeStartup', 'extendStartup'])
+    .describe('Server action: start (start a server), stop (stop a server), restart (restart a server), list (list servers), logs (get server logs), stopAll (stop all servers), setAutoRun (enable/disable auto-start on MCP startup), clearLogs (clear log files for a server), remove (remove server from config), monitorPort (start monitoring a port), unmonitorPort (stop monitoring a port), listMonitored (list monitored ports), acknowledgePort (acknowledge a port failure), acknowledgeStartup (acknowledge startup timeout/failure), extendStartup (extend startup timeout by 30s)'),
   command: z.string().optional()
     .describe('Command to run (for start action). Examples: "npm run dev", "flask run", "docker run -p 3000:3000 myimage", "docker compose up"'),
   cwd: z.string().optional()
@@ -172,14 +172,27 @@ export function createServerTools(serverManager: ServerManager) {
               const status = await serverManager.getStatus(result.id);
               const serverStatus = status[0];
 
-              return createSuccessResponse('SERVER_START_SUCCESS', withLogStatus({
-                id: result.id,
-                pid: result.pid,
-                runnerType: result.runnerType,
-                containerId: result.containerId,
-                port: serverStatus?.port,
-                autoRun: serverStatus?.autoRun,
-              }));
+              // Check if port was detected
+              if (serverStatus?.port) {
+                // Port detected - server fully started
+                return createSuccessResponse('SERVER_START_SUCCESS', withLogStatus({
+                  id: result.id,
+                  pid: result.pid,
+                  runnerType: result.runnerType,
+                  containerId: result.containerId,
+                  port: serverStatus.port,
+                  autoRun: serverStatus?.autoRun,
+                }));
+              } else {
+                // Port not yet detected - server starting, pending detection
+                return createSuccessResponse('SERVER_START_PENDING', withLogStatus({
+                  id: result.id,
+                  pid: result.pid,
+                  runnerType: result.runnerType,
+                  containerId: result.containerId,
+                  autoRun: serverStatus?.autoRun,
+                }));
+              }
             } catch (err) {
               return createErrorResponse('SERVER_START_FAILED', withLogStatus({
                 error: err instanceof Error ? err.message : String(err),
@@ -446,6 +459,56 @@ export function createServerTools(serverManager: ServerManager) {
 
             return createSuccessResponse('PORT_ACKNOWLEDGED', withLogStatus({
               port: args.port,
+            }));
+          }
+
+          case 'acknowledgeStartup': {
+            if (!args.serverId) {
+              return createErrorResponse('SERVER_MISSING_SERVER_ID', withLogStatus({}));
+            }
+
+            // Get the pending startup info before acknowledging (to know the reason)
+            const pendingInfo = serverManager.getPendingStartup(args.serverId);
+            const reason = pendingInfo?.reason;
+
+            const ackResult = await serverManager.acknowledgeStartup(args.serverId);
+
+            if (!ackResult) {
+              return createErrorResponse('STARTUP_ACK_FAILED', withLogStatus({
+                serverId: args.serverId,
+                error: 'Server not found or no pending startup to acknowledge',
+              }));
+            }
+
+            // Use different message based on reason
+            if (reason === 'died') {
+              return createSuccessResponse('STARTUP_ACKNOWLEDGED_DIED', withLogStatus({
+                serverId: args.serverId,
+              }));
+            }
+
+            return createSuccessResponse('STARTUP_ACKNOWLEDGED', withLogStatus({
+              serverId: args.serverId,
+            }));
+          }
+
+          case 'extendStartup': {
+            if (!args.serverId) {
+              return createErrorResponse('SERVER_MISSING_SERVER_ID', withLogStatus({}));
+            }
+
+            const extendResult = await serverManager.extendStartupTimeout(args.serverId);
+
+            if (!extendResult) {
+              return createErrorResponse('STARTUP_EXTEND_FAILED', withLogStatus({
+                serverId: args.serverId,
+                error: 'Server not found, server died, or no pending startup to extend',
+              }));
+            }
+
+            return createSuccessResponse('STARTUP_EXTENDED', withLogStatus({
+              serverId: args.serverId,
+              timeout: '30s',
             }));
           }
 

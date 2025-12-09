@@ -136,6 +136,34 @@ export interface PortFailureInfo {
 /** Function type for getting interval for a monitoring level */
 export type GetIntervalForLevel = (level: MonitoringLevel) => number;
 
+// ============================================================================
+// Pending Startup Types (for startup timeout tracking)
+// ============================================================================
+
+export type PendingStartupReason = 'timeout' | 'died';
+
+export interface PendingStartup {
+  serverId: string;
+  startedAt: Date;
+  timeoutAt: Date;
+  acknowledged: boolean;
+  reason?: PendingStartupReason;  // Set when blocking is triggered
+}
+
+export interface PersistedPendingStartup {
+  serverId: string;
+  startedAt: string;  // ISO date
+  timeoutAt: string;  // ISO date
+  acknowledged: boolean;
+  reason?: PendingStartupReason;
+}
+
+export interface PendingStartupFailureInfo {
+  serverId: string;
+  startedAt: Date;
+  reason: PendingStartupReason;
+}
+
 /**
  * Port Monitor - monitors ports using persistent TCP connections
  */
@@ -402,6 +430,7 @@ export class PortMonitor {
 export class ServerManager {
   private servers: Map<string, ManagedServer> = new Map();
   private portMonitor: PortMonitor | null = null;
+  private pendingStartups: Map<string, PendingStartup> = new Map();
 
   /**
    * Get the port monitor instance (lazy-initialized)
@@ -444,6 +473,23 @@ export class ServerManager {
       await this.getPortMonitor().restoreFromState(localPersisted.monitoredPorts);
       monitoredPorts.push(...localPersisted.monitoredPorts.map(p => p.port));
       await debugLog('ServerManager', `Restored ${monitoredPorts.length} monitored ports`);
+    }
+
+    // Restore pending startups from both local and global
+    const allPendingStartups = [
+      ...localPersisted.pendingStartups,
+      ...globalPersisted.pendingStartups,
+    ];
+    for (const persisted of allPendingStartups) {
+      const pending: PendingStartup = {
+        serverId: persisted.serverId,
+        startedAt: new Date(persisted.startedAt),
+        timeoutAt: new Date(persisted.timeoutAt),
+        acknowledged: persisted.acknowledged,
+        reason: persisted.reason,
+      };
+      this.pendingStartups.set(persisted.serverId, pending);
+      await debugLog('ServerManager', `Restored pending startup: ${persisted.serverId}`);
     }
 
     for (const server of allServers) {
@@ -525,11 +571,53 @@ export class ServerManager {
       }
     }
 
+    // Process restored pending startups
+    // For each pending startup, check if server is still running and if timeout has passed
+    for (const [serverId, pending] of this.pendingStartups) {
+      const managed = this.servers.get(serverId);
+      if (!managed) {
+        // Server no longer exists, remove pending state
+        this.pendingStartups.delete(serverId);
+        await debugLog('ServerManager', `Removed pending startup for non-existent server: ${serverId}`);
+        continue;
+      }
+
+      const isRunning = await managed.runner.isRunning();
+      const now = new Date();
+
+      if (!isRunning) {
+        // Server died - set reason, but respect existing acknowledgment
+        pending.reason = 'died';
+        // Only reset acknowledged if it wasn't already acknowledged
+        // (user already dealt with this failure before MCP restart)
+        await debugLog('ServerManager', `Pending startup server died: ${serverId} (acknowledged: ${pending.acknowledged})`);
+      } else if (now >= pending.timeoutAt) {
+        // Timeout already passed - set reason, but respect existing acknowledgment
+        pending.reason = 'timeout';
+        await debugLog('ServerManager', `Pending startup already timed out: ${serverId} (acknowledged: ${pending.acknowledged})`);
+      } else {
+        // Still within timeout window - resume background detection
+        const remainingMs = pending.timeoutAt.getTime() - now.getTime();
+        await debugLog('ServerManager', `Resuming port detection for ${serverId}, ${Math.round(remainingMs / 1000)}s remaining`);
+        this.resumePortDetection(serverId, remainingMs);
+      }
+    }
+
     await this.saveState();
     return { recovered, started, failed, monitoredPorts };
   }
 
-  private async loadState(global?: boolean): Promise<{ servers: PersistedRunnerState[]; monitoredPorts: PersistedMonitoredPort[] }> {
+  /**
+   * Resume port detection for a server after MCP restart
+   * @param serverId The server to resume detection for
+   * @param remainingMs Time remaining until timeout
+   */
+  private resumePortDetection(serverId: string, remainingMs: number): void {
+    // Run detection in background (don't await)
+    this.detectPortInBackgroundWithTimeout(serverId, remainingMs);
+  }
+
+  private async loadState(global?: boolean): Promise<{ servers: PersistedRunnerState[]; monitoredPorts: PersistedMonitoredPort[]; pendingStartups: PersistedPendingStartup[] }> {
     const filePath = this.getServersFilePath(global);
 
     try {
@@ -547,13 +635,14 @@ export class ServerManager {
         return {
           servers,
           monitoredPorts: data.monitoredPorts || [],
+          pendingStartups: data.pendingStartups || [],
         };
       }
     } catch (err) {
       await debugLog('ServerManager', `Failed to load state from ${filePath}: ${err}`);
     }
 
-    return { servers: [], monitoredPorts: [] };
+    return { servers: [], monitoredPorts: [], pendingStartups: [] };
   }
 
   async saveState(): Promise<void> {
@@ -592,6 +681,25 @@ export class ServerManager {
 
     const monitoredPorts = this.getPortMonitor().getPersistedState();
 
+    // Convert pending startups to persisted format, split by server's global flag
+    const localPendingStartups: PersistedPendingStartup[] = [];
+    const globalPendingStartups: PersistedPendingStartup[] = [];
+    for (const [serverId, pending] of this.pendingStartups) {
+      const managed = this.servers.get(serverId);
+      const persisted: PersistedPendingStartup = {
+        serverId: pending.serverId,
+        startedAt: pending.startedAt.toISOString(),
+        timeoutAt: pending.timeoutAt.toISOString(),
+        acknowledged: pending.acknowledged,
+        reason: pending.reason,
+      };
+      if (managed?.global) {
+        globalPendingStartups.push(persisted);
+      } else {
+        localPendingStartups.push(persisted);
+      }
+    }
+
     // Save local servers to project directory
     const localPath = this.getServersFilePath(false);
     const localDir = path.dirname(localPath);
@@ -605,6 +713,7 @@ export class ServerManager {
         updatedAt: new Date().toISOString(),
         servers: localServers,
         monitoredPorts, // Port monitoring stays in local config
+        pendingStartups: localPendingStartups,
       }, null, 2),
       'utf-8'
     );
@@ -622,6 +731,7 @@ export class ServerManager {
         updatedAt: new Date().toISOString(),
         servers: globalServers,
         monitoredPorts: [], // Global doesn't track port monitoring
+        pendingStartups: globalPendingStartups,
       }, null, 2),
       'utf-8'
     );
@@ -818,8 +928,18 @@ export class ServerManager {
       global: isGlobal ?? false,
     });
 
+    // Create pending startup entry for timeout tracking
+    const now = new Date();
+    const timeoutMs = 30000; // 30 seconds
+    this.pendingStartups.set(serverId, {
+      serverId,
+      startedAt: now,
+      timeoutAt: new Date(now.getTime() + timeoutMs),
+      acknowledged: false,
+    });
+
     // Start port detection in background
-    this.detectPortInBackground(serverId);
+    this.detectPortInBackgroundWithTimeout(serverId, timeoutMs);
 
     await this.saveState();
 
@@ -833,50 +953,198 @@ export class ServerManager {
     };
   }
 
-  private async detectPortInBackground(serverId: string): Promise<void> {
+  /**
+   * Background port detection with timeout management
+   * @param serverId The server to detect port for
+   * @param timeoutMs How long to wait before triggering blocking (default 30s)
+   */
+  private async detectPortInBackgroundWithTimeout(serverId: string, timeoutMs: number = 30000): Promise<void> {
     const managed = this.servers.get(serverId);
     if (!managed) return;
 
-    // Check periodically for 30 seconds
-    for (let i = 0; i < 30; i++) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
+    const iterations = Math.ceil(timeoutMs / 1000);
+    const checkInterval = 1000; // Check every second
+
+    for (let i = 0; i < iterations; i++) {
+      await new Promise(resolve => setTimeout(resolve, checkInterval));
 
       const current = this.servers.get(serverId);
-      if (!current) break;
+      if (!current) {
+        // Server was removed, clean up pending state
+        this.pendingStartups.delete(serverId);
+        await this.saveState();
+        break;
+      }
 
+      // Check if server is still running
+      const isRunning = await current.runner.isRunning();
+      if (!isRunning) {
+        // Server died during startup - trigger blocking
+        const pending = this.pendingStartups.get(serverId);
+        if (pending) {
+          pending.reason = 'died';
+          pending.acknowledged = false;
+          await this.saveState();
+          await debugLog('ServerManager', `Server died during startup: ${serverId}`);
+        }
+        return; // Exit detection, blocking will be triggered by getPendingStartupFailures
+      }
+
+      // Check if port already in status
       const status = await current.runner.getStatus();
       if (status.port) {
-        // Port already detected, check if we need to start monitoring
+        // Port already detected - remove from pending and set up monitoring
+        this.pendingStartups.delete(serverId);
         if (current.monitorPort && !this.getPortMonitor().isMonitoring(status.port)) {
           await this.getPortMonitor().startMonitoring(
             status.port,
-            'block', // Default level
+            'block',
             `Server: ${serverId}`
           );
-          await this.saveState();
           await debugLog('ServerManager', `Auto-started monitoring for port ${status.port}`);
         }
-        break;
+        await this.saveState();
+        return;
       }
 
+      // Try to detect port from logs
       const port = await current.runner.detectPort();
       if (port) {
-        await this.saveState();
+        // Port detected - remove from pending and set up monitoring
+        this.pendingStartups.delete(serverId);
         await debugLog('ServerManager', `Detected port ${port} for ${serverId}`);
 
-        // Auto-start port monitoring if monitorPort is true and not already monitored
         if (current.monitorPort && !this.getPortMonitor().isMonitoring(port)) {
           await this.getPortMonitor().startMonitoring(
             port,
-            'block', // Default level
+            'block',
             `Server: ${serverId}`
           );
-          await this.saveState();
           await debugLog('ServerManager', `Auto-started monitoring for port ${port}`);
         }
-        break;
+        await this.saveState();
+        return;
       }
     }
+
+    // Timeout reached without port detection - trigger blocking
+    const pending = this.pendingStartups.get(serverId);
+    if (pending && !pending.reason) {
+      pending.reason = 'timeout';
+      pending.acknowledged = false;
+      await this.saveState();
+      await debugLog('ServerManager', `Port detection timeout for ${serverId}`);
+    }
+  }
+
+  /**
+   * @deprecated Use detectPortInBackgroundWithTimeout instead
+   */
+  private async detectPortInBackground(serverId: string): Promise<void> {
+    await this.detectPortInBackgroundWithTimeout(serverId, 30000);
+  }
+
+  // ============================================================================
+  // Pending Startup Management
+  // ============================================================================
+
+  /**
+   * Get pending startup failures that should trigger blocking
+   * Returns only startups that have timed out or died and are not acknowledged
+   */
+  getPendingStartupFailures(): PendingStartupFailureInfo[] {
+    const failures: PendingStartupFailureInfo[] = [];
+
+    for (const [, pending] of this.pendingStartups) {
+      // Only return failures (has reason) that are not acknowledged
+      if (pending.reason && !pending.acknowledged) {
+        failures.push({
+          serverId: pending.serverId,
+          startedAt: pending.startedAt,
+          reason: pending.reason,
+        });
+      }
+    }
+
+    return failures;
+  }
+
+  /**
+   * Check if a server has a pending startup (regardless of state)
+   */
+  hasPendingStartup(serverId: string): boolean {
+    return this.pendingStartups.has(serverId);
+  }
+
+  /**
+   * Get pending startup status for a server
+   */
+  getPendingStartup(serverId: string): PendingStartup | undefined {
+    return this.pendingStartups.get(serverId);
+  }
+
+  /**
+   * Acknowledge a pending startup failure
+   * This unblocks tools but doesn't restart detection
+   */
+  async acknowledgeStartup(serverId: string): Promise<boolean> {
+    const pending = this.pendingStartups.get(serverId);
+    if (!pending) {
+      return false;
+    }
+
+    pending.acknowledged = true;
+    await this.saveState();
+    await debugLog('ServerManager', `Acknowledged pending startup: ${serverId}`);
+    return true;
+  }
+
+  /**
+   * Extend the startup timeout by another 30 seconds
+   * Resets the acknowledged flag and reason, resumes detection
+   */
+  async extendStartupTimeout(serverId: string): Promise<boolean> {
+    const pending = this.pendingStartups.get(serverId);
+    if (!pending) {
+      return false;
+    }
+
+    // Check if server is still running
+    const managed = this.servers.get(serverId);
+    if (!managed) {
+      return false;
+    }
+
+    const isRunning = await managed.runner.isRunning();
+    if (!isRunning) {
+      // Server died, can't extend
+      pending.reason = 'died';
+      pending.acknowledged = false;
+      await this.saveState();
+      return false;
+    }
+
+    // Reset timeout
+    const now = new Date();
+    const timeoutMs = 30000;
+    pending.timeoutAt = new Date(now.getTime() + timeoutMs);
+    pending.acknowledged = false;
+    pending.reason = undefined;
+
+    await this.saveState();
+    await debugLog('ServerManager', `Extended startup timeout for ${serverId}`);
+
+    // Resume background detection
+    this.detectPortInBackgroundWithTimeout(serverId, timeoutMs);
+
+    return true;
+  }
+
+  /**
+   * Remove pending startup entry (called when server is stopped or removed)
+   */
+  private removePendingStartup(serverId: string): void {
+    this.pendingStartups.delete(serverId);
   }
 
   /**
@@ -887,6 +1155,9 @@ export class ServerManager {
     if (!managed) {
       throw new Error(`Server "${serverId}" not found. Use list action to see servers.`);
     }
+
+    // Clean up pending startup state
+    this.removePendingStartup(serverId);
 
     const isRunning = await managed.runner.isRunning();
     if (!isRunning) {

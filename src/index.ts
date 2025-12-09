@@ -51,7 +51,7 @@ import { createServerTools } from './tools/server-tools.js';
 import { createConfigTools } from './tools/config-tools.js';
 import { ServerManager } from './server-manager.js';
 import { configManager } from './config.js';
-import { checkPortFailures, checkBreakpointPause, prependToResponse, appendToResponse, buildStatusSuffix, type StatusLineItem } from './tool-response.js';
+import { checkPortFailures, checkBreakpointPause, checkPendingStartups, prependToResponse, appendToResponse, buildStatusSuffix, type StatusLineItem } from './tool-response.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock, getMessage, getFormattedResponse } from './messages.js';
 import { setChromeLauncher } from './error-helpers.js';
 import { createServer } from 'net';
@@ -1189,6 +1189,14 @@ function registerToolHandlers(server: Server) {
 
     if (breakpointCheck.blocked) {
       return breakpointCheck.response;
+    }
+
+    // Check for pending startup failures (block tools until acknowledged)
+    const pendingStartupFailures = serverManager.getPendingStartupFailures();
+    const pendingStartupCheck = checkPendingStartups(pendingStartupFailures, toolName);
+
+    if (pendingStartupCheck.blocked) {
+      return pendingStartupCheck.response;
     }
 
     // Pass validated data to handler

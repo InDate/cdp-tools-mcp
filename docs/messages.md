@@ -1983,6 +1983,21 @@ Logs: server({ action: "logs", serverId: "{{id}}" })
 
 ---
 
+## SERVER_START_PENDING
+
+**Type:** success
+**Summary:** Server starting (waiting for port)
+
+{{id}} (PID: {{pid}}){{#autoRun}}, Auto-run: enabled{{/autoRun}}
+**Status:** Waiting for port detection
+
+The server process started but hasn't reported its port yet.
+- Check logs: `server({ action: 'logs', serverId: '{{id}}' })`
+- Port detection continues in background (30s timeout)
+- If port not detected, tools will be blocked until acknowledged
+
+---
+
 ## SERVER_STOP_SUCCESS
 
 **Type:** success
@@ -2310,6 +2325,63 @@ Use `server({ action: 'listMonitored' })` to see all monitored ports.
 Cannot acknowledge port {{port}}. Either the port is not being monitored, or it is not currently in a failed state.
 
 Use `server({ action: 'listMonitored' })` to check the current status of monitored ports.
+
+---
+
+## Startup Timeout Messages
+
+## STARTUP_ACKNOWLEDGED
+
+**Type:** success
+**Summary:** Startup timeout acknowledged
+
+Acknowledged startup timeout for server "{{serverId}}". Tool execution will now continue.
+
+**Note:** The server is still running but port detection has stopped. If you know the port, you can manually monitor it with `server({ action: 'monitorPort', port: <port> })`.
+
+---
+
+## STARTUP_ACKNOWLEDGED_DIED
+
+**Type:** success
+**Summary:** Server failure acknowledged
+
+Acknowledged that server "{{serverId}}" died during startup. Tool execution will now continue.
+
+Check logs with `server({ action: 'logs', serverId: '{{serverId}}' })` to investigate the failure, then restart with `server({ action: 'restart', serverId: '{{serverId}}' })`.
+
+---
+
+## STARTUP_ACK_FAILED
+
+**Type:** error
+**Code:** ACK_FAILED
+
+Cannot acknowledge startup for server "{{serverId}}". {{error}}
+
+Use `server({ action: 'list' })` to see running servers.
+
+---
+
+## STARTUP_EXTENDED
+
+**Type:** success
+**Summary:** Startup timeout extended
+
+Extended startup timeout for server "{{serverId}}" by {{timeout}}. Port detection has resumed.
+
+Use `server({ action: 'logs', serverId: '{{serverId}}' })` to check server startup progress.
+
+---
+
+## STARTUP_EXTEND_FAILED
+
+**Type:** error
+**Code:** EXTEND_FAILED
+
+Cannot extend startup timeout for server "{{serverId}}". {{error}}
+
+If the server died, use `server({ action: 'restart', serverId: '{{serverId}}' })` to restart it.
 
 ---
 

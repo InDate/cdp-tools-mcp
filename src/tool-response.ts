@@ -3,7 +3,7 @@
  * Functions for modifying tool responses with pre/post content
  */
 
-import type { PortFailureInfo } from './server-manager.js';
+import type { PortFailureInfo, PendingStartupFailureInfo } from './server-manager.js';
 import type { Connection } from './connection-manager.js';
 
 /**
@@ -273,6 +273,83 @@ ${pauseDetails}
 - Use \`inspect({ action: 'getCallStack' })\` or \`inspect({ action: 'getVariables' })\` to examine state
 
 Other tools are blocked until execution is resumed or acknowledged.`,
+        },
+      ],
+      isError: true
+    }
+  };
+}
+
+/**
+ * Check for pending startup failures and determine pre-execution behavior
+ * Blocks tools when servers have failed to start (timeout or died) and not acknowledged
+ */
+export function checkPendingStartups(
+  failures: PendingStartupFailureInfo[],
+  toolName: string
+): PreExecutionResult {
+  // No failures, allow execution
+  if (failures.length === 0) {
+    return {
+      blocked: false,
+      prefix: '',
+      markAsError: false
+    };
+  }
+
+  // Server tool is always allowed (needed to acknowledge/manage servers)
+  if (toolName === 'server') {
+    return {
+      blocked: false,
+      prefix: '',
+      markAsError: false
+    };
+  }
+
+  // Build blocking message based on failure reasons
+  const timeoutFailures = failures.filter(f => f.reason === 'timeout');
+  const diedFailures = failures.filter(f => f.reason === 'died');
+
+  let message = '**BLOCKED: Server startup issue(s)**\n\n';
+
+  if (timeoutFailures.length > 0) {
+    message += `**Startup timeout** - The following server(s) started but no port was detected within 30 seconds:\n`;
+    for (const f of timeoutFailures) {
+      const elapsed = Math.round((Date.now() - f.startedAt.getTime()) / 1000);
+      message += `- "${f.serverId}" (started ${elapsed}s ago)\n`;
+    }
+    message += '\n';
+  }
+
+  if (diedFailures.length > 0) {
+    message += `**Server died** - The following server(s) died before port was detected:\n`;
+    for (const f of diedFailures) {
+      message += `- "${f.serverId}"\n`;
+    }
+    message += '\n';
+  }
+
+  message += `**Options:**\n`;
+  message += `- Check logs: \`server({ action: 'logs', serverId: '<id>' })\`\n`;
+  message += `- Acknowledge and continue: \`server({ action: 'acknowledgeStartup', serverId: '<id>' })\`\n`;
+
+  if (timeoutFailures.length > 0) {
+    message += `- Extend timeout 30s: \`server({ action: 'extendStartup', serverId: '<id>' })\`\n`;
+  }
+
+  if (diedFailures.length > 0) {
+    message += `- Restart server: \`server({ action: 'restart', serverId: '<id>' })\`\n`;
+  }
+
+  message += `- Stop server: \`server({ action: 'stop', serverId: '<id>' })\``;
+
+  return {
+    blocked: true,
+    response: {
+      content: [
+        {
+          type: 'text',
+          text: message,
         },
       ],
       isError: true
