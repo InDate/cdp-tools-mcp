@@ -1931,7 +1931,9 @@ Format: {{format}}
 {{name}} ({{sequenceId}})
 {{duration}}s, {{commandCount}} commands, {{startUrl}}
 clicks:{{clicks}}, drags:{{drags}}, scrolls:{{scrolls}}, keys:{{keyPresses}}{{#navigations}}, nav:{{navigations}}{{/navigations}}{{#comments}}, comments:{{comments}}{{/comments}}
-
+{{#timeline}}
+Timeline: {{timeline}}
+{{/timeline}}
 Next: `get/run/export({ name: "{{name}}" })`
 
 ---
@@ -1942,6 +1944,39 @@ Next: `get/run/export({ name: "{{name}}" })`
 **Summary:** Name exists
 
 "{{sequenceName}}" exists. Use `name: "new-name"` or `overwrite: true`.
+
+---
+
+## BUGS_BLOCKING
+
+**Type:** error
+**Code:** BUGS_BLOCKING
+
+**BLOCKED: Bugs require acknowledgment**
+
+The following bugs were recorded and must be acknowledged before tools can be used:
+
+{{bugList}}
+
+Use `replay({ action: 'acknowledgeBugs' })` to acknowledge.
+
+---
+
+## BUGS_ACKNOWLEDGED
+
+**Type:** success
+**Summary:** Bugs acknowledged
+
+**Bugs acknowledged** ({{count}})
+
+The following bugs have been acknowledged and must be added to your TODO list:
+
+{{bugList}}
+
+---
+**IMPORTANT**: Start a non-blocking agent to investigate each bug immediately.
+The agent should analyze the issue, report findings, and propose a fix - but NOT make changes.
+Add each bug to your TODO list and track investigation progress.
 
 ---
 

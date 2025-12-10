@@ -71,8 +71,15 @@ import {
   eventsToCommands,
   formatEventsForReview,
   formatEventsAsCSV,
+  generateCondensedTimeline,
+  isCommentEvent,
   type CommandConversionOptions,
+  type StoredRecording,
+  type CommentCategory,
+  type CommentEvent,
 } from '../interaction-recorder.js';
+
+import { addBlockingBugs, acknowledgeAllBugs, getBlockingBugs } from '../bug-blocker.js';
 
 import { configManager } from '../config.js';
 
@@ -87,9 +94,10 @@ const replaySchema = z.object({
     'run', 'step', 'finish', 'insert', 'status', 'cancel',
     'repeat', 'runFromLog',
     'startMouseRecording', 'stopMouseRecording', 'mouseRecordingStatus',
-    'recordInteraction', 'stopInteraction', 'listInteractions', 'getInteraction', 'clearInteraction', 'replayInteraction'
+    'recordInteraction', 'stopInteraction', 'listInteractions', 'getInteraction', 'clearInteraction', 'replayInteraction',
+    'acknowledgeBugs'
   ]).describe(
-    'history,create,list,get,delete,export,load,listSaved,deleteSaved,run,step,finish,insert,status,cancel,repeat,runFromLog,recordInteraction,stopInteraction,listInteractions,getInteraction,clearInteraction,replayInteraction'
+    'history,create,list,get,delete,export,load,listSaved,deleteSaved,run,step,finish,insert,status,cancel,repeat,runFromLog,recordInteraction,stopInteraction,listInteractions,getInteraction,clearInteraction,replayInteraction,acknowledgeBugs'
   ),
   limit: z.number().optional().describe('Max commands to show (history, default:50)'),
   name: z.string().optional().describe('Sequence name'),
@@ -936,7 +944,8 @@ async function handleInsert(args: ReplayArgs, recorder: CommandRecorder) {
 async function handleRecordInteraction(
   args: ReplayArgs,
   executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>,
-  getPageForConnection?: (connectionReason: string) => Promise<any>
+  getPageForConnection?: (connectionReason: string) => Promise<any>,
+  recorder?: CommandRecorder
 ) {
   if (!args.connectionReason) {
     return createErrorResponse('MISSING_PARAMETER', {
@@ -998,29 +1007,76 @@ async function handleRecordInteraction(
   }
 
   const showOverlay = args.showOverlay !== false;
+  const sequenceName = args.name || args.connectionReason;
+
+  // startRecording now blocks until recording completes
   const result = await startRecording(page, args.connectionReason, { showOverlay });
 
   if (!result.success) {
     return createErrorResponse('RECORDING_FAILED', { message: result.error });
   }
 
-  let message = `**Recording started** (ID: ${result.id}) for \`${args.connectionReason}\`\n`;
-  if (didAutoLaunch) {
-    message += `Auto-launched Chrome and navigated to ${args.startUrl}\n`;
-  }
-  message += '\n';
-  if (showOverlay) {
-    message += `Overlay controls: **⏸** Pause | **↺** Reset | **✓** Complete\n\n`;
-  }
-  message += `Recording: mouse, keyboard, and navigation events.\n`;
-  message += `Use \`stopInteraction\` when done - recording will be stored in memory.`;
+  // Recording completed - create the sequence
+  const recording = result.recording!;
+  const summary = recording.summary;
 
-  return {
-    content: [{
-      type: 'text',
-      text: message
-    }]
-  };
+  const commands = eventsToCommands(recording.events, {
+    simplify: true,
+    includeDelays: true,
+    preferCoordinates: false,
+    preferSelectors: false,
+  });
+
+  // Check if sequence name already exists
+  if (recorder && recorder.sequenceNameExists(sequenceName) && !args.overwrite) {
+    return createSuccessResponse('RECORDING_NAME_CONFLICT', {
+      sequenceName,
+      connectionReason: args.connectionReason
+    });
+  }
+
+  // Delete existing sequence if overwriting
+  if (recorder && args.overwrite && recorder.sequenceNameExists(sequenceName)) {
+    const existingSeq = recorder.listSequences().find(s => s.name === sequenceName);
+    if (existingSeq) {
+      recorder.deleteSequence(existingSeq.id);
+    }
+  }
+
+  const sequence = recorder ? await recorder.createSequenceFromCommands(sequenceName, commands, {
+    startUrl: recording.startUrl,
+    description: `Recorded from ${args.connectionReason}`,
+  }) : null;
+
+  // Generate condensed timeline
+  const timeline = generateCondensedTimeline(recording.events);
+
+  // Check for BUG comments and add them as blocking bugs
+  const bugComments = recording.events
+    .filter((e): e is CommentEvent => isCommentEvent(e) && e.category === 'bug');
+
+  if (bugComments.length > 0) {
+    addBlockingBugs(
+      bugComments.map(c => ({ text: c.text })),
+      sequenceName
+    );
+  }
+
+  return createSuccessResponse('RECORDING_STOPPED', {
+    name: sequence?.name || sequenceName,
+    sequenceId: sequence?.id || 'unknown',
+    duration: (recording.duration / 1000).toFixed(1),
+    startUrl: recording.startUrl,
+    commandCount: commands.length,
+    clicks: summary.clicks,
+    drags: summary.drags,
+    scrolls: summary.scrolls,
+    keyPresses: summary.keyPresses,
+    navigations: summary.navigations > 0 ? summary.navigations : null,
+    comments: summary.comments > 0 ? summary.comments : null,
+    timeline: timeline || null,
+    bugCount: bugComments.length > 0 ? bugComments.length : null
+  });
 }
 
 async function handleStopInteraction(
@@ -1089,7 +1145,7 @@ async function handleStopInteraction(
     description: `Recorded from ${args.connectionReason}`,
   });
 
-  return createSuccessResponse('RECORDING_STOPPED', {
+  const response = createSuccessResponse('RECORDING_STOPPED', {
     name: sequence.name,
     sequenceId: sequence.id,
     duration: (recording.duration / 1000).toFixed(1),
@@ -1102,6 +1158,16 @@ async function handleStopInteraction(
     navigations: summary.navigations > 0 ? summary.navigations : null,
     comments: summary.comments > 0 ? summary.comments : null
   });
+
+  // Add note if recording was already stopped via UI
+  if (result.alreadyStopped) {
+    response.content[0].text = response.content[0].text.replace(
+      /^(.*?)$/m,
+      '$1 (stopped via UI)'
+    );
+  }
+
+  return response;
 }
 
 function handleListInteractions() {
@@ -1395,9 +1461,10 @@ async function handleReplayInteraction(
 async function handleStartMouseRecording(
   args: ReplayArgs,
   executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>,
-  getPageForConnection?: (connectionReason: string) => Promise<any>
+  getPageForConnection?: (connectionReason: string) => Promise<any>,
+  recorder?: CommandRecorder
 ) {
-  return handleRecordInteraction(args, executeToolCall, getPageForConnection);
+  return handleRecordInteraction(args, executeToolCall, getPageForConnection, recorder);
 }
 
 async function handleStopMouseRecording(
@@ -1641,6 +1708,36 @@ function generatePlaywrightCode(commands: Array<{ tool: string; params: Record<s
 }
 
 // =============================================================================
+// Bug Acknowledgment Handler
+// =============================================================================
+
+function handleAcknowledgeBugs() {
+  const bugs = getBlockingBugs();
+
+  if (bugs.length === 0) {
+    return {
+      content: [{
+        type: 'text',
+        text: '**No blocking bugs**\n\nThere are no bugs requiring acknowledgment.'
+      }]
+    };
+  }
+
+  // Acknowledge all bugs
+  const acknowledged = acknowledgeAllBugs();
+
+  // Build bug list for template
+  const bugList = acknowledged.map(bug =>
+    `- **${bug.id}**: "${bug.text}" (from ${bug.recordingName})`
+  ).join('\n');
+
+  return createSuccessResponse('BUGS_ACKNOWLEDGED', {
+    count: acknowledged.length,
+    bugList
+  });
+}
+
+// =============================================================================
 // Tool Export
 // =============================================================================
 
@@ -1690,13 +1787,13 @@ export function createReplayTools(
           case 'runFromLog':
             return handleRunFromLog(args, executeToolCall);
           case 'startMouseRecording':
-            return handleStartMouseRecording(args, executeToolCall, getPageForConnection);
+            return handleStartMouseRecording(args, executeToolCall, getPageForConnection, commandRecorder);
           case 'stopMouseRecording':
             return handleStopMouseRecording(args, commandRecorder, getPageForConnection);
           case 'mouseRecordingStatus':
             return handleMouseRecordingStatus(args, getPageForConnection);
           case 'recordInteraction':
-            return handleRecordInteraction(args, executeToolCall, getPageForConnection);
+            return handleRecordInteraction(args, executeToolCall, getPageForConnection, commandRecorder);
           case 'stopInteraction':
             return handleStopInteraction(args, commandRecorder, getPageForConnection);
           case 'listInteractions':
@@ -1707,6 +1804,8 @@ export function createReplayTools(
             return handleClearInteraction(args);
           case 'replayInteraction':
             return handleReplayInteraction(args, commandRecorder, executeToolCall, getPageForConnection);
+          case 'acknowledgeBugs':
+            return handleAcknowledgeBugs();
           default:
             return createErrorResponse('INVALID_ACTION', { action: args.action });
         }

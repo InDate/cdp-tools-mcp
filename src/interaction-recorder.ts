@@ -72,10 +72,13 @@ export interface NavigationEvent {
   previousUrl?: string;
 }
 
+export type CommentCategory = 'narrative' | 'bug' | 'feature';
+
 export interface CommentEvent {
   type: 'comment';
   text: string;
   timestamp: number;
+  category: CommentCategory;
   attachedToEventIndex?: number; // Index of the event this comment is attached to
 }
 
@@ -153,13 +156,14 @@ export function isCommentEvent(event: InputEvent): event is CommentEvent {
 // =============================================================================
 
 /**
- * Start recording interactions on a page
+ * Start recording interactions on a page.
+ * Returns a promise that resolves when the recording is completed (via UI or stopRecording).
  */
 export async function startRecording(
   page: Page,
   connectionReference: string,
   options: RecordingOptions = {}
-): Promise<{ success: boolean; id?: number; error?: string }> {
+): Promise<{ success: boolean; id?: number; recording?: StoredRecording; error?: string }> {
   if (activeSessions.has(connectionReference)) {
     return { success: false, error: 'Recording already active for this connection' };
   }
@@ -180,6 +184,12 @@ export async function startRecording(
   activeSessions.set(connectionReference, session);
 
   const showOverlay = options.showOverlay ?? true;
+
+  // Create a promise that will resolve when recording completes
+  let resolveRecording: (result: { success: boolean; id?: number; recording?: StoredRecording; error?: string }) => void;
+  const recordingPromise = new Promise<{ success: boolean; id?: number; recording?: StoredRecording; error?: string }>((resolve) => {
+    resolveRecording = resolve;
+  });
 
   try {
     // Set up navigation tracking via CDP
@@ -204,12 +214,77 @@ export async function startRecording(
 
     await client.send('Page.enable');
 
+    // Set up binding for UI stop button to call back to server
+    await client.send('Runtime.addBinding', { name: '__cdpRecordingComplete' });
+
+    client.on('Runtime.bindingCalled', async (event: any) => {
+      if (event.name === '__cdpRecordingComplete') {
+        // UI stop button was clicked - process the recording
+        try {
+          const payload = JSON.parse(event.payload);
+          const browserEvents = payload.events as InputEvent[];
+          const pausePeriods = payload.pausePeriods || [] as { start: number; end: number }[];
+
+          // Adjust event timestamps to exclude time spent in comment modals
+          // For each event, subtract the total pause time that occurred before it
+          const adjustedBrowserEvents = browserEvents.map(e => {
+            let adjustment = 0;
+            for (const pause of pausePeriods) {
+              if (e.timestamp > pause.end) {
+                // Event occurred after this pause ended - subtract full pause duration
+                adjustment += pause.end - pause.start;
+              } else if (e.timestamp > pause.start) {
+                // Event occurred during pause (shouldn't happen normally, but handle it)
+                adjustment += e.timestamp - pause.start;
+              }
+              // If event occurred before pause started, no adjustment needed
+            }
+            return adjustment > 0 ? { ...e, timestamp: e.timestamp - adjustment } : e;
+          });
+
+          // Merge browser events with navigation events from session
+          const allEvents = [...session.events, ...adjustedBrowserEvents].sort((a, b) => a.timestamp - b.timestamp);
+
+          const endTime = Date.now();
+          const duration = endTime - session.startTime;
+
+          // Calculate summary
+          const summary = calculateSummary(allEvents);
+
+          // Store the recording
+          const stored: StoredRecording = {
+            id: session.id,
+            connectionReference,
+            startTime: session.startTime,
+            endTime,
+            startUrl: session.startUrl,
+            duration,
+            events: allEvents,
+            summary,
+          };
+
+          storedRecordings.set(session.id, stored);
+
+          // Cleanup
+          cleanupHandles.delete(connectionReference);
+          activeSessions.delete(connectionReference);
+
+          // Resolve the blocking promise
+          resolveRecording({ success: true, id: session.id, recording: stored });
+        } catch (e) {
+          console.error('[cdp-tools] Error processing UI stop:', e);
+          resolveRecording({ success: false, error: String(e) });
+        }
+      }
+    });
+
     // Inject event listeners into the page
     await page.evaluate((showOverlayParam: boolean) => {
       (globalThis as any).__cdpRecordingEvents = [];
       (globalThis as any).__cdpRecordingStart = Date.now();
       (globalThis as any).__cdpRecordingPaused = false;
       (globalThis as any).__cdpRecordingState = 'recording';
+      (globalThis as any).__cdpPausePeriods = [];  // Clear pause periods from previous recording
 
       const doc = (globalThis as any).document;
 
@@ -392,7 +467,7 @@ export async function startRecording(
             <span class="cdp-stats" style="color: #d1d5db; min-width: 60px;">0 | 0.0s</span>
             <span class="cdp-event" style="padding: 2px 8px; border-radius: 4px; font-size: 10px; background: #6b7280; min-width: 50px; text-align: center;">-</span>
             <div style="display: flex; gap: 4px; margin-left: 6px;">
-              <button class="cdp-btn cdp-comment" title="Add Comment (Ctrl+Shift+C)" style="background: #374151; border: none; color: white; width: 24px; height: 24px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 10px;">💬</button>
+              <button class="cdp-btn cdp-comment" title="Add Comment (Cmd+Shift+C) | Bug (Cmd+Shift+B) | Feature (Cmd+Shift+F)" style="background: #374151; border: none; color: white; width: 24px; height: 24px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 10px;">💬</button>
               <button class="cdp-btn cdp-pause" title="Pause/Resume" style="background: #374151; border: none; color: white; width: 24px; height: 24px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 10px;">⏸</button>
               <button class="cdp-btn cdp-reset" title="Reset" style="background: #374151; border: none; color: white; width: 24px; height: 24px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 10px;">↺</button>
               <button class="cdp-btn cdp-done" title="Complete" style="background: #059669; border: none; color: white; width: 24px; height: 24px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 10px;">✓</button>
@@ -420,7 +495,50 @@ export async function startRecording(
               box-shadow: 0 25px 50px rgba(0,0,0,0.5);
             ">
               <h3 style="margin: 0 0 16px 0; color: white; font-size: 18px;">Add Comment</h3>
-              <p style="margin: 0 0 12px 0; color: #9ca3af; font-size: 13px;">Describe what you expected to happen after the previous action:</p>
+              <div class="cdp-comment-category" style="display: flex; gap: 0; margin-bottom: 16px;">
+                <label style="flex: 1; cursor: pointer;">
+                  <input type="radio" name="cdp-category" value="narrative" checked style="display: none;">
+                  <span class="cdp-cat-btn" data-cat="narrative" style="
+                    display: block;
+                    text-align: center;
+                    padding: 8px 12px;
+                    background: #3b82f6;
+                    color: white;
+                    font-size: 13px;
+                    font-weight: 500;
+                    border-radius: 6px 0 0 6px;
+                    border: 1px solid #3b82f6;
+                  ">NARRATIVE</span>
+                </label>
+                <label style="flex: 1; cursor: pointer;">
+                  <input type="radio" name="cdp-category" value="bug" style="display: none;">
+                  <span class="cdp-cat-btn" data-cat="bug" style="
+                    display: block;
+                    text-align: center;
+                    padding: 8px 12px;
+                    background: #374151;
+                    color: #9ca3af;
+                    font-size: 13px;
+                    font-weight: 500;
+                    border-top: 1px solid #4b5563;
+                    border-bottom: 1px solid #4b5563;
+                  ">BUG</span>
+                </label>
+                <label style="flex: 1; cursor: pointer;">
+                  <input type="radio" name="cdp-category" value="feature" style="display: none;">
+                  <span class="cdp-cat-btn" data-cat="feature" style="
+                    display: block;
+                    text-align: center;
+                    padding: 8px 12px;
+                    background: #374151;
+                    color: #9ca3af;
+                    font-size: 13px;
+                    font-weight: 500;
+                    border-radius: 0 6px 6px 0;
+                    border: 1px solid #4b5563;
+                  ">FEATURE</span>
+                </label>
+              </div>
               <textarea class="cdp-comment-input" style="
                 width: 100%;
                 height: 120px;
@@ -466,12 +584,40 @@ export async function startRecording(
         const commentInput = overlay.querySelector('.cdp-comment-input') as any;
         const commentCancel = overlay.querySelector('.cdp-comment-cancel');
         const commentSave = overlay.querySelector('.cdp-comment-save');
+        const categoryBtns = overlay.querySelectorAll('.cdp-cat-btn');
+        const categoryRadios = overlay.querySelectorAll('input[name="cdp-category"]') as any;
+
+        // Category button styling
+        const updateCategoryStyles = () => {
+          categoryBtns.forEach((btn: any) => {
+            const cat = btn.dataset.cat;
+            const radio = overlay.querySelector(`input[value="${cat}"]`) as any;
+            if (radio?.checked) {
+              btn.style.background = cat === 'bug' ? '#dc2626' : cat === 'feature' ? '#059669' : '#3b82f6';
+              btn.style.color = 'white';
+              btn.style.borderColor = btn.style.background;
+            } else {
+              btn.style.background = '#374151';
+              btn.style.color = '#9ca3af';
+              btn.style.borderColor = '#4b5563';
+            }
+          });
+        };
+
+        categoryRadios.forEach((radio: any) => {
+          radio.addEventListener('change', updateCategoryStyles);
+        });
 
         // Comment modal functions
-        const showCommentModal = () => {
+        const showCommentModal = (category: string = 'narrative') => {
           if (commentModal) {
             (globalThis as any).__cdpCommentModalOpen = true;
+            (globalThis as any).__cdpCommentModalOpenedAt = Date.now();
             commentModal.style.display = 'flex';
+            // Set the specified category
+            const radio = overlay.querySelector(`input[value="${category}"]`) as any;
+            if (radio) radio.checked = true;
+            updateCategoryStyles();
             if (commentInput) {
               commentInput.value = '';
               commentInput.focus();
@@ -481,6 +627,15 @@ export async function startRecording(
 
         const hideCommentModal = () => {
           if (commentModal) {
+            // Track pause periods to adjust event timestamps later
+            const openedAt = (globalThis as any).__cdpCommentModalOpenedAt;
+            if (openedAt) {
+              const closedAt = Date.now();
+              const pausePeriods = (globalThis as any).__cdpPausePeriods || [];
+              pausePeriods.push({ start: openedAt, end: closedAt });
+              (globalThis as any).__cdpPausePeriods = pausePeriods;
+              delete (globalThis as any).__cdpCommentModalOpenedAt;
+            }
             (globalThis as any).__cdpCommentModalOpen = false;
             commentModal.style.display = 'none';
           }
@@ -490,10 +645,17 @@ export async function startRecording(
           const text = commentInput?.value?.trim();
           if (text) {
             const events = (globalThis as any).__cdpRecordingEvents;
+            // Use the timestamp when modal was opened, not current time
+            // This way the comment appears at the right point in the timeline
+            const modalOpenedAt = (globalThis as any).__cdpCommentModalOpenedAt || Date.now();
+            // Get selected category
+            const selectedRadio = overlay.querySelector('input[name="cdp-category"]:checked') as any;
+            const category = selectedRadio?.value || 'narrative';
             const commentEvent = {
               type: 'comment',
               text,
-              timestamp: Date.now(),
+              timestamp: modalOpenedAt,
+              category,
               attachedToEventIndex: events.length > 0 ? events.length - 1 : undefined,
             };
             events.push(commentEvent);
@@ -535,15 +697,22 @@ export async function startRecording(
           e.stopPropagation();
         });
 
-        // Global keyboard shortcut for comment (Ctrl/Cmd + Shift + C)
+        // Global keyboard shortcuts for comments (Ctrl/Cmd + Shift + C/B/F)
         const commentShortcutHandler = (e: any) => {
+          if ((globalThis as any).__cdpRecordingState === 'completed') return;
+          if (!(e.ctrlKey || e.metaKey) || !e.shiftKey) return;
+
           const key = e.key.toLowerCase();
-          if ((e.ctrlKey || e.metaKey) && e.shiftKey && key === 'c') {
-            if ((globalThis as any).__cdpRecordingState !== 'completed') {
-              e.preventDefault();
-              e.stopPropagation();
-              showCommentModal();
-            }
+          let category: string | null = null;
+
+          if (key === 'c') category = 'narrative';
+          else if (key === 'b') category = 'bug';
+          else if (key === 'f') category = 'feature';
+
+          if (category) {
+            e.preventDefault();
+            e.stopPropagation();
+            showCommentModal(category);
           }
         };
         doc.addEventListener('keydown', commentShortcutHandler, { capture: true });
@@ -572,6 +741,16 @@ export async function startRecording(
         doneBtn?.addEventListener('click', (e: any) => {
           e.stopPropagation();
           (globalThis as any).__cdpRecordingState = 'completed';
+
+          // Send events to server via CDP binding
+          const events = (globalThis as any).__cdpRecordingEvents || [];
+          const pausePeriods = (globalThis as any).__cdpPausePeriods || [];
+          try {
+            (globalThis as any).__cdpRecordingComplete(JSON.stringify({ events, pausePeriods }));
+          } catch (err) {
+            console.error('[cdp-tools] Failed to send recording to server:', err);
+          }
+
           const panel = overlay.querySelector('.cdp-panel');
           if (panel) {
             panel.style.background = 'rgba(5, 150, 105, 0.9)';
@@ -640,7 +819,8 @@ export async function startRecording(
       } catch (e) { /* page may have navigated */ }
     });
 
-    return { success: true, id };
+    // Block until recording completes (via UI button or stopRecording call)
+    return recordingPromise;
   } catch (error: any) {
     activeSessions.delete(connectionReference);
     return { success: false, error: error.message || String(error) };
@@ -653,20 +833,62 @@ export async function startRecording(
 export async function stopRecording(
   page: Page,
   connectionReference: string
-): Promise<{ success: boolean; id?: number; recording?: StoredRecording; error?: string }> {
+): Promise<{ success: boolean; id?: number; recording?: StoredRecording; error?: string; alreadyStopped?: boolean }> {
   const session = activeSessions.get(connectionReference);
+
+  // Check if recording was already stopped via UI but not yet processed
   if (!session) {
+    // Check if there's a most recent stored recording for this connection
+    // (user may have stopped via UI button)
+    const recordings = Array.from(storedRecordings.values())
+      .filter(r => r.connectionReference === connectionReference)
+      .sort((a, b) => b.endTime - a.endTime);
+
+    if (recordings.length > 0) {
+      const mostRecent = recordings[0];
+      // If it was stored within last 60 seconds, assume it was just stopped via UI
+      if (Date.now() - mostRecent.endTime < 60000) {
+        return {
+          success: true,
+          id: mostRecent.id,
+          recording: mostRecent,
+          alreadyStopped: true
+        };
+      }
+    }
+
     return { success: false, error: 'No active recording for this connection' };
   }
 
   try {
-    // Get events from page
-    const pageEvents = await page.evaluate(() => {
-      return (globalThis as any).__cdpRecordingEvents || [];
-    }) as InputEvent[];
+    // Check if recording was completed via UI (but session not yet cleaned up)
+    const pageState = await page.evaluate(() => {
+      return {
+        events: (globalThis as any).__cdpRecordingEvents || [],
+        state: (globalThis as any).__cdpRecordingState,
+        pausePeriods: (globalThis as any).__cdpPausePeriods || [],
+      };
+    });
+
+    const pageEvents = pageState.events as InputEvent[];
+    const wasCompletedViaUI = pageState.state === 'completed';
+    const pausePeriods = pageState.pausePeriods as { start: number; end: number }[];
+
+    // Adjust event timestamps to exclude time spent in comment modals
+    const adjustedPageEvents = pageEvents.map(e => {
+      let adjustment = 0;
+      for (const pause of pausePeriods) {
+        if (e.timestamp > pause.end) {
+          adjustment += pause.end - pause.start;
+        } else if (e.timestamp > pause.start) {
+          adjustment += e.timestamp - pause.start;
+        }
+      }
+      return adjustment > 0 ? { ...e, timestamp: e.timestamp - adjustment } : e;
+    });
 
     // Merge page events with navigation events from session
-    const allEvents = [...session.events, ...pageEvents].sort((a, b) => a.timestamp - b.timestamp);
+    const allEvents = [...session.events, ...adjustedPageEvents].sort((a, b) => a.timestamp - b.timestamp);
 
     const endTime = Date.now();
     const duration = endTime - session.startTime;
@@ -688,16 +910,21 @@ export async function stopRecording(
 
     storedRecordings.set(session.id, stored);
 
-    // Cleanup page listeners
-    const cleanup = cleanupHandles.get(connectionReference);
-    if (cleanup) {
-      await cleanup();
+    // Cleanup page listeners (skip if already cleaned up via UI)
+    if (!wasCompletedViaUI) {
+      const cleanup = cleanupHandles.get(connectionReference);
+      if (cleanup) {
+        await cleanup();
+        cleanupHandles.delete(connectionReference);
+      }
+    } else {
+      // Still remove the cleanup handle reference
       cleanupHandles.delete(connectionReference);
     }
 
     activeSessions.delete(connectionReference);
 
-    return { success: true, id: session.id, recording: stored };
+    return { success: true, id: session.id, recording: stored, alreadyStopped: wasCompletedViaUI };
   } catch (error: any) {
     return { success: false, error: error.message || String(error) };
   }
@@ -1214,4 +1441,82 @@ export function formatEventsAsCSV(events: InputEvent[], startTime?: number): str
   }
 
   return lines.join('\n');
+}
+
+/**
+ * Generate a condensed timeline of events, grouping consecutive actions of the same type
+ * but showing actual comment text inline.
+ * Example: "3 clicks → 5 keys → 'testing this feature' → 2 clicks → 'done testing'"
+ */
+export function generateCondensedTimeline(events: InputEvent[]): string {
+  const simplified = simplifyEvents(events);
+  const parts: string[] = [];
+
+  let currentType: string | null = null;
+  let currentCount = 0;
+
+  const flushCurrent = () => {
+    if (currentType && currentCount > 0) {
+      if (currentCount === 1) {
+        parts.push(`1 ${currentType}`);
+      } else {
+        parts.push(`${currentCount} ${currentType}s`);
+      }
+    }
+    currentType = null;
+    currentCount = 0;
+  };
+
+  for (const event of simplified) {
+    if (isCommentEvent(event)) {
+      flushCurrent();
+      // Truncate long comments
+      const text = event.text.length > 50 ? event.text.substring(0, 47) + '...' : event.text;
+      const category = event.category || 'narrative';
+      if (category === 'bug') {
+        parts.push(`BUG: "${text}"`);
+      } else if (category === 'feature') {
+        parts.push(`FEATURE: "${text}"`);
+      } else {
+        parts.push(`"${text}"`);
+      }
+      continue;
+    }
+
+    if (isNavigationEvent(event)) {
+      flushCurrent();
+      parts.push(`nav`);
+      continue;
+    }
+
+    let eventType: string;
+    if (isKeyboardEvent(event)) {
+      if (event.type === 'keyup') continue;
+      eventType = 'key';
+    } else if (isMouseEvent(event)) {
+      if (event.type === 'click') {
+        eventType = 'click';
+      } else if (event.type === 'wheel') {
+        eventType = 'scroll';
+      } else if (event.type === 'mousemove') {
+        continue; // Skip mousemove
+      } else {
+        continue; // Skip mousedown/mouseup
+      }
+    } else {
+      continue;
+    }
+
+    if (eventType === currentType) {
+      currentCount++;
+    } else {
+      flushCurrent();
+      currentType = eventType;
+      currentCount = 1;
+    }
+  }
+
+  flushCurrent();
+
+  return parts.join(' → ');
 }

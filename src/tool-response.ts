@@ -5,6 +5,8 @@
 
 import type { PortFailureInfo, PendingStartupFailureInfo } from './server-manager.js';
 import type { Connection } from './connection-manager.js';
+import { hasBlockingBugs, formatBlockingBugs } from './bug-blocker.js';
+import { createErrorResponse } from './messages.js';
 
 /**
  * Tool response content item
@@ -176,6 +178,35 @@ export function checkPortFailures(
     blocked: false,
     prefix,
     markAsError: errorPorts.length > 0
+  };
+}
+
+/**
+ * Tools that are allowed to execute when blocked due to bugs
+ * These are tools needed to acknowledge bugs or manage the todo list
+ */
+const BUG_ALLOWED_TOOLS = new Set([
+  'replay',  // Needed to acknowledge bugs
+]);
+
+/**
+ * Check for blocking bugs from recordings
+ */
+export function checkBugBlocking(toolName: string): PreExecutionResult {
+  if (!hasBlockingBugs()) {
+    return { blocked: false, prefix: '', markAsError: false };
+  }
+
+  // Allow replay tool to acknowledge bugs
+  if (BUG_ALLOWED_TOOLS.has(toolName)) {
+    return { blocked: false, prefix: '', markAsError: false };
+  }
+
+  const bugList = formatBlockingBugs();
+
+  return {
+    blocked: true,
+    response: createErrorResponse('BUGS_BLOCKING', { bugList })
   };
 }
 
