@@ -940,7 +940,7 @@ export class ServerManager {
       id: serverId,
       runner,
       autoRun: autoRun ?? false,
-      monitorPort,
+      monitorPort: monitorPort ?? true, // Default to monitoring server port
       global: isGlobal ?? false,
     });
 
@@ -1101,7 +1101,7 @@ export class ServerManager {
 
   /**
    * Acknowledge a pending startup failure
-   * This unblocks tools but doesn't restart detection
+   * Clears the blocking state and starts background health monitoring
    */
   async acknowledgeStartup(serverId: string): Promise<boolean> {
     const pending = this.pendingStartups.get(serverId);
@@ -1109,10 +1109,80 @@ export class ServerManager {
       return false;
     }
 
-    pending.acknowledged = true;
+    // Clear pending state - no longer blocking
+    this.pendingStartups.delete(serverId);
     await this.saveState();
     await debugLog('ServerManager', `Acknowledged pending startup: ${serverId}`);
+
+    // Start background health monitoring
+    // This will detect port (and set up monitoring) or detect server death (and re-block)
+    this.monitorServerHealth(serverId);
+
     return true;
+  }
+
+  /**
+   * Monitor server health after acknowledgment
+   * Checks every 5 seconds for:
+   * - Port detection (sets up port monitoring when found)
+   * - Server death (re-triggers blocking)
+   * Runs until port is found, server dies, or server is removed
+   */
+  private async monitorServerHealth(serverId: string): Promise<void> {
+    const checkInterval = 5000; // Check every 5 seconds
+
+    while (true) {
+      await new Promise(resolve => setTimeout(resolve, checkInterval));
+
+      const managed = this.servers.get(serverId);
+      if (!managed) {
+        // Server was removed - clean exit
+        return;
+      }
+
+      // Check if server is still running
+      const isRunning = await managed.runner.isRunning();
+      if (!isRunning) {
+        // Server died - create blocking entry
+        const now = new Date();
+        this.pendingStartups.set(serverId, {
+          serverId,
+          startedAt: now,
+          timeoutAt: now,
+          acknowledged: false,
+          reason: 'died',
+        });
+        await this.saveState();
+        await debugLog('ServerManager', `Server died (health check): ${serverId}`);
+        return;
+      }
+
+      // Try to detect port if not already monitoring
+      const status = await managed.runner.getStatus();
+      let port: number | undefined = status.port ?? undefined;
+
+      if (!port) {
+        port = (await managed.runner.detectPort()) ?? undefined;
+      }
+
+      if (port && managed.monitorPort && !this.getPortMonitor().isMonitoring(port)) {
+        // Port found - set up monitoring, then port monitor takes over
+        await this.getPortMonitor().startMonitoring(
+          port,
+          'block',
+          `Server: ${serverId}`
+        );
+        await debugLog('ServerManager', `Health check found port ${port} - monitoring started for ${serverId}`);
+        await this.saveState();
+        return; // Port monitor will handle it from here
+      }
+
+      // If port is being monitored, we can stop health checking
+      if (port && this.getPortMonitor().isMonitoring(port)) {
+        await debugLog('ServerManager', `Port ${port} already monitored, stopping health check for ${serverId}`);
+        return;
+      }
+    }
   }
 
   /**
