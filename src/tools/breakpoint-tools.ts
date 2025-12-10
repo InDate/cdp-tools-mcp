@@ -9,12 +9,47 @@ import { createTool } from '../validation-helpers.js';
 import type { LogpointExecutionTracker } from '../logpoint-execution-tracker.js';
 import { createSuccessResponse, createErrorResponse, getErrorMessage } from '../messages.js';
 
+/**
+ * Helper to resolve TypeScript source maps for breakpoint locations.
+ * Handles Vite-style serving (skip translation) vs traditional builds (translate).
+ */
+async function resolveBreakpointLocation(
+  url: string,
+  lineNumber: number,
+  columnNumber: number | undefined,
+  cdpManager: CDPManager,
+  sourceMapHandler: SourceMapHandler
+): Promise<{ url: string; line: number; column: number | undefined }> {
+  let targetUrl = url;
+  let targetLine = lineNumber;
+  let targetColumn = columnNumber;
+
+  if (url.endsWith('.ts') || url.endsWith('.tsx')) {
+    // Check if this .ts/.tsx URL is already loaded as a script (Vite dev server)
+    const tsScriptLoaded = cdpManager.isScriptLoaded(url);
+
+    if (!tsScriptLoaded) {
+      // Traditional build: .ts files compiled to .js, need source map translation
+      const mapped = await sourceMapHandler.mapToGenerated(url, lineNumber, columnNumber || 0);
+      if (mapped) {
+        targetUrl = mapped.generatedFile;
+        targetLine = mapped.line;
+        targetColumn = mapped.column;
+      }
+    }
+    // If tsScriptLoaded is true, use url and lineNumber directly
+    // CDP will handle source map translation via inline source maps
+  }
+
+  return { url: targetUrl, line: targetLine, column: targetColumn };
+}
+
 // Schema definitions
 const breakpointSchema = z.object({
   action: z.enum([
     'set', 'remove', 'list', 'setLogpoint', 'validate', 'resetCounter', 'waitForScript',
-    'setDOMBreakpoint', 'setEventBreakpoint', 'setXHRBreakpoint'
-  ]).describe('Breakpoint action: set (line breakpoint), remove (remove by ID), list (list all), setLogpoint (log without pausing), validate (test expressions), resetCounter (reset logpoint counter), waitForScript (wait for script load), setDOMBreakpoint (pause on DOM changes), setEventBreakpoint (pause on events), setXHRBreakpoint (pause on network requests)'),
+    'setDOMBreakpoint', 'setEventBreakpoint', 'setXHRBreakpoint', 'await'
+  ]).describe('Breakpoint action: set (line breakpoint), remove (remove by ID), list (list all), setLogpoint (log without pausing), validate (test expressions), resetCounter (reset logpoint counter), waitForScript (wait for script load), setDOMBreakpoint (pause on DOM changes), setEventBreakpoint (pause on events), setXHRBreakpoint (pause on network requests), await (set breakpoint and wait for it to hit - abortable)'),
   connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 
   // set/setLogpoint/validate parameters
@@ -62,9 +97,9 @@ export function createBreakpointTools(
 ) {
   return {
     breakpoint: createTool(
-      'Manage breakpoints and logpoints. Actions: set (line breakpoint), remove (remove by ID), list (list all), setLogpoint (log without pausing), validate (test expressions), resetCounter (reset logpoint counter), waitForScript (wait for script load), setDOMBreakpoint (pause when element changes), setEventBreakpoint (pause when event fires), setXHRBreakpoint (pause on network requests)',
+      'Manage breakpoints and logpoints. Actions: set (line breakpoint), remove (remove by ID), list (list all), setLogpoint (log without pausing), validate (test expressions), resetCounter (reset logpoint counter), waitForScript (wait for script load), setDOMBreakpoint (pause when element changes), setEventBreakpoint (pause when event fires), setXHRBreakpoint (pause on network requests), await (set breakpoint and wait for hit - user can abort)',
       breakpointSchema,
-      async (args) => {
+      async (args, abortSignal) => {
         const { action } = args;
 
         // Resolve connection if connectionReason is provided
@@ -91,19 +126,14 @@ export function createBreakpointTools(
               return createErrorResponse('DEBUGGER_NOT_CONNECTED');
             }
 
-            // Try to map through source maps if this is a TypeScript file
-            let targetUrl = args.url;
-            let targetLine = args.lineNumber;
-            let targetColumn = args.columnNumber;
-
-            if (args.url.endsWith('.ts')) {
-              const mapped = await sourceMapHandler.mapToGenerated(args.url, args.lineNumber, args.columnNumber || 0);
-              if (mapped) {
-                targetUrl = mapped.generatedFile;
-                targetLine = mapped.line;
-                targetColumn = mapped.column;
-              }
-            }
+            // Resolve source maps for TypeScript files
+            const resolved = await resolveBreakpointLocation(
+              args.url, args.lineNumber, args.columnNumber,
+              targetCdpManager, sourceMapHandler
+            );
+            const targetUrl = resolved.url;
+            const targetLine = resolved.line;
+            const targetColumn = resolved.column;
 
             try {
               const breakpoint = await targetCdpManager.setBreakpoint(targetUrl, targetLine, targetColumn, args.condition);
@@ -605,19 +635,14 @@ export function createBreakpointTools(
             const includeVariables = args.includeVariables || false;
             const maxExecutions = args.maxExecutions || 20;
 
-            // Try to map through source maps if this is a TypeScript file
-            let targetUrl = args.url;
-            let targetLine = args.lineNumber;
-            let targetColumn = args.columnNumber;
-
-            if (args.url.endsWith('.ts')) {
-              const mapped = await sourceMapHandler.mapToGenerated(args.url, args.lineNumber, args.columnNumber || 0);
-              if (mapped) {
-                targetUrl = mapped.generatedFile;
-                targetLine = mapped.line;
-                targetColumn = mapped.column;
-              }
-            }
+            // Resolve source maps for TypeScript files
+            const resolved = await resolveBreakpointLocation(
+              args.url, args.lineNumber, args.columnNumber,
+              targetCdpManager, sourceMapHandler
+            );
+            const targetUrl = resolved.url;
+            const targetLine = resolved.line;
+            const targetColumn = resolved.column;
 
             // Parse logMessage to extract expressions in {}
             const expressionMatches = args.logMessage.matchAll(/\{([^}]+)\}/g);
@@ -1174,6 +1199,160 @@ export function createBreakpointTools(
                 content: [{
                   type: 'text',
                   text: `## Failed to Set XHR Breakpoint\n\n**Error:** ${error.message}\n\n**URL Pattern:** \`${args.urlPattern}\``,
+                }],
+                isError: true,
+              };
+            }
+          }
+
+          case 'await': {
+            // Wait for any breakpoint to be hit, or set one first if url/lineNumber provided
+            if (!targetCdpManager.isConnected()) {
+              return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+            }
+
+            // Track if we created a breakpoint (for cleanup on abort/timeout)
+            let createdBreakpoint: { breakpointId: string; url: string; line: number; column?: number } | null = null;
+
+            // If url and lineNumber provided, set a breakpoint first
+            if (args.url && args.lineNumber !== undefined) {
+              // Resolve source maps for TypeScript files
+              const resolved = await resolveBreakpointLocation(
+                args.url, args.lineNumber, args.columnNumber,
+                targetCdpManager, sourceMapHandler
+              );
+
+              try {
+                const breakpoint = await targetCdpManager.setBreakpoint(resolved.url, resolved.line, resolved.column, args.condition);
+                const resolvedLine = breakpoint.location.lineNumber + 1;
+                const resolvedColumn = breakpoint.location.columnNumber !== undefined
+                  ? breakpoint.location.columnNumber + 1
+                  : undefined;
+                createdBreakpoint = {
+                  breakpointId: breakpoint.breakpointId,
+                  url: resolved.url,
+                  line: resolvedLine,
+                  column: resolvedColumn
+                };
+              } catch (error: any) {
+                return {
+                  content: [{
+                    type: 'text',
+                    text: `## Failed to Set Await Breakpoint\n\n**Error:** ${error.message}\n\n**Location:** \`${resolved.url}:${resolved.line}\``,
+                  }],
+                  isError: true,
+                };
+              }
+            }
+
+            try {
+              // Create a promise that resolves when paused or aborted
+              const timeout = args.timeout || 300000; // Default 5 minutes
+
+              const waitPromise = new Promise<{ type: 'paused' | 'aborted' | 'timeout' }>((resolve) => {
+                // Set up abort handler
+                if (abortSignal) {
+                  abortSignal.addEventListener('abort', () => {
+                    resolve({ type: 'aborted' });
+                  }, { once: true });
+                }
+
+                // Wait for pause
+                targetCdpManager.waitForPause(timeout)
+                  .then(() => resolve({ type: 'paused' }))
+                  .catch(() => resolve({ type: 'timeout' }));
+              });
+
+              const result = await waitPromise;
+
+              if (result.type === 'aborted') {
+                // Clean up breakpoint on abort (only if we created one)
+                if (createdBreakpoint) {
+                  try {
+                    await targetCdpManager.removeBreakpoint(createdBreakpoint.breakpointId);
+                  } catch {
+                    // Ignore cleanup errors
+                  }
+                }
+
+                let abortMsg = `## Breakpoint Await Aborted\n\n`;
+                if (createdBreakpoint) {
+                  abortMsg += `**Breakpoint removed:** \`${createdBreakpoint.breakpointId}\`\n`;
+                  abortMsg += `**Location:** \`${createdBreakpoint.url}:${createdBreakpoint.line}\`\n\n`;
+                }
+                abortMsg += `User aborted the wait.`;
+
+                return {
+                  content: [{
+                    type: 'text',
+                    text: abortMsg,
+                  }],
+                };
+              }
+
+              if (result.type === 'timeout') {
+                let timeoutMsg = `## Breakpoint Await Timeout\n\n`;
+                timeoutMsg += `No breakpoint was hit within ${timeout / 1000} seconds.\n\n`;
+                if (createdBreakpoint) {
+                  timeoutMsg += `**Note:** The breakpoint at \`${createdBreakpoint.url}:${createdBreakpoint.line}\` is still active.\n`;
+                  timeoutMsg += `Use \`breakpoint({ action: 'remove', breakpointId: '${createdBreakpoint.breakpointId}' })\` to remove it.`;
+                }
+
+                return {
+                  content: [{
+                    type: 'text',
+                    text: timeoutMsg,
+                  }],
+                  isError: true,
+                };
+              }
+
+              // Paused - get call stack info
+              const pauseInfo = targetCdpManager.getPausedInfo();
+
+              // If we created a breakpoint, remove it so it doesn't hit again on resume
+              if (createdBreakpoint) {
+                try {
+                  await targetCdpManager.removeBreakpoint(createdBreakpoint.breakpointId);
+                } catch {
+                  // Ignore removal errors
+                }
+              }
+
+              let markdown = `## Breakpoint Hit!\n\n`;
+
+              if (pauseInfo.paused && pauseInfo.callStack && pauseInfo.callStack.length > 0) {
+                const topFrame = pauseInfo.callStack[0];
+                const hitUrl = targetCdpManager.getScriptUrl(topFrame.location.scriptId) || 'unknown';
+                const hitLine = topFrame.location.lineNumber + 1;
+                const hitColumn = topFrame.location.columnNumber !== undefined ? topFrame.location.columnNumber + 1 : undefined;
+
+                markdown += `**Location:** \`${hitUrl}:${hitLine}${hitColumn ? `:${hitColumn}` : ''}\`\n`;
+                if (createdBreakpoint) {
+                  markdown += `**Created breakpoint removed** (one-shot)\n\n`;
+                }
+                markdown += `**Paused at:** \`${topFrame.functionName || '(anonymous)'}\`\n`;
+                markdown += `**Call Frame ID:** \`${topFrame.callFrameId}\`\n\n`;
+                markdown += `**Next steps:**\n`;
+                markdown += `- \`inspect({ action: 'getVariables', callFrameId: '${topFrame.callFrameId}' })\` - View variables\n`;
+                markdown += `- \`inspect({ action: 'evaluateExpression', expression: '...' })\` - Evaluate code\n`;
+                markdown += `- \`execution({ action: 'stepOver' })\` - Step to next line\n`;
+                markdown += `- \`execution({ action: 'resume' })\` - Continue execution\n`;
+              } else {
+                markdown += `Execution paused but no call stack available.\n`;
+              }
+
+              return {
+                content: [{
+                  type: 'text',
+                  text: markdown,
+                }],
+              };
+            } catch (error: any) {
+              return {
+                content: [{
+                  type: 'text',
+                  text: `## Await Breakpoint Error\n\n**Error:** ${error.message}`,
                 }],
                 isError: true,
               };

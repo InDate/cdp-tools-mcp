@@ -107,6 +107,21 @@ export class CDPManager {
   }
 
   /**
+   * Check if a script with the given URL (or matching suffix) is loaded
+   * This is useful to detect Vite-style serving where .ts files are loaded directly
+   */
+  isScriptLoaded(url: string): boolean {
+    return this.findScriptIds(url) !== null;
+  }
+
+  /**
+   * Get the URL for a script by its ID
+   */
+  getScriptUrl(scriptId: string): string | undefined {
+    return this.scriptIdToUrl.get(scriptId);
+  }
+
+  /**
    * Connect to a Chrome or Node.js debugger instance
    * @param host - The debugger host (default: localhost)
    * @param port - The debugger port (default: 9222)
@@ -325,12 +340,37 @@ export class CDPManager {
     }
 
     // Set breakpoint using 0-based CDP numbers
-    const result = await Debugger.setBreakpointByUrl({
-      url: actualUrl,
-      lineNumber: cdpLineNumber,
-      columnNumber: cdpColumnNumber,
-      condition,
-    });
+    let result;
+    try {
+      result = await Debugger.setBreakpointByUrl({
+        url: actualUrl,
+        lineNumber: cdpLineNumber,
+        columnNumber: cdpColumnNumber,
+        condition,
+      });
+    } catch (error: any) {
+      // Handle "Breakpoint at specified location already exists" error
+      if (error?.message?.includes('already exists')) {
+        // Find and remove the existing breakpoint at this location
+        for (const [bpId, bp] of this.state.breakpoints.entries()) {
+          if (bp.originalLocation?.url === url &&
+              bp.originalLocation?.lineNumber === lineNumber &&
+              (columnNumber === undefined || bp.originalLocation?.columnNumber === columnNumber)) {
+            await this.removeBreakpoint(bpId);
+            break;
+          }
+        }
+        // Retry setting the breakpoint
+        result = await Debugger.setBreakpointByUrl({
+          url: actualUrl,
+          lineNumber: cdpLineNumber,
+          columnNumber: cdpColumnNumber,
+          condition,
+        });
+      } else {
+        throw error;
+      }
+    }
 
     // Check if breakpoint was resolved to any location
     // Per CDP spec, setBreakpointByUrl can return empty locations if script isn't loaded yet
