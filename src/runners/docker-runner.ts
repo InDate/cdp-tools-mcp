@@ -29,8 +29,18 @@ function ensureDockerAvailable(): void {
     });
     if (result.error || result.status !== 0) {
       const stderr = result.stderr?.toString() || '';
+      // Reset cache on any failure so we re-check next time
+      dockerChecked = false;
+
       if (stderr.includes('Cannot connect') || stderr.includes('Is the docker daemon running')) {
         throw new Error('Docker daemon is not running. Please start Docker and try again.');
+      }
+      if (stderr.includes('paused') || stderr.includes('Paused')) {
+        throw new Error('Docker Desktop is paused. Please unpause it and try again.');
+      }
+      // Pass through Docker's error message if available, otherwise generic message
+      if (stderr.trim()) {
+        throw new Error(stderr.trim());
       }
       throw new Error('Docker is not available. Please install Docker and try again.');
     }
@@ -38,12 +48,22 @@ function ensureDockerAvailable(): void {
     if (err.code === 'ENOENT') {
       throw new Error('Docker is not installed. Please install Docker from https://docs.docker.com/get-docker/');
     }
+    // Reset cache on any error so we re-check next time
+    dockerChecked = false;
     throw err;
   }
 }
 
-/** Cache for Docker availability check */
+/** Cache for Docker availability check - reset on failure */
 let dockerChecked = false;
+
+/**
+ * Reset the Docker availability cache.
+ * Called before autoRun to ensure Docker is checked fresh.
+ */
+export function resetDockerCheck(): void {
+  dockerChecked = false;
+}
 
 /**
  * Sanitize a string to be safe for use as a Docker container/project name.
@@ -108,7 +128,16 @@ export class DockerRunner implements Runner {
     if (result.status !== 0) {
       const stderr = result.stderr?.toString() || '';
       const stdout = result.stdout?.toString() || '';
-      throw new Error(stderr || stdout || `Docker command failed with status ${result.status}`);
+      const errorMsg = stderr || stdout || '';
+
+      // Check if Docker daemon stopped while MCP was running
+      if (errorMsg.includes('Cannot connect') || errorMsg.includes('Is the docker daemon running')) {
+        // Reset cache so next attempt will re-check
+        dockerChecked = false;
+        throw new Error('Docker daemon is not running. Please start Docker and try again.');
+      }
+
+      throw new Error(errorMsg || `Docker command failed with status ${result.status}`);
     }
 
     return (result.stdout || '').trim();

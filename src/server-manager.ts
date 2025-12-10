@@ -18,6 +18,7 @@ import {
   type PersistedRunnerState,
   detectRunnerType,
   createRunner,
+  resetDockerCaches,
   NativeRunner,
   DockerRunner,
   DockerComposeRunner,
@@ -492,6 +493,10 @@ export class ServerManager {
       await debugLog('ServerManager', `Restored pending startup: ${persisted.serverId}`);
     }
 
+    // Reset Docker caches before processing servers - ensures we check Docker availability
+    // fresh on each startup, catching cases where Docker stopped since last run
+    resetDockerCaches();
+
     for (const server of allServers) {
       const runnerType = server.type || 'native';
       const runner = createRunner(runnerType, server.id);
@@ -558,6 +563,17 @@ export class ServerManager {
             monitorPort: server.monitorPort,
             global: server.global,
           });
+
+          // Create a pending startup failure to block tools until acknowledged
+          const now = new Date();
+          this.pendingStartups.set(server.id, {
+            serverId: server.id,
+            startedAt: now,
+            timeoutAt: now, // Already timed out
+            acknowledged: false,
+            reason: 'died', // Failed to start = died
+          });
+          await debugLog('ServerManager', `Created blocking failure for autoRun server: ${server.id}`);
         }
       } else {
         // Not running and not autoRun - keep config for manual restart

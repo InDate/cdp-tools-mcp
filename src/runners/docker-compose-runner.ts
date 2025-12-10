@@ -34,7 +34,18 @@ function ensureComposeAvailable(): 'docker compose' | 'docker-compose' {
     if (!result.error && result.status === 0) {
       return 'docker compose';
     }
-  } catch {
+    // Check if Docker daemon is not running
+    const stderr = result.stderr?.toString() || '';
+    if (stderr.includes('Cannot connect') || stderr.includes('Is the docker daemon running')) {
+      // Reset cache so next attempt will check again
+      composeCommand = null;
+      throw new Error('Docker daemon is not running. Please start Docker and try again.');
+    }
+  } catch (err: any) {
+    // Re-throw our own errors
+    if (err.message?.includes('Docker daemon is not running')) {
+      throw err;
+    }
     // Fall through to try docker-compose
   }
 
@@ -48,12 +59,25 @@ function ensureComposeAvailable(): 'docker compose' | 'docker-compose' {
     if (!result.error && result.status === 0) {
       return 'docker-compose';
     }
+    // Check if Docker daemon is not running
+    const stderr = result.stderr?.toString() || '';
+    if (stderr.includes('Cannot connect') || stderr.includes('Is the docker daemon running')) {
+      // Reset cache so next attempt will check again
+      composeCommand = null;
+      throw new Error('Docker daemon is not running. Please start Docker and try again.');
+    }
   } catch (err: any) {
+    // Re-throw our own errors
+    if (err.message?.includes('Docker daemon is not running')) {
+      throw err;
+    }
     if (err.code === 'ENOENT') {
       throw new Error('Docker Compose is not installed. Please install Docker Desktop or docker-compose-plugin.');
     }
   }
 
+  // Reset cache on failure
+  composeCommand = null;
   throw new Error('Docker Compose is not available. Please install Docker Desktop (includes Compose) or the docker-compose-plugin.');
 }
 
@@ -66,8 +90,16 @@ function sanitizeForDocker(name: string): string {
   return name.replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
-/** Cache for compose command */
+/** Cache for compose command - reset on failure */
 let composeCommand: 'docker compose' | 'docker-compose' | null = null;
+
+/**
+ * Reset the Docker Compose availability cache.
+ * Called before autoRun to ensure Docker is checked fresh.
+ */
+export function resetComposeCheck(): void {
+  composeCommand = null;
+}
 
 export class DockerComposeRunner implements Runner {
   readonly type: RunnerType = 'docker-compose';
@@ -177,7 +209,16 @@ export class DockerComposeRunner implements Runner {
     if (result.status !== 0) {
       const stderr = result.stderr?.toString() || '';
       const stdout = result.stdout?.toString() || '';
-      throw new Error(stderr || stdout || `Docker Compose command failed with status ${result.status}`);
+      const errorMsg = stderr || stdout || '';
+
+      // Check if Docker daemon stopped while MCP was running
+      if (errorMsg.includes('Cannot connect') || errorMsg.includes('Is the docker daemon running')) {
+        // Reset cache so next attempt will re-check
+        composeCommand = null;
+        throw new Error('Docker daemon is not running. Please start Docker and try again.');
+      }
+
+      throw new Error(errorMsg || `Docker Compose command failed with status ${result.status}`);
     }
 
     return (result.stdout || '').trim();
