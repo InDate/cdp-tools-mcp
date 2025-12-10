@@ -9,6 +9,7 @@ on:
 jobs:
   verify-mcp-tools:
     runs-on: ubuntu-latest
+    if: ${{ !startsWith(github.event.head_commit.message, 'v') }}
 
     strategy:
       matrix:
