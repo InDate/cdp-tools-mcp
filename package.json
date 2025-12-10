@@ -18,7 +18,8 @@
     "test:ui": "vitest --ui",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "prepublishOnly": "npm run build:verify"
+    "prepublishOnly": "npm run build:verify",
+    "postversion": "git push && git push --tags"
   },
   "keywords": [
     "mcp",
@@ -39,7 +40,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/InDate/cdp-tools-mcp.git"
+    "url": "git+https://github.com/InDate/cdp-tools-mcp.git"
   },
   "bugs": {
     "url": "https://github.com/InDate/cdp-tools-mcp/issues"
