@@ -5,7 +5,7 @@
 
 import type { PortFailureInfo, PendingStartupFailureInfo } from './server-manager.js';
 import type { Connection } from './connection-manager.js';
-import { hasBlockingBugs, formatBlockingBugs } from './bug-blocker.js';
+import { hasPendingBugs, getPendingBugs } from './issue-tracker.js';
 import { createErrorResponse } from './messages.js';
 
 /**
@@ -182,27 +182,27 @@ export function checkPortFailures(
 }
 
 /**
- * Tools that are allowed to execute when blocked due to bugs
- * These are tools needed to acknowledge bugs or manage the todo list
- */
-const BUG_ALLOWED_TOOLS = new Set([
-  'replay',  // Needed to acknowledge bugs
-]);
-
-/**
  * Check for blocking bugs from recordings
+ * Only allows the 'acknowledge' action in the issues tool
  */
-export function checkBugBlocking(toolName: string): PreExecutionResult {
-  if (!hasBlockingBugs()) {
+export async function checkBugBlocking(toolName: string, toolArgs?: Record<string, unknown>): Promise<PreExecutionResult> {
+  const hasBugs = await hasPendingBugs();
+  if (!hasBugs) {
     return { blocked: false, prefix: '', markAsError: false };
   }
 
-  // Allow replay tool to acknowledge bugs
-  if (BUG_ALLOWED_TOOLS.has(toolName)) {
+  // Only allow issues tool with acknowledge action
+  if (toolName === 'issues' && toolArgs?.action === 'acknowledge') {
     return { blocked: false, prefix: '', markAsError: false };
   }
 
-  const bugList = formatBlockingBugs();
+  // Also allow issues tool with list action (to see what's blocking)
+  if (toolName === 'issues' && toolArgs?.action === 'list') {
+    return { blocked: false, prefix: '', markAsError: false };
+  }
+
+  const pendingBugs = await getPendingBugs();
+  const bugList = pendingBugs.map(b => `- [#${b.id}] "${b.description}" (from ${b.recordingName})`).join('\n');
 
   return {
     blocked: true,
@@ -341,10 +341,10 @@ export function checkPendingStartups(
   const timeoutFailures = failures.filter(f => f.reason === 'timeout');
   const diedFailures = failures.filter(f => f.reason === 'died');
 
-  let message = '**BLOCKED: Server startup issue(s)**\n\n';
+  let message = 'BLOCKED: Server startup issue(s)\n\n';
 
   if (timeoutFailures.length > 0) {
-    message += `**Startup timeout** - The following server(s) started but no port was detected within 30 seconds:\n`;
+    message += `Startup timeout - The following server(s) started but no port was detected within 30 seconds:\n`;
     for (const f of timeoutFailures) {
       const elapsed = Math.round((Date.now() - f.startedAt.getTime()) / 1000);
       message += `- "${f.serverId}" (started ${elapsed}s ago)\n`;
@@ -353,26 +353,26 @@ export function checkPendingStartups(
   }
 
   if (diedFailures.length > 0) {
-    message += `**Server died** - The following server(s) died before port was detected:\n`;
+    message += `Server died - The following server(s) died before port was detected:\n`;
     for (const f of diedFailures) {
       message += `- "${f.serverId}"\n`;
     }
     message += '\n';
   }
 
-  message += `**Options:**\n`;
-  message += `- Check logs: \`server({ action: 'logs', serverId: '<id>' })\`\n`;
-  message += `- Acknowledge and continue: \`server({ action: 'acknowledgeStartup', serverId: '<id>' })\`\n`;
+  message += `Options:\n`;
+  message += `- Check logs: server({ action: 'logs', serverId: '<id>' })\n`;
+  message += `- Acknowledge and continue: server({ action: 'acknowledgeStartup', serverId: '<id>' })\n`;
 
   if (timeoutFailures.length > 0) {
-    message += `- Extend timeout 30s: \`server({ action: 'extendStartup', serverId: '<id>' })\`\n`;
+    message += `- Extend timeout 30s: server({ action: 'extendStartup', serverId: '<id>' })\n`;
   }
 
   if (diedFailures.length > 0) {
-    message += `- Restart server: \`server({ action: 'restart', serverId: '<id>' })\`\n`;
+    message += `- Restart server: server({ action: 'restart', serverId: '<id>' })\n`;
   }
 
-  message += `- Stop server: \`server({ action: 'stop', serverId: '<id>' })\``;
+  message += `- Stop server: server({ action: 'stop', serverId: '<id>' })`;
 
   return {
     blocked: true,

@@ -86,6 +86,7 @@ export type InputEvent = MouseEvent | KeyboardEvent | NavigationEvent | CommentE
 
 export interface RecordingOptions {
   showOverlay?: boolean;
+  abortSignal?: AbortSignal;
 }
 
 export interface RecordingSession {
@@ -124,12 +125,36 @@ export interface StoredRecording {
 // Active recording session (one per connection)
 const activeSessions = new Map<string, RecordingSession>();
 
-// Completed recordings stored by index
-const storedRecordings = new Map<number, StoredRecording>();
 let nextRecordingId = 1;
 
 // Cleanup handles for page listeners
 const cleanupHandles = new Map<string, () => Promise<void>>();
+
+// Cancel callbacks for active recordings
+const cancelCallbacks = new Map<string, () => Promise<void>>();
+
+/**
+ * Cancel an active recording without saving
+ */
+export async function cancelRecording(connectionReference: string): Promise<boolean> {
+  const cancel = cancelCallbacks.get(connectionReference);
+  if (cancel) {
+    await cancel();
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Cancel all active recordings
+ */
+export async function cancelAllRecordings(): Promise<number> {
+  const count = cancelCallbacks.size;
+  for (const cancel of cancelCallbacks.values()) {
+    await cancel();
+  }
+  return count;
+}
 
 // =============================================================================
 // Type Guards
@@ -163,9 +188,10 @@ export async function startRecording(
   page: Page,
   connectionReference: string,
   options: RecordingOptions = {}
-): Promise<{ success: boolean; id?: number; recording?: StoredRecording; error?: string }> {
+): Promise<{ success: boolean; id?: number; recording?: StoredRecording; error?: string; cancelled?: boolean }> {
+  // If there's an orphaned recording (e.g., MCP didn't send abort signal), clean it up
   if (activeSessions.has(connectionReference)) {
-    return { success: false, error: 'Recording already active for this connection' };
+    await cancelRecording(connectionReference);
   }
 
   const id = nextRecordingId++;
@@ -185,11 +211,32 @@ export async function startRecording(
 
   const showOverlay = options.showOverlay ?? true;
 
-  // Create a promise that will resolve when recording completes
-  let resolveRecording: (result: { success: boolean; id?: number; recording?: StoredRecording; error?: string }) => void;
-  const recordingPromise = new Promise<{ success: boolean; id?: number; recording?: StoredRecording; error?: string }>((resolve) => {
+  // Create a promise that will resolve when recording completes or is cancelled
+  let resolveRecording: (result: { success: boolean; id?: number; recording?: StoredRecording; error?: string; cancelled?: boolean }) => void;
+  const recordingPromise = new Promise<{ success: boolean; id?: number; recording?: StoredRecording; error?: string; cancelled?: boolean }>((resolve) => {
     resolveRecording = resolve;
   });
+
+  // Store cancel callback for external cancellation
+  const cancelFn = async () => {
+    // Clean up without creating a recording
+    const cleanup = cleanupHandles.get(connectionReference);
+    if (cleanup) {
+      await cleanup().catch(() => {});
+      cleanupHandles.delete(connectionReference);
+    }
+    activeSessions.delete(connectionReference);
+    cancelCallbacks.delete(connectionReference);
+    resolveRecording({ success: false, cancelled: true });
+  };
+  cancelCallbacks.set(connectionReference, cancelFn);
+
+  // Listen for abort signal from MCP (tool cancellation)
+  if (options.abortSignal) {
+    options.abortSignal.addEventListener('abort', () => {
+      cancelFn();
+    }, { once: true });
+  }
 
   try {
     // Set up navigation tracking via CDP
@@ -214,8 +261,9 @@ export async function startRecording(
 
     await client.send('Page.enable');
 
-    // Set up binding for UI stop button to call back to server
+    // Set up bindings for UI buttons to call back to server
     await client.send('Runtime.addBinding', { name: '__cdpRecordingComplete' });
+    await client.send('Runtime.addBinding', { name: '__cdpRecordingCancel' });
 
     client.on('Runtime.bindingCalled', async (event: any) => {
       if (event.name === '__cdpRecordingComplete') {
@@ -263,8 +311,6 @@ export async function startRecording(
             summary,
           };
 
-          storedRecordings.set(session.id, stored);
-
           // Cleanup
           cleanupHandles.delete(connectionReference);
           activeSessions.delete(connectionReference);
@@ -275,6 +321,14 @@ export async function startRecording(
           console.error('[cdp-tools] Error processing UI stop:', e);
           resolveRecording({ success: false, error: String(e) });
         }
+      }
+
+      if (event.name === '__cdpRecordingCancel') {
+        // Cancel button was clicked - clean up without saving
+        cleanupHandles.delete(connectionReference);
+        activeSessions.delete(connectionReference);
+        cancelCallbacks.delete(connectionReference);
+        resolveRecording({ success: false, cancelled: true });
       }
     });
 
@@ -420,9 +474,10 @@ export async function startRecording(
         const duration = ((Date.now() - (globalThis as any).__cdpRecordingStart) / 1000).toFixed(1);
         const isPaused = (globalThis as any).__cdpRecordingPaused;
 
-        const statsEl = overlay.querySelector('.cdp-stats');
-        const eventEl = overlay.querySelector('.cdp-event');
-        const statusEl = overlay.querySelector('.cdp-status');
+        // Use stored references (set after DOM creation)
+        const statsEl = (globalThis as any).__cdpStatsEl;
+        const eventEl = (globalThis as any).__cdpEventEl;
+        const statusEl = (globalThis as any).__cdpStatusEl;
 
         if (statsEl) statsEl.textContent = `${events.length} | ${duration}s`;
         if (statusEl) {
@@ -444,148 +499,259 @@ export async function startRecording(
       if (showOverlayParam) {
         overlay = doc.createElement('div');
         overlay.id = '__cdp-recording-overlay';
-        overlay.innerHTML = `
-          <div class="cdp-panel" style="
-            position: fixed;
-            bottom: 10px;
-            left: 50%;
-            transform: translateX(-50%);
-            background: rgba(0, 0, 0, 0.75);
-            color: white;
-            padding: 6px 12px;
-            border-radius: 20px;
-            font-family: -apple-system, system-ui, sans-serif;
-            font-size: 12px;
-            z-index: 2147483647;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-            backdrop-filter: blur(4px);
-          ">
-            <span class="cdp-status" style="padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; background: #ef4444; letter-spacing: 0.5px;">REC</span>
-            <span class="cdp-stats" style="color: #d1d5db; min-width: 60px;">0 | 0.0s</span>
-            <span class="cdp-event" style="padding: 2px 8px; border-radius: 4px; font-size: 10px; background: #6b7280; min-width: 50px; text-align: center;">-</span>
-            <div style="display: flex; gap: 4px; margin-left: 6px;">
-              <button class="cdp-btn cdp-comment" title="Add Comment (Cmd+Shift+C) | Bug (Cmd+Shift+B) | Feature (Cmd+Shift+F)" style="background: #374151; border: none; color: white; width: 24px; height: 24px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 10px;">💬</button>
-              <button class="cdp-btn cdp-pause" title="Pause/Resume" style="background: #374151; border: none; color: white; width: 24px; height: 24px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 10px;">⏸</button>
-              <button class="cdp-btn cdp-reset" title="Reset" style="background: #374151; border: none; color: white; width: 24px; height: 24px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 10px;">↺</button>
-              <button class="cdp-btn cdp-done" title="Complete" style="background: #059669; border: none; color: white; width: 24px; height: 24px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 10px;">✓</button>
-            </div>
-          </div>
-          <div class="cdp-comment-modal" style="
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.8);
-            z-index: 2147483648;
-            justify-content: center;
-            align-items: center;
-            font-family: -apple-system, system-ui, sans-serif;
-          ">
-            <div style="
-              background: #1f2937;
-              border-radius: 12px;
-              padding: 24px;
-              width: 90%;
-              max-width: 500px;
-              box-shadow: 0 25px 50px rgba(0,0,0,0.5);
-            ">
-              <h3 style="margin: 0 0 16px 0; color: white; font-size: 18px;">Add Comment</h3>
-              <div class="cdp-comment-category" style="display: flex; gap: 0; margin-bottom: 16px;">
-                <label style="flex: 1; cursor: pointer;">
-                  <input type="radio" name="cdp-category" value="narrative" checked style="display: none;">
-                  <span class="cdp-cat-btn" data-cat="narrative" style="
-                    display: block;
-                    text-align: center;
-                    padding: 8px 12px;
-                    background: #3b82f6;
-                    color: white;
-                    font-size: 13px;
-                    font-weight: 500;
-                    border-radius: 6px 0 0 6px;
-                    border: 1px solid #3b82f6;
-                  ">NARRATIVE</span>
-                </label>
-                <label style="flex: 1; cursor: pointer;">
-                  <input type="radio" name="cdp-category" value="bug" style="display: none;">
-                  <span class="cdp-cat-btn" data-cat="bug" style="
-                    display: block;
-                    text-align: center;
-                    padding: 8px 12px;
-                    background: #374151;
-                    color: #9ca3af;
-                    font-size: 13px;
-                    font-weight: 500;
-                    border-top: 1px solid #4b5563;
-                    border-bottom: 1px solid #4b5563;
-                  ">BUG</span>
-                </label>
-                <label style="flex: 1; cursor: pointer;">
-                  <input type="radio" name="cdp-category" value="feature" style="display: none;">
-                  <span class="cdp-cat-btn" data-cat="feature" style="
-                    display: block;
-                    text-align: center;
-                    padding: 8px 12px;
-                    background: #374151;
-                    color: #9ca3af;
-                    font-size: 13px;
-                    font-weight: 500;
-                    border-radius: 0 6px 6px 0;
-                    border: 1px solid #4b5563;
-                  ">FEATURE</span>
-                </label>
-              </div>
-              <textarea class="cdp-comment-input" style="
-                width: 100%;
-                height: 120px;
-                background: #374151;
-                border: 1px solid #4b5563;
-                border-radius: 8px;
-                color: white;
-                padding: 12px;
-                font-size: 14px;
-                resize: vertical;
-                box-sizing: border-box;
-              " placeholder="e.g., 'Expected the form to show a success message'"></textarea>
-              <div style="display: flex; gap: 12px; margin-top: 16px; justify-content: flex-end;">
-                <button class="cdp-comment-cancel" style="
-                  background: #374151;
-                  border: none;
-                  color: white;
-                  padding: 8px 16px;
-                  border-radius: 6px;
-                  cursor: pointer;
-                  font-size: 14px;
-                ">Cancel</button>
-                <button class="cdp-comment-save" style="
-                  background: #3b82f6;
-                  border: none;
-                  color: white;
-                  padding: 8px 16px;
-                  border-radius: 6px;
-                  cursor: pointer;
-                  font-size: 14px;
-                ">Save Comment</button>
-              </div>
-            </div>
-          </div>
-        `;
+
+        // Build overlay using DOM methods (Trusted Types compatible)
+        const panel = doc.createElement('div');
+        panel.className = 'cdp-panel';
+        Object.assign(panel.style, {
+          position: 'fixed',
+          bottom: '10px',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          background: 'rgba(0, 0, 0, 0.75)',
+          color: 'white',
+          padding: '6px 12px',
+          borderRadius: '20px',
+          fontFamily: '-apple-system, system-ui, sans-serif',
+          fontSize: '12px',
+          zIndex: '2147483647',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '10px',
+          boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+          backdropFilter: 'blur(4px)'
+        });
+
+        const statusEl = doc.createElement('span');
+        statusEl.className = 'cdp-status';
+        statusEl.textContent = 'REC';
+        Object.assign(statusEl.style, {
+          padding: '2px 6px',
+          borderRadius: '4px',
+          fontSize: '10px',
+          fontWeight: '600',
+          background: '#ef4444',
+          letterSpacing: '0.5px'
+        });
+
+        const statsEl = doc.createElement('span');
+        statsEl.className = 'cdp-stats';
+        statsEl.textContent = '0 | 0.0s';
+        Object.assign(statsEl.style, { color: '#d1d5db', minWidth: '60px' });
+
+        const eventEl = doc.createElement('span');
+        eventEl.className = 'cdp-event';
+        eventEl.textContent = '-';
+        Object.assign(eventEl.style, {
+          padding: '2px 8px',
+          borderRadius: '4px',
+          fontSize: '10px',
+          background: '#6b7280',
+          minWidth: '50px',
+          textAlign: 'center'
+        });
+
+        const btnContainer = doc.createElement('div');
+        Object.assign(btnContainer.style, { display: 'flex', gap: '4px', marginLeft: '6px' });
+
+        const btnStyle = {
+          background: '#374151',
+          border: 'none',
+          color: 'white',
+          width: '24px',
+          height: '24px',
+          borderRadius: '4px',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: '10px'
+        };
+
+        const commentBtn = doc.createElement('button');
+        commentBtn.className = 'cdp-btn cdp-comment';
+        commentBtn.title = 'Add Comment (Cmd+Shift+C) | Bug (Cmd+Shift+B) | Feature (Cmd+Shift+F)';
+        commentBtn.textContent = '💬';
+        Object.assign(commentBtn.style, btnStyle);
+
+        const pauseBtn = doc.createElement('button');
+        pauseBtn.className = 'cdp-btn cdp-pause';
+        pauseBtn.title = 'Pause/Resume';
+        pauseBtn.textContent = '⏸';
+        Object.assign(pauseBtn.style, btnStyle);
+
+        const resetBtn = doc.createElement('button');
+        resetBtn.className = 'cdp-btn cdp-reset';
+        resetBtn.title = 'Reset';
+        resetBtn.textContent = '↺';
+        Object.assign(resetBtn.style, btnStyle);
+
+        const doneBtn = doc.createElement('button');
+        doneBtn.className = 'cdp-btn cdp-done';
+        doneBtn.title = 'Complete';
+        doneBtn.textContent = '✓';
+        Object.assign(doneBtn.style, { ...btnStyle, background: '#059669' });
+
+        const cancelBtn = doc.createElement('button');
+        cancelBtn.className = 'cdp-btn cdp-cancel';
+        cancelBtn.title = 'Cancel (discard recording)';
+        cancelBtn.textContent = '✕';
+        Object.assign(cancelBtn.style, { ...btnStyle, background: '#dc2626' });
+
+        btnContainer.appendChild(commentBtn);
+        btnContainer.appendChild(pauseBtn);
+        btnContainer.appendChild(resetBtn);
+        btnContainer.appendChild(doneBtn);
+        btnContainer.appendChild(cancelBtn);
+
+        panel.appendChild(statusEl);
+        panel.appendChild(statsEl);
+        panel.appendChild(eventEl);
+        panel.appendChild(btnContainer);
+
+        // Comment modal
+        const commentModal = doc.createElement('div');
+        commentModal.className = 'cdp-comment-modal';
+        Object.assign(commentModal.style, {
+          display: 'none',
+          position: 'fixed',
+          top: '0',
+          left: '0',
+          width: '100%',
+          height: '100%',
+          background: 'rgba(0, 0, 0, 0.8)',
+          zIndex: '2147483648',
+          justifyContent: 'center',
+          alignItems: 'center',
+          fontFamily: '-apple-system, system-ui, sans-serif'
+        });
+
+        const modalCard = doc.createElement('div');
+        Object.assign(modalCard.style, {
+          background: '#1f2937',
+          borderRadius: '12px',
+          padding: '24px',
+          width: '90%',
+          maxWidth: '500px',
+          boxShadow: '0 25px 50px rgba(0,0,0,0.5)'
+        });
+
+        const modalTitle = doc.createElement('h3');
+        modalTitle.textContent = 'Add Comment';
+        Object.assign(modalTitle.style, { margin: '0 0 16px 0', color: 'white', fontSize: '18px' });
+
+        // Category buttons
+        const categoryContainer = doc.createElement('div');
+        categoryContainer.className = 'cdp-comment-category';
+        Object.assign(categoryContainer.style, { display: 'flex', gap: '0', marginBottom: '16px' });
+
+        const categories = [
+          { value: 'narrative', label: 'NARRATIVE', borderRadius: '6px 0 0 6px' },
+          { value: 'bug', label: 'BUG', borderRadius: '0' },
+          { value: 'feature', label: 'FEATURE', borderRadius: '0 6px 6px 0' }
+        ];
+
+        const categoryRadios: any[] = [];
+        const categoryBtnsArr: any[] = [];
+
+        categories.forEach((cat, i) => {
+          const label = doc.createElement('label');
+          Object.assign(label.style, { flex: '1', cursor: 'pointer' });
+
+          const radio = doc.createElement('input');
+          radio.type = 'radio';
+          radio.name = 'cdp-category';
+          radio.value = cat.value;
+          if (i === 0) radio.checked = true;
+          radio.style.display = 'none';
+          categoryRadios.push(radio);
+
+          const span = doc.createElement('span');
+          span.className = 'cdp-cat-btn';
+          span.dataset.cat = cat.value;
+          span.textContent = cat.label;
+          Object.assign(span.style, {
+            display: 'block',
+            textAlign: 'center',
+            padding: '8px 12px',
+            background: i === 0 ? '#3b82f6' : '#374151',
+            color: i === 0 ? 'white' : '#9ca3af',
+            fontSize: '13px',
+            fontWeight: '500',
+            borderRadius: cat.borderRadius,
+            border: i === 0 ? '1px solid #3b82f6' : '1px solid #4b5563'
+          });
+          categoryBtnsArr.push(span);
+
+          label.appendChild(radio);
+          label.appendChild(span);
+          categoryContainer.appendChild(label);
+        });
+
+        const commentInput = doc.createElement('textarea') as any;
+        commentInput.className = 'cdp-comment-input';
+        commentInput.placeholder = "e.g., 'Expected the form to show a success message'";
+        Object.assign(commentInput.style, {
+          width: '100%',
+          height: '120px',
+          background: '#374151',
+          border: '1px solid #4b5563',
+          borderRadius: '8px',
+          color: 'white',
+          padding: '12px',
+          fontSize: '14px',
+          resize: 'vertical',
+          boxSizing: 'border-box'
+        });
+
+        const modalBtnContainer = doc.createElement('div');
+        Object.assign(modalBtnContainer.style, { display: 'flex', gap: '12px', marginTop: '16px', justifyContent: 'flex-end' });
+
+        const commentCancel = doc.createElement('button');
+        commentCancel.className = 'cdp-comment-cancel';
+        commentCancel.textContent = 'Cancel';
+        Object.assign(commentCancel.style, {
+          background: '#374151',
+          border: 'none',
+          color: 'white',
+          padding: '8px 16px',
+          borderRadius: '6px',
+          cursor: 'pointer',
+          fontSize: '14px'
+        });
+
+        const commentSave = doc.createElement('button');
+        commentSave.className = 'cdp-comment-save';
+        commentSave.textContent = 'Save Comment';
+        Object.assign(commentSave.style, {
+          background: '#3b82f6',
+          border: 'none',
+          color: 'white',
+          padding: '8px 16px',
+          borderRadius: '6px',
+          cursor: 'pointer',
+          fontSize: '14px'
+        });
+
+        modalBtnContainer.appendChild(commentCancel);
+        modalBtnContainer.appendChild(commentSave);
+
+        modalCard.appendChild(modalTitle);
+        modalCard.appendChild(categoryContainer);
+        modalCard.appendChild(commentInput);
+        modalCard.appendChild(modalBtnContainer);
+        commentModal.appendChild(modalCard);
+
+        overlay.appendChild(panel);
+        overlay.appendChild(commentModal);
         doc.body.appendChild(overlay);
 
-        const pauseBtn = overlay.querySelector('.cdp-pause');
-        const resetBtn = overlay.querySelector('.cdp-reset');
-        const doneBtn = overlay.querySelector('.cdp-done');
-        const commentBtn = overlay.querySelector('.cdp-comment');
-        const commentModal = overlay.querySelector('.cdp-comment-modal');
-        const commentInput = overlay.querySelector('.cdp-comment-input') as any;
-        const commentCancel = overlay.querySelector('.cdp-comment-cancel');
-        const commentSave = overlay.querySelector('.cdp-comment-save');
-        const categoryBtns = overlay.querySelectorAll('.cdp-cat-btn');
-        const categoryRadios = overlay.querySelectorAll('input[name="cdp-category"]') as any;
+        // Store references for updateOverlay
+        (globalThis as any).__cdpStatusEl = statusEl;
+        (globalThis as any).__cdpStatsEl = statsEl;
+        (globalThis as any).__cdpEventEl = eventEl;
+
+        const categoryBtns = categoryBtnsArr;
 
         // Category button styling
         const updateCategoryStyles = () => {
@@ -754,7 +920,37 @@ export async function startRecording(
           const panel = overlay.querySelector('.cdp-panel');
           if (panel) {
             panel.style.background = 'rgba(5, 150, 105, 0.9)';
-            panel.innerHTML = '<span style="padding: 4px 8px;">Saved</span>';
+            panel.textContent = '';
+            const span = doc.createElement('span');
+            span.style.padding = '4px 8px';
+            span.textContent = 'Saved';
+            panel.appendChild(span);
+            // Remove overlay after brief delay
+            setTimeout(() => {
+              overlay.remove();
+            }, 800);
+          }
+        });
+
+        cancelBtn?.addEventListener('click', (e: any) => {
+          e.stopPropagation();
+          (globalThis as any).__cdpRecordingState = 'cancelled';
+
+          // Send cancel signal to server via CDP binding
+          try {
+            (globalThis as any).__cdpRecordingCancel();
+          } catch (err) {
+            console.error('[cdp-tools] Failed to send cancel to server:', err);
+          }
+
+          const panel = overlay.querySelector('.cdp-panel');
+          if (panel) {
+            panel.style.background = 'rgba(220, 38, 38, 0.9)';
+            panel.textContent = '';
+            const span = doc.createElement('span');
+            span.style.padding = '4px 8px';
+            span.textContent = 'Cancelled';
+            panel.appendChild(span);
             // Remove overlay after brief delay
             setTimeout(() => {
               overlay.remove();
@@ -827,170 +1023,6 @@ export async function startRecording(
   }
 }
 
-/**
- * Stop recording and store in memory
- */
-export async function stopRecording(
-  page: Page,
-  connectionReference: string
-): Promise<{ success: boolean; id?: number; recording?: StoredRecording; error?: string; alreadyStopped?: boolean }> {
-  const session = activeSessions.get(connectionReference);
-
-  // Check if recording was already stopped via UI but not yet processed
-  if (!session) {
-    // Check if there's a most recent stored recording for this connection
-    // (user may have stopped via UI button)
-    const recordings = Array.from(storedRecordings.values())
-      .filter(r => r.connectionReference === connectionReference)
-      .sort((a, b) => b.endTime - a.endTime);
-
-    if (recordings.length > 0) {
-      const mostRecent = recordings[0];
-      // If it was stored within last 60 seconds, assume it was just stopped via UI
-      if (Date.now() - mostRecent.endTime < 60000) {
-        return {
-          success: true,
-          id: mostRecent.id,
-          recording: mostRecent,
-          alreadyStopped: true
-        };
-      }
-    }
-
-    return { success: false, error: 'No active recording for this connection' };
-  }
-
-  try {
-    // Check if recording was completed via UI (but session not yet cleaned up)
-    const pageState = await page.evaluate(() => {
-      return {
-        events: (globalThis as any).__cdpRecordingEvents || [],
-        state: (globalThis as any).__cdpRecordingState,
-        pausePeriods: (globalThis as any).__cdpPausePeriods || [],
-      };
-    });
-
-    const pageEvents = pageState.events as InputEvent[];
-    const wasCompletedViaUI = pageState.state === 'completed';
-    const pausePeriods = pageState.pausePeriods as { start: number; end: number }[];
-
-    // Adjust event timestamps to exclude time spent in comment modals
-    const adjustedPageEvents = pageEvents.map(e => {
-      let adjustment = 0;
-      for (const pause of pausePeriods) {
-        if (e.timestamp > pause.end) {
-          adjustment += pause.end - pause.start;
-        } else if (e.timestamp > pause.start) {
-          adjustment += e.timestamp - pause.start;
-        }
-      }
-      return adjustment > 0 ? { ...e, timestamp: e.timestamp - adjustment } : e;
-    });
-
-    // Merge page events with navigation events from session
-    const allEvents = [...session.events, ...adjustedPageEvents].sort((a, b) => a.timestamp - b.timestamp);
-
-    const endTime = Date.now();
-    const duration = endTime - session.startTime;
-
-    // Calculate summary
-    const summary = calculateSummary(allEvents);
-
-    // Store the recording
-    const stored: StoredRecording = {
-      id: session.id,
-      connectionReference,
-      startTime: session.startTime,
-      endTime,
-      startUrl: session.startUrl,
-      duration,
-      events: allEvents,
-      summary,
-    };
-
-    storedRecordings.set(session.id, stored);
-
-    // Cleanup page listeners (skip if already cleaned up via UI)
-    if (!wasCompletedViaUI) {
-      const cleanup = cleanupHandles.get(connectionReference);
-      if (cleanup) {
-        await cleanup();
-        cleanupHandles.delete(connectionReference);
-      }
-    } else {
-      // Still remove the cleanup handle reference
-      cleanupHandles.delete(connectionReference);
-    }
-
-    activeSessions.delete(connectionReference);
-
-    return { success: true, id: session.id, recording: stored, alreadyStopped: wasCompletedViaUI };
-  } catch (error: any) {
-    return { success: false, error: error.message || String(error) };
-  }
-}
-
-/**
- * Get a stored recording by ID
- */
-export function getRecording(id: number): StoredRecording | undefined {
-  return storedRecordings.get(id);
-}
-
-/**
- * Get all stored recordings
- */
-export function listRecordings(): StoredRecording[] {
-  return Array.from(storedRecordings.values());
-}
-
-/**
- * Clear a stored recording
- */
-export function clearRecording(id: number): boolean {
-  return storedRecordings.delete(id);
-}
-
-/**
- * Clear all stored recordings
- */
-export function clearAllRecordings(): number {
-  const count = storedRecordings.size;
-  storedRecordings.clear();
-  return count;
-}
-
-/**
- * Get recording status for a connection
- */
-export async function getRecordingStatus(
-  page: Page,
-  connectionReference: string
-): Promise<{ isRecording: boolean; id?: number; eventCount?: number; duration?: number; isPaused?: boolean }> {
-  const session = activeSessions.get(connectionReference);
-  if (!session) {
-    return { isRecording: false };
-  }
-
-  try {
-    const status = await page.evaluate(() => {
-      return {
-        count: (globalThis as any).__cdpRecordingEvents?.length || 0,
-        isPaused: (globalThis as any).__cdpRecordingPaused || false,
-      };
-    });
-
-    return {
-      isRecording: true,
-      id: session.id,
-      eventCount: status.count + session.events.length,
-      duration: Date.now() - session.startTime,
-      isPaused: status.isPaused,
-    };
-  } catch {
-    return { isRecording: true, id: session.id, duration: Date.now() - session.startTime };
-  }
-}
 
 // =============================================================================
 // Helper Functions
@@ -1310,139 +1342,6 @@ export function eventsToCommands(
   return commands;
 }
 
-export function formatEventsForReview(events: InputEvent[], startTime?: number): string {
-  const lines: string[] = [];
-  let eventNum = 0;
-  const baseTime = startTime || (events.length > 0 ? events[0].timestamp : 0);
-
-  for (const event of events) {
-    const ms = event.timestamp - baseTime;
-
-    // Navigation events
-    if (isNavigationEvent(event)) {
-      eventNum++;
-      lines.push(`### ${eventNum}. ${event.type.toUpperCase()} @ ${ms}ms`);
-      lines.push(`URL: \`${event.url}\``);
-      if (event.previousUrl) lines.push(`From: \`${event.previousUrl}\``);
-      lines.push('');
-      continue;
-    }
-
-    // Comment events
-    if (isCommentEvent(event)) {
-      eventNum++;
-      lines.push(`### ${eventNum}. COMMENT @ ${ms}ms`);
-      lines.push(`> ${event.text}`);
-      lines.push('');
-      continue;
-    }
-
-    // Keyboard events
-    if (isKeyboardEvent(event)) {
-      if (event.type === 'keyup') continue;
-      eventNum++;
-      let keyDisplay = event.key;
-      if (event.modifiers) {
-        const mods: string[] = [];
-        if (event.modifiers.ctrl) mods.push('Ctrl');
-        if (event.modifiers.alt) mods.push('Alt');
-        if (event.modifiers.shift) mods.push('Shift');
-        if (event.modifiers.meta) mods.push('Cmd');
-        if (mods.length > 0) keyDisplay = mods.join('+') + '+' + keyDisplay;
-      }
-      lines.push(`### ${eventNum}. KEY \`${keyDisplay}\` @ ${ms}ms`);
-      if (event.targetInfo) {
-        lines.push(`Target: \`${event.targetInfo.tag}${event.targetInfo.id ? '#' + event.targetInfo.id : ''}\``);
-        if (event.targetInfo.isInput) lines.push(`Type: **Input field**`);
-      }
-      lines.push('');
-      continue;
-    }
-
-    // Mouse events
-    if (!isMouseEvent(event)) continue;
-    if (event.type === 'mousemove') continue;
-
-    eventNum++;
-    const coords = `(${event.x}, ${event.y})`;
-    const el = event.elementInfo;
-
-    lines.push(`### ${eventNum}. ${event.type.toUpperCase()} at ${coords} @ ${ms}ms`);
-
-    if (el) {
-      lines.push(`Element: \`${el.tag}${el.id ? '#' + el.id : ''}${el.className ? '.' + el.className.split(' ')[0] : ''}\``);
-      if (el.selector) {
-        lines.push(`Selector: \`${el.selector}\` ✓`);
-      } else {
-        lines.push(`Selector: *(none available)*`);
-      }
-      if (el.isCanvas) lines.push(`Type: **Canvas/3D** - use coordinates`);
-      else if (el.isInteractive) lines.push(`Type: **Interactive** - selector recommended`);
-      if (el.text) lines.push(`Text: "${el.text.substring(0, 40)}${el.text.length > 40 ? '...' : ''}"`);
-    }
-
-    if (event.type === 'wheel') {
-      lines.push(`Scroll: deltaX=${event.deltaX || 0}, deltaY=${event.deltaY || 0}`);
-    }
-
-    lines.push('');
-  }
-
-  return lines.join('\n');
-}
-
-export function formatEventsAsCSV(events: InputEvent[], startTime?: number): string {
-  const baseTime = startTime || (events.length > 0 ? events[0].timestamp : 0);
-  const lines: string[] = [];
-
-  // Header
-  lines.push('ms,type,x,y,key,selector,element,text,deltaX,deltaY,comment');
-
-  for (const event of events) {
-    const ms = event.timestamp - baseTime;
-
-    if (isCommentEvent(event)) {
-      const escapedText = event.text.replace(/"/g, '""');
-      lines.push(`${ms},comment,,,,,,,"${escapedText}"`);
-      continue;
-    }
-
-    if (isNavigationEvent(event)) {
-      lines.push(`${ms},${event.type},,,,,"${event.url}",,,,`);
-      continue;
-    }
-
-    if (isKeyboardEvent(event)) {
-      if (event.type === 'keyup') continue;
-      let keyDisplay = event.key;
-      if (event.modifiers) {
-        const mods: string[] = [];
-        if (event.modifiers.ctrl) mods.push('Ctrl');
-        if (event.modifiers.alt) mods.push('Alt');
-        if (event.modifiers.shift) mods.push('Shift');
-        if (event.modifiers.meta) mods.push('Cmd');
-        if (mods.length > 0) keyDisplay = mods.join('+') + '+' + keyDisplay;
-      }
-      const target = event.targetInfo?.tag || '';
-      lines.push(`${ms},key,,,${keyDisplay},,${target},,,,`);
-      continue;
-    }
-
-    if (isMouseEvent(event)) {
-      if (event.type === 'mousemove') continue;
-      const el = event.elementInfo;
-      const selector = el?.selector || '';
-      const element = el?.tag || '';
-      const text = el?.text ? `"${el.text.substring(0, 30).replace(/"/g, '""')}"` : '';
-      const deltaX = event.deltaX || '';
-      const deltaY = event.deltaY || '';
-      lines.push(`${ms},${event.type},${event.x},${event.y},,${selector},${element},${text},${deltaX},${deltaY},`);
-    }
-  }
-
-  return lines.join('\n');
-}
-
 /**
  * Generate a condensed timeline of events, grouping consecutive actions of the same type
  * but showing actual comment text inline.
@@ -1519,4 +1418,535 @@ export function generateCondensedTimeline(events: InputEvent[]): string {
   flushCurrent();
 
   return parts.join(' → ');
+}
+
+// =============================================================================
+// Verification Overlay
+// =============================================================================
+
+export interface VerificationResult {
+  resolved: boolean;
+  comment?: string;
+}
+
+/**
+ * Show a verification overlay on the page asking the user to confirm
+ * whether an issue is resolved.
+ */
+export async function showVerificationOverlay(
+  page: Page,
+  issueType: 'bug' | 'feature',
+  issueDescription: string,
+  issueId: number
+): Promise<VerificationResult> {
+  const typeLabel = issueType === 'bug' ? 'Bug' : 'Feature';
+  const questionText = issueType === 'bug'
+    ? 'Is this bug fixed to your satisfaction?'
+    : 'Is this feature implemented to your satisfaction?';
+
+  return await page.evaluate((params: {
+    typeLabel: string;
+    issueDescription: string;
+    issueId: number;
+    questionText: string;
+  }) => {
+    return new Promise<{ resolved: boolean; comment?: string }>((resolve) => {
+      const doc = (globalThis as any).document;
+
+      // Remove any existing overlay
+      const existing = doc.getElementById('__cdp-verification-overlay');
+      if (existing) existing.remove();
+
+      // Create elements using DOM methods (Trusted Types compatible)
+      const overlay = doc.createElement('div');
+      overlay.id = '__cdp-verification-overlay';
+
+      const backdrop = doc.createElement('div');
+      Object.assign(backdrop.style, {
+        position: 'fixed',
+        top: '0',
+        left: '0',
+        right: '0',
+        bottom: '0',
+        background: '#424242',
+        zIndex: '2147483646',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontFamily: "Roboto, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+      });
+
+      const card = doc.createElement('div');
+      Object.assign(card.style, {
+        background: '#ffffff',
+        borderRadius: '4px',
+        padding: '24px',
+        maxWidth: '480px',
+        width: '90%',
+        boxShadow: '0 11px 15px -7px rgba(0,0,0,0.2), 0 24px 38px 3px rgba(0,0,0,0.14), 0 9px 46px 8px rgba(0,0,0,0.12)',
+        color: '#212121'
+      });
+
+      // Header
+      const header = doc.createElement('div');
+      Object.assign(header.style, { marginBottom: '16px', textAlign: 'center' });
+
+      const typeLabel = doc.createElement('div');
+      typeLabel.textContent = `${params.typeLabel} #${params.issueId}`;
+      Object.assign(typeLabel.style, {
+        fontSize: '12px',
+        color: '#757575',
+        textTransform: 'uppercase',
+        letterSpacing: '0.5px',
+        marginBottom: '8px'
+      });
+
+      const description = doc.createElement('div');
+      description.textContent = params.issueDescription;
+      Object.assign(description.style, {
+        fontSize: '20px',
+        fontWeight: '500',
+        color: '#212121',
+        lineHeight: '1.4',
+        textAlign: 'center'
+      });
+
+      header.appendChild(typeLabel);
+      header.appendChild(description);
+
+      // Question text (subtle styling)
+      const questionBox = doc.createElement('div');
+      questionBox.textContent = params.questionText;
+      Object.assign(questionBox.style, {
+        fontSize: '14px',
+        marginBottom: '20px',
+        padding: '12px 16px',
+        background: '#fafafa',
+        borderRadius: '4px',
+        color: '#757575'
+      });
+
+      // Comment textarea
+      const commentInput = doc.createElement('textarea');
+      commentInput.id = '__cdp-verify-comment';
+      commentInput.placeholder = 'Add a comment (optional)';
+      Object.assign(commentInput.style, {
+        width: '100%',
+        height: '80px',
+        padding: '12px',
+        border: '1px solid #e0e0e0',
+        borderRadius: '4px',
+        background: '#fafafa',
+        color: '#212121',
+        fontSize: '14px',
+        resize: 'none',
+        marginBottom: '24px',
+        boxSizing: 'border-box',
+        outline: 'none'
+      });
+
+      // Button container
+      const buttonContainer = doc.createElement('div');
+      Object.assign(buttonContainer.style, {
+        display: 'flex',
+        gap: '8px',
+        justifyContent: 'flex-end'
+      });
+
+      // Shared button styles
+      const buttonBase = {
+        minWidth: '120px',
+        height: '36px',
+        padding: '0 16px',
+        borderRadius: '4px',
+        border: 'none',
+        fontSize: '14px',
+        fontWeight: '500',
+        cursor: 'pointer',
+        textTransform: 'uppercase',
+        letterSpacing: '0.5px'
+      };
+
+      // No button
+      const noBtn = doc.createElement('button');
+      noBtn.id = '__cdp-verify-no';
+      noBtn.textContent = 'Not Fixed';
+      Object.assign(noBtn.style, {
+        ...buttonBase,
+        background: '#f5f5f5',
+        color: '#616161'
+      });
+
+      // Yes button
+      const yesBtn = doc.createElement('button');
+      yesBtn.id = '__cdp-verify-yes';
+      yesBtn.textContent = 'Fixed';
+      Object.assign(yesBtn.style, {
+        ...buttonBase,
+        background: '#1976d2',
+        color: '#ffffff'
+      });
+
+      buttonContainer.appendChild(noBtn);
+      buttonContainer.appendChild(yesBtn);
+
+      card.appendChild(header);
+      card.appendChild(questionBox);
+      card.appendChild(commentInput);
+      card.appendChild(buttonContainer);
+      backdrop.appendChild(card);
+      overlay.appendChild(backdrop);
+      doc.body.appendChild(overlay);
+
+      // Block keyboard events from reaching the app
+      const blockKeyboard = (e: any) => {
+        e.stopPropagation();
+      };
+      doc.addEventListener('keydown', blockKeyboard, true);
+      doc.addEventListener('keyup', blockKeyboard, true);
+      doc.addEventListener('keypress', blockKeyboard, true);
+
+      const cleanup = () => {
+        doc.removeEventListener('keydown', blockKeyboard, true);
+        doc.removeEventListener('keyup', blockKeyboard, true);
+        doc.removeEventListener('keypress', blockKeyboard, true);
+        overlay.remove();
+      };
+
+      yesBtn?.addEventListener('click', () => {
+        const comment = commentInput?.value?.trim() || undefined;
+        cleanup();
+        resolve({ resolved: true, comment });
+      });
+
+      noBtn?.addEventListener('click', () => {
+        const comment = commentInput?.value?.trim() || undefined;
+        cleanup();
+        resolve({ resolved: false, comment });
+      });
+    });
+  }, { typeLabel, issueDescription, issueId, questionText });
+}
+
+/**
+ * Show a "Ready to begin?" overlay before starting a test replay
+ * Uses DOM methods instead of innerHTML to support Trusted Types policies
+ */
+export async function showTestReadyOverlay(
+  page: Page,
+  issueType: 'bug' | 'feature',
+  issueDescription: string,
+  issueId: number,
+  hasSequence: boolean = true
+): Promise<boolean> {
+  const typeLabel = issueType === 'bug' ? 'Bug' : 'Feature';
+
+  return await page.evaluate((params: {
+    typeLabel: string;
+    issueDescription: string;
+    issueId: number;
+    hasSequence: boolean;
+  }) => {
+    return new Promise<boolean>((resolve) => {
+      const doc = (globalThis as any).document;
+
+      // Remove any existing overlay
+      const existing = doc.getElementById('__cdp-test-ready-overlay');
+      if (existing) existing.remove();
+
+      // Create elements using DOM methods (Trusted Types compatible)
+      const overlay = doc.createElement('div');
+      overlay.id = '__cdp-test-ready-overlay';
+
+      const backdrop = doc.createElement('div');
+      Object.assign(backdrop.style, {
+        position: 'fixed',
+        top: '0',
+        left: '0',
+        right: '0',
+        bottom: '0',
+        background: '#424242',
+        zIndex: '2147483646',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontFamily: "Roboto, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+      });
+
+      const card = doc.createElement('div');
+      Object.assign(card.style, {
+        background: '#ffffff',
+        borderRadius: '4px',
+        padding: '24px',
+        maxWidth: '480px',
+        width: '90%',
+        boxShadow: '0 11px 15px -7px rgba(0,0,0,0.2), 0 24px 38px 3px rgba(0,0,0,0.14), 0 9px 46px 8px rgba(0,0,0,0.12)',
+        color: '#212121',
+        textAlign: 'center'
+      });
+
+      const testingLabel = doc.createElement('div');
+      testingLabel.textContent = `Testing ${params.typeLabel} #${params.issueId}`;
+      Object.assign(testingLabel.style, {
+        fontSize: '12px',
+        color: '#757575',
+        textTransform: 'uppercase',
+        letterSpacing: '0.5px',
+        marginBottom: '16px'
+      });
+
+      const description = doc.createElement('div');
+      description.textContent = params.issueDescription;
+      Object.assign(description.style, {
+        fontSize: '18px',
+        fontWeight: '500',
+        marginBottom: '20px',
+        padding: '16px',
+        background: '#f5f5f5',
+        borderRadius: '4px',
+        color: '#212121',
+        textAlign: 'center'
+      });
+
+      const instructions = doc.createElement('div');
+      instructions.textContent = params.hasSequence
+        ? 'The recorded sequence will replay. Watch for the issue.'
+        : 'Recording will start. Reproduce the issue to verify.';
+      Object.assign(instructions.style, {
+        fontSize: '14px',
+        color: '#616161',
+        marginBottom: '24px'
+      });
+
+      // Button container
+      const buttonContainer = doc.createElement('div');
+      Object.assign(buttonContainer.style, {
+        display: 'flex',
+        gap: '8px',
+        justifyContent: 'center'
+      });
+
+      const buttonBase = {
+        minWidth: '120px',
+        height: '36px',
+        padding: '0 16px',
+        borderRadius: '4px',
+        border: 'none',
+        fontSize: '14px',
+        fontWeight: '500',
+        cursor: 'pointer',
+        textTransform: 'uppercase',
+        letterSpacing: '0.5px'
+      };
+
+      const cancelBtn = doc.createElement('button');
+      cancelBtn.textContent = 'CANCEL';
+      Object.assign(cancelBtn.style, {
+        ...buttonBase,
+        background: '#f5f5f5',
+        color: '#616161'
+      });
+
+      const beginBtn = doc.createElement('button');
+      beginBtn.textContent = 'BEGIN TEST';
+      beginBtn.id = '__cdp-test-begin';
+      Object.assign(beginBtn.style, {
+        ...buttonBase,
+        background: '#1976d2',
+        color: '#ffffff'
+      });
+
+      buttonContainer.appendChild(cancelBtn);
+      buttonContainer.appendChild(beginBtn);
+
+      card.appendChild(testingLabel);
+      card.appendChild(description);
+      card.appendChild(instructions);
+      card.appendChild(buttonContainer);
+      backdrop.appendChild(card);
+      overlay.appendChild(backdrop);
+      doc.body.appendChild(overlay);
+
+      // Block keyboard events from reaching the app
+      const blockKeyboard = (e: any) => {
+        e.stopPropagation();
+      };
+      doc.addEventListener('keydown', blockKeyboard, true);
+      doc.addEventListener('keyup', blockKeyboard, true);
+      doc.addEventListener('keypress', blockKeyboard, true);
+
+      const cleanup = () => {
+        doc.removeEventListener('keydown', blockKeyboard, true);
+        doc.removeEventListener('keyup', blockKeyboard, true);
+        doc.removeEventListener('keypress', blockKeyboard, true);
+        overlay.remove();
+      };
+
+      cancelBtn.addEventListener('click', () => {
+        cleanup();
+        resolve(false);
+      });
+
+      beginBtn.addEventListener('click', () => {
+        cleanup();
+        resolve(true);
+      });
+    });
+  }, { typeLabel, issueDescription, issueId, hasSequence });
+}
+
+/**
+ * Show a "Replay in progress" overlay that blocks user interaction
+ * Returns a cleanup function to remove the overlay
+ */
+export async function showReplayOverlay(
+  page: Page,
+  issueType: 'bug' | 'feature',
+  issueDescription: string,
+  issueId: number
+): Promise<() => Promise<void>> {
+  const typeLabel = issueType === 'bug' ? 'Bug' : 'Feature';
+
+  await page.evaluate((params: {
+    typeLabel: string;
+    issueDescription: string;
+    issueId: number;
+  }) => {
+    const doc = (globalThis as any).document;
+
+    // Create overlay - transparent with banner at top
+    const overlay = doc.createElement('div');
+    overlay.id = '__cdp-replay-overlay';
+    Object.assign(overlay.style, {
+      position: 'fixed',
+      top: '0',
+      left: '0',
+      width: '100%',
+      height: '100%',
+      background: 'transparent',
+      zIndex: '2147483647',
+      pointerEvents: 'auto',
+      fontFamily: '"Roboto", -apple-system, system-ui, sans-serif'
+    });
+
+    // Banner at top (not centered)
+    const card = doc.createElement('div');
+    Object.assign(card.style, {
+      position: 'absolute',
+      top: '16px',
+      left: '50%',
+      transform: 'translateX(-50%)',
+      background: 'rgba(33, 33, 33, 0.9)',
+      borderRadius: '8px',
+      padding: '12px 24px',
+      maxWidth: '400px',
+      boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+      textAlign: 'center',
+      display: 'flex',
+      alignItems: 'center',
+      gap: '12px'
+    });
+
+    // Spinner (small, inline)
+    const spinner = doc.createElement('div');
+    Object.assign(spinner.style, {
+      width: '20px',
+      height: '20px',
+      border: '2px solid rgba(255,255,255,0.3)',
+      borderTop: '2px solid #4fc3f7',
+      borderRadius: '50%',
+      animation: 'cdp-spin 1s linear infinite',
+      flexShrink: '0'
+    });
+
+    // Add keyframe animations (spin for spinner, shake for feedback)
+    const style = doc.createElement('style');
+    style.textContent = `
+      @keyframes cdp-spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+      @keyframes cdp-shake { 0%, 100% { transform: translateX(0); } 20% { transform: translateX(-4px); } 40% { transform: translateX(4px); } 60% { transform: translateX(-4px); } 80% { transform: translateX(4px); } }
+    `;
+    doc.head.appendChild(style);
+    (globalThis as any).__cdpReplayStyle = style;
+
+    // Instructions/status text
+    const instructions = doc.createElement('div');
+    instructions.textContent = `Replaying ${params.typeLabel} #${params.issueId}...`;
+    Object.assign(instructions.style, {
+      fontSize: '14px',
+      color: '#ffffff',
+      whiteSpace: 'nowrap'
+    });
+
+    card.appendChild(spinner);
+    card.appendChild(instructions);
+    overlay.appendChild(card);
+    doc.body.appendChild(overlay);
+
+    // Block all user interactions with escalating feedback
+    let attemptCount = 0;
+    const attitudeMessages = [
+      "I said WAIT.",
+      "Seriously?",
+      "The spinner means BUSY.",
+      "Do you want bugs? Because this is how you get bugs.",
+      "...",
+    ];
+
+    // Events that trigger shake/attitude (intentional user actions)
+    const feedbackEvents = ['click', 'keydown', 'touchend'];
+    // Events to block silently (prevent default but no feedback)
+    const silentBlockEvents = ['mousedown', 'mouseup', 'keyup', 'keypress', 'touchstart'];
+
+    const blockWithFeedback = (e: any) => {
+      e.preventDefault();
+      e.stopPropagation();
+      attemptCount++;
+
+      // Shake the instructions text
+      instructions.style.animation = 'none';
+      void (instructions as any).offsetWidth; // Force reflow
+      instructions.style.animation = 'cdp-shake 0.3s ease';
+
+      // After 3 attempts, show attitude
+      if (attemptCount > 3) {
+        const msgIndex = Math.min(attemptCount - 4, attitudeMessages.length - 1);
+        instructions.textContent = attitudeMessages[msgIndex];
+        instructions.style.color = '#d32f2f';
+      }
+    };
+
+    const blockSilently = (e: any) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+
+    feedbackEvents.forEach(evt => doc.addEventListener(evt, blockWithFeedback, true));
+    silentBlockEvents.forEach(evt => doc.addEventListener(evt, blockSilently, true));
+    (globalThis as any).__cdpReplayBlocker = {
+      blockWithFeedback,
+      blockSilently,
+      feedbackEvents,
+      silentBlockEvents
+    };
+  }, { typeLabel, issueDescription, issueId });
+
+  // Return cleanup function
+  return async () => {
+    await page.evaluate(() => {
+      const doc = (globalThis as any).document;
+      const overlay = doc.getElementById('__cdp-replay-overlay');
+      if (overlay) overlay.remove();
+
+      const style = (globalThis as any).__cdpReplayStyle;
+      if (style) style.remove();
+
+      const blocker = (globalThis as any).__cdpReplayBlocker;
+      if (blocker) {
+        blocker.feedbackEvents.forEach((evt: string) => doc.removeEventListener(evt, blocker.blockWithFeedback, true));
+        blocker.silentBlockEvents.forEach((evt: string) => doc.removeEventListener(evt, blocker.blockSilently, true));
+        delete (globalThis as any).__cdpReplayBlocker;
+      }
+      delete (globalThis as any).__cdpReplayStyle;
+    }).catch(() => {});
+  };
 }

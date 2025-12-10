@@ -4,7 +4,7 @@
 
 import type { CommandRecorder, RecordedCommand, CommandSequence, ActiveSequenceState } from '../command-recorder.js';
 import { debugLog } from '../debug-logger.js';
-import { sanitizeReference, validateReference } from '../reference-validator.js';
+import { sanitizeReference, requireValidReference } from '../reference-validator.js';
 import { checkUrlPort } from '../utils/port-check.js';
 import { configManager, ClickValidationConfig } from '../config.js';
 import type { ClickActionMeta, ConsoleToolMeta, NetworkToolMeta } from '../tool-response.js';
@@ -596,15 +596,8 @@ export async function autoLaunchChrome(
   connectionReason: string,
   logPrefix: string = 'auto-launch'
 ): Promise<AutoLaunchResult> {
-  // Validate connectionReason before launch (must be valid 3-word reference)
-  const validation = validateReference(connectionReason);
-  if (!validation.valid) {
-    return {
-      success: false,
-      error: validation.error!,
-      errorType: 'INVALID_REFERENCE'
-    };
-  }
+  // Validate connectionReason before launch (throws InvalidReferenceError if invalid)
+  requireValidReference(connectionReason);
 
   await debugLog(logPrefix, `Auto-launching Chrome with reference: ${connectionReason}`);
   const launchResult = await executeToolCall('launchChrome', { reference: connectionReason });
@@ -629,11 +622,11 @@ export async function ensureConnection(
   ctx: ExecutionContext,
   needsConnection: boolean,
   hasLaunchBeforeConnection: boolean
-): Promise<{ success: true } | { success: false; error: string }> {
+): Promise<{ success: true; didAutoLaunch: boolean } | { success: false; error: string }> {
   const { executeToolCall, connectionReason, logPrefix = 'executor' } = ctx;
 
   if (!needsConnection || hasLaunchBeforeConnection) {
-    return { success: true };
+    return { success: true, didAutoLaunch: false };
   }
 
   try {
@@ -648,14 +641,14 @@ export async function ensureConnection(
     // Auto-resume if paused at a breakpoint
     await resumeIfPaused(ctx);
 
-    return { success: true };
+    return { success: true, didAutoLaunch: false };
   } catch {
     await debugLog(logPrefix, `Connection ${connectionReason} not active, launching Chrome...`);
     const launchResult = await autoLaunchChrome(executeToolCall, connectionReason, logPrefix);
     if (!launchResult.success) {
       return { success: false, error: launchResult.error };
     }
-    return { success: true };
+    return { success: true, didAutoLaunch: true };
   }
 }
 
@@ -675,7 +668,7 @@ export async function checkPortBeforeNavigation(
   }
 
   if (!portCheck.open) {
-    const error = `Port ${portCheck.port} is not open on ${portCheck.host}. Is your server running?`;
+    const error = `Port ${portCheck.port} is not open on ${portCheck.host}`;
     await debugLog(logPrefix, error);
     return { success: false, error };
   }

@@ -11,7 +11,7 @@ import { NetworkMonitor } from '../network-monitor.js';
 import { SourceMapHandler } from '../sourcemap-handler.js';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
-import { validateReference, sanitizeReference, UNNAMED_CONNECTION } from '../reference-validator.js';
+import { requireValidReference, sanitizeReference, UNNAMED_CONNECTION } from '../reference-validator.js';
 import type { LogpointExecutionTracker } from '../logpoint-execution-tracker.js';
 
 // Consolidated schema for tab tools
@@ -120,16 +120,8 @@ export function createTabTools(
           }
 
           case 'create': {
-            // Validate reference
-            const validation = validateReference(args.reference!);
-            if (!validation.valid) {
-              return createErrorResponse('INVALID_REFERENCE', {
-                error: validation.error!
-              });
-            }
-
-            // Use the sanitized reference from validation
-            const sanitizedReference = validation.sanitized!;
+            // Validate and get sanitized reference (throws if invalid)
+            const sanitizedReference = requireValidReference(args.reference!);
 
             // Check for duplicate reference - use validated lookup to auto-cleanup dead connections
             const existingConnection = await connectionManager.findConnectionByReferenceValidated(sanitizedReference);
@@ -234,16 +226,8 @@ export function createTabTools(
           }
 
           case 'rename': {
-            // Validate new reference
-            const validation = validateReference(args.newReference!);
-            if (!validation.valid) {
-              return createErrorResponse('INVALID_REFERENCE', {
-                error: validation.error!
-              });
-            }
-
-            // Use the sanitized reference from validation
-            const newSanitized = validation.sanitized!;
+            // Validate and get sanitized new reference (throws if invalid)
+            const newSanitized = requireValidReference(args.newReference!);
 
             // Check if new reference is already in use - use validated lookup to auto-cleanup dead connections
             const existingWithNewRef = await connectionManager.findConnectionByReferenceValidated(newSanitized);

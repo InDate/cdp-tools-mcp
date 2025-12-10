@@ -104,6 +104,11 @@ export interface DebugConfig {
 /**
  * Root configuration structure
  */
+export interface ToolsConfig {
+  enabled: string[];   // Tools to enable
+  disabled: string[];  // Tools to disable (takes priority over enabled)
+}
+
 export interface CdpToolsConfig {
   version: number;
   configLocation: 'local' | 'global';  // Where to load config from on startup
@@ -113,6 +118,7 @@ export interface CdpToolsConfig {
   changeDetection: ChangeDetectionConfig;
   clickValidation: ClickValidationConfig;
   debug: DebugConfig;
+  tools: ToolsConfig;
 }
 
 /**
@@ -161,6 +167,10 @@ const DEFAULT_CONFIG: CdpToolsConfig = {
     enabled: false,               // Debug logging disabled by default
     historyLogEnabled: false,     // History log disabled by default
   },
+  tools: {
+    enabled: ['issues'],  // All tools enabled by default
+    disabled: [],
+  },
 };
 
 /**
@@ -175,6 +185,29 @@ export class ConfigManager {
 
   // Runtime port state (not persisted to config file)
   private currentPort: number = DEFAULT_CONFIG.chrome.startingDebugPort;
+
+  constructor() {
+    // Sync load config at construction for early access (e.g., tool registration)
+    this.loadSync();
+  }
+
+  /**
+   * Synchronously load config for early access during module initialization
+   */
+  private loadSync(): void {
+    try {
+      const localConfigPath = getOutputPath('config.json');
+      if (fs.existsSync(localConfigPath)) {
+        const content = fs.readFileSync(localConfigPath, 'utf-8');
+        const loaded = JSON.parse(content);
+        this.config = this.mergeConfig(DEFAULT_CONFIG, loaded);
+        this.loadedFromPath = localConfigPath;
+        this.loaded = true;
+      }
+    } catch {
+      // Ignore errors, use defaults
+    }
+  }
 
   /**
    * Get preferred path for creating new config
@@ -311,6 +344,10 @@ export class ConfigManager {
         enabled: loaded.debug?.enabled ?? defaults.debug.enabled,
         historyLogEnabled: loaded.debug?.historyLogEnabled ?? defaults.debug.historyLogEnabled,
       },
+      tools: {
+        enabled: loaded.tools?.enabled ?? defaults.tools.enabled,
+        disabled: loaded.tools?.disabled ?? defaults.tools.disabled,
+      },
     };
   }
 
@@ -391,6 +428,27 @@ export class ConfigManager {
    */
   getDebugConfig(): DebugConfig {
     return this.getConfig().debug;
+  }
+
+  /**
+   * Get tools configuration
+   */
+  getToolsConfig(): ToolsConfig {
+    return this.getConfig().tools;
+  }
+
+  /**
+   * Check if a tool is enabled
+   * A tool is enabled if it's in the enabled list and not in the disabled list
+   */
+  isToolEnabled(toolName: string): boolean {
+    const tools = this.getToolsConfig();
+    // If in disabled list, it's disabled
+    if (tools.disabled.includes(toolName)) return false;
+    // If in enabled list, it's enabled
+    if (tools.enabled.includes(toolName)) return true;
+    // Default to disabled if not in either list
+    return false;
   }
 
   /**

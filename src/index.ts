@@ -49,6 +49,7 @@ import { createModalTools } from './tools/modal-tools.js';
 import { createReplayTools } from './tools/replay-tools.js';
 import { createServerTools } from './tools/server-tools.js';
 import { createConfigTools } from './tools/config-tools.js';
+import { createIssuesTools } from './tools/issues-tools.js';
 import { ServerManager } from './server-manager.js';
 import { configManager } from './config.js';
 import { checkPortFailures, checkBreakpointPause, checkBugBlocking, checkPendingStartups, prependToResponse, appendToResponse, buildStatusSuffix, type StatusLineItem } from './tool-response.js';
@@ -59,7 +60,7 @@ import { readFile } from 'fs/promises';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { debugLog, enableDebugLogging, disableDebugLogging, isDebugEnabled, enableHistoryLogging, disableHistoryLogging, setStartupMetrics } from './debug-logger.js';
-import { validateReference, UNNAMED_CONNECTION } from './reference-validator.js';
+import { validateReference, requireValidReference, UNNAMED_CONNECTION, InvalidReferenceError } from './reference-validator.js';
 import { initializePaths } from './helpers/paths.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -265,13 +266,7 @@ const connectionTools = {
       // Validate reference FIRST, before launching Chrome
       const userReference = args.reference;
       if (userReference) {
-        const validation = validateReference(userReference);
-        if (!validation.valid) {
-          return createErrorResponse('INVALID_REFERENCE', {
-            reference: userReference,
-            error: validation.error
-          });
-        }
+        requireValidReference(userReference); // Throws InvalidReferenceError if invalid
       }
 
       // Use reserved port unless explicitly specified
@@ -637,15 +632,8 @@ const connectionTools = {
     }).strict(),
     async (args) => {
       // Validate reference
-      const validation = validateReference(args.reference);
-      if (!validation.valid) {
-        return createErrorResponse('INVALID_REFERENCE', {
-          error: validation.error!
-        });
-      }
-
-      // Use the sanitized reference from validation
-      const reference = validation.sanitized!;
+      // Validate and get sanitized reference (throws if invalid)
+      const reference = requireValidReference(args.reference);
 
       // Check for duplicate reference - use validated lookup to auto-cleanup dead connections
       const existingConnection = await connectionManager.findConnectionByReferenceValidated(reference);
@@ -1075,7 +1063,23 @@ async function executeToolCall(toolName: string, params: Record<string, any>): P
     throw new Error(`Validation failed: ${JSON.stringify(validation.error)}`);
   }
 
-  return await tool.handler(validation.data);
+  const result = await tool.handler(validation.data);
+
+  // If tool returned an error, throw it as a ToolError so it propagates correctly
+  if (result?.isError) {
+    throw new ToolError(result);
+  }
+
+  return result;
+}
+
+/**
+ * Error that wraps a tool error response for propagation
+ */
+class ToolError extends Error {
+  constructor(public response: any) {
+    super(response?.content?.[0]?.text || 'Tool error');
+  }
 }
 
 // Combine all tools
@@ -1110,6 +1114,29 @@ const allTools = {
   ...createServerTools(serverManager),
   // Config management tools
   ...createConfigTools(),
+  // Issues tracking tools (conditionally enabled)
+  ...(configManager.isToolEnabled('issues') ? createIssuesTools(
+    executeToolCall,
+    async (name: string) => {
+      // Helper to get sequence path by name
+      const sequences = commandRecorder.listSequences();
+      const sequence = sequences.find(s => s.name === name || s.id === name);
+      if (!sequence) return null;
+      // Try to find saved file
+      const sequencesDir = commandRecorder.getSequencesDir();
+      const filename = name.replace(/[^a-z0-9-_]/gi, '-').toLowerCase() + '.json';
+      const { join } = await import('path');
+      const { existsSync } = await import('fs');
+      const filepath = join(sequencesDir, filename);
+      if (existsSync(filepath)) return filepath;
+      return null;
+    },
+    async (connectionReason: string) => {
+      const resolved = await resolveConnectionFromReason(connectionReason);
+      if (!resolved?.puppeteerManager) return null;
+      return resolved.puppeteerManager.getPage();
+    }
+  ) : {}),
 };
 
 /**
@@ -1126,7 +1153,7 @@ function registerToolHandlers(server: Server) {
     };
   });
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const toolName = request.params.name;
     const tool = allTools[toolName as keyof typeof allTools];
 
@@ -1200,14 +1227,14 @@ function registerToolHandlers(server: Server) {
     }
 
     // Check for blocking bugs from recordings
-    const bugCheck = checkBugBlocking(toolName);
+    const bugCheck = await checkBugBlocking(toolName, validation.data as Record<string, unknown>);
     if (bugCheck.blocked) {
       return bugCheck.response;
     }
 
     // Pass validated data to handler
     try {
-      const result = await tool.handler(validation.data);
+      const result = await tool.handler(validation.data, extra?.signal);
 
       // Prepend port failure prefix if any
       if (portCheck.prefix) {
@@ -1270,15 +1297,21 @@ function registerToolHandlers(server: Server) {
 
       return result;
     } catch (error) {
+      // Check for ToolError and return its response directly
+      if (error instanceof ToolError) {
+        return error.response;
+      }
+
+      // Check for InvalidReferenceError and return its formatted response
+      if (error instanceof InvalidReferenceError) {
+        return error.response;
+      }
+
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
-              success: false,
-              error: `Tool execution failed: ${error}`,
-              code: 'EXECUTION_ERROR'
-            }, null, 2),
+            text: error instanceof Error ? error.message : `${error}`,
           },
         ],
         isError: true

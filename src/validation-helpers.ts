@@ -108,7 +108,7 @@ function formatZodErrors(error: z.ZodError): string[] {
 export function createTool<T extends z.ZodTypeAny>(
   description: string,
   zodSchema: T,
-  handler: (args: z.infer<T>) => Promise<any>
+  handler: (args: z.infer<T>, abortSignal?: AbortSignal) => Promise<any>
 ) {
   return {
     description,

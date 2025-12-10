@@ -2,6 +2,8 @@
  * Reference validation utilities
  */
 
+import { createErrorResponse } from './messages.js';
+
 // Constants
 export const UNNAMED_CONNECTION = 'unnamed-connection-default';
 export const RESERVED_REFERENCES = [
@@ -20,7 +22,7 @@ export function sanitizeReference(ref: string): string {
 }
 
 /**
- * Validate a reference string
+ * Validate a reference string (legacy API)
  * Returns the sanitized reference if valid, or an error if invalid
  *
  * Accepts both formats:
@@ -55,4 +57,29 @@ export function validateReference(ref: string): { valid: boolean; sanitized?: st
   }
 
   return { valid: true, sanitized };
+}
+
+/**
+ * Error class for invalid references - contains the MCP error response
+ */
+export class InvalidReferenceError extends Error {
+  public readonly response: { content: { type: string; text: string }[] };
+
+  constructor(error: string) {
+    super(error);
+    this.name = 'InvalidReferenceError';
+    this.response = createErrorResponse('INVALID_REFERENCE', { error });
+  }
+}
+
+/**
+ * Validate and return sanitized reference, or throw InvalidReferenceError
+ * Use this in tool handlers - throws if invalid, returns sanitized string if valid
+ */
+export function requireValidReference(ref: string): string {
+  const result = validateReference(ref);
+  if (!result.valid) {
+    throw new InvalidReferenceError(result.error!);
+  }
+  return result.sanitized!;
 }

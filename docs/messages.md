@@ -1934,7 +1934,18 @@ clicks:{{clicks}}, drags:{{drags}}, scrolls:{{scrolls}}, keys:{{keyPresses}}{{#n
 {{#timeline}}
 Timeline: {{timeline}}
 {{/timeline}}
+{{#bugCount}}
+🐛 **{{bugCount}} bug(s) recorded** - Use `issues({ action: 'list' })` to view
+{{/bugCount}}
+{{#featureCount}}
+✨ **{{featureCount}} feature(s) requested** - Use `issues({ action: 'list' })` to view
+{{/featureCount}}
+{{#hasIssues}}
+**Issues created:** {{issuesCreatedList}}
+{{/hasIssues}}
+{{^hasIssues}}
 Next: `get/run/export({ name: "{{name}}" })`
+{{/hasIssues}}
 
 ---
 
@@ -1958,14 +1969,190 @@ The following bugs were recorded and must be acknowledged before tools can be us
 
 {{bugList}}
 
-Use `replay({ action: 'acknowledgeBugs' })` to acknowledge.
+Use `issues({ action: 'acknowledge' })` to acknowledge.
 
 ---
 
-## BUGS_ACKNOWLEDGED
+## Issues Messages
+
+## ISSUES_LIST
 
 **Type:** success
-**Summary:** Bugs acknowledged
+**Summary:** Issues list
+
+**Issues** ({{count}}) - {{bugCount}} bugs, {{featureCount}} features, {{pendingCount}} pending
+{{#search}}*Filtered by: "{{search}}"*{{/search}}
+{{#includeCompleted}}*Showing completed issues*{{/includeCompleted}}
+{{^includeCompleted}}{{^search}}*Tip: Use `includeCompleted: true` to see fixed/implemented issues*{{/search}}{{/includeCompleted}}
+
+{{issuesList}}
+
+---
+
+## ISSUES_CREATED
+
+**Type:** success
+**Summary:** Issue created
+
+**Issue #{{id}} created** ({{type}})
+
+{{description}}{{#sequenceFile}}
+
+Sequence: `{{sequenceFile}}`{{/sequenceFile}}
+
+---
+
+## ISSUES_NOT_FOUND
+
+**Type:** error
+**Code:** ISSUES_NOT_FOUND
+
+Issue #{{id}} not found
+
+{{message}}
+
+---
+
+## ISSUES_MISSING_ID
+
+**Type:** error
+**Code:** ISSUES_MISSING_ID
+
+{{message}}
+
+---
+
+## ISSUES_MISSING_TYPE
+
+**Type:** error
+**Code:** ISSUES_MISSING_TYPE
+
+{{message}}
+
+---
+
+## ISSUES_MISSING_DESCRIPTION
+
+**Type:** error
+**Code:** ISSUES_MISSING_DESCRIPTION
+
+{{message}}
+
+---
+
+## ISSUES_MISSING_START_URL
+
+**Type:** error
+**Code:** ISSUES_MISSING_START_URL
+
+{{message}}
+
+---
+
+## ISSUES_WORK_STARTED
+
+**Type:** success
+**Summary:** Working on issue #{{id}}
+
+{{details}}{{#replayStarted}}
+Sequence replay completed.{{/replayStarted}}{{#connectionReason}}
+
+Connection: `{{connectionReason}}`{{/connectionReason}}
+
+---
+
+## ISSUES_VERIFICATION_CANCELLED
+
+**Type:** info
+**Summary:** Verification cancelled for #{{id}}
+
+Verification cancelled for {{type}} #{{id}}.
+
+{{description}}
+
+---
+
+## ISSUES_RESOLVED
+
+**Type:** success
+**Summary:** Issue #{{id}} {{status}}
+
+**{{type}} #{{id}} marked as {{status}}**
+
+{{description}}
+{{#userComment}}
+
+**User comment:** {{userComment}}
+{{/userComment}}
+
+---
+
+## ISSUES_NOT_RESOLVED
+
+**Type:** warning
+**Summary:** Issue #{{id}} not resolved
+
+**{{type}} #{{id}} - NOT RESOLVED**
+
+User indicated this issue is not yet resolved. Status remains: {{status}}
+
+{{description}}
+{{#userComment}}
+
+**User comment:** {{userComment}}
+{{/userComment}}
+
+---
+
+## ISSUES_MISSING_CONNECTION
+
+**Type:** error
+**Code:** ISSUES_MISSING_CONNECTION
+
+{{message}}
+
+---
+
+## ISSUES_NO_PAGE_ACCESS
+
+**Type:** error
+**Code:** ISSUES_NO_PAGE_ACCESS
+
+{{message}}
+
+---
+
+## ISSUES_PAGE_ERROR
+
+**Type:** error
+**Code:** ISSUES_PAGE_ERROR
+
+{{message}}
+
+---
+
+## ISSUES_CHROME_LAUNCH_FAILED
+
+**Type:** error
+**Code:** ISSUES_CHROME_LAUNCH_FAILED
+
+{{message}}
+
+---
+
+## ISSUES_INVALID_CONNECTION
+
+**Type:** error
+**Code:** ISSUES_INVALID_CONNECTION
+
+{{message}}
+
+---
+
+## ISSUES_ACKNOWLEDGED
+
+**Type:** success
+**Summary:** Bugs acknowledged ({{count}})
 
 **Bugs acknowledged** ({{count}})
 
@@ -1973,10 +2160,51 @@ The following bugs have been acknowledged and must be added to your TODO list:
 
 {{bugList}}
 
----
 **IMPORTANT**: Start a non-blocking agent to investigate each bug immediately.
 The agent should analyze the issue, report findings, and propose a fix - but NOT make changes.
 Add each bug to your TODO list and track investigation progress.
+
+---
+
+## ISSUES_NONE_PENDING
+
+**Type:** success
+**Summary:** No pending bugs
+
+{{message}}
+
+---
+
+## ISSUES_INVALID_ACTION
+
+**Type:** error
+**Code:** ISSUES_INVALID_ACTION
+
+Unknown action: {{action}}
+
+{{message}}
+
+---
+
+## ISSUES_SEQUENCE_NOT_FOUND
+
+**Type:** error
+**Code:** ISSUES_SEQUENCE_NOT_FOUND
+
+Sequence "{{sequenceName}}" not found
+
+{{message}}
+
+---
+
+## ISSUES_SEQUENCE_COPY_FAILED
+
+**Type:** error
+**Code:** ISSUES_SEQUENCE_COPY_FAILED
+
+Failed to copy sequence "{{sequenceName}}"
+
+{{error}}
 
 ---
 
@@ -2169,11 +2397,6 @@ Server `{{serverId}}` is already running (PID: {{pid}}).
 **Code:** SERVER_START_FAILED
 
 Failed to start server: {{error}}
-
-**Suggestions:**
-- Check that the working directory (cwd) exists
-- Verify the command is correct
-- Check for port conflicts
 
 ---
 
@@ -2512,3 +2735,15 @@ No global config exists to clone from.
 ```
 
 ---
+
+## Navigation Messages
+
+## NAVIGATION_FAILED
+
+**Type:** error
+**Code:** NAVIGATION_FAILED
+
+Navigation failed: {{message}}
+
+---
+
