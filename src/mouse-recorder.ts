@@ -115,30 +115,79 @@ export async function startMouseRecording(
 
       const doc = (globalThis as any).document;
 
-      // Helper to build best-effort selector
+      // Build selector helper - returns unique selector or undefined
+      // Strategy aligned with element-collector.ts getUniqueSelector
       const buildSelector = (el: any): string | undefined => {
         if (!el || el === doc.body || el === doc.documentElement) return undefined;
+
+        const tag = el.tagName?.toLowerCase();
+
+        // 1. ID is always unique and most specific
         if (el.id) return `#${el.id}`;
-        if (el.className && typeof el.className === 'string') {
-          const classes = el.className.trim().split(/\s+/).filter((c: string) => c.length > 0);
-          if (classes.length > 0) {
-            const selector = `${el.tagName.toLowerCase()}.${classes.slice(0, 2).join('.')}`;
+
+        // 2. For inputs, use name attribute (stable form identifier)
+        if (el.name && (tag === 'input' || tag === 'textarea' || tag === 'select')) {
+          const selector = `${tag}[name="${el.name}"]`;
+          try {
+            if (doc.querySelectorAll(selector).length === 1) return selector;
+          } catch (e) { /* invalid selector */ }
+        }
+
+        // 3. aria-label is stable and descriptive
+        const ariaLabel = el.getAttribute?.('aria-label');
+        if (ariaLabel && ariaLabel.length <= 40) {
+          const selector = `${tag}[aria-label="${ariaLabel}"]`;
+          try {
+            if (doc.querySelectorAll(selector).length === 1) return selector;
+          } catch (e) { /* invalid selector */ }
+        }
+
+        // 4. href for links (prefer short/relative hrefs)
+        if (tag === 'a' && el.href) {
+          const href = el.getAttribute?.('href');
+          if (href && href !== '#' && !href.startsWith('javascript:') && href.length <= 60) {
+            const selector = `a[href="${href}"]`;
             try {
               if (doc.querySelectorAll(selector).length === 1) return selector;
             } catch (e) { /* invalid selector */ }
           }
         }
-        const dataAttrs = ['data-testid', 'data-id', 'data-name', 'name', 'aria-label'];
+
+        // 5. Try data-testid and other test attributes
+        const dataAttrs = ['data-testid', 'data-test-id', 'data-cy', 'data-id'];
         for (const attr of dataAttrs) {
           const val = el.getAttribute?.(attr);
           if (val) {
-            const selector = `${el.tagName.toLowerCase()}[${attr}="${val}"]`;
+            const selector = `${tag}[${attr}="${val}"]`;
             try {
               if (doc.querySelectorAll(selector).length === 1) return selector;
             } catch (e) { /* invalid selector */ }
           }
         }
-        return el.tagName?.toLowerCase();
+
+        // 6. Text-based selector using :has-text() (cdp-tools extended selector)
+        const text = el.textContent?.trim();
+        if (text && text.length > 0 && text.length <= 30) {
+          const escapedText = text.replace(/"/g, '\\"');
+          // :has-text is supported by cdp-tools selector resolver
+          return `${tag}:has-text("${escapedText}")`;
+        }
+
+        // 7. Try class-based selector (filter out hash/generated classes)
+        if (el.className && typeof el.className === 'string') {
+          const classes = el.className.split(' ').filter((c: string) =>
+            c.length > 0 && c.length <= 20 && !c.includes('__') && !c.match(/^[a-z]+-[a-f0-9]+$/i)
+          );
+          if (classes.length > 0) {
+            const selector = `${tag}.${classes.slice(0, 2).join('.')}`;
+            try {
+              if (doc.querySelectorAll(selector).length === 1) return selector;
+            } catch (e) { /* invalid selector */ }
+          }
+        }
+
+        // 8. No unique selector found - return undefined to fall back to coordinates
+        return undefined;
       };
 
       // Helper to get element info
@@ -766,11 +815,9 @@ export function eventsToSequenceCommands(
       const selector = elementInfo?.selector;
       const isCanvas = elementInfo?.isCanvas;
 
-      // Decide whether to use selector or coordinates
-      const useSelector = selector &&
-        !preferCoordinates &&
-        !isCanvas &&
-        (preferSelectors || elementInfo?.isInteractive);
+      // Use selector when available, unless preferCoordinates is set or element is canvas
+      // Selector-based clicks are more reliable as they survive layout changes
+      const useSelector = selector && !preferCoordinates && !isCanvas;
 
       if (useSelector) {
         commands.push({
@@ -781,7 +828,7 @@ export function eventsToSequenceCommands(
           },
         });
       } else {
-        // Use coordinate-based approach
+        // Use coordinate-based approach for canvas/3D or when no selector available
         commands.push({
           tool: 'input',
           params: {

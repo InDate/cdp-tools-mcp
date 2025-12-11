@@ -1147,14 +1147,22 @@ async function handleRecordInteraction(
   await initializeTracker();
 
   // Create issues and save sequences for each bug/feature comment
+  // Each issue gets its own sequence with a unique ID
   for (const comment of [...bugComments, ...featureComments]) {
     const issueType = comment.category as 'bug' | 'feature';
 
     // Create the issue first (with temp filename, will be updated by saveIssueSequence)
     const issue = await addIssue(issueType, comment.text, '', sequenceName, 'pending', recording.startUrl || '');
 
+    // Create a unique sequence for this issue (each issue gets its own copy)
+    const issueSequenceData: CommandSequence = {
+      ...sequenceData,
+      id: `seq-${Date.now()}-${issue.id}`,
+      name: `${issueType}-${issue.id}-repro`,
+    };
+
     // Save sequence and link to issue
-    await saveIssueSequence(issue.id, issueType, comment.text, sequenceData);
+    await saveIssueSequence(issue.id, issueType, comment.text, issueSequenceData);
 
     createdIssues.push({
       id: issue.id,

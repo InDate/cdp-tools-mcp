@@ -308,6 +308,18 @@ export class CommandRecorder {
   }
 
   /**
+   * Remove a sequence by name (used when reloading to avoid duplicates with different IDs)
+   */
+  private removeSequenceByName(name: string): void {
+    for (const [id, seq] of this.sequences.entries()) {
+      if (seq.name === name) {
+        this.sequences.delete(id);
+        break;
+      }
+    }
+  }
+
+  /**
    * Clear all sequences
    */
   async clearAllSequences(): Promise<void> {
@@ -460,6 +472,8 @@ export class CommandRecorder {
       if (filename.startsWith('/') || filename.includes(':\\')) {
         const content = await fs.readFile(filename, 'utf-8');
         const sequence: CommandSequence = JSON.parse(content);
+        // Remove any existing sequence with the same name (may have different ID)
+        this.removeSequenceByName(sequence.name);
         this.sequences.set(sequence.id, sequence);
         await debugLog('command-recorder', `Loaded sequence "${sequence.name}" from ${filename}`);
         return sequence;
@@ -478,6 +492,8 @@ export class CommandRecorder {
       const content = await fs.readFile(filepath, 'utf-8');
       const sequence: CommandSequence = JSON.parse(content);
 
+      // Remove any existing sequence with the same name (may have different ID)
+      this.removeSequenceByName(sequence.name);
       // Add sequence to memory
       this.sequences.set(sequence.id, sequence);
 

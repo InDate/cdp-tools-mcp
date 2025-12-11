@@ -358,6 +358,8 @@ export async function showReplayBanner(
     const doc = (globalThis as any).document;
 
     // Create overlay - transparent with banner at top
+    // pointerEvents: 'none' allows automated clicks to pass through while
+    // event listeners still capture and block manual user interactions
     const overlay = doc.createElement('div');
     overlay.id = '__cdp-replay-overlay';
     Object.assign(overlay.style, {
@@ -368,7 +370,7 @@ export async function showReplayBanner(
       height: '100%',
       background: 'transparent',
       zIndex: '2147483647',
-      pointerEvents: 'auto',
+      pointerEvents: 'none',
       fontFamily: '"Roboto", -apple-system, system-ui, sans-serif'
     });
 
@@ -439,9 +441,14 @@ export async function showReplayBanner(
     const silentBlockEvents = ['mousedown', 'mouseup', 'keyup', 'keypress', 'touchstart'];
 
     const blockWithFeedback = (e: any) => {
+      // Don't block if CDP replay is in progress (flag set by replay executor)
+      if ((globalThis as any).__cdpReplayClickInProgress) return;
+
       e.preventDefault();
       e.stopPropagation();
       attemptCount++;
+
+      console.log('[cdp-tools] Blocked user interaction during replay:', e.type, 'target:', e.target?.tagName);
 
       instructions.style.animation = 'none';
       void (instructions as any).offsetWidth;
@@ -455,6 +462,9 @@ export async function showReplayBanner(
     };
 
     const blockSilently = (e: any) => {
+      // Don't block if CDP replay is in progress (flag set by replay executor)
+      if ((globalThis as any).__cdpReplayClickInProgress) return;
+
       e.preventDefault();
       e.stopPropagation();
     };

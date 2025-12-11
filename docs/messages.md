@@ -1597,9 +1597,9 @@ Completed {{successful}}/{{total}} commands in {{duration}}s
 ## REPLAY_RUN_FAILED
 
 **Type:** error
-**Summary:** {{sequenceName}}
+**Summary:** Failed at step {{failedStep}} ({{failedTool}})
 
-Failed at step {{failedStep}} ({{failedTool}})
+Sequence: {{sequenceName}}
 
 ---
 
@@ -2097,6 +2097,11 @@ Verification cancelled for {{type}} #{{id}}.
 
 **User comment:** {{userComment}}
 {{/userComment}}
+{{#replayDetails}}
+
+**Replay execution details:**
+{{replayDetails}}
+{{/replayDetails}}
 
 ---
 
@@ -2114,6 +2119,21 @@ User indicated this issue is not yet resolved. Status remains: {{status}}
 
 **User comment:** {{userComment}}
 {{/userComment}}
+{{#replayDetails}}
+
+**Replay execution details:**
+{{replayDetails}}
+{{/replayDetails}}
+
+---
+
+## ISSUES_REPLAY_FAILED
+
+**Type:** error
+**Code:** ISSUES_REPLAY_FAILED
+**Summary:** {{type}} #{{id}} replay failed
+
+{{replayDetails}}
 
 ---
 

@@ -231,8 +231,13 @@ export function createInputTools(
                   return false;
                 }, selector);
 
-                // Perform the click
-                await page.click(selector, { clickCount });
+                // Perform the click - set flag to allow click through replay blocker
+                await page.evaluate(() => { (globalThis as any).__cdpReplayClickInProgress = true; });
+                try {
+                  await page.click(selector, { clickCount });
+                } finally {
+                  await page.evaluate(() => { (globalThis as any).__cdpReplayClickInProgress = false; });
+                }
 
                 // Check if breakpoint was hit during click - if so, skip post-click evaluation
                 // which would hang because page JS is paused
@@ -543,7 +548,12 @@ export function createInputTools(
 
                 // Clear existing text first (unless append mode)
                 if (!append) {
-                  await page.click(selector, { clickCount: 3 });
+                  await page.evaluate(() => { (globalThis as any).__cdpReplayClickInProgress = true; });
+                  try {
+                    await page.click(selector, { clickCount: 3 });
+                  } finally {
+                    await page.evaluate(() => { (globalThis as any).__cdpReplayClickInProgress = false; });
+                  }
                   await page.keyboard.press('Backspace');
                 }
                 // Type new text

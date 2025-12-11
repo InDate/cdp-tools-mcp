@@ -504,6 +504,9 @@ export function createIssuesTools(
             }
 
             // Play the sequence if available, otherwise record user actions
+            // Track replay execution results to surface to user
+            let replayResult: any = null;
+
             if (hasSequence) {
               const sequencePath = join(getInteractionSequencesDir(), issue.sequenceFile!);
               const sequenceName = issue.sequenceFile!.replace(/\.json$/, '');
@@ -514,7 +517,7 @@ export function createIssuesTools(
                 filename: sequencePath,
               });
 
-              await executeToolCall('replay', {
+              replayResult = await executeToolCall('replay', {
                 action: 'run',
                 name: sequenceName,
                 connectionReason: connectionRef,
@@ -523,6 +526,32 @@ export function createIssuesTools(
                 issueType: issue.type,
                 issueDescription: issue.description,
               });
+
+              // Check if replay failed - look for "Failed" in the result text
+              const replayText = replayResult?.content?.[0]?.text || '';
+              const replayFailed = replayText.includes('**Failed:**') && !replayText.includes('**Failed:** 0');
+
+              if (replayFailed) {
+                // Close the tab on failure
+                if (!args.keepBrowserOpen) {
+                  try {
+                    await executeToolCall('tab', {
+                      action: 'close',
+                      reference: connectionRef,
+                    });
+                  } catch {
+                    // Non-fatal
+                  }
+                }
+
+                // Return error immediately with replay details
+                return createErrorResponse('ISSUES_REPLAY_FAILED', {
+                  id: issue.id,
+                  type: issue.type,
+                  description: issue.description,
+                  replayDetails: replayText,
+                });
+              }
             } else {
               // No sequence - start recording user's actions (executeToolCall throws on error)
               await executeToolCall('replay', {
@@ -565,6 +594,12 @@ export function createIssuesTools(
               }
             }
 
+            // Extract replay execution details if available
+            let replayDetails: any = null;
+            if (replayResult?.content?.[0]?.text) {
+              replayDetails = replayResult.content[0].text;
+            }
+
             if (verification.resolved) {
               // User confirmed resolution
               const newStatus: IssueStatus = issue.type === 'bug' ? 'fixed' : 'implemented';
@@ -576,15 +611,17 @@ export function createIssuesTools(
                 status: newStatus,
                 description: issue.description,
                 userComment: verification.comment || null,
+                replayDetails,
               });
             } else {
-              // User said not resolved
+              // User said not resolved - include replay details so user can see what happened
               return createSuccessResponse('ISSUES_NOT_RESOLVED', {
                 id: issue.id,
                 type: issue.type,
                 status: issue.status,
                 description: issue.description,
                 userComment: verification.comment || null,
+                replayDetails,
               });
             }
           }
