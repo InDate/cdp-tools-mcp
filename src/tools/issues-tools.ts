@@ -26,7 +26,7 @@ import {
   updateIssueSequenceFile,
   acknowledgeAllBugs,
   getPendingBugs,
-  getInteractionSequencesDir,
+  getIssueSequencesDir,
   generateSequenceFilename,
   type TrackedIssue,
   type IssueType,
@@ -44,7 +44,7 @@ const issuesSchema = z.object({
   description: z.string().optional()
     .describe('Issue description (required for create)'),
   sequenceName: z.string().optional()
-    .describe('Name of existing sequence to link (for create - moves sequence to interactions folder)'),
+    .describe('Name of existing sequence to link (for create - moves sequence to issues folder)'),
   startUrl: z.string().optional()
     .describe('Starting URL for manual issue verification (required for create when no sequenceName provided)'),
   connectionReason: z.string().optional()
@@ -202,16 +202,16 @@ export function createIssuesTools(
 
             let sequenceFile = '';
 
-            // If sequenceName provided, move/copy sequence to interactions folder
+            // If sequenceName provided, move/copy sequence to issues folder
             if (args.sequenceName && getSequencePath) {
               const sourcePath = await getSequencePath(args.sequenceName);
 
               if (sourcePath) {
-                // Generate new filename for interactions folder
+                // Generate new filename for issues folder
                 // We'll use a temporary ID, then update after creating the issue
                 const tempId = Date.now();
                 const newFilename = generateSequenceFilename(args.type, tempId, args.description);
-                const destPath = join(getInteractionSequencesDir(), newFilename);
+                const destPath = join(getIssueSequencesDir(), newFilename);
 
                 try {
                   // Copy the sequence file
@@ -245,8 +245,8 @@ export function createIssuesTools(
             if (sequenceFile && args.sequenceName) {
               const correctFilename = generateSequenceFilename(args.type, issue.id, args.description);
               if (correctFilename !== sequenceFile) {
-                const oldPath = join(getInteractionSequencesDir(), sequenceFile);
-                const newPath = join(getInteractionSequencesDir(), correctFilename);
+                const oldPath = join(getIssueSequencesDir(), sequenceFile);
+                const newPath = join(getIssueSequencesDir(), correctFilename);
                 try {
                   await fs.rename(oldPath, newPath);
                   issue.sequenceFile = correctFilename;
@@ -295,7 +295,7 @@ export function createIssuesTools(
 
             if (hasSequence) {
               // Auto-replay sequence if available
-              const sequencePath = join(getInteractionSequencesDir(), issue.sequenceFile!);
+              const sequencePath = join(getIssueSequencesDir(), issue.sequenceFile!);
               const sequenceName = issue.sequenceFile!.replace(/\.json$/, '');
 
               // Load and run sequence (errors propagate via ToolError)
@@ -518,7 +518,7 @@ export function createIssuesTools(
             let replayResult: any = null;
 
             if (hasSequence) {
-              const sequencePath = join(getInteractionSequencesDir(), issue.sequenceFile!);
+              const sequencePath = join(getIssueSequencesDir(), issue.sequenceFile!);
               const sequenceName = issue.sequenceFile!.replace(/\.json$/, '');
 
               // Load and run sequence - executeToolCall throws on error
@@ -564,15 +564,28 @@ export function createIssuesTools(
               }
             } else {
               // No sequence - start recording user's actions (executeToolCall throws on error)
-              await executeToolCall('replay', {
+              const recordingResult = await executeToolCall('replay', {
                 action: 'recordInteraction',
                 connectionReason: connectionRef,
                 name: `verify-${issue.type}-${issue.id}`,
                 startUrl: issue.startUrl || 'about:blank',
-                // Pass issue info so recording saves to interactions folder
+                // Pass issue info so recording saves to issues folder
                 issueId: issue.id,
                 issueType: issue.type,
                 issueDescription: issue.description,
+              });
+
+              // Check if recording was successful (not cancelled)
+              const resultText = recordingResult?.content?.[0]?.text || '';
+              if (resultText.includes('cancelled')) {
+                return recordingResult;
+              }
+
+              // Return with instruction to run resolve again to verify with new sequence
+              return createSuccessResponse('ISSUES_SEQUENCE_RERECORDED', {
+                type: issue.type,
+                id: issue.id,
+                recordingDetails: resultText,
               });
             }
 

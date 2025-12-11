@@ -1128,7 +1128,7 @@ async function handleRecordInteraction(
     description: `Recorded from ${args.connectionReason}`,
   };
 
-  // Only create in-memory sequence if no issues (issues go to interactions folder only)
+  // Only create in-memory sequence if no issues (issues go to issues folder only)
   let sequence: CommandSequence | null = null;
   if (!hasIssues && recorder) {
     // Delete existing sequence if overwriting
@@ -1183,7 +1183,7 @@ async function handleRecordInteraction(
     });
   }
 
-  // If issueId provided, save sequence to interactions folder and link to existing issue
+  // If issueId provided, save sequence to issues folder and link to existing issue
   if (issueId && issueType && issueDescription) {
     await saveIssueSequence(
       issueId,

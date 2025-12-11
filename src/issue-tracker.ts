@@ -44,16 +44,16 @@ let nextIdInitialized = false;
 // File Paths
 // =============================================================================
 
-function getInteractionsDir(): string {
-  return getOutputPath('interactions');
+function getIssuesDir(): string {
+  return getOutputPath('issues');
 }
 
 function getSequencesDir(): string {
-  return getOutputPath('interactions', 'sequences');
+  return getOutputPath('issues', 'sequences');
 }
 
 function getIssuesFilePath(): string {
-  return join(getInteractionsDir(), 'issues.csv');
+  return join(getIssuesDir(), 'issues.csv');
 }
 
 // =============================================================================
@@ -309,7 +309,7 @@ async function updateIssueInCSV(id: number, updater: (issue: TrackedIssue) => Tr
  */
 export async function initializeTracker(_includeCompleted: boolean = false): Promise<void> {
   // Ensure directories exist
-  await fs.mkdir(getInteractionsDir(), { recursive: true });
+  await fs.mkdir(getIssuesDir(), { recursive: true });
   await fs.mkdir(getSequencesDir(), { recursive: true });
 
   // Initialize next ID from file if needed
@@ -422,7 +422,7 @@ export async function updateIssueSequenceFile(id: number, sequenceFile: string):
 }
 
 /**
- * Save a sequence file to the interactions folder and link it to an issue
+ * Save a sequence file to the issues folder and link it to an issue
  */
 export async function saveIssueSequence(
   issueId: number,
@@ -434,7 +434,7 @@ export async function saveIssueSequence(
   const { promises: fs } = await import('fs');
   const { join } = await import('path');
 
-  const sequencesDir = getInteractionSequencesDir();
+  const sequencesDir = getIssueSequencesDir();
   const filename = generateSequenceFilename(issueType, issueId, issueDescription);
   const sequenceNameForFile = filename.replace(/\.json$/, '');
 
@@ -500,11 +500,14 @@ export async function getPendingBugs(): Promise<TrackedIssue[]> {
 }
 
 /**
- * Get the sequences directory path for interactions
+ * Get the sequences directory path for issues
  */
-export function getInteractionSequencesDir(): string {
+export function getIssueSequencesDir(): string {
   return getSequencesDir();
 }
+
+// Alias for backwards compatibility
+export const getInteractionSequencesDir = getIssueSequencesDir;
 
 /**
  * Generate a sequence filename for an issue
