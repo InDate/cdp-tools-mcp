@@ -2303,29 +2303,40 @@ Use `server({ action: "start", command: "<cmd>", cwd: "<dir>", id: "<name>" })` 
 
 ---
 
-## SERVER_LOGS_SUCCESS
+## SERVER_LOGS_FILE
 
 **Type:** success
 
-**Logs for `{{serverId}}`** ({{lineCount}} lines{{#isDelta}}, new since last view{{/isDelta}})
+Logs for {{serverId}}
 
-{{#running}}🟢 Running{{/running}}{{^running}}🔴 Stopped{{/running}}{{#autoRun}} ⚡{{/autoRun}}
-{{#port}}**Port:** {{port}}{{/port}}
-{{#uptime}}**Uptime:** {{uptime}}{{/uptime}}
+{{#running}}Running{{/running}}{{^running}}Stopped{{/running}}{{#autoRun}} (auto-run){{/autoRun}}
+{{#port}}Port: {{port}}{{/port}}
+{{#uptime}}Uptime: {{uptime}}{{/uptime}}
 
-{{logs}}
+stdout: {{stdoutPath}}
+stderr: {{stderrPath}}
 
 ---
 
-## SERVER_LOGS_EMPTY
+## SERVER_LOGS_COMMAND
 
 **Type:** success
 
-**Logs for `{{serverId}}`**
+Logs for {{serverId}}
 
-{{#running}}🟢 Running{{/running}}{{^running}}🔴 Stopped{{/running}}{{#autoRun}} ⚡{{/autoRun}}
+{{#running}}Running{{/running}}{{^running}}Stopped{{/running}}{{#autoRun}} (auto-run){{/autoRun}}
+{{#port}}Port: {{port}}{{/port}}
+{{#uptime}}Uptime: {{uptime}}{{/uptime}}
 
-_No {{#isDelta}}new {{/isDelta}}log output._
+View logs: {{command}}
+
+---
+
+## SERVER_LOGS_UNAVAILABLE
+
+**Type:** error
+
+Log access not available for server {{serverId}}.
 
 ---
 

@@ -350,6 +350,18 @@ export class NativeRunner implements Runner {
   }
 
   /**
+   * Get log access info
+   */
+  getLogAccess(): { type: 'file'; logDir: string; stdoutPath: string; stderrPath: string } {
+    return {
+      type: 'file',
+      logDir: this.getLogDir(),
+      stdoutPath: this.getStdoutLogPath(),
+      stderrPath: this.getStderrLogPath(),
+    };
+  }
+
+  /**
    * Get log stats for status line
    */
   getLogStats(): { newStdout: number; newStderr: number } {

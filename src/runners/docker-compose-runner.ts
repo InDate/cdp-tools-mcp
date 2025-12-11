@@ -482,4 +482,18 @@ export class DockerComposeRunner implements Runner {
 
   /** Setters */
   setPort(port: number): void { this.port = port; }
+
+  /**
+   * Get log access info
+   */
+  getLogAccess(): { type: 'command'; command: string } {
+    const args = ['logs'];
+    if (this.composeFile) {
+      args.unshift('-f', this.composeFile);
+    }
+    return {
+      type: 'command',
+      command: `docker compose ${args.join(' ')}`,
+    };
+  }
 }

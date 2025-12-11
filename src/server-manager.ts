@@ -1444,6 +1444,22 @@ export class ServerManager {
   }
 
   /**
+   * Get log access info (file paths for native, commands for docker)
+   */
+  getLogAccess(serverId: string): { type: 'file'; logDir: string; stdoutPath: string; stderrPath: string } | { type: 'command'; command: string } | null {
+    const managed = this.servers.get(serverId);
+    if (!managed) {
+      throw new Error(`Server "${serverId}" not found`);
+    }
+
+    if (managed.runner.getLogAccess) {
+      return managed.runner.getLogAccess();
+    }
+
+    return null;
+  }
+
+  /**
    * Stop all servers
    */
   async stopAll(): Promise<string[]> {

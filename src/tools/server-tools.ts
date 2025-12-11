@@ -24,10 +24,6 @@ const serverSchema = z.object({
     .describe('Enable auto-run on MCP startup (for setAutoRun action, or when starting a server)'),
   env: z.record(z.string()).optional()
     .describe('Environment variables to set when starting the server (for start action)'),
-  logType: z.enum(['stdout', 'stderr', 'all']).optional()
-    .describe('Type of logs to retrieve (for logs action, default: all)'),
-  lines: z.number().optional()
-    .describe('Number of log lines to retrieve (for logs action). If not specified, returns new logs since last view.'),
   // Runner type parameter
   runner: z.enum(['native', 'docker', 'docker-compose']).optional()
     .describe('Runner type (for start action): native (spawn process directly), docker (run container), docker-compose (run compose stack). Auto-detected from command if not specified.'),
@@ -139,7 +135,7 @@ export function createServerTools(serverManager: ServerManager) {
 
   return {
     server: createTool(
-      'Manage development servers. Actions: start (start a server from npm script), stop (stop a running server), restart (restart a server), list (list running servers with status), logs (get server console output), stopAll (stop all servers), setAutoRun (enable/disable auto-start on MCP startup)',
+      'Manage development servers. Actions: start (start a server from npm script), stop (stop a running server), restart (restart a server), list (list running servers with status), logs (get log file paths or docker command), stopAll (stop all servers), setAutoRun (enable/disable auto-start on MCP startup)',
       serverSchema,
       async (args: ServerArgs) => {
         switch (args.action) {
@@ -273,37 +269,39 @@ export function createServerTools(serverManager: ServerManager) {
             }
 
             try {
-              const isDelta = args.lines === undefined;
-              const logs = await serverManager.getLogs(args.serverId, {
-                type: args.logType || 'all',
-                lines: args.lines,
-                delta: isDelta,
-              });
-
               const status = await serverManager.getStatus(args.serverId);
               const serverStatus = status[0];
+              const logAccess = serverManager.getLogAccess(args.serverId);
 
-              if (logs.length === 0) {
-                return createSuccessResponse('SERVER_LOGS_EMPTY', withLogStatus({
+              if (!logAccess) {
+                return createErrorResponse('SERVER_LOGS_UNAVAILABLE', withLogStatus({
+                  serverId: args.serverId,
+                }));
+              }
+
+              if (logAccess.type === 'file') {
+                return createSuccessResponse('SERVER_LOGS_FILE', withLogStatus({
                   serverId: args.serverId,
                   running: serverStatus?.running,
                   autoRun: serverStatus?.autoRun,
                   runnerType: serverStatus?.runnerType,
-                  isDelta,
+                  port: serverStatus?.port,
+                  uptime: serverStatus?.uptime,
+                  logDir: logAccess.logDir,
+                  stdoutPath: logAccess.stdoutPath,
+                  stderrPath: logAccess.stderrPath,
+                }));
+              } else {
+                return createSuccessResponse('SERVER_LOGS_COMMAND', withLogStatus({
+                  serverId: args.serverId,
+                  running: serverStatus?.running,
+                  autoRun: serverStatus?.autoRun,
+                  runnerType: serverStatus?.runnerType,
+                  port: serverStatus?.port,
+                  uptime: serverStatus?.uptime,
+                  command: logAccess.command,
                 }));
               }
-
-              return createSuccessResponse('SERVER_LOGS_SUCCESS', withLogStatus({
-                serverId: args.serverId,
-                lineCount: logs.length,
-                isDelta,
-                running: serverStatus?.running,
-                autoRun: serverStatus?.autoRun,
-                runnerType: serverStatus?.runnerType,
-                port: serverStatus?.port,
-                uptime: serverStatus?.uptime,
-                logs: '```\n' + logs.join('\n') + '\n```',
-              }));
             } catch (err) {
               return createErrorResponse('SERVER_NOT_FOUND', withLogStatus({
                 serverId: args.serverId,

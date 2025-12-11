@@ -472,4 +472,15 @@ export class DockerRunner implements Runner {
 
   /** Setters */
   setPort(port: number): void { this.port = port; }
+
+  /**
+   * Get log access info
+   */
+  getLogAccess(): { type: 'command'; command: string } {
+    const target = this.containerId || this.containerName || this.id;
+    return {
+      type: 'command',
+      command: `docker logs ${target}`,
+    };
+  }
 }

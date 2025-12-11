@@ -106,6 +106,11 @@ export interface Runner {
    * Clear logs (optional - only native runner supports this)
    */
   clearLogs?(): Promise<{ logDir: string; stdoutPath: string; stderrPath: string }>;
+
+  /**
+   * Get log access info - file paths for native runner, command for docker
+   */
+  getLogAccess?(): { type: 'file'; logDir: string; stdoutPath: string; stderrPath: string } | { type: 'command'; command: string };
 }
 
 /**
