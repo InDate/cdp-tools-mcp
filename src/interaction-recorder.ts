@@ -12,6 +12,7 @@
  */
 
 import type { Page } from 'puppeteer-core';
+import { debugLog } from './debug-logger.js';
 
 // =============================================================================
 // Types
@@ -285,10 +286,14 @@ export async function startRecording(
     // Set up bindings for UI buttons to call back to server
     await client.send('Runtime.addBinding', { name: '__cdpRecordingComplete' });
     await client.send('Runtime.addBinding', { name: '__cdpRecordingCancel' });
+    // Binding to save events before navigation (so they're not lost on refresh)
+    await client.send('Runtime.addBinding', { name: '__cdpRecordingSaveEvents' });
 
     client.on('Runtime.bindingCalled', async (event: any) => {
+      debugLog('recording', `Binding called: ${event.name}`);
       if (event.name === '__cdpRecordingComplete') {
         // UI stop button was clicked - process the recording
+        debugLog('recording', 'Processing recording completion...');
         try {
           const payload = JSON.parse(event.payload);
           const browserEvents = payload.events as InputEvent[];
@@ -336,10 +341,16 @@ export async function startRecording(
           cleanupHandles.delete(connectionReference);
           activeSessions.delete(connectionReference);
 
+          // Close the tab when recording completes
+          try {
+            await page.close();
+          } catch (e) { /* page may already be closed */ }
+
           // Resolve the blocking promise
+          debugLog('recording', `Recording complete with ${allEvents.length} events`);
           resolveRecording({ success: true, id: session.id, recording: stored });
         } catch (e) {
-          console.error('[cdp-tools] Error processing UI stop:', e);
+          debugLog('recording', `Error processing UI stop: ${e}`);
           resolveRecording({ success: false, error: String(e) });
         }
       }
@@ -355,17 +366,69 @@ export async function startRecording(
         } catch (e) { /* page may already be closed */ }
         resolveRecording({ success: false, cancelled: true });
       }
+
+      if (event.name === '__cdpRecordingSaveEvents') {
+        // Browser is about to navigate - save events to server-side session
+        try {
+          const payload = JSON.parse(event.payload);
+          const browserEvents = payload.events as InputEvent[];
+          const pausePeriods = payload.pausePeriods || [] as { start: number; end: number }[];
+
+          // Adjust timestamps for pause periods
+          const adjustedEvents = browserEvents.map(e => {
+            let adjustment = 0;
+            for (const pause of pausePeriods) {
+              if (e.timestamp > pause.end) {
+                adjustment += pause.end - pause.start;
+              } else if (e.timestamp > pause.start) {
+                adjustment += e.timestamp - pause.start;
+              }
+            }
+            return adjustment > 0 ? { ...e, timestamp: e.timestamp - adjustment } : e;
+          });
+
+          // Merge with existing session events (navigation events)
+          session.events = [...session.events, ...adjustedEvents].sort((a, b) => a.timestamp - b.timestamp);
+        } catch (e) {
+          console.error('[cdp-tools] Error saving events before navigation:', e);
+        }
+      }
     });
 
-    // Inject event listeners into the page
-    await page.evaluate((showOverlayParam: boolean) => {
-      (globalThis as any).__cdpRecordingEvents = [];
-      (globalThis as any).__cdpRecordingStart = Date.now();
-      (globalThis as any).__cdpRecordingPaused = false;
-      (globalThis as any).__cdpRecordingState = 'recording';
-      (globalThis as any).__cdpPausePeriods = [];  // Clear pause periods from previous recording
+    // Function to inject recording script - can be called multiple times (after navigation)
+    const injectRecordingScript = async () => {
+      await page.evaluate((showOverlayParam: boolean) => {
+        // Check if already injected (avoid duplicate listeners)
+        if ((globalThis as any).__cdpRecordingInjected) return;
+        (globalThis as any).__cdpRecordingInjected = true;
 
-      const doc = (globalThis as any).document;
+        (globalThis as any).__cdpRecordingEvents = [];
+        (globalThis as any).__cdpRecordingStart = Date.now();
+        (globalThis as any).__cdpRecordingPaused = false;
+        (globalThis as any).__cdpRecordingState = 'recording';
+        (globalThis as any).__cdpPausePeriods = [];
+
+        const doc = (globalThis as any).document;
+
+        // Save events to server before page unload (refresh/navigation)
+        // Use a flag to prevent double-saving (both beforeunload and pagehide can fire)
+        let eventsSaved = false;
+        const saveEventsBeforeUnload = () => {
+          if (eventsSaved) return;
+          eventsSaved = true;
+          const events = (globalThis as any).__cdpRecordingEvents || [];
+          const pausePeriods = (globalThis as any).__cdpPausePeriods || [];
+          if (events.length > 0) {
+            try {
+              (globalThis as any).__cdpRecordingSaveEvents(JSON.stringify({ events, pausePeriods }));
+            } catch (e) {
+              // Binding may not be available
+            }
+          }
+        };
+        (globalThis as any).addEventListener('beforeunload', saveEventsBeforeUnload);
+        // Also handle pagehide for bfcache
+        (globalThis as any).addEventListener('pagehide', saveEventsBeforeUnload);
 
       // Build selector helper - returns unique selector or undefined
       // Strategy aligned with element-collector.ts getUniqueSelector
@@ -1123,7 +1186,41 @@ export async function startRecording(
       doc.addEventListener('keydown', listeners.keydown, { capture: true, passive: true });
       doc.addEventListener('keyup', listeners.keyup, { capture: true, passive: true });
       doc.addEventListener('paste', listeners.paste, { capture: true });
-    }, showOverlayOption);
+      }, showOverlayOption);
+    };
+
+    // Track if we've done initial injection (to distinguish from navigation reloads)
+    let initialInjectionDone = false;
+
+    // Re-inject recording overlay and listeners after page load (handles refresh/navigation)
+    client.on('Page.loadEventFired', async () => {
+      // Skip the initial load event since we inject manually below
+      if (!initialInjectionDone) {
+        debugLog('recording', 'Skipping initial Page.loadEventFired');
+        return;
+      }
+
+      debugLog('recording', 'Page.loadEventFired - re-registering bindings and re-injecting script');
+      // Small delay to ensure page is ready
+      await new Promise(resolve => setTimeout(resolve, 100));
+      try {
+        // Re-register bindings (they don't persist across navigations)
+        await client.send('Runtime.addBinding', { name: '__cdpRecordingComplete' });
+        await client.send('Runtime.addBinding', { name: '__cdpRecordingCancel' });
+        await client.send('Runtime.addBinding', { name: '__cdpRecordingSaveEvents' });
+        debugLog('recording', 'Bindings re-registered');
+
+        await injectRecordingScript();
+        debugLog('recording', 'Recording script re-injected successfully');
+      } catch (e) {
+        // Page may have been closed or navigated away
+        debugLog('recording', `Failed to re-inject recording script: ${e}`);
+      }
+    });
+
+    // Initial injection
+    await injectRecordingScript();
+    initialInjectionDone = true;
 
     // Store cleanup function
     cleanupHandles.set(connectionReference, async () => {
