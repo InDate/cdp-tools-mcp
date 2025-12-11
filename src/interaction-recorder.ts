@@ -64,6 +64,19 @@ export interface KeyboardEvent {
     tag: string;
     id?: string;
     isInput?: boolean;
+    selector?: string;
+  };
+}
+
+export interface PasteEvent {
+  type: 'paste';
+  text: string;
+  timestamp: number;
+  targetInfo?: {
+    tag: string;
+    id?: string;
+    isInput?: boolean;
+    selector?: string;
   };
 }
 
@@ -84,7 +97,7 @@ export interface CommentEvent {
   attachedToEventIndex?: number; // Index of the event this comment is attached to
 }
 
-export type InputEvent = MouseEvent | KeyboardEvent | NavigationEvent | CommentEvent;
+export type InputEvent = MouseEvent | KeyboardEvent | PasteEvent | NavigationEvent | CommentEvent;
 
 export interface RecordingOptions {
   showOverlay?: boolean;
@@ -177,6 +190,10 @@ export function isNavigationEvent(event: InputEvent): event is NavigationEvent {
 
 export function isCommentEvent(event: InputEvent): event is CommentEvent {
   return event.type === 'comment';
+}
+
+export function isPasteEvent(event: InputEvent): event is PasteEvent {
+  return event.type === 'paste';
 }
 
 // =============================================================================
@@ -484,10 +501,68 @@ export async function startRecording(
             tag,
             id: target.id || undefined,
             isInput: ['input', 'textarea', 'select'].includes(tag) || target.isContentEditable,
+            selector: buildSelector(target),
           };
         }
         (globalThis as any).__cdpRecordingEvents.push(event);
         updateOverlay(event, type);
+      };
+
+      // Capture paste event
+      const capturePasteEvent = (e: any) => {
+        if ((globalThis as any).__cdpRecordingPaused) return;
+        if ((globalThis as any).__cdpCommentModalOpen) return;
+        if (isOurUI(e.target)) return;
+
+        let pastedText = e.clipboardData?.getData('text');
+        if (!pastedText) return; // Only capture text paste events
+
+        const target = e.target;
+        const tag = target?.tagName?.toLowerCase();
+
+        // Normalize text based on target element type
+        // Single-line inputs can't accept newlines - the browser strips them
+        // So we store what will actually end up in the field
+        if (tag === 'input') {
+          // Replace newlines with empty string for single-line inputs
+          pastedText = pastedText.replace(/[\r\n]/g, '');
+        }
+
+        const event: any = {
+          type: 'paste',
+          text: pastedText,
+          timestamp: Date.now(),
+        };
+
+        if (target && tag) {
+          event.targetInfo = {
+            tag,
+            id: target.id || undefined,
+            isInput: ['input', 'textarea', 'select'].includes(tag) || target.isContentEditable,
+            selector: buildSelector(target),
+          };
+        }
+
+        // Remove the preceding Cmd/Ctrl+V keydown events since we're capturing the paste content directly
+        const events = (globalThis as any).__cdpRecordingEvents;
+        // Look backwards for recent keydown events that are part of the paste shortcut
+        // (within last 500ms to account for any delay between keydown and paste event)
+        const now = Date.now();
+        while (events.length > 0) {
+          const lastEvent = events[events.length - 1];
+          const timeDiff = now - lastEvent.timestamp;
+          const isRecentKeydown = lastEvent.type === 'keydown' && timeDiff < 500;
+          const isPasteKey = (lastEvent.key === 'v' || lastEvent.key === 'V') &&
+                             (lastEvent.modifiers?.meta || lastEvent.modifiers?.ctrl);
+          if (isRecentKeydown && isPasteKey) {
+            events.pop(); // Remove the 'v' keydown
+          } else {
+            break;
+          }
+        }
+
+        events.push(event);
+        updateOverlay(event, 'paste');
       };
 
       // Overlay
@@ -512,8 +587,10 @@ export async function startRecording(
         if (eventEl) {
           const isKey = type === 'keydown' || type === 'keyup';
           const isComment = type === 'comment';
-          eventEl.textContent = isComment ? 'NOTE' : isKey ? event.key : type.replace('mouse', '').toUpperCase();
+          const isPaste = type === 'paste';
+          eventEl.textContent = isComment ? 'NOTE' : isPaste ? 'PASTE' : isKey ? event.key : type.replace('mouse', '').toUpperCase();
           eventEl.style.background = isComment ? '#f59e0b' :
+                                     isPaste ? '#9333ea' :
                                      type === 'click' ? '#ef4444' :
                                      type === 'wheel' ? '#3b82f6' :
                                      isKey ? '#10b981' :
@@ -1000,6 +1077,7 @@ export async function startRecording(
         dblclick: (e: any) => captureMouseEvent(e, 'dblclick'),
         keydown: (e: any) => captureKeyEvent(e, 'keydown'),
         keyup: (e: any) => captureKeyEvent(e, 'keyup'),
+        paste: (e: any) => capturePasteEvent(e),
       };
 
       const listeners = (globalThis as any).__cdpRecordingListeners;
@@ -1011,6 +1089,7 @@ export async function startRecording(
       doc.addEventListener('dblclick', listeners.dblclick, { capture: true, passive: true });
       doc.addEventListener('keydown', listeners.keydown, { capture: true, passive: true });
       doc.addEventListener('keyup', listeners.keyup, { capture: true, passive: true });
+      doc.addEventListener('paste', listeners.paste, { capture: true });
     }, showOverlayOption);
 
     // Store cleanup function
@@ -1031,6 +1110,7 @@ export async function startRecording(
             doc.removeEventListener('dblclick', listeners.dblclick, { capture: true });
             doc.removeEventListener('keydown', listeners.keydown, { capture: true });
             doc.removeEventListener('keyup', listeners.keyup, { capture: true });
+            doc.removeEventListener('paste', listeners.paste, { capture: true });
           }
           const overlay = doc.getElementById('__cdp-recording-overlay');
           if (overlay) overlay.remove();
@@ -1121,7 +1201,7 @@ export function simplifyEvents(
   };
 
   for (const event of events) {
-    if (isKeyboardEvent(event) || isNavigationEvent(event) || isCommentEvent(event)) {
+    if (isKeyboardEvent(event) || isNavigationEvent(event) || isCommentEvent(event) || isPasteEvent(event)) {
       flushPending();
       simplified.push(event);
       continue;
@@ -1187,22 +1267,30 @@ export interface CommandConversionOptions {
   preferSelectors?: boolean;
   includeDelays?: boolean;
   startTime?: number;
+  /** Maximum delay in ms (0 = no limit). Delays exceeding this are capped. */
+  maxDelayMs?: number;
 }
 
 export function eventsToCommands(
   events: InputEvent[],
   options: CommandConversionOptions = {}
 ): Array<{ tool: string; params: Record<string, any>; delay?: number; comment?: string }> {
-  const { simplify = true, includeHovers = false, preferCoordinates = false, preferSelectors = false, includeDelays = false, startTime } = options;
+  const { simplify = true, includeHovers = false, preferCoordinates = false, preferSelectors = false, includeDelays = false, startTime, maxDelayMs = 0 } = options;
   const processedEvents = simplify ? simplifyEvents(events) : events;
   const commands: Array<{ tool: string; params: Record<string, any>; delay?: number; comment?: string }> = [];
 
   const baseTime = startTime || (processedEvents.length > 0 ? processedEvents[0].timestamp : 0);
   let lastTimestamp = baseTime;
+  // Track the last selector that received typed text (for append mode)
+  let lastTypedSelector: string | null = null;
 
   const addCommand = (cmd: { tool: string; params: Record<string, any> }, eventTimestamp: number) => {
     if (includeDelays) {
-      const delay = eventTimestamp - lastTimestamp;
+      let delay = eventTimestamp - lastTimestamp;
+      // Cap delay at maxDelayMs if configured (0 = no limit)
+      if (maxDelayMs > 0 && delay > maxDelayMs) {
+        delay = maxDelayMs;
+      }
       if (delay > 0) {
         commands.push({ ...cmd, delay });
       } else {
@@ -1253,11 +1341,42 @@ export function eventsToCommands(
       continue;
     }
 
+    // Paste events - convert to type command with the pasted text
+    if (isPasteEvent(event)) {
+      // Remove any preceding paste-shortcut command (Meta+v or Ctrl+v)
+      // that was captured before this paste event
+      if (commands.length > 0) {
+        const lastCmd = commands[commands.length - 1];
+        if (lastCmd.tool === 'input' && lastCmd.params.action === 'press') {
+          const key = (lastCmd.params.key as string || '').toLowerCase();
+          if (key === 'meta+v' || key === 'control+v' || key === 'ctrl+v') {
+            commands.pop(); // Remove the paste shortcut command
+          }
+        }
+      }
+      // Include selector if available from the paste target
+      const selector = event.targetInfo?.selector;
+      const typeParams: Record<string, any> = { action: 'type', text: event.text };
+      if (selector) {
+        typeParams.selector = selector;
+        // Append if we already typed to this selector
+        if (lastTypedSelector === selector) {
+          typeParams.append = true;
+        }
+        lastTypedSelector = selector;
+      }
+      addCommand({ tool: 'input', params: typeParams }, event.timestamp);
+      i++;
+      continue;
+    }
+
     // Keyboard events
     if (isKeyboardEvent(event)) {
       if (event.type === 'keydown') {
         if (event.key.length === 1 && !event.modifiers?.ctrl && !event.modifiers?.alt && !event.modifiers?.meta) {
           let typedText = event.key;
+          // Use selector from first event in the sequence
+          const selector = event.targetInfo?.selector;
           let j = i + 1;
           while (j < processedEvents.length) {
             const next = processedEvents[j];
@@ -1272,7 +1391,16 @@ export function eventsToCommands(
             }
           }
           if (typedText.length > 1) {
-            addCommand({ tool: 'input', params: { action: 'type', text: typedText } }, event.timestamp);
+            const typeParams: Record<string, any> = { action: 'type', text: typedText };
+            if (selector) {
+              typeParams.selector = selector;
+              // Append if we already typed to this selector
+              if (lastTypedSelector === selector) {
+                typeParams.append = true;
+              }
+              lastTypedSelector = selector;
+            }
+            addCommand({ tool: 'input', params: typeParams }, event.timestamp);
             i = j;
             continue;
           }
@@ -1358,6 +1486,8 @@ export function eventsToCommands(
         // Coordinate-based click for canvas/3D elements
         addCommand({ tool: 'input', params: { action: 'click', x: event.x, y: event.y } }, event.timestamp);
       }
+      // Reset lastTypedSelector on click - typing after a click should replace, not append
+      lastTypedSelector = null;
       i++;
       continue;
     }
@@ -1416,6 +1546,14 @@ export function generateCondensedTimeline(events: InputEvent[]): string {
     if (isNavigationEvent(event)) {
       flushCurrent();
       parts.push(`nav`);
+      continue;
+    }
+
+    if (isPasteEvent(event)) {
+      flushCurrent();
+      // Show truncated paste content
+      const text = event.text.length > 30 ? event.text.substring(0, 27) + '...' : event.text;
+      parts.push(`paste: "${text}"`);
       continue;
     }
 

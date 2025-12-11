@@ -900,11 +900,12 @@ export async function waitForElement(
 export async function validateTypedText(
   ctx: ExecutionContext,
   selector: string,
-  expectedText: string
+  expectedText: string,
+  append: boolean = false
 ): Promise<void> {
   const { executeToolCall, connectionReason, logPrefix = 'executor' } = ctx;
 
-  debugLog(logPrefix, `Validating typed text in ${selector}`);
+  debugLog(logPrefix, `Validating typed text in ${selector}${append ? ' (append mode)' : ''}`);
 
   try {
     await new Promise(resolve => setTimeout(resolve, 100));
@@ -935,12 +936,21 @@ export async function validateTypedText(
       }
     }
 
-    if (actualValue !== expectedText) {
-      debugLog(logPrefix, `Text validation failed: expected "${expectedText}", got "${actualValue}"`);
-      throw new Error(`Text validation failed for ${selector}: expected "${expectedText}", got "${actualValue}"`);
+    // In append mode, check if the field ends with the expected text
+    // In replace mode, check for exact match
+    if (append) {
+      if (!actualValue.endsWith(expectedText)) {
+        debugLog(logPrefix, `Text validation failed (append): expected to end with "${expectedText}", got "${actualValue}"`);
+        throw new Error(`Text validation failed for ${selector}: expected to end with "${expectedText}", got "${actualValue}"`);
+      }
+    } else {
+      if (actualValue !== expectedText) {
+        debugLog(logPrefix, `Text validation failed: expected "${expectedText}", got "${actualValue}"`);
+        throw new Error(`Text validation failed for ${selector}: expected "${expectedText}", got "${actualValue}"`);
+      }
     }
 
-    debugLog(logPrefix, `Text validated: "${actualValue}" matches expected`);
+    debugLog(logPrefix, `Text validated: "${actualValue}" ${append ? 'ends with' : 'matches'} expected`);
   } catch (error: any) {
     if (error.message?.includes('Text validation failed')) {
       throw error;
@@ -1534,7 +1544,7 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
 
       // Post-step async operations (after marking success)
       if (cmd.tool === 'input' && params.action === 'type' && params.selector && connectionReason) {
-        await validateTypedText(ctx, params.selector, params.text || '');
+        await validateTypedText(ctx, params.selector, params.text || '', params.append === true);
       }
 
       // Pre-fetch next element after navigation/click

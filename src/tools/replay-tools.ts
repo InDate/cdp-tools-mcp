@@ -1086,11 +1086,13 @@ async function handleRecordInteraction(
   const recording = result.recording!;
   const summary = recording.summary;
 
+  const replayConfig = configManager.getReplayConfig();
   const commands = eventsToCommands(recording.events, {
     simplify: true,
     includeDelays: true,
     preferCoordinates: false,
     preferSelectors: false,
+    maxDelayMs: replayConfig.maxDelayMs,
   });
 
   // Generate condensed timeline
@@ -1196,6 +1198,19 @@ async function handleRecordInteraction(
 
 
 /**
+ * Escape a string for use in JavaScript code generation
+ * Handles newlines, quotes, backslashes, and other special characters
+ */
+function escapeJsString(str: string): string {
+  return str
+    .replace(/\\/g, '\\\\')   // Backslashes first
+    .replace(/'/g, "\\'")      // Single quotes
+    .replace(/\n/g, '\\n')     // Newlines
+    .replace(/\r/g, '\\r')     // Carriage returns
+    .replace(/\t/g, '\\t');    // Tabs
+}
+
+/**
  * Generate Puppeteer test code from sequence commands
  */
 function generatePuppeteerCode(commands: Array<{ tool: string; params: Record<string, any> }>, startUrl?: string): string {
@@ -1260,12 +1275,12 @@ function generatePuppeteerCode(commands: Array<{ tool: string; params: Record<st
           break;
 
         case 'type':
-          lines.push(`  await page.keyboard.type('${params.text}');`);
+          lines.push(`  await page.keyboard.type('${escapeJsString(params.text)}');`);
           lines.push('');
           break;
 
         case 'press':
-          lines.push(`  await page.keyboard.press('${params.key}');`);
+          lines.push(`  await page.keyboard.press('${escapeJsString(params.key)}');`);
           lines.push('');
           break;
       }
@@ -1356,12 +1371,12 @@ function generatePlaywrightCode(commands: Array<{ tool: string; params: Record<s
 
         case 'type':
           // Playwright uses type() for key-by-key typing, fill() for setting value directly
-          lines.push(`  await page.keyboard.type('${params.text}');`);
+          lines.push(`  await page.keyboard.type('${escapeJsString(params.text)}');`);
           lines.push('');
           break;
 
         case 'press':
-          lines.push(`  await page.keyboard.press('${params.key}');`);
+          lines.push(`  await page.keyboard.press('${escapeJsString(params.key)}');`);
           lines.push('');
           break;
 

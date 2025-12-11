@@ -39,6 +39,8 @@ export interface ReplayConfig {
   playwrightExportPath: string;
   /** Export path for Puppeteer tests (default: ./tests/puppeteer) */
   puppeteerExportPath: string;
+  /** Maximum delay between commands in ms when recording (default: 1000, 0 = no limit) */
+  maxDelayMs: number;
 }
 
 /**
@@ -231,6 +233,7 @@ const DEFAULT_CONFIG: CdpToolsConfig = {
     showCursor: true,         // Show visual cursor during replay
     playwrightExportPath: './tests/e2e',      // Export path for Playwright tests
     puppeteerExportPath: './tests/puppeteer', // Export path for Puppeteer tests
+    maxDelayMs: 1000,         // Cap recorded delays at 1 second (0 = no limit)
   },
   changeDetection: {
     enabled: true,            // Detect DOM changes by default
@@ -480,6 +483,7 @@ export class ConfigManager {
         showCursor: loaded.replay?.showCursor ?? defaults.replay.showCursor,
         playwrightExportPath: loaded.replay?.playwrightExportPath ?? defaults.replay.playwrightExportPath,
         puppeteerExportPath: loaded.replay?.puppeteerExportPath ?? defaults.replay.puppeteerExportPath,
+        maxDelayMs: loaded.replay?.maxDelayMs ?? defaults.replay.maxDelayMs,
       },
       changeDetection: {
         enabled: loaded.changeDetection?.enabled ?? defaults.changeDetection.enabled,

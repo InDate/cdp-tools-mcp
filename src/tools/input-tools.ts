@@ -39,6 +39,7 @@ const inputToolSchema = z.object({
   // type
   text: z.string().optional(),
   delay: z.number().optional().describe('Keystroke delay ms'),
+  append: z.boolean().optional().describe('Append text instead of replacing (default: false)'),
 
   // press
   key: z.string().optional(),
@@ -452,7 +453,7 @@ export function createInputTools(
           }
 
           case 'type': {
-            const { selector: rawSelector, text, delay = 0, handleModals = false, dismissStrategy = 'auto' } = args;
+            const { selector: rawSelector, text, delay = 0, handleModals = false, dismissStrategy = 'auto', append = false } = args;
 
             if (!rawSelector) {
               return {
@@ -540,9 +541,11 @@ export function createInputTools(
                   }
                 }
 
-                // Clear existing text first
-                await page.click(selector, { clickCount: 3 });
-                await page.keyboard.press('Backspace');
+                // Clear existing text first (unless append mode)
+                if (!append) {
+                  await page.click(selector, { clickCount: 3 });
+                  await page.keyboard.press('Backspace');
+                }
                 // Type new text
                 await page.type(selector, text, { delay });
 

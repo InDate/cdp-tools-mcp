@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Paste Recording Test</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      max-width: 600px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    h1 {
+      color: #333;
+      border-bottom: 3px solid #9333ea;
+      padding-bottom: 10px;
+    }
+    .section {
+      background: white;
+      padding: 20px;
+      margin: 20px 0;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    input, textarea {
+      padding: 10px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      margin: 5px 0;
+      font-size: 14px;
+    }
+    input[type="text"] {
+      width: 100%;
+      box-sizing: border-box;
+    }
+    textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 100px;
+      resize: vertical;
+    }
+    button {
+      background: #9333ea;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      margin: 5px 5px 5px 0;
+      font-size: 14px;
+    }
+    button:hover {
+      background: #7e22ce;
+    }
+    button.secondary {
+      background: #6b7280;
+    }
+    button.secondary:hover {
+      background: #4b5563;
+    }
+    .result {
+      background: #f0fdf4;
+      border: 1px solid #86efac;
+      padding: 15px;
+      margin-top: 15px;
+      border-radius: 4px;
+      font-family: 'Courier New', monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+      display: none;
+    }
+    .result.visible {
+      display: block;
+    }
+    .hint {
+      color: #666;
+      font-size: 12px;
+      font-style: italic;
+      margin-top: 10px;
+    }
+    .back-link {
+      display: inline-block;
+      margin-bottom: 20px;
+      color: #9333ea;
+      text-decoration: none;
+    }
+    .back-link:hover {
+      text-decoration: underline;
+    }
+    label {
+      display: block;
+      font-weight: 500;
+      margin-bottom: 5px;
+      color: #374151;
+    }
+    .field-group {
+      margin-bottom: 15px;
+    }
+  </style>
+</head>
+<body>
+  <a href="/" class="back-link">&larr; Back to Main</a>
+  <h1>Paste Recording Test</h1>
+
+  <div class="section">
+    <h2>Test: Single Line Paste</h2>
+    <p>Copy some text to your clipboard, then paste it into the input below using Cmd+V (Mac) or Ctrl+V (Windows).</p>
+
+    <div class="field-group">
+      <label for="single-paste">Paste here:</label>
+      <input type="text" id="single-paste" placeholder="Paste text here...">
+    </div>
+
+    <div id="single-result" class="result"></div>
+    <p class="hint">Expected: Recording should capture the pasted text content, not individual keystrokes like "Meta+v"</p>
+  </div>
+
+  <div class="section">
+    <h2>Test: Multi-Line Paste</h2>
+    <p>Copy multiple lines of text and paste them into the textarea.</p>
+
+    <div class="field-group">
+      <label for="multi-paste">Paste multi-line text:</label>
+      <textarea id="multi-paste" placeholder="Paste multiple lines here..."></textarea>
+    </div>
+
+    <div id="multi-result" class="result"></div>
+    <p class="hint">Expected: Recording should capture all pasted lines as a single paste event</p>
+  </div>
+
+  <div class="section">
+    <h2>Test: Paste + Type Combined</h2>
+    <p>Paste some text, then type additional characters after it.</p>
+
+    <div class="field-group">
+      <label for="combined-input">Paste and type:</label>
+      <input type="text" id="combined-input" placeholder="Paste, then type more...">
+    </div>
+
+    <div id="combined-result" class="result"></div>
+    <p class="hint">Expected: Recording should show paste event followed by separate keydown events for typed characters</p>
+  </div>
+
+  <div class="section">
+    <h2>Actions</h2>
+    <button id="clear-all">Clear All Fields</button>
+    <button id="copy-sample" class="secondary">Copy Sample Text</button>
+  </div>
+
+  <script>
+    // Handle paste events and show results
+    function setupPasteHandler(inputId, resultId) {
+      const input = document.getElementById(inputId);
+      const result = document.getElementById(resultId);
+
+      input.addEventListener('paste', (e) => {
+        const pastedText = e.clipboardData.getData('text');
+        result.textContent = `Pasted: "${pastedText}"\nLength: ${pastedText.length} characters\nLines: ${pastedText.split('\n').length}`;
+        result.classList.add('visible');
+      });
+
+      input.addEventListener('input', () => {
+        // Update result on any input change
+        if (result.classList.contains('visible')) {
+          result.textContent += `\nCurrent value: "${input.value}"`;
+        }
+      });
+    }
+
+    setupPasteHandler('single-paste', 'single-result');
+    setupPasteHandler('multi-paste', 'multi-result');
+    setupPasteHandler('combined-input', 'combined-result');
+
+    // Clear all fields
+    document.getElementById('clear-all').addEventListener('click', () => {
+      document.getElementById('single-paste').value = '';
+      document.getElementById('multi-paste').value = '';
+      document.getElementById('combined-input').value = '';
+      document.querySelectorAll('.result').forEach(el => {
+        el.textContent = '';
+        el.classList.remove('visible');
+      });
+    });
+
+    // Copy sample text to clipboard
+    document.getElementById('copy-sample').addEventListener('click', async () => {
+      const sampleText = 'Hello from clipboard!\nThis is line 2.\nAnd line 3.';
+      try {
+        await navigator.clipboard.writeText(sampleText);
+        alert('Sample text copied to clipboard!');
+      } catch (err) {
+        // Fallback for older browsers
+        const textarea = document.createElement('textarea');
+        textarea.value = sampleText;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        alert('Sample text copied to clipboard!');
+      }
+    });
+  </script>
+</body>
+</html>
