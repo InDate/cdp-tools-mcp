@@ -370,6 +370,10 @@ export async function startRecording(
         cleanupHandles.delete(connectionReference);
         activeSessions.delete(connectionReference);
         cancelCallbacks.delete(connectionReference);
+        // Close the tab when cancelled
+        try {
+          await page.close();
+        } catch (e) { /* page may already be closed */ }
         resolveRecording({ success: false, cancelled: true });
       }
     });
@@ -1092,8 +1096,9 @@ export async function startRecording(
           (globalThis as any).__cdpRecordingState = 'cancelled';
 
           // Send cancel signal to server via CDP binding
+          // Note: CDP bindings require exactly one string argument
           try {
-            (globalThis as any).__cdpRecordingCancel();
+            (globalThis as any).__cdpRecordingCancel('cancel');
           } catch (err) {
             console.error('[cdp-tools] Failed to send cancel to server:', err);
           }
