@@ -207,7 +207,7 @@ export async function startRecording(
   page: Page,
   connectionReference: string,
   options: RecordingOptions = {}
-): Promise<{ success: boolean; id?: number; recording?: StoredRecording; error?: string; cancelled?: boolean }> {
+): Promise<{ success: boolean; id?: number; recording?: StoredRecording; error?: string; cancelled?: boolean; closeTab?: boolean }> {
   // If there's an orphaned recording (e.g., MCP didn't send abort signal), clean it up
   if (activeSessions.has(connectionReference)) {
     await cancelRecording(connectionReference);
@@ -234,8 +234,8 @@ export async function startRecording(
   const showOverlayOption = options.showOverlay ?? true;
 
   // Create a promise that will resolve when recording completes or is cancelled
-  let resolveRecording: (result: { success: boolean; id?: number; recording?: StoredRecording; error?: string; cancelled?: boolean }) => void;
-  const recordingPromise = new Promise<{ success: boolean; id?: number; recording?: StoredRecording; error?: string; cancelled?: boolean }>((resolve) => {
+  let resolveRecording: (result: { success: boolean; id?: number; recording?: StoredRecording; error?: string; cancelled?: boolean; closeTab?: boolean }) => void;
+  const recordingPromise = new Promise<{ success: boolean; id?: number; recording?: StoredRecording; error?: string; cancelled?: boolean; closeTab?: boolean }>((resolve) => {
     resolveRecording = resolve;
   });
 
@@ -341,14 +341,9 @@ export async function startRecording(
           cleanupHandles.delete(connectionReference);
           activeSessions.delete(connectionReference);
 
-          // Close the tab when recording completes
-          try {
-            await page.close();
-          } catch (e) { /* page may already be closed */ }
-
-          // Resolve the blocking promise
+          // Resolve the blocking promise - caller should close the tab
           debugLog('recording', `Recording complete with ${allEvents.length} events`);
-          resolveRecording({ success: true, id: session.id, recording: stored });
+          resolveRecording({ success: true, id: session.id, recording: stored, closeTab: true });
         } catch (e) {
           debugLog('recording', `Error processing UI stop: ${e}`);
           resolveRecording({ success: false, error: String(e) });
@@ -360,11 +355,8 @@ export async function startRecording(
         cleanupHandles.delete(connectionReference);
         activeSessions.delete(connectionReference);
         cancelCallbacks.delete(connectionReference);
-        // Close the tab when cancelled
-        try {
-          await page.close();
-        } catch (e) { /* page may already be closed */ }
-        resolveRecording({ success: false, cancelled: true });
+        // Resolve with closeTab flag - caller should close the tab
+        resolveRecording({ success: false, cancelled: true, closeTab: true });
       }
 
       if (event.name === '__cdpRecordingSaveEvents') {

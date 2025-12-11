@@ -1070,6 +1070,18 @@ async function handleRecordInteraction(
     issueId
   });
 
+  // Close the tab if requested by the recording result
+  if (result.closeTab) {
+    try {
+      await executeToolCall('tab', {
+        action: 'close',
+        reference: args.connectionReason,
+      });
+    } catch {
+      // Non-fatal - tab may already be closed
+    }
+  }
+
   if (!result.success) {
     if (result.cancelled) {
       return {

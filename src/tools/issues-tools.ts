@@ -499,8 +499,18 @@ export function createIssuesTools(
                 overwrite: true,
               });
 
-              // Return the recording result directly
-              return recordingResult;
+              // Check if recording was successful (not cancelled)
+              const resultText = recordingResult?.content?.[0]?.text || '';
+              if (resultText.includes('cancelled')) {
+                return recordingResult;
+              }
+
+              // Return with clear instruction to run resolve again
+              return createSuccessResponse('ISSUES_SEQUENCE_RERECORDED', {
+                type: issue.type,
+                id: issue.id,
+                recordingDetails: resultText,
+              });
             }
 
             // Play the sequence if available, otherwise record user actions

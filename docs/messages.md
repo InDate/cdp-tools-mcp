@@ -2241,6 +2241,17 @@ Failed to copy sequence "{{sequenceName}}"
 
 ---
 
+## ISSUES_SEQUENCE_RERECORDED
+
+**Type:** success
+**Summary:** New sequence recorded for {{type}} #{{id}}
+
+{{recordingDetails}}
+
+**ACTION REQUIRED:** The sequence has been updated. Run `issues({ action: 'resolve', id: {{id}} })` again to verify the fix with the new sequence.
+
+---
+
 ## MISSING_CONNECTION
 
 **Type:** error
