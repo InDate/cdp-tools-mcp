@@ -22,7 +22,8 @@ Your AI agent gets access to:
 - 🌐 **Automate browser interactions** with smart element discovery
 - 🔄 **Debug both Chrome and Node.js** applications simultaneously
 - 🤖 **Multi-agent support**: Nested Claude agents can each manage their own browser tabs
-- 🎯 **Targeted Server Management**: MCP that monitors ports and manages server processes automatically. If something fails, all tools are blocked until the LLM fixes the issue. 
+- 🎯 **Targeted Server Management**: MCP that monitors ports and manages server processes automatically. If something fails, all tools are blocked until the LLM fixes the issue.
+- 📋 **Issues Tracking**: Track bugs and features with recorded reproduction sequences that verify fixes automatically 
 
 ## Quick Start
 
@@ -78,6 +79,10 @@ claude mcp add cdp-tools -- npx cdp-tools-mcp@latest
 - **Persistent State**: Server PIDs, ports, and config survive session restarts
 - **Auto-Restart**: Servers with autoRun enabled restart automatically with exponential backoff
 - **Cross-Session Logs**: File-based logging lets any session read server output
+
+### Issues Tracking
+- **Bug & Feature Workflow**: Create issues, record reproduction steps, and verify fixes with automated replay
+- **Sequence-Based Verification**: `workOn` navigates to context, `resolve` replays and confirms the fix
 
 ## Example Usage
 
@@ -144,6 +149,8 @@ MIT
 ## What's New
 
 ### Latest
+- **Issues Tracking**: New `issues` tool for bug/feature tracking with recorded reproduction sequences and automated verification
+- **Recording Survives Navigation**: Overlay persists across page refresh with proper connection cleanup
 - **Interaction Recording**: Record mouse clicks, drags, scrolls, keyboard input, and navigation events with a visual overlay - add comments during recording with Ctrl+Shift+C
 - **Visual Replay Cursor**: See exactly where clicks happen during replay with animated cursor and ripple effects
 - **Test Export**: Export recordings as Playwright (.spec.ts) or Puppeteer (.test.js) tests with `export({ name: "my-test", format: "playwright" })`
