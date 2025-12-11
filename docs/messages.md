@@ -2055,9 +2055,22 @@ Issue #{{id}} not found
 **Summary:** Working on issue #{{id}}
 
 {{details}}{{#replayStarted}}
-Sequence replay completed.{{/replayStarted}}{{#connectionReason}}
+Sequence replay completed.{{/replayStarted}}{{#browserLaunched}}
+Browser launched and navigated to start URL.{{/browserLaunched}}{{#recordingStarted}}
+Recording started. Reproduce the issue, then stop the recording.{{/recordingStarted}}{{#connectionReason}}
 
 Connection: `{{connectionReason}}`{{/connectionReason}}
+
+---
+
+## ISSUES_WORK_CANCELLED
+
+**Type:** info
+**Summary:** Work session cancelled for #{{id}}
+
+Work session cancelled for {{type}} #{{id}}.
+
+{{description}}
 
 ---
 
@@ -2744,6 +2757,26 @@ No global config exists to clone from.
 ```json
 {{config}}
 ```
+
+---
+
+## TOOLS_LIST
+
+**Type:** info
+
+{{toolsJson}}
+
+---
+
+## TOOLS_LIST_CONFLICT
+
+**Type:** error
+
+Dependency conflicts detected. All tools are blocked until resolved.
+
+{{#each conflicts}}
+{{this}}
+{{/each}}
 
 ---
 

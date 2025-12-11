@@ -9,8 +9,8 @@ import { configManager } from '../config.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
 
 const configSchema = z.object({
-  action: z.enum(['status', 'useLocal', 'useGlobal', 'reset', 'backup', 'cloneFromGlobal', 'show'])
-    .describe('Config action: status (show config location info), useLocal (switch to project config), useGlobal (switch to global config), reset (reset to defaults), backup (backup current config), cloneFromGlobal (copy global to local), show (display current config)'),
+  action: z.enum(['status', 'useLocal', 'useGlobal', 'reset', 'backup', 'cloneFromGlobal', 'show', 'listTools'])
+    .describe('Config action: status (show config location info), useLocal (switch to project config), useGlobal (switch to global config), reset (reset to defaults), backup (backup current config), cloneFromGlobal (copy global to local), show (display current config), listTools (list all toggleable tools with status and dependencies)'),
   seedFromGlobal: z.boolean().optional()
     .describe('For useLocal action: if true (default), seeds new local config from global if it exists'),
 }).strict();
@@ -20,7 +20,7 @@ type ConfigArgs = z.infer<typeof configSchema>;
 export function createConfigTools() {
   return {
     config: createTool(
-      'Manage cdp-tools configuration. Actions: status (show where config is loaded from), useLocal (switch to project-local config), useGlobal (switch to global ~/.cdp-tools config), reset (reset to defaults), backup (create timestamped backup), cloneFromGlobal (copy global config to local), show (display current settings)',
+      'Manage cdp-tools configuration. Actions: status (show where config is loaded from), useLocal (switch to project-local config), useGlobal (switch to global ~/.cdp-tools config), reset (reset to defaults), backup (create timestamped backup), cloneFromGlobal (copy global config to local), show (display current settings), listTools (list all toggleable tools with their status and dependencies)',
       configSchema,
       async (args: ConfigArgs) => {
         switch (args.action) {
@@ -81,6 +81,21 @@ export function createConfigTools() {
             const config = configManager.getConfig();
             return createSuccessResponse('CONFIG_SHOW', {
               config: JSON.stringify(config, null, 2),
+            });
+          }
+
+          case 'listTools': {
+            const tools = configManager.getToggleableTools();
+            const conflicts = configManager.getDependencyConflicts();
+            const toolsJson = JSON.stringify(tools, null, 2);
+            if (conflicts.length > 0) {
+              return createErrorResponse('TOOLS_LIST_CONFLICT', {
+                toolsJson,
+                conflicts,
+              });
+            }
+            return createSuccessResponse('TOOLS_LIST', {
+              toolsJson,
             });
           }
 

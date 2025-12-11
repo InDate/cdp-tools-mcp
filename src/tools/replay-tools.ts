@@ -9,6 +9,7 @@ import type { CommandRecorder, ActiveSequenceState, CommandSequence } from '../c
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import { showReplayOverlay } from '../interaction-recorder.js';
+import { getIssue } from '../issue-tracker.js';
 
 import {
   loadSequence,
@@ -984,15 +985,35 @@ async function handleRecordInteraction(
     });
   }
 
+  // If issueId is provided, look up the issue and use its details
+  let issueId = args.issueId;
+  let issueType = args.issueType;
+  let issueDescription = args.issueDescription;
+  let startUrl = args.startUrl;
+
+  if (issueId) {
+    const issue = await getIssue(issueId);
+    if (!issue) {
+      return createErrorResponse('ISSUES_NOT_FOUND', {
+        id: issueId,
+        message: `Issue #${issueId} not found`
+      });
+    }
+    // Use issue details (override any provided args)
+    issueType = issue.type;
+    issueDescription = issue.description;
+    startUrl = startUrl || issue.startUrl;  // Use provided startUrl or fall back to issue's startUrl
+  }
+
   let page = await getPageForConnection(args.connectionReason);
 
   // Auto-launch Chrome if no connection found (requires startUrl)
   if (!page) {
-    if (!args.startUrl) {
+    if (!startUrl) {
       return createErrorResponse('MISSING_PARAMETER', {
         action: 'recordInteraction',
         missing: 'startUrl',
-        message: 'Chrome is not running. Provide a "startUrl" to auto-launch Chrome and navigate before recording.'
+        message: 'Chrome is not running. Provide a "startUrl" or "issueId" (with startUrl) to auto-launch Chrome and navigate before recording.'
       });
     }
 
@@ -1008,11 +1029,11 @@ async function handleRecordInteraction(
     const navResult = await executeToolCall('navigate', {
       action: 'goto',
       connectionReason: args.connectionReason,
-      url: args.startUrl
+      url: startUrl
     });
     if (navResult?.isError) {
       return createErrorResponse('NAVIGATION_FAILED', {
-        url: args.startUrl,
+        url: startUrl,
         message: `Failed to navigate to startUrl: ${navResult?.content?.[0]?.text || 'Unknown error'}`
       });
     }
@@ -1025,13 +1046,31 @@ async function handleRecordInteraction(
         message: 'Failed to connect to Chrome after auto-launch'
       });
     }
+  } else if (startUrl) {
+    // Page already exists but startUrl provided - navigate to it
+    const navResult = await executeToolCall('navigate', {
+      action: 'goto',
+      connectionReason: args.connectionReason,
+      url: startUrl
+    });
+    if (navResult?.isError) {
+      return createErrorResponse('NAVIGATION_FAILED', {
+        url: startUrl,
+        message: `Failed to navigate to startUrl: ${navResult?.content?.[0]?.text || 'Unknown error'}`
+      });
+    }
   }
 
   const showOverlay = args.showOverlay !== false;
-  const sequenceName = args.name || args.connectionReason;
+  const sequenceName = args.name || (issueId ? `${issueType}-${issueId}-repro` : args.connectionReason);
 
   // startRecording now blocks until recording completes
-  const result = await startRecording(page, args.connectionReason, { showOverlay, abortSignal });
+  // If issueId is provided, startRecording will show a fullscreen overlay with issue details
+  const result = await startRecording(page, args.connectionReason, {
+    showOverlay,
+    abortSignal,
+    issueId
+  });
 
   if (!result.success) {
     if (result.cancelled) {
@@ -1125,13 +1164,13 @@ async function handleRecordInteraction(
   }
 
   // If issueId provided, save sequence to interactions folder and link to existing issue
-  if (args.issueId && args.issueType && args.issueDescription) {
+  if (issueId && issueType && issueDescription) {
     await saveIssueSequence(
-      args.issueId,
-      args.issueType,
-      args.issueDescription,
+      issueId,
+      issueType,
+      issueDescription,
       sequenceData,
-      `CDP Tools verification sequence for ${args.issueType} #${args.issueId}: ${args.issueDescription}`
+      `CDP Tools verification sequence for ${issueType} #${issueId}: ${issueDescription}`
     );
   }
 

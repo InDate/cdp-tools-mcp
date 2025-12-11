@@ -102,10 +102,96 @@ export interface DebugConfig {
 }
 
 /**
+ * List of tools that can be toggled via config
+ * New tools added here will be auto-discovered and added to enabled list on startup
+ */
+export const TOGGLEABLE_TOOLS = [
+  'connection',  // Core Chrome/debugger connection
+  'tab',         // Tab management
+  'breakpoint',  // Breakpoints, logpoints
+  'execution',   // Pause, resume, step
+  'inspection',  // Call stack, variables, evaluate
+  'source',      // Source maps, code search
+  'console',     // Console monitoring
+  'network',     // Network monitoring
+  'page',        // Navigation
+  'dom',         // DOM queries
+  'screenshot',  // Screenshots, PDF
+  'input',       // Click, type, hover
+  'content',     // Text extraction, interactive elements
+  'modal',       // Modal detection/dismissal
+  'storage',     // Cookies, localStorage
+  'download',    // File downloads
+  'replay',      // Sequence recording/playback
+  'server',      // Dev server management
+  'issues',      // Issue tracking
+  // Note: 'config' is NOT toggleable - always enabled
+] as const;
+
+export type ToggleableToolName = typeof TOGGLEABLE_TOOLS[number];
+
+/**
+ * Tool dependencies - key depends on values
+ * If a dependency is disabled, the dependent tool cannot function
+ */
+export const TOOL_DEPENDENCIES: Record<string, string[]> = {
+  tab: ['connection'],
+  breakpoint: ['connection'],
+  execution: ['connection'],
+  inspection: ['connection'],
+  source: ['connection'],
+  console: ['connection'],
+  network: ['connection'],
+  page: ['connection'],
+  dom: ['connection'],
+  screenshot: ['connection'],
+  input: ['connection'],
+  content: ['connection'],
+  modal: ['connection'],
+  storage: ['connection'],
+  replay: ['connection', 'input', 'page'],
+  issues: ['replay'],
+};
+
+/**
+ * Check for dependency conflicts in tools config
+ * Returns array of conflict descriptions (grouped by disabled dependency), empty if no conflicts
+ */
+export function checkToolDependencyConflicts(enabled: string[], disabled: string[]): string[] {
+  // Group dependents by their disabled dependency
+  const dependentsByDisabled: Record<string, string[]> = {};
+
+  for (const toolName of enabled) {
+    const deps = TOOL_DEPENDENCIES[toolName];
+    if (!deps) continue;
+
+    for (const dep of deps) {
+      if (disabled.includes(dep)) {
+        if (!dependentsByDisabled[dep]) {
+          dependentsByDisabled[dep] = [];
+        }
+        dependentsByDisabled[dep].push(toolName);
+      }
+    }
+  }
+
+  // Build conflict messages grouped by disabled dependency
+  const conflicts: string[] = [];
+  for (const [disabledTool, dependents] of Object.entries(dependentsByDisabled)) {
+    const count = dependents.length;
+    const toolWord = count === 1 ? 'tool' : 'tools';
+    const dependentsList = dependents.join(', ');
+    conflicts.push(`'${disabledTool}' is disabled but required for (${count}) ${toolWord}:\n\t${dependentsList}`);
+  }
+
+  return conflicts;
+}
+
+/**
  * Root configuration structure
  */
 export interface ToolsConfig {
-  enabled: string[];   // Tools to enable
+  enabled: string[];   // Tools to enable (auto-populated with new tools on startup)
   disabled: string[];  // Tools to disable (takes priority over enabled)
 }
 
@@ -186,6 +272,9 @@ export class ConfigManager {
   // Runtime port state (not persisted to config file)
   private currentPort: number = DEFAULT_CONFIG.chrome.startingDebugPort;
 
+  // Dependency conflict state - blocks all tool access if set
+  private dependencyConflicts: string[] = [];
+
   constructor() {
     // Sync load config at construction for early access (e.g., tool registration)
     this.loadSync();
@@ -203,10 +292,38 @@ export class ConfigManager {
         this.config = this.mergeConfig(DEFAULT_CONFIG, loaded);
         this.loadedFromPath = localConfigPath;
         this.loaded = true;
+        // Auto-discover new tools (save happens in async load())
+        this.discoverTools();
+        // Check for dependency conflicts
+        this.validateDependencies();
       }
     } catch {
       // Ignore errors, use defaults
     }
+  }
+
+  /**
+   * Validate tool dependencies and store any conflicts
+   */
+  private validateDependencies(): void {
+    this.dependencyConflicts = checkToolDependencyConflicts(
+      this.config.tools.enabled,
+      this.config.tools.disabled
+    );
+  }
+
+  /**
+   * Check if there are dependency conflicts blocking tool access
+   */
+  hasDependencyConflicts(): boolean {
+    return this.dependencyConflicts.length > 0;
+  }
+
+  /**
+   * Get the list of dependency conflicts
+   */
+  getDependencyConflicts(): string[] {
+    return [...this.dependencyConflicts];
   }
 
   /**
@@ -254,6 +371,10 @@ export class ConfigManager {
           const globalLoaded = JSON.parse(globalContent);
           this.config = this.mergeConfig(DEFAULT_CONFIG, globalLoaded);
           this.loadedFromPath = globalConfigPath;
+          // Auto-discover new tools
+          if (this.discoverTools()) {
+            await debugLog('ConfigManager', `Discovered new tools, updating config`);
+          }
           await debugLog('ConfigManager', `Using global config (per local configLocation setting)`);
 
           // Clean up local config to just have the pointer
@@ -270,6 +391,10 @@ export class ConfigManager {
         // Use local config
         this.config = this.mergeConfig(DEFAULT_CONFIG, loaded);
         this.loadedFromPath = localConfigPath;
+        // Auto-discover new tools
+        if (this.discoverTools()) {
+          await debugLog('ConfigManager', `Discovered new tools, updating config`);
+        }
         await debugLog('ConfigManager', `Loaded config from ${localConfigPath}`);
         await this.save();
       } else {
@@ -283,6 +408,10 @@ export class ConfigManager {
         } else {
           this.config = { ...DEFAULT_CONFIG };
         }
+        // Auto-discover new tools
+        if (this.discoverTools()) {
+          await debugLog('ConfigManager', `Discovered new tools, updating config`);
+        }
         // Save to local (getPreferredConfigPath will fall back to global if local not writable)
         this.loadedFromPath = this.getPreferredConfigPath();
         await this.save();
@@ -292,6 +421,12 @@ export class ConfigManager {
       await debugLog('ConfigManager', `Failed to load config: ${err}, using defaults`);
       this.config = { ...DEFAULT_CONFIG };
       this.loadedFromPath = null;
+    }
+
+    // Validate dependencies after config is fully loaded
+    this.validateDependencies();
+    if (this.hasDependencyConflicts()) {
+      await debugLog('ConfigManager', `Tool dependency conflicts detected: ${this.dependencyConflicts.join(', ')}`);
     }
 
     this.loaded = true;
@@ -449,6 +584,48 @@ export class ConfigManager {
     if (tools.enabled.includes(toolName)) return true;
     // Default to disabled if not in either list
     return false;
+  }
+
+  /**
+   * Auto-discover and enable new tools
+   * Any tool in TOGGLEABLE_TOOLS that isn't in disabled will be added to enabled
+   * Also removes tools from enabled if they are in disabled
+   * Returns true if config was modified
+   */
+  discoverTools(): boolean {
+    let modified = false;
+
+    // Remove any tools from enabled that are in disabled
+    for (const toolName of this.config.tools.disabled) {
+      const enabledIndex = this.config.tools.enabled.indexOf(toolName);
+      if (enabledIndex !== -1) {
+        this.config.tools.enabled.splice(enabledIndex, 1);
+        modified = true;
+      }
+    }
+
+    // Auto-add new tools to enabled (if not in disabled)
+    for (const toolName of TOGGLEABLE_TOOLS) {
+      // Skip if already in enabled or disabled
+      if (this.config.tools.enabled.includes(toolName)) continue;
+      if (this.config.tools.disabled.includes(toolName)) continue;
+
+      // Auto-add to enabled
+      this.config.tools.enabled.push(toolName);
+      modified = true;
+    }
+    return modified;
+  }
+
+  /**
+   * Get list of available toggleable tools with their current state
+   */
+  getToggleableTools(): Array<{ name: string; enabled: boolean; dependencies: string[] }> {
+    return TOGGLEABLE_TOOLS.map(name => ({
+      name,
+      enabled: this.isToolEnabled(name),
+      dependencies: TOOL_DEPENDENCIES[name] || [],
+    }));
   }
 
   /**

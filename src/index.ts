@@ -1082,39 +1082,40 @@ class ToolError extends Error {
   }
 }
 
-// Combine all tools
+// Combine all tools (conditionally based on config)
 const allTools = {
-  ...connectionTools,
+  // Connection tools (Chrome/debugger)
+  ...(configManager.isToolEnabled('connection') ? connectionTools : {}),
   // Tab Management tools
-  ...createTabTools(connectionManager, sourceMapHandler, updateActiveManagers, logpointTracker),
+  ...(configManager.isToolEnabled('tab') ? createTabTools(connectionManager, sourceMapHandler, updateActiveManagers, logpointTracker) : {}),
   // CDP Debugging tools
-  ...createBreakpointTools(proxyCdpManager, sourceMapHandler, logpointTracker, resolveConnectionFromReason),
-  ...createExecutionTools(proxyCdpManager, resolveConnectionFromReason, connectionManager),
-  ...createInspectionTools(proxyCdpManager, sourceMapHandler, resolveConnectionFromReason),
-  ...createSourceTools(proxyCdpManager, sourceMapHandler, resolveConnectionFromReason),
+  ...(configManager.isToolEnabled('breakpoint') ? createBreakpointTools(proxyCdpManager, sourceMapHandler, logpointTracker, resolveConnectionFromReason) : {}),
+  ...(configManager.isToolEnabled('execution') ? createExecutionTools(proxyCdpManager, resolveConnectionFromReason, connectionManager) : {}),
+  ...(configManager.isToolEnabled('inspection') ? createInspectionTools(proxyCdpManager, sourceMapHandler, resolveConnectionFromReason) : {}),
+  ...(configManager.isToolEnabled('source') ? createSourceTools(proxyCdpManager, sourceMapHandler, resolveConnectionFromReason) : {}),
   // Browser Automation tools
-  ...createConsoleTools(proxyPuppeteerManager, proxyConsoleMonitor, resolveConnectionFromReason),
-  ...createNetworkTools(proxyPuppeteerManager, proxyNetworkMonitor, resolveConnectionFromReason),
-  ...createPageTools(proxyPuppeteerManager, proxyCdpManager, proxyConsoleMonitor, proxyNetworkMonitor, connectionManager, resolveConnectionFromReason, clickableCache, executeToolCall),
-  ...createDOMTools(proxyPuppeteerManager, proxyCdpManager, connectionManager, resolveConnectionFromReason),
-  ...createScreenshotTools(proxyPuppeteerManager, proxyCdpManager, connectionManager, resolveConnectionFromReason),
-  ...createInputTools(proxyPuppeteerManager, proxyCdpManager, connectionManager, resolveConnectionFromReason),
-  ...createContentTools(proxyPuppeteerManager, proxyCdpManager, connectionManager, resolveConnectionFromReason, clickableCache),
-  ...createModalTools(resolveConnectionFromReason),
-  ...createStorageTools(proxyPuppeteerManager, proxyCdpManager, resolveConnectionFromReason),
+  ...(configManager.isToolEnabled('console') ? createConsoleTools(proxyPuppeteerManager, proxyConsoleMonitor, resolveConnectionFromReason) : {}),
+  ...(configManager.isToolEnabled('network') ? createNetworkTools(proxyPuppeteerManager, proxyNetworkMonitor, resolveConnectionFromReason) : {}),
+  ...(configManager.isToolEnabled('page') ? createPageTools(proxyPuppeteerManager, proxyCdpManager, proxyConsoleMonitor, proxyNetworkMonitor, connectionManager, resolveConnectionFromReason, clickableCache, executeToolCall) : {}),
+  ...(configManager.isToolEnabled('dom') ? createDOMTools(proxyPuppeteerManager, proxyCdpManager, connectionManager, resolveConnectionFromReason) : {}),
+  ...(configManager.isToolEnabled('screenshot') ? createScreenshotTools(proxyPuppeteerManager, proxyCdpManager, connectionManager, resolveConnectionFromReason) : {}),
+  ...(configManager.isToolEnabled('input') ? createInputTools(proxyPuppeteerManager, proxyCdpManager, connectionManager, resolveConnectionFromReason) : {}),
+  ...(configManager.isToolEnabled('content') ? createContentTools(proxyPuppeteerManager, proxyCdpManager, connectionManager, resolveConnectionFromReason, clickableCache) : {}),
+  ...(configManager.isToolEnabled('modal') ? createModalTools(resolveConnectionFromReason) : {}),
+  ...(configManager.isToolEnabled('storage') ? createStorageTools(proxyPuppeteerManager, proxyCdpManager, resolveConnectionFromReason) : {}),
   // Download tools
-  ...createDownloadTools(),
+  ...(configManager.isToolEnabled('download') ? createDownloadTools() : {}),
   // Replay tools
-  ...createReplayTools(commandRecorder, executeToolCall, async (connectionReason: string) => {
+  ...(configManager.isToolEnabled('replay') ? createReplayTools(commandRecorder, executeToolCall, async (connectionReason: string) => {
     const resolved = await resolveConnectionFromReason(connectionReason);
     if (!resolved?.puppeteerManager) return null;
     return resolved.puppeteerManager.getPage();
-  }),
+  }) : {}),
   // Server management tools
-  ...createServerTools(serverManager),
-  // Config management tools
+  ...(configManager.isToolEnabled('server') ? createServerTools(serverManager) : {}),
+  // Config management tools (always enabled - not toggleable)
   ...createConfigTools(),
-  // Issues tracking tools (conditionally enabled)
+  // Issues tracking tools
   ...(configManager.isToolEnabled('issues') ? createIssuesTools(
     executeToolCall,
     async (name: string) => {
@@ -1168,6 +1169,25 @@ function registerToolHandlers(server: Server) {
               code: 'UNKNOWN_TOOL',
               availableTools: Object.keys(allTools).sort()
             }, null, 2),
+          },
+        ],
+        isError: true
+      };
+    }
+
+    // Check for tool dependency conflicts (blocks ALL tools except config)
+    if (toolName !== 'config' && configManager.hasDependencyConflicts()) {
+      const conflicts = configManager.getDependencyConflicts();
+      const configPath = configManager.getStatus().loadedFrom || '.cdp-tools/config.json';
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Tool dependency conflict - all tools blocked.
+
+${conflicts.join('\n\n')}
+
+Edit ${configPath} to resolve, then restart the MCP server.`,
           },
         ],
         isError: true

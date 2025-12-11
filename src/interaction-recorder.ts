@@ -12,6 +12,8 @@
  */
 
 import type { Page } from 'puppeteer-core';
+import { getIssue } from './issue-tracker.js';
+import { showOverlay, getWorkOnNoSequenceConfig } from './overlays.js';
 
 // =============================================================================
 // Types
@@ -87,6 +89,7 @@ export type InputEvent = MouseEvent | KeyboardEvent | NavigationEvent | CommentE
 export interface RecordingOptions {
   showOverlay?: boolean;
   abortSignal?: AbortSignal;
+  issueId?: number;  // If provided, looks up issue and shows fullscreen overlay
 }
 
 export interface RecordingSession {
@@ -209,7 +212,29 @@ export async function startRecording(
 
   activeSessions.set(connectionReference, session);
 
-  const showOverlay = options.showOverlay ?? true;
+  // If issueId is provided, look up the issue and show a "Ready to begin?" overlay
+  if (options.issueId) {
+    const issue = await getIssue(options.issueId);
+    if (issue) {
+      const overlayConfig = getWorkOnNoSequenceConfig(issue.type, issue.id, issue.description);
+      // Customize for recording context
+      overlayConfig.title = `Recording for ${issue.type === 'bug' ? 'Bug' : 'Feature'} #${issue.id}`;
+      overlayConfig.instructions = 'Click BEGIN to start recording your actions.';
+      overlayConfig.buttons = [
+        { id: 'cancel', label: 'CANCEL', action: 'cancel' },
+        { id: 'begin', label: 'BEGIN RECORDING', action: 'record', primary: true },
+      ];
+
+      const result = await showOverlay(page, overlayConfig);
+
+      if (result.action === 'cancel') {
+        activeSessions.delete(connectionReference);
+        return { success: false, cancelled: true };
+      }
+    }
+  }
+
+  const showOverlayOption = options.showOverlay ?? true;
 
   // Create a promise that will resolve when recording completes or is cancelled
   let resolveRecording: (result: { success: boolean; id?: number; recording?: StoredRecording; error?: string; cancelled?: boolean }) => void;
@@ -499,28 +524,30 @@ export async function startRecording(
       if (showOverlayParam) {
         overlay = doc.createElement('div');
         overlay.id = '__cdp-recording-overlay';
+        overlay.style.cssText = 'opacity: 1 !important;';
 
         // Build overlay using DOM methods (Trusted Types compatible)
         const panel = doc.createElement('div');
         panel.className = 'cdp-panel';
-        Object.assign(panel.style, {
-          position: 'fixed',
-          bottom: '10px',
-          left: '50%',
-          transform: 'translateX(-50%)',
-          background: 'rgba(0, 0, 0, 0.75)',
-          color: 'white',
-          padding: '6px 12px',
-          borderRadius: '20px',
-          fontFamily: '-apple-system, system-ui, sans-serif',
-          fontSize: '12px',
-          zIndex: '2147483647',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '10px',
-          boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
-          backdropFilter: 'blur(4px)'
-        });
+        panel.style.cssText = `
+          position: fixed !important;
+          bottom: 10px !important;
+          left: 50% !important;
+          transform: translateX(-50%) !important;
+          background: rgba(0, 0, 0, 0.9) !important;
+          color: white !important;
+          padding: 6px 12px !important;
+          border-radius: 20px !important;
+          font-family: -apple-system, system-ui, sans-serif !important;
+          font-size: 12px !important;
+          z-index: 2147483647 !important;
+          display: flex !important;
+          align-items: center !important;
+          gap: 10px !important;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.3) !important;
+          backdrop-filter: blur(4px) !important;
+          opacity: 1 !important;
+        `;
 
         const statusEl = doc.createElement('span');
         statusEl.className = 'cdp-status';
@@ -612,29 +639,31 @@ export async function startRecording(
         // Comment modal
         const commentModal = doc.createElement('div');
         commentModal.className = 'cdp-comment-modal';
-        Object.assign(commentModal.style, {
-          display: 'none',
-          position: 'fixed',
-          top: '0',
-          left: '0',
-          width: '100%',
-          height: '100%',
-          background: 'rgba(0, 0, 0, 0.8)',
-          zIndex: '2147483648',
-          justifyContent: 'center',
-          alignItems: 'center',
-          fontFamily: '-apple-system, system-ui, sans-serif'
-        });
+        commentModal.style.cssText = `
+          display: none !important;
+          position: fixed !important;
+          top: 0 !important;
+          left: 0 !important;
+          width: 100% !important;
+          height: 100% !important;
+          background: rgba(0, 0, 0, 0.9) !important;
+          z-index: 2147483648 !important;
+          justify-content: center !important;
+          align-items: center !important;
+          font-family: -apple-system, system-ui, sans-serif !important;
+          opacity: 1 !important;
+        `;
 
         const modalCard = doc.createElement('div');
-        Object.assign(modalCard.style, {
-          background: '#1f2937',
-          borderRadius: '12px',
-          padding: '24px',
-          width: '90%',
-          maxWidth: '500px',
-          boxShadow: '0 25px 50px rgba(0,0,0,0.5)'
-        });
+        modalCard.style.cssText = `
+          background: #1f2937 !important;
+          border-radius: 12px !important;
+          padding: 24px !important;
+          width: 90% !important;
+          max-width: 500px !important;
+          box-shadow: 0 25px 50px rgba(0,0,0,0.5) !important;
+          opacity: 1 !important;
+        `;
 
         const modalTitle = doc.createElement('h3');
         modalTitle.textContent = 'Add Comment';
@@ -982,7 +1011,7 @@ export async function startRecording(
       doc.addEventListener('dblclick', listeners.dblclick, { capture: true, passive: true });
       doc.addEventListener('keydown', listeners.keydown, { capture: true, passive: true });
       doc.addEventListener('keyup', listeners.keyup, { capture: true, passive: true });
-    }, showOverlay);
+    }, showOverlayOption);
 
     // Store cleanup function
     cleanupHandles.set(connectionReference, async () => {
@@ -1273,14 +1302,15 @@ export function eventsToCommands(
 
     // Drag detection
     if (event.type === 'mousedown') {
-      const dragStart = { x: event.x, y: event.y };
+      const dragStart = { x: Math.max(0, event.x), y: Math.max(0, event.y) };
       let dragEnd = dragStart;
       let j = i + 1;
 
       while (j < processedEvents.length && processedEvents[j].type !== 'mouseup') {
         const nextEvent = processedEvents[j];
         if (isMouseEvent(nextEvent) && nextEvent.type === 'mousemove') {
-          dragEnd = { x: nextEvent.x, y: nextEvent.y };
+          // Clamp coordinates to valid viewport bounds (negative coords are outside viewport)
+          dragEnd = { x: Math.max(0, nextEvent.x), y: Math.max(0, nextEvent.y) };
         }
         j++;
       }
@@ -1288,7 +1318,8 @@ export function eventsToCommands(
       if (j < processedEvents.length && processedEvents[j].type === 'mouseup') {
         const mouseup = processedEvents[j];
         if (isMouseEvent(mouseup)) {
-          dragEnd = { x: mouseup.x, y: mouseup.y };
+          // Clamp coordinates to valid viewport bounds
+          dragEnd = { x: Math.max(0, mouseup.x), y: Math.max(0, mouseup.y) };
         }
 
         const distance = Math.sqrt(
@@ -1453,63 +1484,83 @@ export async function showVerificationOverlay(
     return new Promise<{ resolved: boolean; comment?: string }>((resolve) => {
       const doc = (globalThis as any).document;
 
-      // Remove any existing overlay
+      // Remove any existing overlays (including replay overlay that may still be present)
       const existing = doc.getElementById('__cdp-verification-overlay');
       if (existing) existing.remove();
+      const replayOverlay = doc.getElementById('__cdp-replay-overlay');
+      if (replayOverlay) replayOverlay.remove();
+
+      // Also clean up replay overlay event listeners if present
+      const blocker = (globalThis as any).__cdpReplayBlocker;
+      if (blocker) {
+        blocker.feedbackEvents?.forEach((evt: string) => doc.removeEventListener(evt, blocker.blockWithFeedback, true));
+        blocker.silentBlockEvents?.forEach((evt: string) => doc.removeEventListener(evt, blocker.blockSilently, true));
+        delete (globalThis as any).__cdpReplayBlocker;
+      }
+      const style = (globalThis as any).__cdpReplayStyle;
+      if (style) {
+        style.remove();
+        delete (globalThis as any).__cdpReplayStyle;
+      }
 
       // Create elements using DOM methods (Trusted Types compatible)
       const overlay = doc.createElement('div');
       overlay.id = '__cdp-verification-overlay';
+      overlay.style.cssText = 'opacity: 1 !important;';
 
       const backdrop = doc.createElement('div');
-      Object.assign(backdrop.style, {
-        position: 'fixed',
-        top: '0',
-        left: '0',
-        right: '0',
-        bottom: '0',
-        background: '#424242',
-        zIndex: '2147483646',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        fontFamily: "Roboto, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-      });
+      backdrop.style.cssText = `
+        position: fixed !important;
+        top: 0 !important;
+        left: 0 !important;
+        right: 0 !important;
+        bottom: 0 !important;
+        background: #424242 !important;
+        z-index: 2147483646 !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        font-family: Roboto, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+        opacity: 1 !important;
+      `;
 
       const card = doc.createElement('div');
-      Object.assign(card.style, {
-        background: '#ffffff',
-        borderRadius: '4px',
-        padding: '24px',
-        maxWidth: '480px',
-        width: '90%',
-        boxShadow: '0 11px 15px -7px rgba(0,0,0,0.2), 0 24px 38px 3px rgba(0,0,0,0.14), 0 9px 46px 8px rgba(0,0,0,0.12)',
-        color: '#212121'
-      });
+      card.style.cssText = `
+        background: #ffffff !important;
+        border-radius: 4px !important;
+        padding: 24px !important;
+        max-width: 480px !important;
+        width: 90% !important;
+        box-shadow: 0 11px 15px -7px rgba(0,0,0,0.2), 0 24px 38px 3px rgba(0,0,0,0.14), 0 9px 46px 8px rgba(0,0,0,0.12) !important;
+        color: #212121 !important;
+        opacity: 1 !important;
+      `;
 
       // Header
       const header = doc.createElement('div');
-      Object.assign(header.style, { marginBottom: '16px', textAlign: 'center' });
+      header.style.cssText = 'margin-bottom: 16px !important; text-align: center !important; opacity: 1 !important;';
 
       const typeLabel = doc.createElement('div');
       typeLabel.textContent = `${params.typeLabel} #${params.issueId}`;
-      Object.assign(typeLabel.style, {
-        fontSize: '12px',
-        color: '#757575',
-        textTransform: 'uppercase',
-        letterSpacing: '0.5px',
-        marginBottom: '8px'
-      });
+      typeLabel.style.cssText = `
+        font-size: 12px !important;
+        color: #757575 !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.5px !important;
+        margin-bottom: 8px !important;
+        opacity: 1 !important;
+      `;
 
       const description = doc.createElement('div');
       description.textContent = params.issueDescription;
-      Object.assign(description.style, {
-        fontSize: '20px',
-        fontWeight: '500',
-        color: '#212121',
-        lineHeight: '1.4',
-        textAlign: 'center'
-      });
+      description.style.cssText = `
+        font-size: 20px !important;
+        font-weight: 500 !important;
+        color: #212121 !important;
+        line-height: 1.4 !important;
+        text-align: center !important;
+        opacity: 1 !important;
+      `;
 
       header.appendChild(typeLabel);
       header.appendChild(description);
@@ -1517,75 +1568,84 @@ export async function showVerificationOverlay(
       // Question text (subtle styling)
       const questionBox = doc.createElement('div');
       questionBox.textContent = params.questionText;
-      Object.assign(questionBox.style, {
-        fontSize: '14px',
-        marginBottom: '20px',
-        padding: '12px 16px',
-        background: '#fafafa',
-        borderRadius: '4px',
-        color: '#757575'
-      });
+      questionBox.style.cssText = `
+        font-size: 14px !important;
+        margin-bottom: 20px !important;
+        padding: 12px 16px !important;
+        background: #fafafa !important;
+        border-radius: 4px !important;
+        color: #757575 !important;
+        opacity: 1 !important;
+      `;
 
       // Comment textarea
       const commentInput = doc.createElement('textarea');
       commentInput.id = '__cdp-verify-comment';
       commentInput.placeholder = 'Add a comment (optional)';
-      Object.assign(commentInput.style, {
-        width: '100%',
-        height: '80px',
-        padding: '12px',
-        border: '1px solid #e0e0e0',
-        borderRadius: '4px',
-        background: '#fafafa',
-        color: '#212121',
-        fontSize: '14px',
-        resize: 'none',
-        marginBottom: '24px',
-        boxSizing: 'border-box',
-        outline: 'none'
-      });
+      commentInput.style.cssText = `
+        width: 100% !important;
+        height: 80px !important;
+        padding: 12px !important;
+        border: 1px solid #e0e0e0 !important;
+        border-radius: 4px !important;
+        background: #fafafa !important;
+        color: #212121 !important;
+        font-size: 14px !important;
+        resize: none !important;
+        margin-bottom: 24px !important;
+        box-sizing: border-box !important;
+        outline: none !important;
+        opacity: 1 !important;
+      `;
 
       // Button container
       const buttonContainer = doc.createElement('div');
-      Object.assign(buttonContainer.style, {
-        display: 'flex',
-        gap: '8px',
-        justifyContent: 'flex-end'
-      });
-
-      // Shared button styles
-      const buttonBase = {
-        minWidth: '120px',
-        height: '36px',
-        padding: '0 16px',
-        borderRadius: '4px',
-        border: 'none',
-        fontSize: '14px',
-        fontWeight: '500',
-        cursor: 'pointer',
-        textTransform: 'uppercase',
-        letterSpacing: '0.5px'
-      };
+      buttonContainer.style.cssText = `
+        display: flex !important;
+        gap: 8px !important;
+        justify-content: flex-end !important;
+        opacity: 1 !important;
+      `;
 
       // No button
       const noBtn = doc.createElement('button');
       noBtn.id = '__cdp-verify-no';
       noBtn.textContent = 'Not Fixed';
-      Object.assign(noBtn.style, {
-        ...buttonBase,
-        background: '#f5f5f5',
-        color: '#616161'
-      });
+      noBtn.style.cssText = `
+        min-width: 120px !important;
+        height: 36px !important;
+        padding: 0 16px !important;
+        border-radius: 4px !important;
+        border: none !important;
+        font-size: 14px !important;
+        font-weight: 500 !important;
+        cursor: pointer !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.5px !important;
+        background: #f5f5f5 !important;
+        color: #616161 !important;
+        opacity: 1 !important;
+      `;
 
       // Yes button
       const yesBtn = doc.createElement('button');
       yesBtn.id = '__cdp-verify-yes';
       yesBtn.textContent = 'Fixed';
-      Object.assign(yesBtn.style, {
-        ...buttonBase,
-        background: '#1976d2',
-        color: '#ffffff'
-      });
+      yesBtn.style.cssText = `
+        min-width: 120px !important;
+        height: 36px !important;
+        padding: 0 16px !important;
+        border-radius: 4px !important;
+        border: none !important;
+        font-size: 14px !important;
+        font-weight: 500 !important;
+        cursor: pointer !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.5px !important;
+        background: #1976d2 !important;
+        color: #ffffff !important;
+        opacity: 1 !important;
+      `;
 
       buttonContainer.appendChild(noBtn);
       buttonContainer.appendChild(yesBtn);
@@ -1628,9 +1688,12 @@ export async function showVerificationOverlay(
   }, { typeLabel, issueDescription, issueId, questionText });
 }
 
+export type TestReadyAction = 'cancel' | 'begin' | 'rerecord';
+
 /**
  * Show a "Ready to begin?" overlay before starting a test replay
  * Uses DOM methods instead of innerHTML to support Trusted Types policies
+ * Returns: 'cancel', 'begin', or 'rerecord'
  */
 export async function showTestReadyOverlay(
   page: Page,
@@ -1638,7 +1701,7 @@ export async function showTestReadyOverlay(
   issueDescription: string,
   issueId: number,
   hasSequence: boolean = true
-): Promise<boolean> {
+): Promise<TestReadyAction> {
   const typeLabel = issueType === 'bug' ? 'Bug' : 'Feature';
 
   return await page.evaluate((params: {
@@ -1647,7 +1710,7 @@ export async function showTestReadyOverlay(
     issueId: number;
     hasSequence: boolean;
   }) => {
-    return new Promise<boolean>((resolve) => {
+    return new Promise<'cancel' | 'begin' | 'rerecord'>((resolve) => {
       const doc = (globalThis as any).document;
 
       // Remove any existing overlay
@@ -1657,106 +1720,115 @@ export async function showTestReadyOverlay(
       // Create elements using DOM methods (Trusted Types compatible)
       const overlay = doc.createElement('div');
       overlay.id = '__cdp-test-ready-overlay';
+      overlay.style.cssText = 'opacity: 1 !important;';
 
       const backdrop = doc.createElement('div');
-      Object.assign(backdrop.style, {
-        position: 'fixed',
-        top: '0',
-        left: '0',
-        right: '0',
-        bottom: '0',
-        background: '#424242',
-        zIndex: '2147483646',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        fontFamily: "Roboto, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-      });
+      backdrop.style.cssText = `
+        position: fixed !important;
+        top: 0 !important;
+        left: 0 !important;
+        right: 0 !important;
+        bottom: 0 !important;
+        background: #424242 !important;
+        z-index: 2147483646 !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        font-family: Roboto, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+        opacity: 1 !important;
+      `;
 
       const card = doc.createElement('div');
-      Object.assign(card.style, {
-        background: '#ffffff',
-        borderRadius: '4px',
-        padding: '24px',
-        maxWidth: '480px',
-        width: '90%',
-        boxShadow: '0 11px 15px -7px rgba(0,0,0,0.2), 0 24px 38px 3px rgba(0,0,0,0.14), 0 9px 46px 8px rgba(0,0,0,0.12)',
-        color: '#212121',
-        textAlign: 'center'
-      });
+      card.style.cssText = `
+        background: #ffffff !important;
+        border-radius: 4px !important;
+        padding: 24px !important;
+        max-width: 480px !important;
+        width: 90% !important;
+        box-shadow: 0 11px 15px -7px rgba(0,0,0,0.2), 0 24px 38px 3px rgba(0,0,0,0.14), 0 9px 46px 8px rgba(0,0,0,0.12) !important;
+        color: #212121 !important;
+        text-align: center !important;
+        opacity: 1 !important;
+      `;
 
       const testingLabel = doc.createElement('div');
       testingLabel.textContent = `Testing ${params.typeLabel} #${params.issueId}`;
-      Object.assign(testingLabel.style, {
-        fontSize: '12px',
-        color: '#757575',
-        textTransform: 'uppercase',
-        letterSpacing: '0.5px',
-        marginBottom: '16px'
-      });
+      testingLabel.style.cssText = `
+        font-size: 12px !important;
+        color: #757575 !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.5px !important;
+        margin-bottom: 16px !important;
+        opacity: 1 !important;
+      `;
 
       const description = doc.createElement('div');
       description.textContent = params.issueDescription;
-      Object.assign(description.style, {
-        fontSize: '18px',
-        fontWeight: '500',
-        marginBottom: '20px',
-        padding: '16px',
-        background: '#f5f5f5',
-        borderRadius: '4px',
-        color: '#212121',
-        textAlign: 'center'
-      });
+      description.style.cssText = `
+        font-size: 18px !important;
+        font-weight: 500 !important;
+        margin-bottom: 20px !important;
+        padding: 16px !important;
+        background: #f5f5f5 !important;
+        border-radius: 4px !important;
+        color: #212121 !important;
+        text-align: center !important;
+        opacity: 1 !important;
+      `;
 
       const instructions = doc.createElement('div');
       instructions.textContent = params.hasSequence
         ? 'The recorded sequence will replay. Watch for the issue.'
         : 'Recording will start. Reproduce the issue to verify.';
-      Object.assign(instructions.style, {
-        fontSize: '14px',
-        color: '#616161',
-        marginBottom: '24px'
-      });
+      instructions.style.cssText = `
+        font-size: 14px !important;
+        color: #616161 !important;
+        margin-bottom: 24px !important;
+        opacity: 1 !important;
+      `;
 
       // Button container
       const buttonContainer = doc.createElement('div');
-      Object.assign(buttonContainer.style, {
-        display: 'flex',
-        gap: '8px',
-        justifyContent: 'center'
-      });
+      buttonContainer.style.cssText = `
+        display: flex !important;
+        gap: 8px !important;
+        justify-content: center !important;
+        opacity: 1 !important;
+      `;
 
-      const buttonBase = {
-        minWidth: '120px',
-        height: '36px',
-        padding: '0 16px',
-        borderRadius: '4px',
-        border: 'none',
-        fontSize: '14px',
-        fontWeight: '500',
-        cursor: 'pointer',
-        textTransform: 'uppercase',
-        letterSpacing: '0.5px'
-      };
+      const buttonBaseCss = `
+        min-width: 100px !important;
+        height: 36px !important;
+        padding: 0 16px !important;
+        border-radius: 4px !important;
+        border: none !important;
+        font-size: 14px !important;
+        font-weight: 500 !important;
+        cursor: pointer !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.5px !important;
+        opacity: 1 !important;
+      `;
 
       const cancelBtn = doc.createElement('button');
       cancelBtn.textContent = 'CANCEL';
-      Object.assign(cancelBtn.style, {
-        ...buttonBase,
-        background: '#f5f5f5',
-        color: '#616161'
-      });
+      cancelBtn.style.cssText = buttonBaseCss + 'background: #f5f5f5 !important; color: #616161 !important;';
+
+      // Only show re-record button if there's already a sequence
+      let rerecordBtn: any = null;
+      if (params.hasSequence) {
+        rerecordBtn = doc.createElement('button');
+        rerecordBtn.textContent = 'RE-RECORD';
+        rerecordBtn.style.cssText = buttonBaseCss + 'background: #ff9800 !important; color: #ffffff !important;';
+      }
 
       const beginBtn = doc.createElement('button');
       beginBtn.textContent = 'BEGIN TEST';
       beginBtn.id = '__cdp-test-begin';
-      Object.assign(beginBtn.style, {
-        ...buttonBase,
-        background: '#1976d2',
-        color: '#ffffff'
-      });
+      beginBtn.style.cssText = buttonBaseCss + 'background: #1976d2 !important; color: #ffffff !important;';
 
       buttonContainer.appendChild(cancelBtn);
+      if (rerecordBtn) buttonContainer.appendChild(rerecordBtn);
       buttonContainer.appendChild(beginBtn);
 
       card.appendChild(testingLabel);
@@ -1784,12 +1856,19 @@ export async function showTestReadyOverlay(
 
       cancelBtn.addEventListener('click', () => {
         cleanup();
-        resolve(false);
+        resolve('cancel');
       });
+
+      if (rerecordBtn) {
+        rerecordBtn.addEventListener('click', () => {
+          cleanup();
+          resolve('rerecord');
+        });
+      }
 
       beginBtn.addEventListener('click', () => {
         cleanup();
-        resolve(true);
+        resolve('begin');
       });
     });
   }, { typeLabel, issueDescription, issueId, hasSequence });

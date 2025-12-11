@@ -9,6 +9,13 @@ import { join } from 'path';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import { showVerificationOverlay, showTestReadyOverlay } from '../interaction-recorder.js';
+import {
+  showOverlay,
+  getWorkOnNoSequenceConfig,
+  getTestReadyConfig,
+  getVerificationConfig,
+  type OverlayResult,
+} from '../overlays.js';
 import { requireValidReference } from '../reference-validator.js';
 import {
   initializeTracker,
@@ -276,19 +283,20 @@ export function createIssuesTools(
             // Update status to in_progress
             await updateIssueStatus(args.id, 'in_progress');
 
-            // Auto-replay sequence if available
+            // Use provided connectionReason or generate one
             let connectionRef: string | null = null;
+            if (args.connectionReason) {
+              connectionRef = requireValidReference(args.connectionReason);
+            } else {
+              connectionRef = `${issue.type} ${issue.id} workOn`;
+            }
 
-            if (issue.sequenceFile) {
-              // Use provided connectionReason or generate one (replay run will auto-launch Chrome)
-              if (args.connectionReason) {
-                connectionRef = requireValidReference(args.connectionReason);
-              } else {
-                connectionRef = `${issue.type} ${issue.id} workOn`;
-              }
+            const hasSequence = !!issue.sequenceFile;
 
-              const sequencePath = join(getInteractionSequencesDir(), issue.sequenceFile);
-              const sequenceName = issue.sequenceFile.replace(/\.json$/, '');
+            if (hasSequence) {
+              // Auto-replay sequence if available
+              const sequencePath = join(getInteractionSequencesDir(), issue.sequenceFile!);
+              const sequenceName = issue.sequenceFile!.replace(/\.json$/, '');
 
               // Load and run sequence (errors propagate via ToolError)
               await executeToolCall('replay', {
@@ -305,6 +313,75 @@ export function createIssuesTools(
                 issueType: issue.type,
                 issueDescription: issue.description,
               });
+            } else if (issue.startUrl && getPageForConnection) {
+              // No sequence but has startUrl - launch browser, navigate, and show options overlay
+              let page = await getPageForConnection(connectionRef);
+              if (!page) {
+                // Auto-launch Chrome
+                try {
+                  await executeToolCall('launchChrome', {
+                    reference: connectionRef,
+                  });
+                  page = await getPageForConnection(connectionRef);
+                } catch (error: any) {
+                  return createErrorResponse('ISSUES_CHROME_LAUNCH_FAILED', {
+                    message: `Failed to launch Chrome: ${error.message}`,
+                  });
+                }
+              }
+
+              if (!page) {
+                return createErrorResponse('ISSUES_PAGE_ERROR', {
+                  message: 'Failed to get browser page after launch',
+                });
+              }
+
+              // Navigate to startUrl
+              await executeToolCall('navigate', {
+                action: 'goto',
+                connectionReason: connectionRef,
+                url: issue.startUrl,
+                waitUntil: 'load',
+              });
+
+              // Refresh page reference after navigation
+              page = await getPageForConnection(connectionRef);
+              if (!page) {
+                return createErrorResponse('ISSUES_PAGE_ERROR', {
+                  message: 'Lost browser page after navigation',
+                });
+              }
+
+              // Show overlay with options: Cancel, Explore, or Record
+              const overlayConfig = getWorkOnNoSequenceConfig(issue.type, issue.id, issue.description);
+              const result = await showOverlay(page, overlayConfig);
+
+              if (result.action === 'cancel') {
+                return createSuccessResponse('ISSUES_WORK_CANCELLED', {
+                  id: issue.id,
+                  type: issue.type,
+                  description: issue.description,
+                  message: 'Work session cancelled by user',
+                });
+              }
+
+              if (result.action === 'record') {
+                // Start recording user's actions - this blocks until recording completes
+                const recordingResult = await executeToolCall('replay', {
+                  action: 'recordInteraction',
+                  connectionReason: connectionRef,
+                  name: `${issue.type}-${issue.id}-repro`,
+                  startUrl: issue.startUrl,
+                  issueId: issue.id,
+                  issueType: issue.type,
+                  issueDescription: issue.description,
+                });
+
+                // Return the recording result directly so user sees what was recorded
+                return recordingResult;
+              }
+
+              // action === 'explore' - just leave browser open for manual exploration
             }
 
             return createSuccessResponse('ISSUES_WORK_STARTED', {
@@ -313,7 +390,8 @@ export function createIssuesTools(
               description: issue.description,
               sequenceFile: issue.sequenceFile || null,
               details: formatIssueDetails(issue),
-              replayStarted: !!issue.sequenceFile,
+              replayStarted: hasSequence,
+              browserLaunched: !hasSequence && !!issue.startUrl,
               connectionReason: connectionRef,
             });
           }
@@ -322,12 +400,6 @@ export function createIssuesTools(
             if (!args.id) {
               return createErrorResponse('ISSUES_MISSING_ID', {
                 message: 'Issue ID is required',
-              });
-            }
-
-            if (!args.connectionReason) {
-              return createErrorResponse('ISSUES_MISSING_CONNECTION', {
-                message: 'connectionReason is required to verify resolution (need browser to show verification)',
               });
             }
 
@@ -345,22 +417,31 @@ export function createIssuesTools(
               });
             }
 
-            // Validate the connection reference (must be exactly 3 words)
-            const connectionRef = requireValidReference(args.connectionReason);
+            // Generate a unique reference for this resolve session
+            const connectionRef = `${issue.type} ${issue.id} resolve`;
 
-            // Try to get page, launch Chrome if not available
+            // Always create a fresh tab for resolve verification
             let page = await getPageForConnection(connectionRef);
             if (!page) {
-              // Auto-launch Chrome
+              // Try to create a new tab first (if Chrome is already running)
               try {
-                await executeToolCall('launchChrome', {
+                await executeToolCall('tab', {
+                  action: 'create',
                   reference: connectionRef,
                 });
                 page = await getPageForConnection(connectionRef);
-              } catch (error: any) {
-                return createErrorResponse('ISSUES_CHROME_LAUNCH_FAILED', {
-                  message: `Failed to launch Chrome: ${error.message}`,
-                });
+              } catch {
+                // Chrome not running - launch it
+                try {
+                  await executeToolCall('launchChrome', {
+                    reference: connectionRef,
+                  });
+                  page = await getPageForConnection(connectionRef);
+                } catch (error: any) {
+                  return createErrorResponse('ISSUES_CHROME_LAUNCH_FAILED', {
+                    message: `Failed to launch Chrome: ${error.message}`,
+                  });
+                }
               }
             }
 
@@ -392,15 +473,34 @@ export function createIssuesTools(
             }
 
             // Show "Ready to begin?" overlay
-            const readyToBegin = await showTestReadyOverlay(page, issue.type, issue.description, issue.id, hasSequence);
+            const readyAction = await showTestReadyOverlay(page, issue.type, issue.description, issue.id, hasSequence);
 
-            if (!readyToBegin) {
+            if (readyAction === 'cancel') {
               return createSuccessResponse('ISSUES_VERIFICATION_CANCELLED', {
                 id: issue.id,
                 type: issue.type,
                 description: issue.description,
                 message: 'Verification cancelled by user',
               });
+            }
+
+            // Handle re-record: start recording instead of replaying
+            if (readyAction === 'rerecord') {
+              // Start recording user's actions to replace existing sequence
+              // recordInteraction will navigate to startUrl if provided
+              const recordingResult = await executeToolCall('replay', {
+                action: 'recordInteraction',
+                connectionReason: connectionRef,
+                name: `${issue.type}-${issue.id}-repro`,
+                startUrl: issue.startUrl || 'about:blank',
+                issueId: issue.id,
+                issueType: issue.type,
+                issueDescription: issue.description,
+                overwrite: true,
+              });
+
+              // Return the recording result directly
+              return recordingResult;
             }
 
             // Play the sequence if available, otherwise record user actions
