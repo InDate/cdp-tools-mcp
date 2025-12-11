@@ -284,22 +284,45 @@ export class ConfigManager {
    * Synchronously load config for early access during module initialization
    */
   private loadSync(): void {
+    const localConfigPath = getOutputPath('config.json');
+    const globalConfigPath = join(homedir(), '.cdp-tools', 'config.json');
+
     try {
-      const localConfigPath = getOutputPath('config.json');
       if (fs.existsSync(localConfigPath)) {
         const content = fs.readFileSync(localConfigPath, 'utf-8');
         const loaded = JSON.parse(content);
         this.config = this.mergeConfig(DEFAULT_CONFIG, loaded);
         this.loadedFromPath = localConfigPath;
         this.loaded = true;
-        // Auto-discover new tools (save happens in async load())
+        // Auto-discover new tools
+        if (this.discoverTools()) {
+          this.saveSync();
+        }
+      } else {
+        // No local config - create one
+        // Seed from global if it exists, otherwise use defaults
+        if (fs.existsSync(globalConfigPath)) {
+          const content = fs.readFileSync(globalConfigPath, 'utf-8');
+          const loaded = JSON.parse(content);
+          this.config = this.mergeConfig(DEFAULT_CONFIG, loaded);
+        } else {
+          this.config = { ...DEFAULT_CONFIG };
+        }
+        // Auto-discover new tools (populates enabled list)
         this.discoverTools();
-        // Check for dependency conflicts
-        this.validateDependencies();
+        // Save to local
+        this.loadedFromPath = this.getPreferredConfigPath();
+        this.saveSync();
+        this.loaded = true;
       }
     } catch {
       // Ignore errors, use defaults
+      this.config = { ...DEFAULT_CONFIG };
+      this.discoverTools();
     }
+
+    // Validate dependencies after config is fully loaded
+    this.validateDependencies();
   }
 
   /**
@@ -499,6 +522,25 @@ export class ConfigManager {
     }
 
     await fs.promises.writeFile(
+      configPath,
+      JSON.stringify(this.config, null, 2),
+      'utf-8'
+    );
+  }
+
+  /**
+   * Synchronously save configuration to disk
+   * Used during loadSync() to persist config before async code runs
+   */
+  private saveSync(): void {
+    const configPath = this.loadedFromPath || getConfigSavePath();
+    const dir = dirname(configPath);
+
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+
+    fs.writeFileSync(
       configPath,
       JSON.stringify(this.config, null, 2),
       'utf-8'

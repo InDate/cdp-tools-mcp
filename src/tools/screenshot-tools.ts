@@ -396,32 +396,32 @@ const clipSchema = z.object({
 }).strict();
 
 const screenshotSchema = z.object({
-  action: z.enum(['fullPage', 'viewport', 'element', 'pdf']).describe('Screenshot action: fullPage (take full page screenshot), viewport (take viewport screenshot), element (take element screenshot), pdf (print page to PDF)'),
-  connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
+  action: z.enum(['fullPage', 'viewport', 'element', 'pdf']),
+  connectionReason: z.string(),
 
-  // Screenshot options (fullPage, viewport, element)
-  type: z.enum(['png', 'jpeg']).optional().describe('Image format (for fullPage/viewport/element actions, default: jpeg)'),
-  quality: z.number().min(0).max(100).optional().describe('JPEG quality 0-100 (for fullPage/viewport/element actions)'),
-  clip: clipSchema.optional().describe('Specific region to capture (for fullPage/viewport actions)'),
-  saveToDisk: z.string().optional().describe('Path to save file (for all actions). For fullPage/viewport/element: optional, auto-saves large files. For pdf: optional for Chrome engine, required for weasyprint.'),
-  autoSaveThreshold: z.number().optional().describe('Auto-save to disk if size >= this (bytes) - for fullPage/viewport/element actions, default: 1 byte'),
-  fullPage: z.boolean().optional().describe('Capture full page (for fullPage action only, default: true)'),
+  // Screenshot options
+  type: z.enum(['png', 'jpeg']).optional(),
+  quality: z.number().min(0).max(100).optional().describe('JPEG quality 0-100'),
+  clip: clipSchema.optional().describe('Region to capture'),
+  saveToDisk: z.string().optional().describe('Output path'),
+  autoSaveThreshold: z.number().optional().describe('Auto-save bytes threshold'),
+  fullPage: z.boolean().optional(),
 
-  // Element screenshot options
-  selector: z.string().optional().describe('CSS selector (required for element action). Supports extended selectors: :has-text("text") for partial match, :text("text") for exact match. Example: div:has-text("Chart")'),
+  // Element
+  selector: z.string().optional().describe('CSS selector. Supports :has-text(), :text()'),
 
   // PDF options
-  engine: z.enum(['chrome', 'weasyprint']).optional().describe('PDF rendering engine (for pdf action, default: chrome)'),
-  landscape: z.boolean().optional().describe('Landscape orientation (for pdf action with Chrome engine, default: false)'),
-  printBackground: z.boolean().optional().describe('Print background graphics (for pdf action with Chrome engine, default: true)'),
-  scale: z.number().optional().describe('Scale of webpage (for pdf action with Chrome engine, default: 1, range: 0.1-2)'),
-  paperWidthCm: z.number().optional().describe('Paper width in cm (for pdf action with Chrome engine, default: 21.0 for A4)'),
-  paperHeightCm: z.number().optional().describe('Paper height in cm (for pdf action with Chrome engine, default: 29.7 for A4)'),
-  mediaType: z.enum(['print', 'screen']).optional().describe('CSS media type (for pdf action with WeasyPrint engine, default: print)'),
-  baseUrl: z.string().optional().describe('Base URL for relative URLs (for pdf action with WeasyPrint engine)'),
-  stylesheets: z.array(z.string()).optional().describe('Additional CSS stylesheets (for pdf action with WeasyPrint engine)'),
-  optimizeImages: z.boolean().optional().describe('Optimize images (for pdf action with WeasyPrint engine, default: true)'),
-  timeout: z.number().optional().describe('Timeout in ms (for pdf action with WeasyPrint engine, default: 30000, max: 120000)').refine(val => val === undefined || (val >= 1000 && val <= 120000), {
+  engine: z.enum(['chrome', 'weasyprint']).optional(),
+  landscape: z.boolean().optional(),
+  printBackground: z.boolean().optional(),
+  scale: z.number().optional().describe('Page scale 0.1-2'),
+  paperWidthCm: z.number().optional(),
+  paperHeightCm: z.number().optional(),
+  mediaType: z.enum(['print', 'screen']).optional(),
+  baseUrl: z.string().optional(),
+  stylesheets: z.array(z.string()).optional(),
+  optimizeImages: z.boolean().optional(),
+  timeout: z.number().optional().describe('Timeout ms').refine(val => val === undefined || (val >= 1000 && val <= 120000), {
     message: 'Timeout must be between 1000ms and 120000ms'
   }),
 }).strict();

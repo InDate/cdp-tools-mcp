@@ -49,38 +49,37 @@ const breakpointSchema = z.object({
   action: z.enum([
     'set', 'remove', 'list', 'setLogpoint', 'validate', 'resetCounter', 'waitForScript',
     'setDOMBreakpoint', 'setEventBreakpoint', 'setXHRBreakpoint', 'await'
-  ]).describe('Breakpoint action: set (line breakpoint), remove (remove by ID), list (list all), setLogpoint (log without pausing), validate (test expressions), resetCounter (reset logpoint counter), waitForScript (wait for script load), setDOMBreakpoint (pause on DOM changes), setEventBreakpoint (pause on events), setXHRBreakpoint (pause on network requests), await (set breakpoint and wait for it to hit - abortable)'),
-  connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
+  ]),
+  connectionReason: z.string().optional(),
 
-  // set/setLogpoint/validate parameters
-  url: z.string().optional().describe('File URL or path (for set, setLogpoint, validate, waitForScript actions)'),
-  lineNumber: z.number().optional().describe('Line number (for set, setLogpoint, validate actions)'),
-  columnNumber: z.number().optional().describe('Column number (for set, setLogpoint, validate actions)'),
-  condition: z.string().optional().describe('Condition expression (for set, setLogpoint actions)'),
+  // Location
+  url: z.string().optional(),
+  lineNumber: z.number().optional(),
+  columnNumber: z.number().optional(),
+  condition: z.string().optional(),
 
-  // setLogpoint parameters
-  logMessage: z.string().optional().describe('Message with {expression} interpolation (for setLogpoint, validate actions)'),
-  includeCallStack: z.boolean().optional().describe('Include call stack (for setLogpoint action, default: false)'),
-  includeVariables: z.boolean().optional().describe('Include local variables (for setLogpoint action, default: false)'),
-  maxExecutions: z.number().int().min(1).optional().describe('Max executions before pause (for setLogpoint action, default: 20)'),
+  // Logpoint
+  logMessage: z.string().optional().describe('Message with {expr} interpolation'),
+  includeCallStack: z.boolean().optional(),
+  includeVariables: z.boolean().optional(),
+  maxExecutions: z.number().int().min(1).optional(),
 
-  // validate/waitForScript parameters
-  timeout: z.number().optional().describe('Timeout (ms) for validate and waitForScript actions, default: 2000 for validate, 10000 for waitForScript'),
+  // Timing
+  timeout: z.number().optional().describe('Timeout ms'),
 
-  // remove/resetCounter parameters
-  breakpointId: z.string().optional().describe('Breakpoint ID (for remove, resetCounter actions)'),
+  // Management
+  breakpointId: z.string().optional(),
 
-  // setDOMBreakpoint parameters
-  selector: z.string().optional().describe('CSS selector for the element (for setDOMBreakpoint action)'),
-  domBreakpointType: z.enum(['subtree-modified', 'attribute-modified', 'node-removed']).optional()
-    .describe('Type of DOM change to break on (for setDOMBreakpoint): subtree-modified (child added/removed), attribute-modified (attribute changed), node-removed (element deleted)'),
+  // DOM breakpoint
+  selector: z.string().optional(),
+  domBreakpointType: z.enum(['subtree-modified', 'attribute-modified', 'node-removed']).optional(),
 
-  // setEventBreakpoint parameters
-  eventName: z.string().optional().describe('DOM event name to break on (for setEventBreakpoint), e.g., "click", "submit", "input", "keydown"'),
-  targetName: z.string().optional().describe('EventTarget interface to filter (for setEventBreakpoint), e.g., "HTMLButtonElement". Default: all targets'),
+  // Event breakpoint
+  eventName: z.string().optional().describe('Event: click, submit, input, keydown...'),
+  targetName: z.string().optional().describe('Filter by element type'),
 
-  // setXHRBreakpoint parameters
-  urlPattern: z.string().optional().describe('URL substring to match (for setXHRBreakpoint). Breaks when XHR/Fetch URL contains this pattern'),
+  // XHR breakpoint
+  urlPattern: z.string().optional().describe('URL substring to match'),
 }).strict();
 
 export function createBreakpointTools(

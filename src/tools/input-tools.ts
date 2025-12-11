@@ -19,51 +19,50 @@ import type { ToolResponseMeta, ClickActionMeta } from '../tool-response.js';
 
 // Coordinate schema for mouse actions
 const coordinateSchema = z.object({
-  x: z.number().describe('X coordinate in CSS pixels from viewport left'),
-  y: z.number().describe('Y coordinate in CSS pixels from viewport top'),
+  x: z.number(),
+  y: z.number(),
 });
 
 // Consolidated input tool schema
 const inputToolSchema = z.object({
-  action: z.enum(['click', 'type', 'press', 'hover', 'focus', 'focusNext', 'focusPrevious', 'drag', 'scroll', 'mousemove', 'pinch'])
-    .describe('Input action: click (click element), type (type text into element), press (press keyboard key), hover (hover over element), focus (focus element by selector), focusNext (Tab to next focusable element), focusPrevious (Shift+Tab to previous focusable element), drag (drag from one point to another), scroll (scroll wheel at position), mousemove (move mouse to position), pinch (pinch zoom gesture)'),
-  connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
+  action: z.enum(['click', 'type', 'press', 'hover', 'focus', 'focusNext', 'focusPrevious', 'drag', 'scroll', 'mousemove', 'pinch']),
+  connectionReason: z.string(),
 
-  // click, type, hover, focus parameters
-  selector: z.string().optional().describe('CSS selector (required for click, type, hover, focus actions). Supports extended selectors: :has-text("text") for partial match, :text("text") for exact match. Example: button:has-text("Submit")'),
-  handleModals: z.boolean().optional().describe('Auto-dismiss modals before action (for click, type, hover actions, default: false)'),
-  dismissStrategy: z.enum(['accept', 'reject', 'close', 'remove', 'auto']).optional().describe('Strategy to use when dismissing modals if handleModals is true (for click, type, hover actions, default: auto)'),
+  // Selector-based actions
+  selector: z.string().optional().describe('CSS selector. Supports :has-text("x"), :text("x")'),
+  handleModals: z.boolean().optional(),
+  dismissStrategy: z.enum(['accept', 'reject', 'close', 'remove', 'auto']).optional(),
 
-  // click parameters
-  clickCount: z.number().optional().describe('Number of clicks (for click action, default: 1)'),
+  // click
+  clickCount: z.number().optional(),
 
-  // type parameters
-  text: z.string().optional().describe('Text to type (required for type action)'),
-  delay: z.number().optional().describe('Delay between keystrokes in ms (for type action, default: 0)'),
+  // type
+  text: z.string().optional(),
+  delay: z.number().optional().describe('Keystroke delay ms'),
 
-  // press parameters
-  key: z.string().optional().describe('Key to press (required for press action)'),
+  // press
+  key: z.string().optional(),
 
-  // focusNext/focusPrevious parameters
-  count: z.number().optional().describe('Number of times to tab (for focusNext/focusPrevious actions, default: 1)'),
+  // focusNext/focusPrevious
+  count: z.number().optional().describe('Tab count'),
 
-  // drag parameters
-  from: coordinateSchema.optional().describe('Starting coordinates for drag action (required for drag)'),
-  to: coordinateSchema.optional().describe('Ending coordinates for drag action (required for drag)'),
-  steps: z.number().optional().describe('Number of intermediate points for drag action (default: 10). More steps = smoother drag'),
+  // drag
+  from: coordinateSchema.optional(),
+  to: coordinateSchema.optional(),
+  steps: z.number().optional().describe('Drag smoothness'),
 
-  // scroll parameters
-  deltaX: z.number().optional().describe('Horizontal scroll amount in pixels (for scroll action, default: 0). Positive = scroll right'),
-  deltaY: z.number().optional().describe('Vertical scroll amount in pixels (for scroll action, default: 0). Positive = scroll down'),
-  x: z.number().optional().describe('X coordinate for click/scroll/mousemove/pinch action. For click: clicks at coordinates instead of using selector'),
-  y: z.number().optional().describe('Y coordinate for click/scroll/mousemove/pinch action. For click: clicks at coordinates instead of using selector'),
+  // scroll
+  deltaX: z.number().optional().describe('Horizontal scroll px'),
+  deltaY: z.number().optional().describe('Vertical scroll px'),
+  x: z.number().optional(),
+  y: z.number().optional(),
 
-  // pinch parameters
-  scaleFactor: z.number().optional().describe('Scale factor for pinch gesture (for pinch action). >1 = zoom in, <1 = zoom out. Example: 2.0 doubles zoom, 0.5 halves zoom'),
+  // pinch
+  scaleFactor: z.number().optional().describe('>1 zoom in, <1 zoom out'),
 
-  // Change detection parameters
-  detectChanges: z.boolean().optional().describe('Detect DOM changes from this action (default: from config)'),
-  settleTimeout: z.number().optional().describe('Max time to wait for DOM to settle in ms (default: 2000)'),
+  // Change detection
+  detectChanges: z.boolean().optional(),
+  settleTimeout: z.number().optional().describe('DOM settle timeout ms'),
 }).strict();
 
 export function createInputTools(

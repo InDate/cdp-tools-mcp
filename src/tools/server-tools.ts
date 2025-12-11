@@ -10,37 +10,20 @@ import { type RunnerType } from '../runners/index.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
 
 const serverSchema = z.object({
-  action: z.enum(['start', 'stop', 'restart', 'list', 'logs', 'stopAll', 'setAutoRun', 'clearLogs', 'remove', 'monitorPort', 'unmonitorPort', 'listMonitored', 'acknowledgePort', 'acknowledgeStartup', 'extendStartup'])
-    .describe('Server action: start (start a server), stop (stop a server), restart (restart a server), list (list servers), logs (get server logs), stopAll (stop all servers), setAutoRun (enable/disable auto-start on MCP startup), clearLogs (clear log files for a server), remove (remove server from config), monitorPort (start monitoring a port), unmonitorPort (stop monitoring a port), listMonitored (list monitored ports), acknowledgePort (acknowledge a port failure), acknowledgeStartup (acknowledge startup timeout/failure), extendStartup (extend startup timeout by 30s)'),
-  command: z.string().optional()
-    .describe('Command to run (for start action). Examples: "npm run dev", "flask run", "docker run -p 3000:3000 myimage", "docker compose up"'),
-  cwd: z.string().optional()
-    .describe('Working directory for the command (for start action)'),
-  id: z.string().optional()
-    .describe('Server identifier (for start action). Use a descriptive name like "flask-api" or "next-frontend"'),
-  serverId: z.string().optional()
-    .describe('Server ID to operate on (for stop, restart, logs, setAutoRun, clearLogs actions)'),
-  autoRun: z.boolean().optional()
-    .describe('Enable auto-run on MCP startup (for setAutoRun action, or when starting a server)'),
-  env: z.record(z.string()).optional()
-    .describe('Environment variables to set when starting the server (for start action)'),
-  // Runner type parameter
-  runner: z.enum(['native', 'docker', 'docker-compose']).optional()
-    .describe('Runner type (for start action): native (spawn process directly), docker (run container), docker-compose (run compose stack). Auto-detected from command if not specified.'),
-  // Server port monitoring
-  monitorPort: z.boolean().optional()
-    .describe('If true, auto-add server port to monitoredPorts when detected (for start action)'),
-  // Port monitoring parameters
-  port: z.number().optional()
-    .describe('Port number (for monitorPort, unmonitorPort, acknowledgePort actions)'),
-  monitoringLevel: z.enum(['inform', 'error', 'block']).optional()
-    .describe('Monitoring level (for monitorPort action): inform (info line in responses), error (error line in responses), block (block all tools until acknowledged)'),
-  description: z.string().optional()
-    .describe('Description for the monitored port (for monitorPort action)'),
-  interval: z.number().optional()
-    .describe('Custom check interval in milliseconds (for monitorPort action). Overrides level-based defaults from config. Default: block=1000ms, error=2000ms, inform=5000ms'),
-  global: z.boolean().optional()
-    .describe('If true, store/lookup server state in global ~/.cdp-tools/ instead of project directory. Use this when running MCP from a different directory than where the server was started.'),
+  action: z.enum(['start', 'stop', 'restart', 'list', 'logs', 'stopAll', 'setAutoRun', 'clearLogs', 'remove', 'monitorPort', 'unmonitorPort', 'listMonitored', 'acknowledgePort', 'acknowledgeStartup', 'extendStartup']),
+  command: z.string().optional().describe('Command: npm run dev, flask run, docker compose up'),
+  cwd: z.string().optional(),
+  id: z.string().optional().describe('Server name'),
+  serverId: z.string().optional(),
+  autoRun: z.boolean().optional(),
+  env: z.record(z.string()).optional(),
+  runner: z.enum(['native', 'docker', 'docker-compose']).optional(),
+  monitorPort: z.boolean().optional(),
+  port: z.number().optional(),
+  monitoringLevel: z.enum(['inform', 'error', 'block']).optional(),
+  description: z.string().optional(),
+  interval: z.number().optional().describe('Check interval ms'),
+  global: z.boolean().optional().describe('Use ~/.cdp-tools/'),
 }).strict();
 
 type ServerArgs = z.infer<typeof serverSchema>;
