@@ -12,8 +12,6 @@
  */
 
 import type { Page } from 'puppeteer-core';
-import { getIssue } from './issue-tracker.js';
-import { showOverlay, getWorkOnNoSequenceConfig } from './overlays.js';
 
 // =============================================================================
 // Types
@@ -229,27 +227,8 @@ export async function startRecording(
 
   activeSessions.set(connectionReference, session);
 
-  // If issueId is provided, look up the issue and show a "Ready to begin?" overlay
-  if (options.issueId) {
-    const issue = await getIssue(options.issueId);
-    if (issue) {
-      const overlayConfig = getWorkOnNoSequenceConfig(issue.type, issue.id, issue.description);
-      // Customize for recording context
-      overlayConfig.title = `Recording for ${issue.type === 'bug' ? 'Bug' : 'Feature'} #${issue.id}`;
-      overlayConfig.instructions = 'Click BEGIN to start recording your actions.';
-      overlayConfig.buttons = [
-        { id: 'cancel', label: 'CANCEL', action: 'cancel' },
-        { id: 'begin', label: 'BEGIN RECORDING', action: 'record', primary: true },
-      ];
-
-      const result = await showOverlay(page, overlayConfig);
-
-      if (result.action === 'cancel') {
-        activeSessions.delete(connectionReference);
-        return { success: false, cancelled: true };
-      }
-    }
-  }
+  // Note: When issueId is provided, the caller (workOn handler) has already shown
+  // the options overlay where the user chose to record. No need for another overlay here.
 
   const showOverlayOption = options.showOverlay ?? true;
 
