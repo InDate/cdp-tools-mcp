@@ -34,12 +34,11 @@ export interface IssueFilter {
 }
 
 // =============================================================================
-// State
+// State - minimal, only tracks next ID
 // =============================================================================
 
-let issues: TrackedIssue[] = [];
 let nextIssueId = 1;
-let initialized = false;
+let nextIdInitialized = false;
 
 // =============================================================================
 // File Paths
@@ -158,8 +157,13 @@ function csvRowToIssue(row: string): TrackedIssue | null {
   };
 }
 
-async function loadIssuesFromCSV(includeCompleted: boolean): Promise<void> {
+/**
+ * Read all issues from CSV, optionally filtering
+ * Does NOT modify any global state except nextIssueId
+ */
+async function readIssuesFromCSV(filter?: { includeCompleted?: boolean }): Promise<TrackedIssue[]> {
   const filepath = getIssuesFilePath();
+  const includeCompleted = filter?.includeCompleted ?? false;
 
   try {
     const content = await fs.readFile(filepath, 'utf-8');
@@ -170,41 +174,129 @@ async function loadIssuesFromCSV(includeCompleted: boolean): Promise<void> {
       lines.shift();
     }
 
-    issues = [];
+    const result: TrackedIssue[] = [];
     let maxId = 0;
 
     for (const line of lines) {
       const issue = csvRowToIssue(line);
       if (issue) {
-        // Filter out completed issues unless requested
+        // Filter completed issues only for return value, but always track maxId
         if (includeCompleted || (issue.status !== 'fixed' && issue.status !== 'implemented')) {
-          issues.push(issue);
+          result.push(issue);
         }
         if (issue.id > maxId) maxId = issue.id;
       }
     }
 
-    nextIssueId = maxId + 1;
+    // Update nextIssueId based on what's in the file
+    if (maxId >= nextIssueId) {
+      nextIssueId = maxId + 1;
+    }
+    nextIdInitialized = true;
+
+    return result;
   } catch (error: any) {
     if (error.code === 'ENOENT') {
-      // File doesn't exist yet, start fresh
-      issues = [];
-      nextIssueId = 1;
-    } else {
-      throw error;
+      // File doesn't exist yet
+      nextIdInitialized = true;
+      return [];
     }
+    throw error;
   }
 }
 
-async function saveIssuesToCSV(): Promise<void> {
+/**
+ * Initialize nextIssueId by scanning the file (if not already done)
+ */
+async function ensureNextIdInitialized(): Promise<void> {
+  if (nextIdInitialized) return;
+
+  const filepath = getIssuesFilePath();
+  try {
+    const content = await fs.readFile(filepath, 'utf-8');
+    const lines = content.split('\n').filter(line => line.trim());
+
+    let maxId = 0;
+    for (const line of lines) {
+      if (line.startsWith('id,')) continue; // skip header
+      const issue = csvRowToIssue(line);
+      if (issue && issue.id > maxId) {
+        maxId = issue.id;
+      }
+    }
+    nextIssueId = maxId + 1;
+  } catch (error: any) {
+    if (error.code !== 'ENOENT') throw error;
+    nextIssueId = 1;
+  }
+  nextIdInitialized = true;
+}
+
+/**
+ * Append a single issue to the CSV file (does not rewrite existing data)
+ */
+async function appendIssueToCSV(issue: TrackedIssue): Promise<void> {
   const filepath = getIssuesFilePath();
   const dir = dirname(filepath);
 
   // Ensure directory exists
   await fs.mkdir(dir, { recursive: true });
 
-  const lines = [CSV_HEADER, ...issues.map(issueToCSVRow)];
-  await fs.writeFile(filepath, lines.join('\n') + '\n', 'utf-8');
+  // Check if file exists and has content
+  let needsHeader = false;
+  try {
+    const stat = await fs.stat(filepath);
+    if (stat.size === 0) needsHeader = true;
+  } catch (error: any) {
+    if (error.code === 'ENOENT') needsHeader = true;
+    else throw error;
+  }
+
+  const row = issueToCSVRow(issue);
+  if (needsHeader) {
+    await fs.writeFile(filepath, CSV_HEADER + '\n' + row + '\n', 'utf-8');
+  } else {
+    await fs.appendFile(filepath, row + '\n', 'utf-8');
+  }
+}
+
+/**
+ * Update a specific issue in the CSV by ID (reads file, modifies line, writes back)
+ * This preserves ALL other lines exactly as they are
+ */
+async function updateIssueInCSV(id: number, updater: (issue: TrackedIssue) => TrackedIssue): Promise<TrackedIssue | null> {
+  const filepath = getIssuesFilePath();
+
+  let content: string;
+  try {
+    content = await fs.readFile(filepath, 'utf-8');
+  } catch (error: any) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+
+  const lines = content.split('\n');
+  let updated: TrackedIssue | null = null;
+  let foundIndex = -1;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line || line.startsWith('id,')) continue; // skip empty and header
+
+    const issue = csvRowToIssue(lines[i]);
+    if (issue && issue.id === id) {
+      updated = updater(issue);
+      lines[i] = issueToCSVRow(updated);
+      foundIndex = i;
+      break;
+    }
+  }
+
+  if (updated && foundIndex >= 0) {
+    await fs.writeFile(filepath, lines.join('\n'), 'utf-8');
+  }
+
+  return updated;
 }
 
 // =============================================================================
@@ -212,21 +304,20 @@ async function saveIssuesToCSV(): Promise<void> {
 // =============================================================================
 
 /**
- * Initialize the issue tracker - loads existing issues from CSV
- * Always reloads from disk to pick up external changes
+ * Initialize the issue tracker - ensures directories exist
+ * No longer loads issues into memory; they're read on demand
  */
-export async function initializeTracker(includeCompleted: boolean = false): Promise<void> {
+export async function initializeTracker(_includeCompleted: boolean = false): Promise<void> {
   // Ensure directories exist
   await fs.mkdir(getInteractionsDir(), { recursive: true });
   await fs.mkdir(getSequencesDir(), { recursive: true });
 
-  // Always reload from CSV to pick up external changes
-  await loadIssuesFromCSV(includeCompleted);
-  initialized = true;
+  // Initialize next ID from file if needed
+  await ensureNextIdInitialized();
 }
 
 /**
- * Add a new issue
+ * Add a new issue - appends to CSV without rewriting existing data
  */
 export async function addIssue(
   type: IssueType,
@@ -250,27 +341,30 @@ export async function addIssue(
     acknowledgedAt: initialStatus === 'acknowledged' ? new Date() : undefined
   };
 
-  issues.push(issue);
-  await saveIssuesToCSV();
+  // Append only - does not rewrite existing data
+  await appendIssueToCSV(issue);
 
   return issue;
 }
 
 /**
- * Get a single issue by ID
+ * Get a single issue by ID - reads directly from CSV
  */
 export async function getIssue(id: number): Promise<TrackedIssue | undefined> {
   await initializeTracker();
-  return issues.find(i => i.id === id);
+  // Read all issues (including completed) to find by ID
+  const allIssues = await readIssuesFromCSV({ includeCompleted: true });
+  return allIssues.find(i => i.id === id);
 }
 
 /**
- * Get all issues, optionally filtered
+ * Get all issues, optionally filtered - reads directly from CSV
  */
 export async function getIssues(filter?: IssueFilter): Promise<TrackedIssue[]> {
-  await initializeTracker(filter?.includeCompleted);
+  await initializeTracker();
 
-  let result = [...issues];
+  // Read from CSV with completed filter
+  let result = await readIssuesFromCSV({ includeCompleted: filter?.includeCompleted });
 
   if (filter?.type) {
     result = result.filter(i => i.type === filter.type);
@@ -284,47 +378,47 @@ export async function getIssues(filter?: IssueFilter): Promise<TrackedIssue[]> {
 }
 
 /**
- * Update issue status with appropriate timestamp
+ * Update issue status with appropriate timestamp - modifies only the specific line
  */
 export async function updateIssueStatus(id: number, status: IssueStatus): Promise<TrackedIssue | undefined> {
   await initializeTracker();
 
-  const issue = issues.find(i => i.id === id);
-  if (!issue) return undefined;
+  const updated = await updateIssueInCSV(id, (issue) => {
+    issue.status = status;
 
-  issue.status = status;
+    // Set appropriate timestamp
+    const now = new Date();
+    switch (status) {
+      case 'acknowledged':
+        issue.acknowledgedAt = now;
+        break;
+      case 'in_progress':
+        issue.startedAt = now;
+        break;
+      case 'fixed':
+      case 'implemented':
+        issue.resolvedAt = now;
+        break;
+    }
 
-  // Set appropriate timestamp
-  const now = new Date();
-  switch (status) {
-    case 'acknowledged':
-      issue.acknowledgedAt = now;
-      break;
-    case 'in_progress':
-      issue.startedAt = now;
-      break;
-    case 'fixed':
-    case 'implemented':
-      issue.resolvedAt = now;
-      break;
-  }
+    return issue;
+  });
 
-  await saveIssuesToCSV();
-  return issue;
+  return updated ?? undefined;
 }
 
 /**
- * Update the sequence file for an issue
+ * Update the sequence file for an issue - modifies only the specific line
  */
 export async function updateIssueSequenceFile(id: number, sequenceFile: string): Promise<TrackedIssue | undefined> {
   await initializeTracker();
 
-  const issue = issues.find(i => i.id === id);
-  if (!issue) return undefined;
+  const updated = await updateIssueInCSV(id, (issue) => {
+    issue.sequenceFile = sequenceFile;
+    return issue;
+  });
 
-  issue.sequenceFile = sequenceFile;
-  await saveIssuesToCSV();
-  return issue;
+  return updated ?? undefined;
 }
 
 /**
@@ -369,19 +463,22 @@ export async function saveIssueSequence(
 export async function acknowledgeAllBugs(): Promise<TrackedIssue[]> {
   await initializeTracker();
 
-  const pendingBugs = issues.filter(i => i.type === 'bug' && i.status === 'pending');
-  const now = new Date();
+  // Read all issues to find pending bugs
+  const allIssues = await readIssuesFromCSV({ includeCompleted: true });
+  const pendingBugs = allIssues.filter(i => i.type === 'bug' && i.status === 'pending');
 
+  // Update each pending bug individually
+  const acknowledged: TrackedIssue[] = [];
   for (const bug of pendingBugs) {
-    bug.status = 'acknowledged';
-    bug.acknowledgedAt = now;
+    const updated = await updateIssueInCSV(bug.id, (issue) => {
+      issue.status = 'acknowledged';
+      issue.acknowledgedAt = new Date();
+      return issue;
+    });
+    if (updated) acknowledged.push(updated);
   }
 
-  if (pendingBugs.length > 0) {
-    await saveIssuesToCSV();
-  }
-
-  return pendingBugs;
+  return acknowledged;
 }
 
 /**
@@ -389,7 +486,8 @@ export async function acknowledgeAllBugs(): Promise<TrackedIssue[]> {
  */
 export async function hasPendingBugs(): Promise<boolean> {
   await initializeTracker();
-  return issues.some(i => i.type === 'bug' && i.status === 'pending');
+  const allIssues = await readIssuesFromCSV({ includeCompleted: true });
+  return allIssues.some(i => i.type === 'bug' && i.status === 'pending');
 }
 
 /**
@@ -397,7 +495,8 @@ export async function hasPendingBugs(): Promise<boolean> {
  */
 export async function getPendingBugs(): Promise<TrackedIssue[]> {
   await initializeTracker();
-  return issues.filter(i => i.type === 'bug' && i.status === 'pending');
+  const allIssues = await readIssuesFromCSV({ includeCompleted: true });
+  return allIssues.filter(i => i.type === 'bug' && i.status === 'pending');
 }
 
 /**
