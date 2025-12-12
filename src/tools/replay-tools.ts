@@ -557,7 +557,8 @@ async function handleRun(
   args: ReplayArgs,
   recorder: CommandRecorder,
   executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>,
-  getPageForConnection: (connectionReason: string) => Promise<any>
+  getPageForConnection: (connectionReason: string) => Promise<any>,
+  abortSignal?: AbortSignal
 ) {
   // Load sequence
   const loadResult = await loadSequence({ name: args.name, sequenceId: args.sequenceId }, recorder);
@@ -654,15 +655,35 @@ async function handleRun(
     }
   }
 
+  // Helper to clean up cursor, overlay, and optionally close tab
+  const cleanup = async (closeTab = false) => {
+    if (cursorPage) {
+      await removeReplayCursor(cursorPage).catch(() => {});
+      setReplayCursorCallbacks({});
+    }
+    if (cleanupReplayOverlay) {
+      await cleanupReplayOverlay().catch(() => {});
+    }
+    if (closeTab && didAutoLaunch && connectionReason) {
+      await executeToolCall('tab', { action: 'close', reference: connectionReason }).catch(() => {});
+    }
+  };
+
   // Calculate start step (convert 1-indexed to 0-indexed)
   const startStep = args.startFrom ? Math.max(0, args.startFrom - 1) : 0;
 
   // Validate startFrom
   if (args.startFrom && args.startFrom > sequence.commands.length) {
-    if (cleanupReplayOverlay) await cleanupReplayOverlay();
+    await cleanup();
     return createErrorResponse('INVALID_START_FROM', {
       message: `startFrom (${args.startFrom}) exceeds sequence length (${sequence.commands.length})`
     });
+  }
+
+  // Register cleanup handler on abort signal BEFORE execution starts
+  // This ensures cleanup runs even if the tool call is interrupted mid-execution
+  if (abortSignal) {
+    abortSignal.addEventListener('abort', () => { cleanup(true); }, { once: true });
   }
 
   // Execute the sequence
@@ -675,8 +696,19 @@ async function handleRun(
     stepTimeout: args.stepTimeout,
     totalTimeout: args.totalTimeout,
     stepTo: args.stepTo,
-    overrideConnectionReason: args.connectionReason
+    overrideConnectionReason: args.connectionReason,
+    abortSignal
   });
+
+  // Handle abort - return early (cleanup already handled by abort signal listener)
+  if (abortSignal?.aborted) {
+    return createSuccessResponse('REPLAY_ABORTED', {
+      name: sequence.name,
+      completedSteps: execResult.results.length,
+      totalSteps: sequence.commands.length,
+      message: 'Replay aborted by user'
+    });
+  }
 
   // Handle breakpoint hit
   if (execResult.breakpointHit && connectionReason) {
@@ -721,13 +753,7 @@ async function handleRun(
   }
 
   // Clean up cursor and overlay
-  if (cursorPage) {
-    await removeReplayCursor(cursorPage);
-    setReplayCursorCallbacks({});
-  }
-  if (cleanupReplayOverlay) {
-    await cleanupReplayOverlay();
-  }
+  await cleanup();
 
   // Format results
   let response = formatExecutionResults(sequence.name, execResult.results, execResult.totalCommands, execResult.durationMs);
@@ -1449,7 +1475,7 @@ export function createReplayTools(
           case 'deleteSaved':
             return handleDeleteSaved(args, commandRecorder);
           case 'run':
-            return handleRun(args, commandRecorder, executeToolCall, getPageForConnection!);
+            return handleRun(args, commandRecorder, executeToolCall, getPageForConnection!, abortSignal);
           case 'status':
             return handleStatus(commandRecorder);
           case 'step':

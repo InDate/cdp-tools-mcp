@@ -766,54 +766,6 @@ export async function executeCommandWithRetry(
 }
 
 /**
- * Wait for debugger to pause after navigation if breakpoints exist
- */
-export async function waitForDebuggerPause(
-  ctx: ExecutionContext,
-  timeoutMs: number = 10000
-): Promise<boolean> {
-  const { executeToolCall, connectionReason, logPrefix = 'executor' } = ctx;
-
-  try {
-    const breakpointResult = await executeToolCall('breakpoint', {
-      action: 'list',
-      connectionReason
-    });
-
-    const breakpointText = breakpointResult?.content?.[0]?.text || '';
-    const hasBreakpoints = breakpointText.includes('**ID:**') || breakpointText.includes('breakpointId');
-
-    if (!hasBreakpoints) {
-      return false;
-    }
-
-    debugLog(logPrefix, `Navigation completed with active breakpoints, waiting for debugger pause...`);
-
-    const pauseStartTime = Date.now();
-    while (Date.now() - pauseStartTime < timeoutMs) {
-      const callStackResult = await executeToolCall('inspect', {
-        action: 'getCallStack',
-        connectionReason
-      });
-
-      const callStackText = callStackResult?.content?.[0]?.text || '';
-      if (callStackText.includes('callFrameId') && !callStackText.includes('Not paused')) {
-        debugLog(logPrefix, `Debugger paused at breakpoint`);
-        return true;
-      }
-
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-
-    debugLog(logPrefix, `Warning: Debugger did not pause within ${timeoutMs}ms`);
-    return false;
-  } catch (err: any) {
-    debugLog(logPrefix, `Warning: Could not check for debugger pause: ${err.message}`);
-    return false;
-  }
-}
-
-/**
  * Validate that navigation succeeded (page loaded correctly)
  */
 export async function validateNavigation(
@@ -1199,6 +1151,7 @@ export interface ExecuteStepsOptions {
   stepTimeout?: number;
   totalTimeout?: number;
   overrideConnectionReason?: string;
+  abortSignal?: AbortSignal;
 }
 
 /**
@@ -1214,7 +1167,8 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
     record,
     stepTimeout = 30000,
     totalTimeout = 300000,
-    overrideConnectionReason
+    overrideConnectionReason,
+    abortSignal
   } = options;
 
   const { executeToolCall, commandRecorder, connectionReason, logPrefix = 'executor' } = ctx;
@@ -1248,8 +1202,38 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
     }
   };
 
+  // Abortable delay helper - properly cleans up listeners
+  const abortableDelay = (ms: number): Promise<boolean> => {
+    return new Promise((resolve) => {
+      const timeoutId = setTimeout(() => resolve(false), ms);
+      if (abortSignal) {
+        const onAbort = () => {
+          clearTimeout(timeoutId);
+          resolve(true); // true = was aborted
+        };
+        abortSignal.addEventListener('abort', onAbort, { once: true });
+        // Clean up listener if timeout completes normally
+        setTimeout(() => {
+          abortSignal.removeEventListener('abort', onAbort);
+        }, ms + 1);
+      }
+    });
+  };
+
   for (let i = startStep; i < targetEnd; i++) {
     const cmd = commands[i];
+
+    // Check if aborted
+    if (abortSignal?.aborted) {
+      debugLog(logPrefix, `Replay aborted at step ${i + 1}`);
+      results.push({
+        step: i + 1,
+        tool: cmd.tool,
+        success: false,
+        error: 'Replay aborted by user'
+      });
+      break;
+    }
 
     // Check total timeout
     const elapsed = Date.now() - startTime;
@@ -1270,7 +1254,8 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
     // Wait for delay if specified (for recorded interactions)
     if (cmd.delay && cmd.delay > 0) {
       debugLog(logPrefix, `Waiting ${cmd.delay}ms before step ${i + 1}`);
-      await new Promise(resolve => setTimeout(resolve, cmd.delay));
+      const wasAborted = await abortableDelay(cmd.delay);
+      if (wasAborted) continue;
     }
 
     try {
