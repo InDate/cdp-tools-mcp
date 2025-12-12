@@ -66,6 +66,20 @@ const inputToolSchema = z.object({
   settleTimeout: z.number().optional().describe('DOM settle timeout ms'),
 }).strict();
 
+/**
+ * Wrapper to execute input actions while bypassing the replay blocker overlay.
+ * Sets __cdpReplayClickInProgress flag before the action and clears it after.
+ * This allows CDP-dispatched events to pass through the overlay's event listeners.
+ */
+async function withReplayBypass<T>(page: any, action: () => Promise<T>): Promise<T> {
+  await page.evaluate(() => { (globalThis as any).__cdpReplayClickInProgress = true; });
+  try {
+    return await action();
+  } finally {
+    await page.evaluate(() => { (globalThis as any).__cdpReplayClickInProgress = false; });
+  }
+}
+
 export function createInputTools(
   puppeteerManager: PuppeteerManager,
   cdpManager: CDPManager,
@@ -113,7 +127,7 @@ export function createInputTools(
 
             // Coordinate-based click (for canvas/3D apps)
             if (typeof x === 'number' && typeof y === 'number') {
-              await page.mouse.click(x, y, { clickCount });
+              await withReplayBypass(page, () => page.mouse.click(x, y, { clickCount }));
               return {
                 content: [{
                   type: 'text',
@@ -231,13 +245,8 @@ export function createInputTools(
                   return false;
                 }, selector);
 
-                // Perform the click - set flag to allow click through replay blocker
-                await page.evaluate(() => { (globalThis as any).__cdpReplayClickInProgress = true; });
-                try {
-                  await page.click(selector, { clickCount });
-                } finally {
-                  await page.evaluate(() => { (globalThis as any).__cdpReplayClickInProgress = false; });
-                }
+                // Perform the click - use wrapper to bypass replay blocker overlay
+                await withReplayBypass(page, () => page.click(selector, { clickCount }));
 
                 // Check if breakpoint was hit during click - if so, skip post-click evaluation
                 // which would hang because page JS is paused
@@ -548,16 +557,13 @@ export function createInputTools(
 
                 // Clear existing text first (unless append mode)
                 if (!append) {
-                  await page.evaluate(() => { (globalThis as any).__cdpReplayClickInProgress = true; });
-                  try {
+                  await withReplayBypass(page, async () => {
                     await page.click(selector, { clickCount: 3 });
-                  } finally {
-                    await page.evaluate(() => { (globalThis as any).__cdpReplayClickInProgress = false; });
-                  }
-                  await page.keyboard.press('Backspace');
+                    await page.keyboard.press('Backspace');
+                  });
                 }
-                // Type new text
-                await page.type(selector, text, { delay });
+                // Type new text - use wrapper to bypass replay blocker overlay
+                await withReplayBypass(page, () => page.type(selector, text, { delay }));
 
                 // Get the actual value after typing
                 const currentValue = await page.$eval(selector, (el: unknown) => {
@@ -649,10 +655,13 @@ export function createInputTools(
               };
             }
 
-            await executeWithPauseDetection(
-              targetCdpManager,
-              () => page.keyboard.press(key as any),
-              'pressKey'
+            // Use wrapper to bypass replay blocker overlay for key press
+            await withReplayBypass(page, () =>
+              executeWithPauseDetection(
+                targetCdpManager,
+                () => page.keyboard.press(key as any),
+                'pressKey'
+              )
             );
 
             return createSuccessResponse('KEY_PRESS_SUCCESS', {
@@ -737,7 +746,7 @@ export function createInputTools(
                   }
                 }
 
-                await page.hover(selector);
+                await withReplayBypass(page, () => page.hover(selector));
                 return { selector };
               },
               'hoverElement'
@@ -844,7 +853,7 @@ export function createInputTools(
                 }
 
                 // Focus the element
-                await page.focus(selector);
+                await withReplayBypass(page, () => page.focus(selector));
 
                 // Get focused element info
                 const focusInfo = await getFocusedElementInfo(page);
@@ -877,14 +886,16 @@ export function createInputTools(
             const result = await executeWithPauseDetection(
               targetCdpManager,
               async () => {
-                // Press Tab count times
-                for (let i = 0; i < count; i++) {
-                  await page.keyboard.press('Tab');
-                  // Small delay between tabs for stability
-                  if (i < count - 1) {
-                    await new Promise(resolve => setTimeout(resolve, 50));
+                // Press Tab count times - use wrapper to bypass replay blocker overlay
+                await withReplayBypass(page, async () => {
+                  for (let i = 0; i < count; i++) {
+                    await page.keyboard.press('Tab');
+                    // Small delay between tabs for stability
+                    if (i < count - 1) {
+                      await new Promise(resolve => setTimeout(resolve, 50));
+                    }
                   }
-                }
+                });
 
                 // Get focused element info
                 const focusInfo = await getFocusedElementInfo(page);
@@ -909,16 +920,18 @@ export function createInputTools(
             const result = await executeWithPauseDetection(
               targetCdpManager,
               async () => {
-                // Press Shift+Tab count times
-                for (let i = 0; i < count; i++) {
-                  await page.keyboard.down('Shift');
-                  await page.keyboard.press('Tab');
-                  await page.keyboard.up('Shift');
-                  // Small delay between tabs for stability
-                  if (i < count - 1) {
-                    await new Promise(resolve => setTimeout(resolve, 50));
+                // Press Shift+Tab count times - use wrapper to bypass replay blocker overlay
+                await withReplayBypass(page, async () => {
+                  for (let i = 0; i < count; i++) {
+                    await page.keyboard.down('Shift');
+                    await page.keyboard.press('Tab');
+                    await page.keyboard.up('Shift');
+                    // Small delay between tabs for stability
+                    if (i < count - 1) {
+                      await new Promise(resolve => setTimeout(resolve, 50));
+                    }
                   }
-                }
+                });
 
                 // Get focused element info
                 const focusInfo = await getFocusedElementInfo(page);
@@ -955,35 +968,38 @@ export function createInputTools(
             const result = await executeWithPauseDetection(
               targetCdpManager,
               async () => {
-                const mouse = page.mouse;
+                // Use wrapper to bypass replay blocker overlay for entire drag operation
+                return await withReplayBypass(page, async () => {
+                  const mouse = page.mouse;
 
-                // Move to start position
-                await mouse.move(from.x, from.y);
+                  // Move to start position
+                  await mouse.move(from.x, from.y);
 
-                // Press mouse button
-                await mouse.down();
+                  // Press mouse button
+                  await mouse.down();
 
-                // Calculate intermediate steps for smooth drag
-                const deltaX = (to.x - from.x) / steps;
-                const deltaY = (to.y - from.y) / steps;
+                  // Calculate intermediate steps for smooth drag
+                  const deltaX = (to.x - from.x) / steps;
+                  const deltaY = (to.y - from.y) / steps;
 
-                for (let i = 1; i <= steps; i++) {
-                  const currentX = from.x + deltaX * i;
-                  const currentY = from.y + deltaY * i;
-                  await mouse.move(currentX, currentY);
-                  // Small delay for smoother drag
-                  await new Promise(resolve => setTimeout(resolve, 10));
-                }
+                  for (let i = 1; i <= steps; i++) {
+                    const currentX = from.x + deltaX * i;
+                    const currentY = from.y + deltaY * i;
+                    await mouse.move(currentX, currentY);
+                    // Small delay for smoother drag
+                    await new Promise(resolve => setTimeout(resolve, 10));
+                  }
 
-                // Release mouse button
-                await mouse.up();
+                  // Release mouse button
+                  await mouse.up();
 
-                return {
-                  from,
-                  to,
-                  steps,
-                  distance: Math.sqrt(Math.pow(to.x - from.x, 2) + Math.pow(to.y - from.y, 2)),
-                };
+                  return {
+                    from,
+                    to,
+                    steps,
+                    distance: Math.sqrt(Math.pow(to.x - from.x, 2) + Math.pow(to.y - from.y, 2)),
+                  };
+                });
               },
               'drag'
             );
@@ -1024,30 +1040,33 @@ export function createInputTools(
             const result = await executeWithPauseDetection(
               targetCdpManager,
               async () => {
-                const mouse = page.mouse;
+                // Use wrapper to bypass replay blocker overlay for scroll operation
+                return await withReplayBypass(page, async () => {
+                  const mouse = page.mouse;
 
-                // If coordinates provided, move to that position first
-                if (x !== undefined && y !== undefined) {
-                  await mouse.move(x, y);
-                }
+                  // If coordinates provided, move to that position first
+                  if (x !== undefined && y !== undefined) {
+                    await mouse.move(x, y);
+                  }
 
-                // Perform scroll
-                await mouse.wheel({ deltaX, deltaY });
+                  // Perform scroll
+                  await mouse.wheel({ deltaX, deltaY });
 
-                // Get current scroll position
-                const scrollPosition = await page.evaluate(() => ({
-                  scrollX: (globalThis as any).window.scrollX,
-                  scrollY: (globalThis as any).window.scrollY,
-                  maxScrollX: (globalThis as any).document.documentElement.scrollWidth - (globalThis as any).window.innerWidth,
-                  maxScrollY: (globalThis as any).document.documentElement.scrollHeight - (globalThis as any).window.innerHeight,
-                }));
+                  // Get current scroll position
+                  const scrollPosition = await page.evaluate(() => ({
+                    scrollX: (globalThis as any).window.scrollX,
+                    scrollY: (globalThis as any).window.scrollY,
+                    maxScrollX: (globalThis as any).document.documentElement.scrollWidth - (globalThis as any).window.innerWidth,
+                    maxScrollY: (globalThis as any).document.documentElement.scrollHeight - (globalThis as any).window.innerHeight,
+                  }));
 
-                return {
-                  deltaX,
-                  deltaY,
-                  position: x !== undefined && y !== undefined ? { x, y } : undefined,
-                  scrollPosition,
-                };
+                  return {
+                    deltaX,
+                    deltaY,
+                    position: x !== undefined && y !== undefined ? { x, y } : undefined,
+                    scrollPosition,
+                  };
+                });
               },
               'scroll'
             );
@@ -1098,7 +1117,8 @@ export function createInputTools(
             const result = await executeWithPauseDetection(
               targetCdpManager,
               async () => {
-                await page.mouse.move(x, y);
+                // Use wrapper to bypass replay blocker overlay for mousemove
+                await withReplayBypass(page, () => page.mouse.move(x, y));
 
                 // Get element at the mouse position
                 const elementInfo = await page.evaluate((mouseX: number, mouseY: number) => {
@@ -1173,21 +1193,23 @@ export function createInputTools(
                 const client = await page.createCDPSession();
 
                 try {
-                  // Use CDP's synthesizePinchGesture (experimental but widely supported)
-                  await client.send('Input.synthesizePinchGesture', {
-                    x: centerX,
-                    y: centerY,
-                    scaleFactor,
-                    relativeSpeed: 300, // pixels per second
-                    gestureSourceType: 'touch',
-                  });
+                  // Use wrapper to bypass replay blocker overlay for pinch gesture
+                  return await withReplayBypass(page, async () => {
+                    await client.send('Input.synthesizePinchGesture', {
+                      x: centerX,
+                      y: centerY,
+                      scaleFactor,
+                      relativeSpeed: 300, // pixels per second
+                      gestureSourceType: 'touch',
+                    });
 
-                  return {
-                    x: centerX,
-                    y: centerY,
-                    scaleFactor,
-                    action: scaleFactor > 1 ? 'zoom in' : 'zoom out',
-                  };
+                    return {
+                      x: centerX,
+                      y: centerY,
+                      scaleFactor,
+                      action: scaleFactor > 1 ? 'zoom in' : 'zoom out',
+                    };
+                  });
                 } finally {
                   await client.detach();
                 }

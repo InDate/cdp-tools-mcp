@@ -446,6 +446,7 @@ export async function showReplayBanner(
 
       e.preventDefault();
       e.stopPropagation();
+      e.stopImmediatePropagation();
       attemptCount++;
 
       console.log('[cdp-tools] Blocked user interaction during replay:', e.type, 'target:', e.target?.tagName);
@@ -467,6 +468,7 @@ export async function showReplayBanner(
 
       e.preventDefault();
       e.stopPropagation();
+      e.stopImmediatePropagation();
     };
 
     feedbackEvents.forEach(evt => doc.addEventListener(evt, blockWithFeedback, true));
