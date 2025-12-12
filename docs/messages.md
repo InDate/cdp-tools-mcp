@@ -1549,6 +1549,17 @@ Error: {{error}}
 
 ## Replay Messages
 
+## REPLAY_ABORTED
+
+**Type:** success
+**Summary:** Replay aborted
+
+**Replay aborted:** {{name}}
+
+Completed {{completedSteps}}/{{totalSteps}} steps before abort.
+
+---
+
 ## REPLAY_HISTORY
 
 **Type:** success
@@ -1980,12 +1991,9 @@ Use `issues({ action: 'acknowledge' })` to acknowledge.
 **Type:** success
 **Summary:** Issues list
 
-**Issues** ({{count}}) - {{bugCount}} bugs, {{featureCount}} features, {{pendingCount}} pending
-{{#search}}*Filtered by: "{{search}}"*{{/search}}
-{{#includeCompleted}}*Showing completed issues*{{/includeCompleted}}
-{{^includeCompleted}}{{^search}}*Tip: Use `includeCompleted: true` to see fixed/implemented issues*{{/search}}{{/includeCompleted}}
-
 {{issuesList}}
+
+{{count}} issues: {{bugCount}} bugs, {{featureCount}} features{{#pendingCount}}, {{pendingCount}} pending{{/pendingCount}}
 
 ---
 
@@ -2819,6 +2827,66 @@ Dependency conflicts detected. All tools are blocked until resolved.
 **Code:** NAVIGATION_FAILED
 
 Navigation failed: {{message}}
+
+---
+
+## Dashboard Messages
+
+## DASHBOARD_OPEN
+
+**Type:** success
+
+Dashboard available at {{url}}
+
+**Session type:** {{type}}
+
+---
+
+## DASHBOARD_STATUS
+
+**Type:** success
+
+**Dashboard Status**
+
+| Property | Value |
+|----------|-------|
+| Session ID | {{shortId}} |
+| Full ID | {{sessionId}} |
+| PID | {{pid}} |
+| Type | {{type}} |
+| Port | {{port}} |
+| URL | {{url}} |
+| Sessions | {{sessionCount}} |
+
+---
+
+## DASHBOARD_STOPPED
+
+**Type:** success
+
+{{message}}
+
+---
+
+## DASHBOARD_NOT_AVAILABLE
+
+**Type:** error
+**Code:** DASHBOARD_NOT_AVAILABLE
+
+Dashboard is not available: {{reason}}
+
+---
+
+## DASHBOARD_NOT_HUB
+
+**Type:** error
+**Code:** DASHBOARD_NOT_HUB
+
+{{reason}}
+
+**Suggestions:**
+- The hub is running in a different session
+- Use `dashboard({ action: "status" })` to see which session is the hub
 
 ---
 
