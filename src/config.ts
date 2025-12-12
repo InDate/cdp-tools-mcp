@@ -8,6 +8,7 @@ import { dirname, join } from 'path';
 import { homedir } from 'os';
 import { getConfigSavePath, getOutputPath } from './helpers/paths.js';
 import { debugLog } from './debug-logger.js';
+import { atomicWriteFile } from './atomic-write.js';
 
 /**
  * Port monitoring frequency configuration - interval per level in ms
@@ -127,6 +128,7 @@ export const TOGGLEABLE_TOOLS = [
   'replay',      // Sequence recording/playback
   'server',      // Dev server management
   'issues',      // Issue tracking
+  'dashboard',   // Web dashboard for monitoring sessions
   // Note: 'config' is NOT toggleable - always enabled
 ] as const;
 
@@ -403,11 +405,10 @@ export class ConfigManager {
           }
           await debugLog('ConfigManager', `Using global config (per local configLocation setting)`);
 
-          // Clean up local config to just have the pointer
-          await fs.promises.writeFile(
+          // Clean up local config to just have the pointer (atomic write)
+          await atomicWriteFile(
             localConfigPath,
-            JSON.stringify({ configLocation: 'global' }, null, 2),
-            'utf-8'
+            JSON.stringify({ configLocation: 'global' }, null, 2)
           );
 
           await this.save();
@@ -519,16 +520,10 @@ export class ConfigManager {
    */
   async save(): Promise<void> {
     const configPath = this.loadedFromPath || getConfigSavePath();
-    const dir = dirname(configPath);
-
-    if (!fs.existsSync(dir)) {
-      await fs.promises.mkdir(dir, { recursive: true });
-    }
-
-    await fs.promises.writeFile(
+    // Atomic write handles directory creation and prevents corruption
+    await atomicWriteFile(
       configPath,
-      JSON.stringify(this.config, null, 2),
-      'utf-8'
+      JSON.stringify(this.config, null, 2)
     );
   }
 
@@ -765,20 +760,16 @@ export class ConfigManager {
     const localDir = dirname(localPath);
     const globalDir = dirname(globalPath);
 
-    // Ensure directories exist
-    if (!fs.existsSync(localDir)) {
-      await fs.promises.mkdir(localDir, { recursive: true });
-    }
+    // Ensure global directory exists (for reading config below)
     if (!fs.existsSync(globalDir)) {
       await fs.promises.mkdir(globalDir, { recursive: true });
     }
 
-    // Write minimal local config with just the preference
+    // Write minimal local config with just the preference (atomic write)
     const minimalConfig = { configLocation: 'global' as const };
-    await fs.promises.writeFile(
+    await atomicWriteFile(
       localPath,
-      JSON.stringify(minimalConfig, null, 2),
-      'utf-8'
+      JSON.stringify(minimalConfig, null, 2)
     );
 
     // Load and use global config

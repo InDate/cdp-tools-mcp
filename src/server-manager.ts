@@ -11,6 +11,7 @@ import * as fs from 'fs';
 import * as net from 'net';
 import { debugLog } from './debug-logger.js';
 import { getOutputPath } from './helpers/paths.js';
+import { atomicWriteFile } from './atomic-write.js';
 import { configManager } from './config.js';
 import {
   type Runner,
@@ -432,6 +433,8 @@ export class ServerManager {
   private servers: Map<string, ManagedServer> = new Map();
   private portMonitor: PortMonitor | null = null;
   private pendingStartups: Map<string, PendingStartup> = new Map();
+  /** Mutex to serialize saveState calls - prevents concurrent file writes */
+  private saveMutex: Promise<void> = Promise.resolve();
 
   /**
    * Get the port monitor instance (lazy-initialized)
@@ -661,7 +664,19 @@ export class ServerManager {
     return { servers: [], monitoredPorts: [], pendingStartups: [] };
   }
 
+  /**
+   * Save state to disk - serialized through mutex to prevent concurrent writes
+   */
   async saveState(): Promise<void> {
+    // Queue behind any pending save to serialize all writes
+    this.saveMutex = this.saveMutex.then(() => this.doSaveState()).catch(() => {});
+    return this.saveMutex;
+  }
+
+  /**
+   * Internal save implementation - uses atomic writes to prevent corruption
+   */
+  private async doSaveState(): Promise<void> {
     // Split servers by global flag
     const localServers: PersistedRunnerState[] = [];
     const globalServers: PersistedRunnerState[] = [];
@@ -716,13 +731,9 @@ export class ServerManager {
       }
     }
 
-    // Save local servers to project directory
+    // Save local servers to project directory (atomic write prevents corruption)
     const localPath = this.getServersFilePath(false);
-    const localDir = path.dirname(localPath);
-    if (!fs.existsSync(localDir)) {
-      await fs.promises.mkdir(localDir, { recursive: true });
-    }
-    await fs.promises.writeFile(
+    await atomicWriteFile(
       localPath,
       JSON.stringify({
         version: 4,
@@ -730,17 +741,12 @@ export class ServerManager {
         servers: localServers,
         monitoredPorts, // Port monitoring stays in local config
         pendingStartups: localPendingStartups,
-      }, null, 2),
-      'utf-8'
+      }, null, 2)
     );
 
-    // Save global servers to ~/.cdp-tools/
+    // Save global servers to ~/.cdp-tools/ (atomic write prevents corruption)
     const globalPath = this.getServersFilePath(true);
-    const globalDir = path.dirname(globalPath);
-    if (!fs.existsSync(globalDir)) {
-      await fs.promises.mkdir(globalDir, { recursive: true });
-    }
-    await fs.promises.writeFile(
+    await atomicWriteFile(
       globalPath,
       JSON.stringify({
         version: 4,
@@ -748,8 +754,7 @@ export class ServerManager {
         servers: globalServers,
         monitoredPorts: [], // Global doesn't track port monitoring
         pendingStartups: globalPendingStartups,
-      }, null, 2),
-      'utf-8'
+      }, null, 2)
     );
   }
 

@@ -10,6 +10,7 @@ import { join } from 'path';
 import { debugLog, isHistoryLogEnabled, logToHistoryFile } from './debug-logger.js';
 import { sanitizeReference } from './reference-validator.js';
 import { getOutputPath } from './helpers/paths.js';
+import { atomicWriteFile } from './atomic-write.js';
 
 export interface RecordedCommand {
   tool: string;
@@ -372,10 +373,8 @@ export class CommandRecorder {
     const targetDir = this.getSequencesDir(global);
 
     try {
-      // Ensure directory exists
-      await fs.mkdir(targetDir, { recursive: true });
-
       // Sanitize filename - use name directly
+      // Note: atomicWriteFile handles directory creation
       const safeFilename = sequence.name.replace(/[^a-z0-9-_]/gi, '-').toLowerCase();
       const filename = `${safeFilename}.json`;
       const filepath = join(targetDir, filename);
@@ -396,7 +395,7 @@ export class CommandRecorder {
         _comment: 'CDP Tools replay sequence. Load with: replay({ action: "load", filename: "<this-file>" }), then run with: replay({ action: "replay", sequenceId: "<id>" })',
         ...sequence
       };
-      await fs.writeFile(filepath, JSON.stringify(exportData, null, 2));
+      await atomicWriteFile(filepath, JSON.stringify(exportData, null, 2));
       await debugLog('command-recorder', `Saved sequence "${sequence.name}" to ${filepath}`);
       return { success: true, filepath };
     } catch (error: any) {
@@ -512,8 +511,14 @@ export class CommandRecorder {
     const sequences: Array<{ filename: string; name: string; id: string; commandCount: number; description?: string; expectedOutcome?: string; startUrl?: string; location: string; fullPath: string }> = [];
 
     try {
-      await fs.mkdir(dir, { recursive: true });
-      const files = await fs.readdir(dir);
+      // Read directory - if it doesn't exist, return empty list (no side effects)
+      let files: string[];
+      try {
+        files = await fs.readdir(dir);
+      } catch (err: any) {
+        if (err.code === 'ENOENT') return sequences; // Directory doesn't exist yet
+        throw err;
+      }
       const jsonFiles = files.filter(f => f.endsWith('.json'));
 
       for (const file of jsonFiles) {

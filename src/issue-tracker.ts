@@ -3,8 +3,9 @@
  */
 
 import { promises as fs } from 'fs';
-import { join, dirname } from 'path';
+import { join } from 'path';
 import { getOutputPath } from './helpers/paths.js';
+import { atomicWriteFile } from './atomic-write.js';
 
 // =============================================================================
 // Types
@@ -237,12 +238,9 @@ async function ensureNextIdInitialized(): Promise<void> {
  */
 async function appendIssueToCSV(issue: TrackedIssue): Promise<void> {
   const filepath = getIssuesFilePath();
-  const dir = dirname(filepath);
-
-  // Ensure directory exists
-  await fs.mkdir(dir, { recursive: true });
 
   // Check if file exists and has content
+  // Note: atomicWriteFile handles directory creation
   let needsHeader = false;
   try {
     const stat = await fs.stat(filepath);
@@ -254,7 +252,7 @@ async function appendIssueToCSV(issue: TrackedIssue): Promise<void> {
 
   const row = issueToCSVRow(issue);
   if (needsHeader) {
-    await fs.writeFile(filepath, CSV_HEADER + '\n' + row + '\n', 'utf-8');
+    await atomicWriteFile(filepath, CSV_HEADER + '\n' + row + '\n');
   } else {
     await fs.appendFile(filepath, row + '\n', 'utf-8');
   }
@@ -293,7 +291,7 @@ async function updateIssueInCSV(id: number, updater: (issue: TrackedIssue) => Tr
   }
 
   if (updated && foundIndex >= 0) {
-    await fs.writeFile(filepath, lines.join('\n'), 'utf-8');
+    await atomicWriteFile(filepath, lines.join('\n'));
   }
 
   return updated;
@@ -439,16 +437,15 @@ export async function saveIssueSequence(
   const sequenceNameForFile = filename.replace(/\.json$/, '');
 
   try {
-    await fs.mkdir(sequencesDir, { recursive: true });
     const dataToSave = {
       ...sequenceData,
       name: sequenceNameForFile,
       _comment: comment || `CDP Tools sequence for ${issueType} #${issueId}: ${issueDescription}`,
     };
-    await fs.writeFile(
+    // atomicWriteFile handles directory creation
+    await atomicWriteFile(
       join(sequencesDir, filename),
-      JSON.stringify(dataToSave, null, 2),
-      'utf-8'
+      JSON.stringify(dataToSave, null, 2)
     );
     await updateIssueSequenceFile(issueId, filename);
     return { success: true, filename };
