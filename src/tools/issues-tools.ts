@@ -71,17 +71,24 @@ function formatIssuesList(issues: TrackedIssue[]): string {
 
   const lines: string[] = [];
 
-  for (const issue of issues) {
-    const date = issue.reportedAt.toLocaleDateString();
-    const statusIcon = getStatusIcon(issue.status);
-    const typeIcon = issue.type === 'bug' ? '🐛' : '✨';
+  // Calculate column widths
+  const idWidth = Math.max(2, ...issues.map(i => String(i.id).length));
+  const statusWidth = Math.max(6, ...issues.map(i => i.status.length));
+  const typeWidth = 7; // "feature" is longest
 
-    lines.push(`${typeIcon} **#${issue.id}** [${statusIcon} ${issue.status}] ${issue.description}`);
-    lines.push(`   Reported: ${date} | Recording: ${issue.recordingName || 'none'}`);
-    if (issue.sequenceFile) {
-      lines.push(`   Sequence: \`${issue.sequenceFile}\``);
-    }
-    lines.push('');
+  // Header
+  lines.push(`${'ID'.padEnd(idWidth)}  ${'STATUS'.padEnd(statusWidth)}  ${'TYPE'.padEnd(typeWidth)}  TITLE`);
+
+  for (const issue of issues) {
+    const id = String(issue.id).padEnd(idWidth);
+    const status = issue.status.toUpperCase().padEnd(statusWidth);
+    const type = issue.type.padEnd(typeWidth);
+    // Truncate description to ~60 chars for readability
+    const title = issue.description.length > 60
+      ? issue.description.substring(0, 57) + '...'
+      : issue.description;
+
+    lines.push(`${id}  ${status}  ${type}  ${title}`);
   }
 
   return lines.join('\n');
@@ -142,7 +149,7 @@ export function createIssuesTools(
     issues: createTool(
       'Track and manage bugs and features. Actions: list (show all issues with optional filters), create (create new issue, optionally linking a sequence), workOn (start working on issue with auto-replay), resolve (mark as fixed/implemented), acknowledge (acknowledge pending bugs to unblock tools)',
       issuesSchema,
-      async (args) => {
+      async (args, abortSignal) => {
         // Initialize tracker on first use
         await initializeTracker();
 
@@ -292,6 +299,14 @@ export function createIssuesTools(
             }
 
             const hasSequence = !!issue.sequenceFile;
+
+            // Register cleanup on abort signal to close browser tab if tool is cancelled
+            if (abortSignal && connectionRef) {
+              const cleanupOnAbort = async () => {
+                await executeToolCall('tab', { action: 'close', reference: connectionRef }).catch(() => {});
+              };
+              abortSignal.addEventListener('abort', () => { cleanupOnAbort(); }, { once: true });
+            }
 
             if (hasSequence) {
               // Auto-replay sequence if available
