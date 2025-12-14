@@ -8,7 +8,8 @@
     "cdp-tools-mcp": "build/index.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npm run build:dashboard",
+    "build:dashboard": "node scripts/build-dashboard.mjs",
     "build:verify": "npm run build && node scripts/verify-mcp.js && node scripts/measure-startup.mjs",
     "dev": "tsc --watch",
     "start": "node build/index.js",
@@ -58,16 +59,23 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",
     "chrome-remote-interface": "^0.33.2",
+    "fp-ts": "^2.16.11",
+    "io-ts": "^2.2.22",
     "puppeteer-core": "^23.10.4",
+    "rxjs": "^7.8.2",
     "source-map": "^0.7.4",
+    "ws": "^8.18.0",
     "zod": "^3.23.8",
     "zod-to-json-schema": "^3.23.0"
   },
   "devDependencies": {
     "@types/chrome-remote-interface": "^0.31.14",
     "@types/node": "^22.10.2",
+    "@types/ws": "^8.5.13",
     "@vitest/ui": "^3.2.4",
+    "esbuild": "^0.24.2",
     "happy-dom": "^20.0.10",
+    "preact": "^10.25.4",
     "typescript": "^5.7.2",
     "vitest": "^3.2.4"
   }

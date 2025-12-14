@@ -50,9 +50,11 @@ import { createReplayTools } from './tools/replay-tools.js';
 import { createServerTools } from './tools/server-tools.js';
 import { createConfigTools } from './tools/config-tools.js';
 import { createIssuesTools } from './tools/issues-tools.js';
+import { createDashboardTools, setDashboardInstance, getDashboardInstance, setSessionInfo, getDuplicateSessionInfo } from './tools/dashboard-tools.js';
+import { initializeDashboard, shutdownDashboard, type DashboardInstance, type ConnectionInfo as DashboardConnectionInfo } from './dashboard/index.js';
 import { ServerManager } from './server-manager.js';
 import { configManager } from './config.js';
-import { checkPortFailures, checkBreakpointPause, checkBugBlocking, checkPendingStartups, prependToResponse, appendToResponse, buildStatusSuffix, type StatusLineItem } from './tool-response.js';
+import { checkPortFailures, checkBreakpointPause, checkBugBlocking, checkPendingStartups, checkDuplicateSession, prependToResponse, appendToResponse, buildStatusSuffix, type StatusLineItem } from './tool-response.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock, getMessage, getFormattedResponse } from './messages.js';
 import { setChromeLauncher } from './error-helpers.js';
 import { createServer } from 'net';
@@ -61,7 +63,8 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { debugLog, enableDebugLogging, disableDebugLogging, isDebugEnabled, enableHistoryLogging, disableHistoryLogging, setStartupMetrics } from './debug-logger.js';
 import { validateReference, requireValidReference, UNNAMED_CONNECTION, InvalidReferenceError } from './reference-validator.js';
-import { initializePaths } from './helpers/paths.js';
+import { initializePaths, getOutputPath } from './helpers/paths.js';
+import { createSessionDetector, type SessionInfo, type SessionDetector } from './session-detector.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -954,6 +957,10 @@ let activePuppeteerManager: PuppeteerManager | null = null;
 let activeConsoleMonitor: ConsoleMonitor | null = null;
 let activeNetworkMonitor: NetworkMonitor | null = null;
 
+// Session detection state (set in main, used in tool handler)
+let sessionDetectorInstance: SessionDetector | null = null;
+let sessionVerifyStarted = false;
+
 // Helper to update active manager references
 const updateActiveManagers = (connectionId?: string) => {
   const connection = connectionManager.getConnection(connectionId);
@@ -1138,6 +1145,8 @@ const allTools = {
       return resolved.puppeteerManager.getPage();
     }
   ) : {}),
+  // Dashboard tools (lazy-initialized in main())
+  ...(configManager.isToolEnabled('dashboard') ? createDashboardTools() : {}),
 };
 
 /**
@@ -1252,6 +1261,13 @@ Edit ${configPath} to resolve, then restart the MCP server.`,
       return bugCheck.response;
     }
 
+    // Check for duplicate session (multiple MCPs for same Claude session)
+    const duplicateInfo = getDuplicateSessionInfo();
+    const duplicateCheck = checkDuplicateSession(duplicateInfo, toolName);
+    if (duplicateCheck.blocked) {
+      return duplicateCheck.response;
+    }
+
     // Pass validated data to handler
     try {
       const result = await tool.handler(validation.data, extra?.signal);
@@ -1271,6 +1287,7 @@ Edit ${configPath} to resolve, then restart the MCP server.`,
 
       // Collect status lines to append to response
       const statusItems: StatusLineItem[] = [];
+
 
       // Append server log status to all tool responses
       const serverLogStats = serverManager.getLogStats();
@@ -1315,6 +1332,43 @@ Edit ${configPath} to resolve, then restart the MCP server.`,
         appendToResponse(result, statusSuffix);
       }
 
+      // Always append PID for session file verification
+      // This gets logged by Claude, allowing us to identify our session file
+      // See: src/session-detector.ts for how this is used
+      appendToResponse(result, `\npid:${process.pid}`);
+
+      // Report action to dashboard (if enabled)
+      const dashboardInst = getDashboardInstance();
+      if (dashboardInst) {
+        if (dashboardInst.hub) {
+          // We're the hub - update our own state
+          const connections = connectionManager.getAllConnections().map(conn => ({
+            reference: conn.reference || conn.id,
+            type: conn.type,
+            state: conn.cdpManager.isPaused() ? 'paused' as const :
+                   (Date.now() - conn.lastActivityAt < 30000) ? 'active' as const : 'idle' as const,
+            createdAt: conn.createdAt,
+            lastActivityAt: conn.lastActivityAt,
+          }));
+          dashboardInst.hub.updateSelf(connections, {
+            tool: toolName,
+            timestamp: Date.now(),
+            connectionReference: connectionReason,
+          });
+        } else if (dashboardInst.client) {
+          // We're a client - report to hub
+          dashboardInst.client.reportAction(toolName, connectionReason);
+        }
+      }
+
+      // Start session verification after first tool use
+      // The PID we just appended to the response will be logged by Claude.
+      // Now we watch session files and look for that PID to identify our session.
+      if (sessionDetectorInstance && !sessionVerifyStarted) {
+        sessionVerifyStarted = true;
+        sessionDetectorInstance.verify(process.pid);
+      }
+
       return result;
     } catch (error) {
       // Check for ToolError and return its response directly
@@ -1347,6 +1401,95 @@ async function main() {
   // Initialize path configuration early (before any file operations)
   const pathConfig = initializePaths();
   console.error(`[cdp-tools] Path config: global=${pathConfig.globalBase}, workingDir=${pathConfig.workingDirBase ?? 'none (using global fallback)'}`);
+
+  // Start non-blocking session detection (polls for file modified after MCP start)
+  const cwd = process.cwd();
+  const mcpStartTime = Date.now();
+  // SessionInfo detected asynchronously - may be undefined until callback fires
+  let detectedSessionInfo: SessionInfo | undefined;
+  // Dashboard instance - initialized after session is detected
+  let dashboardInstance: DashboardInstance | null = null;
+
+  // Set up session detector (starts monitoring immediately)
+  sessionDetectorInstance = createSessionDetector(cwd);
+
+  // Helper to convert connections to dashboard format
+  const getConnectionsForDashboard = (): DashboardConnectionInfo[] => {
+    return connectionManager.getAllConnections().map(conn => ({
+      reference: conn.reference || conn.id,
+      type: conn.type,
+      state: conn.cdpManager.isPaused() ? 'paused' as const :
+             (Date.now() - conn.lastActivityAt < 30000) ? 'active' as const : 'idle' as const,
+      createdAt: conn.createdAt,
+      lastActivityAt: conn.lastActivityAt,
+    }));
+  };
+
+  const sessionStartTime = Date.now() - (performance.now() - STARTUP_TIME);
+
+  // Failover callback - when hub dies, try to become the new hub
+  const handleHubDown = async () => {
+    await debugLog('dashboard', 'Attempting to become new hub...');
+    const currentSession = detectedSessionInfo;
+    const newInstance = await initializeDashboard(
+      process.cwd(),
+      sessionStartTime,
+      getConnectionsForDashboard,
+      currentSession?.sessionId || `pid-${process.pid}`,
+      currentSession?.shortId || `pid-${process.pid}`,
+      handleHubDown  // Pass callback again for the new client
+    );
+    if (newInstance) {
+      dashboardInstance = newInstance;
+      setDashboardInstance(newInstance);
+      await debugLog('dashboard', `Failover: now ${newInstance.type} on port ${newInstance.port}`);
+    }
+  };
+
+  // Initialize dashboard immediately (don't wait for session detection)
+  if (configManager.isToolEnabled('dashboard')) {
+    dashboardInstance = await initializeDashboard(
+      process.cwd(),
+      sessionStartTime,
+      getConnectionsForDashboard,
+      `pid-${process.pid}`,  // Placeholder until session detected
+      `pid-${process.pid}`,
+      handleHubDown
+    );
+
+    if (dashboardInstance) {
+      setDashboardInstance(dashboardInstance);
+      await debugLog('dashboard', `Initialized as ${dashboardInstance.type} on port ${dashboardInstance.port}`);
+    } else {
+      await debugLog('dashboard', `Initialization failed`);
+    }
+  }
+
+  // Subscribe to session changes - update session info when detected
+  sessionDetectorInstance.session$.subscribe(async (sessionInfo) => {
+    await debugLog('session-detector', `Session ID: ${sessionInfo.shortId} (${sessionInfo.sessionId})`);
+    detectedSessionInfo = sessionInfo;
+    setSessionInfo(sessionInfo);
+
+    // Update dashboard with real session info
+    await debugLog('dashboard', `Updating session info: instance=${!!dashboardInstance}, hub=${!!dashboardInstance?.hub}, client=${!!dashboardInstance?.client}`);
+    if (dashboardInstance?.hub) {
+      dashboardInstance.hub.updateSessionInfo(sessionInfo.sessionId, sessionInfo.shortId);
+      await debugLog('dashboard', `Hub session info updated to ${sessionInfo.shortId}`);
+    } else if (dashboardInstance?.client) {
+      dashboardInstance.client.updateSessionInfo(sessionInfo.sessionId, sessionInfo.shortId);
+      await debugLog('dashboard', `Client session info updated to ${sessionInfo.shortId}`);
+    }
+  });
+
+  // Subscribe to entry count changes - update dashboard
+  sessionDetectorInstance.entryCount$.subscribe(async (count) => {
+    if (dashboardInstance?.hub) {
+      dashboardInstance.hub.updateSessionEntryCount(count);
+    } else if (dashboardInstance?.client) {
+      dashboardInstance.client.updateSessionEntryCount(count);
+    }
+  });
 
   // Capture import time (time from script start to main() being called)
   const importTime = performance.now() - STARTUP_TIME;
@@ -1423,6 +1566,8 @@ async function main() {
   if (serverInitResult.failed.length > 0) {
     console.error(`[cdp-tools] Failed to auto-start ${serverInitResult.failed.length} server(s): ${serverInitResult.failed.join(', ')}`);
   }
+
+  // Dashboard is initialized in session detection callback after sessionId is known
 
   console.error(`[cdp-tools] Server ready (PID: ${process.pid})`);
 
@@ -1519,6 +1664,15 @@ async function main() {
       sourceMapHandler.clear();
       await chromeLauncher.kill();
       await portReserver.release();
+      // Stop session detector if running
+      if (sessionDetectorInstance) {
+        sessionDetectorInstance.stop();
+      }
+      // Stop file watcher if running
+      if ((dashboardInstance as any)?._stopFileWatcher) {
+        (dashboardInstance as any)._stopFileWatcher();
+      }
+      await shutdownDashboard(dashboardInstance);
       console.error('[cdp-tools] Cleanup complete');
     } catch (error) {
       console.error(`[cdp-tools] Cleanup error: ${error}`);

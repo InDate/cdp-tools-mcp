@@ -7,6 +7,21 @@ import type { PortFailureInfo, PendingStartupFailureInfo } from './server-manage
 import type { Connection } from './connection-manager.js';
 import { hasPendingBugs, getPendingBugs } from './issue-tracker.js';
 import { createErrorResponse } from './messages.js';
+import { readFileSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Get MCP version from package.json
+let MCP_VERSION = 'unknown';
+try {
+  const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
+  MCP_VERSION = pkg.version;
+} catch {
+  // Ignore errors
+}
 
 /**
  * Tool response content item
@@ -386,6 +401,92 @@ export function checkPendingStartups(
       isError: true
     }
   };
+}
+
+/**
+ * Duplicate session info for blocking check
+ */
+export interface DuplicateSessionInfo {
+  sessionId: string;
+  shortId: string;
+  allPids: number[];      // MCP process IDs
+  allPpids: number[];     // Claude session process IDs (parents)
+  currentPid: number;     // This MCP process ID
+  currentPpid: number;    // This Claude session process ID
+}
+
+/**
+ * Check for duplicate session (multiple MCPs sharing same Claude session)
+ * Both original and duplicate sessions are blocked with appropriate messages
+ */
+export function checkDuplicateSession(
+  info: DuplicateSessionInfo | null,
+  toolName: string
+): PreExecutionResult {
+  // No session info or not a duplicate - allow
+  if (!info || info.allPids.length <= 1) {
+    return { blocked: false, prefix: '', markAsError: false };
+  }
+
+  const firstPid = info.allPids[0];
+  const isOriginal = info.currentPid === firstPid;
+  const duplicatePids = info.allPids.filter(p => p !== firstPid);
+  const duplicatePpids = info.allPpids.filter(p => p !== info.allPpids[0]);
+
+  if (isOriginal) {
+    // Original session - tell them about the duplicate and how to kill it
+    return {
+      blocked: true,
+      response: {
+        content: [
+          {
+            type: 'text',
+            text: `**BLOCKED: Duplicate MCP session detected**
+
+**To fix:** Kill the duplicate Claude session:
+\`\`\`
+kill ${duplicatePpids.length > 0 ? duplicatePpids.join(' ') : duplicatePids.join(' ')}
+\`\`\`
+
+Another Claude session has connected with the same session ID:
+
+- Session ID: ${info.shortId} (${info.sessionId})
+- This Claude PID: ${info.currentPpid} (original)
+- Duplicate Claude PID(s): ${duplicatePpids.join(', ') || duplicatePids.join(', ')}
+- MCP Version: ${MCP_VERSION}`,
+          },
+        ],
+        isError: true
+      }
+    };
+  } else {
+    // Duplicate session - tell them to fork
+    const firstPpid = info.allPpids[0] || firstPid;
+    return {
+      blocked: true,
+      response: {
+        content: [
+          {
+            type: 'text',
+            text: `**BLOCKED: Duplicate MCP session detected**
+
+**To fix:** Exit this session and run:
+\`\`\`
+claude --resume ${info.sessionId} --fork-session
+\`\`\`
+
+Another Claude session is already running with this session ID:
+
+- Session ID: ${info.shortId} (${info.sessionId})
+- Original Claude PID: ${firstPpid}
+- This Claude PID: ${info.currentPpid} (duplicate)
+- MCP Version: ${MCP_VERSION}`,
+          },
+        ],
+        isError: true
+      }
+    };
+  }
 }
 
 /**
