@@ -52,6 +52,8 @@ import { createConfigTools } from './tools/config-tools.js';
 import { createIssuesTools } from './tools/issues-tools.js';
 import { createDashboardTools, setDashboardInstance, getDashboardInstance, setSessionInfo, getDuplicateSessionInfo } from './tools/dashboard-tools.js';
 import { initializeDashboard, shutdownDashboard, type DashboardInstance, type ConnectionInfo as DashboardConnectionInfo } from './dashboard/index.js';
+import { Orchestrator } from './log-processor/orchestrator.js';
+import { mkdirSync } from 'fs';
 import { ServerManager } from './server-manager.js';
 import { configManager } from './config.js';
 import { checkPortFailures, checkBreakpointPause, checkBugBlocking, checkPendingStartups, checkDuplicateSession, prependToResponse, appendToResponse, buildStatusSuffix, type StatusLineItem } from './tool-response.js';
@@ -64,6 +66,7 @@ import { fileURLToPath } from 'url';
 import { debugLog, enableDebugLogging, disableDebugLogging, isDebugEnabled, enableHistoryLogging, disableHistoryLogging, setStartupMetrics } from './debug-logger.js';
 import { validateReference, requireValidReference, UNNAMED_CONNECTION, InvalidReferenceError } from './reference-validator.js';
 import { initializePaths, getOutputPath } from './helpers/paths.js';
+import { cleanupStaleTempFiles, cleanupStaleTempFilesSync } from './atomic-write.js';
 import { createSessionDetector, type SessionInfo, type SessionDetector } from './session-detector.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -961,6 +964,9 @@ let activeNetworkMonitor: NetworkMonitor | null = null;
 let sessionDetectorInstance: SessionDetector | null = null;
 let sessionVerifyStarted = false;
 
+// Log processor orchestrator (set in main for hub instances)
+let orchestratorInstance: Orchestrator | null = null;
+
 // Helper to update active manager references
 const updateActiveManagers = (connectionId?: string) => {
   const connection = connectionManager.getConnection(connectionId);
@@ -1402,6 +1408,20 @@ async function main() {
   const pathConfig = initializePaths();
   console.error(`[cdp-tools] Path config: global=${pathConfig.globalBase}, workingDir=${pathConfig.workingDirBase ?? 'none (using global fallback)'}`);
 
+  // Clean up stale temp files from previous crashed/killed processes
+  // Run in background - don't block startup
+  Promise.all([
+    cleanupStaleTempFiles(pathConfig.globalBase),
+    pathConfig.workingDirBase ? cleanupStaleTempFiles(pathConfig.workingDirBase) : Promise.resolve({ cleaned: [], errors: [] })
+  ]).then(([globalResult, localResult]) => {
+    const totalCleaned = globalResult.cleaned.length + localResult.cleaned.length;
+    if (totalCleaned > 0) {
+      console.error(`[cdp-tools] Cleaned ${totalCleaned} stale temp file(s)`);
+    }
+  }).catch(() => {
+    // Ignore cleanup errors - best effort only
+  });
+
   // Start non-blocking session detection (polls for file modified after MCP start)
   const cwd = process.cwd();
   const mcpStartTime = Date.now();
@@ -1427,6 +1447,32 @@ async function main() {
 
   const sessionStartTime = Date.now() - (performance.now() - STARTUP_TIME);
 
+  // Helper to start orchestrator when becoming hub
+  const startOrchestrator = async (hub: NonNullable<DashboardInstance['hub']>) => {
+    if (orchestratorInstance || !sessionDetectorInstance) return;
+
+    try {
+      const configDir = join(cwd, '.cdp-tools', 'config');
+      mkdirSync(join(configDir, 'classifiers'), { recursive: true });
+      mkdirSync(join(configDir, 'extractors'), { recursive: true });
+      mkdirSync(join(configDir, 'state-machines'), { recursive: true });
+
+      orchestratorInstance = new Orchestrator({
+        source: {
+          mode: 'live',
+          sessionDetector: sessionDetectorInstance
+        },
+        configDir
+      });
+
+      await orchestratorInstance.start();
+      hub.connectLogProcessor(orchestratorInstance);
+      await debugLog('log-processor', 'Orchestrator started and connected to dashboard hub');
+    } catch (error) {
+      await debugLog('log-processor', `Failed to start orchestrator: ${error}`);
+    }
+  };
+
   // Failover callback - when hub dies, try to become the new hub
   const handleHubDown = async () => {
     await debugLog('dashboard', 'Attempting to become new hub...');
@@ -1443,6 +1489,11 @@ async function main() {
       dashboardInstance = newInstance;
       setDashboardInstance(newInstance);
       await debugLog('dashboard', `Failover: now ${newInstance.type} on port ${newInstance.port}`);
+
+      // If we became the hub, start the orchestrator
+      if (newInstance.hub) {
+        await startOrchestrator(newInstance.hub);
+      }
     }
   };
 
@@ -1490,6 +1541,11 @@ async function main() {
       dashboardInstance.client.updateSessionEntryCount(count);
     }
   });
+
+  // Initialize log processor orchestrator (hub only)
+  if (dashboardInstance?.hub) {
+    await startOrchestrator(dashboardInstance.hub);
+  }
 
   // Capture import time (time from script start to main() being called)
   const importTime = performance.now() - STARTUP_TIME;
@@ -1668,11 +1724,26 @@ async function main() {
       if (sessionDetectorInstance) {
         sessionDetectorInstance.stop();
       }
+      // Stop log processor orchestrator if running
+      if (orchestratorInstance) {
+        orchestratorInstance.stop();
+      }
       // Stop file watcher if running
       if ((dashboardInstance as any)?._stopFileWatcher) {
         (dashboardInstance as any)._stopFileWatcher();
       }
       await shutdownDashboard(dashboardInstance);
+
+      // Final sync cleanup of temp files before exit
+      const globalCleaned = cleanupStaleTempFilesSync(pathConfig.globalBase, 0);
+      const localCleaned = pathConfig.workingDirBase
+        ? cleanupStaleTempFilesSync(pathConfig.workingDirBase, 0)
+        : { cleaned: [] };
+      const totalCleaned = globalCleaned.cleaned.length + localCleaned.cleaned.length;
+      if (totalCleaned > 0) {
+        console.error(`[cdp-tools] Cleaned ${totalCleaned} temp file(s) on shutdown`);
+      }
+
       console.error('[cdp-tools] Cleanup complete');
     } catch (error) {
       console.error(`[cdp-tools] Cleanup error: ${error}`);

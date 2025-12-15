@@ -8,6 +8,7 @@ import { createTool } from '../validation-helpers.js';
 import { ServerManager, type ServerStatus, type LogStats, type MonitoredPortStatus, type MonitoringLevel } from '../server-manager.js';
 import { type RunnerType } from '../runners/index.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
+import { getDashboardInstance } from './dashboard-tools.js';
 
 const serverSchema = z.object({
   action: z.enum(['start', 'stop', 'restart', 'list', 'logs', 'stopAll', 'setAutoRun', 'clearLogs', 'remove', 'monitorPort', 'unmonitorPort', 'listMonitored', 'acknowledgePort', 'acknowledgeStartup', 'extendStartup']),
@@ -229,20 +230,39 @@ export function createServerTools(serverManager: ServerManager) {
             await serverManager.cleanup();
             const servers = await serverManager.getStatus();
 
-            if (servers.length === 0) {
+            // Add dashboard as a special internal server if running
+            const dashboardInstance = getDashboardInstance();
+            const allServers = [...servers];
+            if (dashboardInstance) {
+              allServers.push({
+                id: 'cdp-dashboard',
+                command: dashboardInstance.type === 'hub' ? 'dashboard hub' : 'dashboard client',
+                cwd: process.cwd(),
+                running: true,
+                pid: process.pid,
+                port: dashboardInstance.port,
+                startedAt: new Date(),  // Approximate - dashboard started with MCP
+                uptime: '-',
+                autoRun: false,
+                runnerType: 'native' as const,
+                global: false,
+              });
+            }
+
+            if (allServers.length === 0) {
               return createSuccessResponse('SERVER_LIST_EMPTY', withLogStatus({}));
             }
 
-            const runningCount = servers.filter(s => s.running).length;
-            const stoppedCount = servers.length - runningCount;
-            const dockerCount = servers.filter(s => s.runnerType !== 'native').length;
+            const runningCount = allServers.filter(s => s.running).length;
+            const stoppedCount = allServers.length - runningCount;
+            const dockerCount = allServers.filter(s => s.runnerType !== 'native').length;
 
             return createSuccessResponse('SERVER_LIST_SUCCESS', withLogStatus({
-              count: servers.length,
+              count: allServers.length,
               runningCount,
               stoppedCount,
               dockerCount,
-              serverList: formatServerList(servers),
+              serverList: formatServerList(allServers),
             }));
           }
 
