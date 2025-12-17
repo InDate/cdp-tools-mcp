@@ -423,6 +423,38 @@ export class PortMonitor {
       await this.stopMonitoring(port);
     }
   }
+
+  /**
+   * Pause all port monitoring (e.g., when paused at a breakpoint)
+   * Stops reconnection attempts but preserves port state
+   */
+  pauseMonitoring(): void {
+    for (const monitored of this.ports.values()) {
+      // Clear any pending reconnect timers
+      if (monitored.reconnectTimer) {
+        clearTimeout(monitored.reconnectTimer);
+        monitored.reconnectTimer = undefined;
+      }
+      // Close any active socket connections
+      if (monitored.socket) {
+        monitored.socket.removeAllListeners();
+        monitored.socket.destroy();
+        monitored.socket = null;
+      }
+    }
+    debugLog('PortMonitor', 'Port monitoring paused');
+  }
+
+  /**
+   * Resume all port monitoring (e.g., when resuming from a breakpoint)
+   * Restarts connection attempts for all monitored ports
+   */
+  resumeMonitoring(): void {
+    for (const port of this.ports.keys()) {
+      this.connectToPort(port);
+    }
+    debugLog('PortMonitor', 'Port monitoring resumed');
+  }
 }
 
 // ============================================================================

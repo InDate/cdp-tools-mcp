@@ -150,8 +150,14 @@ export function checkPortFailures(
   // Check for blocking failures (block level ports that haven't been acknowledged)
   const blockingPorts = failedPorts.filter(p => p.level === 'block');
 
-  if (blockingPorts.length > 0 && toolName !== 'server') {
-    // Block all tools except the server tool (needed to acknowledge/manage ports)
+  // Tools that should not be blocked by port failures
+  // - server: needed to acknowledge/manage ports
+  // - execution: needed to resume from breakpoints (otherwise deadlock with breakpoint blocking)
+  // - breakpoint: needed to manage breakpoints while debugging
+  const portFailureExemptTools = new Set(['server', 'execution', 'breakpoint']);
+
+  if (blockingPorts.length > 0 && !portFailureExemptTools.has(toolName)) {
+    // Block all tools except exempt tools
     const portList = blockingPorts.map(p =>
       `Port ${p.port}${p.description ? ` (${p.description})` : ''} - down since ${p.failedAt.toISOString()}`
     ).join('\n');
@@ -234,6 +240,7 @@ export interface BreakpointPauseInfo {
     url: string;
     lineNumber: number;
   };
+  callFrameId?: string;
 }
 
 /**
@@ -261,9 +268,11 @@ export function checkBreakpointPause(
   for (const conn of connections) {
     if (conn.cdpManager.isPaused() && !conn.breakpointPauseAcknowledged) {
       const pauseInfo = conn.cdpManager.getPausedInfo();
+      const topFrame = pauseInfo.callStack?.[0];
       pausedConnections.push({
         reference: conn.reference || conn.id,
         location: pauseInfo.location,
+        callFrameId: topFrame?.callFrameId,
       });
     }
   }
@@ -299,8 +308,17 @@ export function checkBreakpointPause(
     const loc = p.location
       ? `\n  Location: ${p.location.url}:${p.location.lineNumber}`
       : '';
-    return `- "${p.reference}"${loc}`;
+    const frameId = p.callFrameId
+      ? `\n  callFrameId: "${p.callFrameId}"`
+      : '';
+    return `- "${p.reference}"${loc}${frameId}`;
   }).join('\n');
+
+  // Build getVariables hint with callFrameId if available
+  const firstCallFrameId = pausedConnections[0]?.callFrameId;
+  const getVariablesHint = firstCallFrameId
+    ? `\`inspect({ action: 'getVariables', callFrameId: '${firstCallFrameId}' })\``
+    : `\`inspect({ action: 'getVariables' })\``;
 
   return {
     blocked: true,
@@ -316,7 +334,7 @@ ${pauseDetails}
 **To continue:**
 - Use \`execution({ action: 'resume' })\` to resume execution
 - Use \`execution({ action: 'acknowledge' })\` to acknowledge and continue using other tools while paused
-- Use \`inspect({ action: 'getCallStack' })\` or \`inspect({ action: 'getVariables' })\` to examine state
+- Use \`inspect({ action: 'getCallStack' })\` or ${getVariablesHint} to examine state
 
 Other tools are blocked until execution is resumed or acknowledged.`,
         },

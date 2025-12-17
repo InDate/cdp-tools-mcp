@@ -49,6 +49,7 @@ import { createModalTools } from './tools/modal-tools.js';
 import { createReplayTools } from './tools/replay-tools.js';
 import { createServerTools } from './tools/server-tools.js';
 import { createConfigTools } from './tools/config-tools.js';
+import { createPluginTools } from './tools/plugin-tools.js';
 import { createIssuesTools } from './tools/issues-tools.js';
 import { createDashboardTools, setDashboardInstance, getDashboardInstance, setSessionInfo, getDuplicateSessionInfo } from './tools/dashboard-tools.js';
 import { initializeDashboard, shutdownDashboard, type DashboardInstance, type ConnectionInfo as DashboardConnectionInfo } from './dashboard/index.js';
@@ -389,6 +390,11 @@ const connectionTools = {
             await cdpManager.connect('localhost', port, targetId);
             runtimeType = cdpManager.getRuntimeType();
 
+            // Set up pause/resume callbacks to control port monitoring
+            const portMonitor = serverManager.getPortMonitor();
+            cdpManager.setPauseCallback(() => portMonitor.pauseMonitoring());
+            cdpManager.setResumeCallback(() => portMonitor.resumeMonitoring());
+
             // Connect Puppeteer for Chrome (if not already connected)
             if (runtimeType === 'chrome' && !browserAlreadyExists) {
               await puppeteerManager.connect('localhost', port);
@@ -690,6 +696,11 @@ const connectionTools = {
         // Connect CDP first to detect runtime type
         await cdpManager.connect(host, port);
         const runtimeType = cdpManager.getRuntimeType();
+
+        // Set up pause/resume callbacks to control port monitoring
+        const portMonitor = serverManager.getPortMonitor();
+        cdpManager.setPauseCallback(() => portMonitor.pauseMonitoring());
+        cdpManager.setResumeCallback(() => portMonitor.resumeMonitoring());
 
         const features = ['debugging'];
 
@@ -1100,7 +1111,7 @@ const allTools = {
   // Connection tools (Chrome/debugger)
   ...(configManager.isToolEnabled('connection') ? connectionTools : {}),
   // Tab Management tools
-  ...(configManager.isToolEnabled('tab') ? createTabTools(connectionManager, sourceMapHandler, updateActiveManagers, logpointTracker) : {}),
+  ...(configManager.isToolEnabled('tab') ? createTabTools(connectionManager, sourceMapHandler, updateActiveManagers, logpointTracker, serverManager) : {}),
   // CDP Debugging tools
   ...(configManager.isToolEnabled('breakpoint') ? createBreakpointTools(proxyCdpManager, sourceMapHandler, logpointTracker, resolveConnectionFromReason) : {}),
   ...(configManager.isToolEnabled('execution') ? createExecutionTools(proxyCdpManager, resolveConnectionFromReason, connectionManager) : {}),
@@ -1128,6 +1139,8 @@ const allTools = {
   ...(configManager.isToolEnabled('server') ? createServerTools(serverManager) : {}),
   // Config management tools (always enabled - not toggleable)
   ...createConfigTools(),
+  // Plugin management tools (always enabled - not toggleable)
+  ...createPluginTools(() => orchestratorInstance),
   // Issues tracking tools
   ...(configManager.isToolEnabled('issues') ? createIssuesTools(
     executeToolCall,
@@ -1456,6 +1469,7 @@ async function main() {
       mkdirSync(join(configDir, 'classifiers'), { recursive: true });
       mkdirSync(join(configDir, 'extractors'), { recursive: true });
       mkdirSync(join(configDir, 'state-machines'), { recursive: true });
+      mkdirSync(join(configDir, 'dashboard'), { recursive: true });
 
       orchestratorInstance = new Orchestrator({
         source: {
@@ -1467,6 +1481,11 @@ async function main() {
 
       await orchestratorInstance.start();
       hub.connectLogProcessor(orchestratorInstance);
+
+      // Start custom dashboard route loader
+      const dashboardConfigDir = join(configDir, 'dashboard');
+      await hub.startRouteLoader(dashboardConfigDir);
+
       await debugLog('log-processor', 'Orchestrator started and connected to dashboard hub');
     } catch (error) {
       await debugLog('log-processor', `Failed to start orchestrator: ${error}`);
@@ -1542,6 +1561,16 @@ async function main() {
     }
   });
 
+  // Load configuration early so debug logging is available for orchestrator startup
+  await configManager.load();
+  const debugConfig = configManager.getDebugConfig();
+  if (debugConfig.enabled) {
+    await enableDebugLogging({ clearOnStartup: true });
+  }
+  if (debugConfig.historyLogEnabled) {
+    enableHistoryLogging();
+  }
+
   // Initialize log processor orchestrator (hub only)
   if (dashboardInstance?.hub) {
     await startOrchestrator(dashboardInstance.hub);
@@ -1599,17 +1628,7 @@ async function main() {
   const transportTime = performance.now() - transportStart;
   console.error(`[cdp-tools] Transport connected (PID: ${process.pid})`);
 
-  // Load configuration
-  await configManager.load();
-
-  // Apply debug config from configuration file
-  const debugConfig = configManager.getDebugConfig();
-  if (debugConfig.enabled) {
-    await enableDebugLogging();
-  }
-  if (debugConfig.historyLogEnabled) {
-    enableHistoryLogging();
-  }
+  // Note: Config was already loaded earlier (before orchestrator startup) for debug logging
 
   // Initialize server manager - recover running servers and start auto-run servers
   const serverInitResult = await serverManager.initialize();

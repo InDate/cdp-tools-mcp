@@ -30,6 +30,8 @@ export class CDPManager {
     logs: any[];
   } | null = null;
   private consoleMessageCallback: ConsoleMessageCallback | null = null;
+  private pauseCallback: (() => void) | null = null;
+  private resumeCallback: (() => void) | null = null;
 
   // DOMDebugger state for advanced breakpoints
   private domBreakpoints: Map<string, DOMBreakpointInfo> = new Map();
@@ -47,6 +49,20 @@ export class CDPManager {
    */
   setConsoleMessageCallback(callback: ConsoleMessageCallback | null): void {
     this.consoleMessageCallback = callback;
+  }
+
+  /**
+   * Set a callback to be called when debugger pauses at a breakpoint
+   */
+  setPauseCallback(callback: (() => void) | null): void {
+    this.pauseCallback = callback;
+  }
+
+  /**
+   * Set a callback to be called when debugger resumes from a breakpoint
+   */
+  setResumeCallback(callback: (() => void) | null): void {
+    this.resumeCallback = callback;
   }
 
   /**
@@ -188,11 +204,21 @@ export class CDPManager {
           const url = this.scriptIdToUrl.get(location.scriptId) || 'unknown';
           this.injectConsoleLink(url, location.lineNumber, '⏸️ Paused at');
         }
+
+        // Notify pause callback (e.g., to pause port monitoring)
+        if (this.pauseCallback) {
+          this.pauseCallback();
+        }
       });
 
       Debugger.resumed(() => {
         this.state.paused = false;
         this.state.currentCallFrames = undefined;
+
+        // Notify resume callback (e.g., to resume port monitoring)
+        if (this.resumeCallback) {
+          this.resumeCallback();
+        }
       });
 
       // Listen for breakpoint resolution - updates pending breakpoints when script loads

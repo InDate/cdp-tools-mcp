@@ -13,6 +13,7 @@ import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import { requireValidReference, sanitizeReference, UNNAMED_CONNECTION } from '../reference-validator.js';
 import type { LogpointExecutionTracker } from '../logpoint-execution-tracker.js';
+import type { ServerManager } from '../server-manager.js';
 
 // Consolidated schema for tab tools
 const tabSchema = z.object({
@@ -28,7 +29,8 @@ export function createTabTools(
   connectionManager: ConnectionManager,
   sourceMapHandler: SourceMapHandler,
   updateActiveManagers: (connectionId: string) => void,
-  logpointTracker: LogpointExecutionTracker
+  logpointTracker: LogpointExecutionTracker,
+  serverManager: ServerManager
 ) {
   return {
     tab: createTool(
@@ -163,6 +165,11 @@ export function createTabTools(
 
               // Connect CDPManager to the specific page target
               await cdpManager.connect(host, port, targetId);
+
+              // Set up pause/resume callbacks to control port monitoring
+              const portMonitor = serverManager.getPortMonitor();
+              cdpManager.setPauseCallback(() => portMonitor.pauseMonitoring());
+              cdpManager.setResumeCallback(() => portMonitor.resumeMonitoring());
 
               // Start monitoring
               consoleMonitor.startMonitoring(page);
