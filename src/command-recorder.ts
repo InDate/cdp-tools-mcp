@@ -11,6 +11,7 @@ import { debugLog, isHistoryLogEnabled, logToHistoryFile } from './debug-logger.
 import { sanitizeReference } from './reference-validator.js';
 import { getOutputPath } from './helpers/paths.js';
 import { atomicWriteFile } from './atomic-write.js';
+import { getIssueSequencesDir, getIssuesBySequenceFile } from './issue-tracker.js';
 
 export interface RecordedCommand {
   tool: string;
@@ -507,7 +508,7 @@ export class CommandRecorder {
   /**
    * List saved sequences on disk from a specific directory
    */
-  private async listSequencesFromDir(dir: string, location: 'working-dir' | 'global'): Promise<Array<{ filename: string; name: string; id: string; commandCount: number; description?: string; expectedOutcome?: string; startUrl?: string; location: string; fullPath: string }>> {
+  private async listSequencesFromDir(dir: string, location: 'working-dir' | 'global' | 'issues'): Promise<Array<{ filename: string; name: string; id: string; commandCount: number; description?: string; expectedOutcome?: string; startUrl?: string; location: string; fullPath: string }>> {
     const sequences: Array<{ filename: string; name: string; id: string; commandCount: number; description?: string; expectedOutcome?: string; startUrl?: string; location: string; fullPath: string }> = [];
 
     try {
@@ -565,6 +566,40 @@ export class CommandRecorder {
     }
 
     return [...workingDirSequences, ...globalSequences];
+  }
+
+  /**
+   * List issue sequences on disk with associated issue metadata
+   */
+  async listIssueSequencesOnDisk(): Promise<Array<{
+    filename: string;
+    name: string;
+    id: string;
+    commandCount: number;
+    description?: string;
+    expectedOutcome?: string;
+    startUrl?: string;
+    location: string;
+    fullPath: string;
+    issueId?: number;
+    issueType?: string;
+    issueStatus?: string;
+  }>> {
+    const issuesDir = getIssueSequencesDir();
+    const sequences = await this.listSequencesFromDir(issuesDir, 'issues');
+
+    // Get issue metadata
+    const issueMap = await getIssuesBySequenceFile();
+
+    return sequences.map(seq => {
+      const issue = issueMap.get(seq.filename);
+      return {
+        ...seq,
+        issueId: issue?.id,
+        issueType: issue?.type,
+        issueStatus: issue?.status
+      };
+    });
   }
 
   /**

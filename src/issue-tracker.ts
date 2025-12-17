@@ -519,3 +519,17 @@ export function generateSequenceFilename(type: IssueType, id: number, descriptio
 
   return `${type}-${String(id).padStart(3, '0')}-${sanitized || 'untitled'}.json`;
 }
+
+/**
+ * Get issues indexed by their sequence filename
+ */
+export async function getIssuesBySequenceFile(): Promise<Map<string, TrackedIssue>> {
+  const issues = await getIssues({ includeCompleted: true });
+  const map = new Map<string, TrackedIssue>();
+  for (const issue of issues) {
+    if (issue.sequenceFile) {
+      map.set(issue.sequenceFile, issue);
+    }
+  }
+  return map;
+}

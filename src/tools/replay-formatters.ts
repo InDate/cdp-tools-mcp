@@ -499,32 +499,110 @@ export function formatSequenceDetails(sequence: CommandSequence): string {
 
 /**
  * Format saved sequences on disk listing
+ * Categories:
+ * - Saved: Regular sequences in .cdp-tools/sequences/
+ * - Issues: Issue sequences that are in_progress (or all if showAll)
+ * - Abandoned: Issue sequences without a linked issue (orphaned)
  */
 export function formatSavedSequencesList(
-  sequences: Array<{ filename: string; name: string; id: string; commandCount: number; description?: string; expectedOutcome?: string; startUrl?: string; location?: string; fullPath?: string }>
+  sequences: Array<{ filename: string; name: string; id: string; commandCount: number; description?: string; expectedOutcome?: string; startUrl?: string; location?: string; fullPath?: string }>,
+  issueSequences?: Array<{ filename: string; name: string; id: string; commandCount: number; description?: string; expectedOutcome?: string; startUrl?: string; location?: string; fullPath?: string; issueId?: number; issueType?: string; issueStatus?: string }>,
+  showAll: boolean = false
 ): string {
-  if (sequences.length === 0) {
+  // Categorize issue sequences
+  const activeIssues: typeof issueSequences = [];
+  const completedIssues: typeof issueSequences = [];
+  const abandoned: typeof issueSequences = [];
+
+  if (issueSequences) {
+    for (const seq of issueSequences) {
+      if (!seq.issueId) {
+        // No linked issue - abandoned/orphaned
+        abandoned.push(seq);
+      } else if (seq.issueStatus === 'in_progress') {
+        // Only in_progress issues are shown by default
+        activeIssues.push(seq);
+      } else {
+        // Everything else (pending, acknowledged, fixed, implemented) goes to completed
+        completedIssues.push(seq);
+      }
+    }
+  }
+
+  const hasSequences = sequences.length > 0;
+  const hasActiveIssues = activeIssues.length > 0;
+  const hasCompletedIssues = completedIssues.length > 0;
+  const hasAbandoned = abandoned.length > 0;
+
+  const hasAnythingToShow = hasSequences || hasActiveIssues || (showAll && (hasCompletedIssues || hasAbandoned));
+  if (!hasAnythingToShow) {
     return getFormattedResponse('REPLAY_SAVED_EMPTY', {});
   }
 
-  // Sort by ID timestamp (oldest first) - ID format is "seq-{timestamp}"
-  const sorted = [...sequences].sort((a, b) => {
-    const tsA = parseInt((a.id || '').replace('seq-', ''), 10) || 0;
-    const tsB = parseInt((b.id || '').replace('seq-', ''), 10) || 0;
-    return tsA - tsB;
-  });
+  let response = '';
 
-  // Use message template for first two lines
-  let response = getFormattedResponse('REPLAY_SAVED_LIST', {
-    count: sorted.length
-  });
+  // Format regular sequences (Saved)
+  if (hasSequences) {
+    const sorted = [...sequences].sort((a, b) => {
+      const tsA = parseInt((a.id || '').replace('seq-', ''), 10) || 0;
+      const tsB = parseInt((b.id || '').replace('seq-', ''), 10) || 0;
+      return tsA - tsB;
+    });
 
-  response += '\n';
+    response = `**Saved** (${sorted.length})\n`;
+    sorted.forEach((seq, idx) => {
+      const locationTag = seq.location === 'global' ? ' [global]' : '';
+      response += `${idx + 1}. ${seq.name} (${seq.commandCount})${locationTag}\n`;
+    });
+  }
 
-  sorted.forEach((seq, idx) => {
-    const locationTag = seq.location === 'global' ? ' [global]' : '';
-    response += `${idx + 1}. ${seq.name} (${seq.commandCount})${locationTag}\n`;
-  });
+  // Format active issue sequences (Issues)
+  if (hasActiveIssues) {
+    const sortedIssues = [...activeIssues].sort((a, b) => (a.issueId || 0) - (b.issueId || 0));
+
+    if (response) response += '\n';
+    response += `**Issues** (${sortedIssues.length})\n`;
+
+    sortedIssues.forEach((seq, idx) => {
+      const tag = `[${seq.issueType} #${seq.issueId} - ${seq.issueStatus}]`;
+      response += `${idx + 1}. ${tag} ${seq.name} (${seq.commandCount})\n`;
+    });
+  }
+
+  // Format completed issues (only if showAll)
+  if (showAll && hasCompletedIssues) {
+    const sortedCompleted = [...completedIssues].sort((a, b) => (a.issueId || 0) - (b.issueId || 0));
+
+    if (response) response += '\n';
+    response += `**Completed** (${sortedCompleted.length})\n`;
+
+    sortedCompleted.forEach((seq, idx) => {
+      const tag = `[${seq.issueType} #${seq.issueId} - ${seq.issueStatus}]`;
+      response += `${idx + 1}. ${tag} ${seq.name} (${seq.commandCount})\n`;
+    });
+  }
+
+  // Format abandoned sequences (only if showAll)
+  if (showAll && hasAbandoned) {
+    const sortedAbandoned = [...abandoned].sort((a, b) => {
+      const tsA = parseInt((a.id || '').replace('seq-', ''), 10) || 0;
+      const tsB = parseInt((b.id || '').replace('seq-', ''), 10) || 0;
+      return tsA - tsB;
+    });
+
+    if (response) response += '\n';
+    response += `**Abandoned** (${sortedAbandoned.length})\n`;
+
+    sortedAbandoned.forEach((seq, idx) => {
+      response += `${idx + 1}. ${seq.name} (${seq.commandCount})\n`;
+    });
+  }
+
+  // Show hint about hidden items
+  if (!showAll && (hasCompletedIssues || hasAbandoned)) {
+    const hiddenCount = completedIssues.length + abandoned.length;
+    response += `\n_${hiddenCount} other sequence(s) hidden. Use showAll: true to see all._\n`;
+  }
 
   response += `\nRun: \`replay({ action: 'run', name: '<name>' })\``;
 

@@ -127,6 +127,7 @@ const replaySchema = z.object({
   issueType: z.enum(['bug', 'feature']).optional(),
   issueDescription: z.string().optional(),
   showReplayOverlay: z.boolean().optional(),
+  showAll: z.boolean().optional().describe('Show all sequences including completed/fixed issues'),
 }).strict();
 
 // =============================================================================
@@ -525,9 +526,11 @@ async function handleLoad(args: ReplayArgs, recorder: CommandRecorder) {
   });
 }
 
-async function handleListSaved(recorder: CommandRecorder) {
+async function handleListSaved(args: ReplayArgs, recorder: CommandRecorder) {
   const savedSequences = await recorder.listSavedSequencesOnDisk();
-  return { content: [{ type: 'text', text: formatSavedSequencesList(savedSequences) }] };
+  const issueSequences = await recorder.listIssueSequencesOnDisk();
+  const showAll = args.showAll ?? false;
+  return { content: [{ type: 'text', text: formatSavedSequencesList(savedSequences, issueSequences, showAll) }] };
 }
 
 async function handleDeleteSaved(args: ReplayArgs, recorder: CommandRecorder) {
@@ -1471,7 +1474,7 @@ export function createReplayTools(
           case 'load':
             return handleLoad(args, commandRecorder);
           case 'listSaved':
-            return handleListSaved(commandRecorder);
+            return handleListSaved(args, commandRecorder);
           case 'deleteSaved':
             return handleDeleteSaved(args, commandRecorder);
           case 'run':
