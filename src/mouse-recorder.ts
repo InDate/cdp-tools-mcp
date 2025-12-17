@@ -310,123 +310,133 @@ export async function startMouseRecording(
       };
 
       if (showOverlayParam) {
-        // Create subtle, compact overlay with buttons
+        // Create subtle, compact overlay with buttons using DOM methods (Trusted Types compatible)
         overlay = doc.createElement('div');
         overlay.id = '__cdp-recording-overlay';
-        overlay.innerHTML = `
-          <div class="cdp-panel" style="
-            position: fixed;
-            bottom: 10px;
-            left: 50%;
-            transform: translateX(-50%);
-            background: rgba(0, 0, 0, 0.75);
-            color: white;
-            padding: 6px 12px;
-            border-radius: 20px;
-            font-family: -apple-system, system-ui, sans-serif;
-            font-size: 12px;
-            z-index: 2147483647;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-            backdrop-filter: blur(4px);
-          ">
-            <span class="cdp-status" style="
-              padding: 2px 6px;
-              border-radius: 4px;
-              font-size: 10px;
-              font-weight: 600;
-              background: #ef4444;
-              letter-spacing: 0.5px;
-            ">REC</span>
-            <span class="cdp-stats" style="color: #d1d5db; min-width: 60px;">0 | 0.0s</span>
-            <span class="cdp-event" style="
-              padding: 2px 8px;
-              border-radius: 4px;
-              font-size: 10px;
-              background: #6b7280;
-              min-width: 50px;
-              text-align: center;
-            ">-</span>
-            <div style="display: flex; gap: 4px; margin-left: 6px;">
-              <button class="cdp-btn cdp-pause" title="Pause/Resume" style="
-                background: #374151;
-                border: none;
-                color: white;
-                width: 24px;
-                height: 24px;
-                border-radius: 4px;
-                cursor: pointer;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                font-size: 10px;
-              ">⏸</button>
-              <button class="cdp-btn cdp-reset" title="Reset" style="
-                background: #374151;
-                border: none;
-                color: white;
-                width: 24px;
-                height: 24px;
-                border-radius: 4px;
-                cursor: pointer;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                font-size: 10px;
-              ">↺</button>
-              <button class="cdp-btn cdp-done" title="Complete" style="
-                background: #059669;
-                border: none;
-                color: white;
-                width: 24px;
-                height: 24px;
-                border-radius: 4px;
-                cursor: pointer;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                font-size: 10px;
-              ">✓</button>
-            </div>
-          </div>
+
+        const panel = doc.createElement('div');
+        panel.className = 'cdp-panel';
+        panel.style.cssText = `
+          position: fixed;
+          bottom: 10px;
+          left: 50%;
+          transform: translateX(-50%);
+          background: rgba(0, 0, 0, 0.75);
+          color: white;
+          padding: 6px 12px;
+          border-radius: 20px;
+          font-family: -apple-system, system-ui, sans-serif;
+          font-size: 12px;
+          z-index: 2147483647;
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+          backdrop-filter: blur(4px);
         `;
+
+        const status = doc.createElement('span');
+        status.className = 'cdp-status';
+        status.textContent = 'REC';
+        status.style.cssText = `
+          padding: 2px 6px;
+          border-radius: 4px;
+          font-size: 10px;
+          font-weight: 600;
+          background: #ef4444;
+          letter-spacing: 0.5px;
+        `;
+
+        const stats = doc.createElement('span');
+        stats.className = 'cdp-stats';
+        stats.textContent = '0 | 0.0s';
+        stats.style.cssText = 'color: #d1d5db; min-width: 60px;';
+
+        const event = doc.createElement('span');
+        event.className = 'cdp-event';
+        event.textContent = '-';
+        event.style.cssText = `
+          padding: 2px 8px;
+          border-radius: 4px;
+          font-size: 10px;
+          background: #6b7280;
+          min-width: 50px;
+          text-align: center;
+        `;
+
+        const btnContainer = doc.createElement('div');
+        btnContainer.style.cssText = 'display: flex; gap: 4px; margin-left: 6px;';
+
+        const btnStyle = `
+          background: #374151;
+          border: none;
+          color: white;
+          width: 24px;
+          height: 24px;
+          border-radius: 4px;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 10px;
+        `;
+
+        const pauseBtn = doc.createElement('button');
+        pauseBtn.className = 'cdp-btn cdp-pause';
+        pauseBtn.title = 'Pause/Resume';
+        pauseBtn.textContent = '⏸';
+        pauseBtn.style.cssText = btnStyle;
+
+        const resetBtn = doc.createElement('button');
+        resetBtn.className = 'cdp-btn cdp-reset';
+        resetBtn.title = 'Reset';
+        resetBtn.textContent = '↺';
+        resetBtn.style.cssText = btnStyle;
+
+        const doneBtn = doc.createElement('button');
+        doneBtn.className = 'cdp-btn cdp-done';
+        doneBtn.title = 'Complete';
+        doneBtn.textContent = '✓';
+        doneBtn.style.cssText = btnStyle.replace('#374151', '#059669');
+
+        btnContainer.appendChild(pauseBtn);
+        btnContainer.appendChild(resetBtn);
+        btnContainer.appendChild(doneBtn);
+
+        panel.appendChild(status);
+        panel.appendChild(stats);
+        panel.appendChild(event);
+        panel.appendChild(btnContainer);
+        overlay.appendChild(panel);
         doc.body.appendChild(overlay);
 
-        // Button handlers
-        const pauseBtn = overlay.querySelector('.cdp-pause');
-        const resetBtn = overlay.querySelector('.cdp-reset');
-        const doneBtn = overlay.querySelector('.cdp-done');
-
-        pauseBtn?.addEventListener('click', (e: any) => {
+        // Button handlers - use existing references instead of querying
+        pauseBtn.addEventListener('click', (e: any) => {
           e.stopPropagation();
           const isPaused = !(globalThis as any).__cdpRecordingPaused;
           (globalThis as any).__cdpRecordingPaused = isPaused;
           pauseBtn.textContent = isPaused ? '▶' : '⏸';
-          const statusEl = overlay.querySelector('.cdp-status');
-          if (statusEl) {
-            statusEl.textContent = isPaused ? 'PAUSED' : 'REC';
-            statusEl.style.background = isPaused ? '#eab308' : '#ef4444';
-          }
+          status.textContent = isPaused ? 'PAUSED' : 'REC';
+          status.style.background = isPaused ? '#eab308' : '#ef4444';
         });
 
-        resetBtn?.addEventListener('click', (e: any) => {
+        resetBtn.addEventListener('click', (e: any) => {
           e.stopPropagation();
           (globalThis as any).__cdpRecordingEvents = [];
           (globalThis as any).__cdpRecordingStart = Date.now();
-          const statsEl = overlay.querySelector('.cdp-stats');
-          if (statsEl) statsEl.textContent = '0 | 0.0s';
+          stats.textContent = '0 | 0.0s';
         });
 
-        doneBtn?.addEventListener('click', (e: any) => {
+        doneBtn.addEventListener('click', (e: any) => {
           e.stopPropagation();
           (globalThis as any).__cdpRecordingState = 'completed';
-          const panel = overlay.querySelector('.cdp-panel');
-          if (panel) {
-            panel.style.background = 'rgba(5, 150, 105, 0.9)';
-            panel.innerHTML = '<span style="padding: 4px 8px;">✓ Recording complete - retrieve with stopMouseRecording</span>';
-          }
+          panel.style.background = 'rgba(5, 150, 105, 0.9)';
+          // Clear panel and add completion message using DOM methods (Trusted Types compatible)
+          while (panel.firstChild) panel.removeChild(panel.firstChild);
+          const completeMsg = doc.createElement('span');
+          completeMsg.textContent = '✓ Recording complete - retrieve with stopMouseRecording';
+          completeMsg.style.cssText = 'padding: 4px 8px;';
+          panel.appendChild(completeMsg);
         });
 
         // Create highlight box

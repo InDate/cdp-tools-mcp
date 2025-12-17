@@ -1213,7 +1213,26 @@ export function createBreakpointTools(
             // Track if we created a breakpoint (for cleanup on abort/timeout)
             let createdBreakpoint: { breakpointId: string; url: string; line: number; column?: number } | null = null;
 
-            // If url and lineNumber provided, set a breakpoint first
+            const timeout = args.timeout || 300000; // Default 5 minutes
+
+            // IMPORTANT: Start listening for pause BEFORE setting breakpoint
+            // This prevents race condition where breakpoint triggers immediately
+            // and pause event fires before we've registered the resolver
+            const waitPromise = new Promise<{ type: 'paused' | 'aborted' | 'timeout' }>((resolve) => {
+              // Set up abort handler
+              if (abortSignal) {
+                abortSignal.addEventListener('abort', () => {
+                  resolve({ type: 'aborted' });
+                }, { once: true });
+              }
+
+              // Wait for pause - registered before breakpoint is set
+              targetCdpManager.waitForPause(timeout)
+                .then(() => resolve({ type: 'paused' }))
+                .catch(() => resolve({ type: 'timeout' }));
+            });
+
+            // If url and lineNumber provided, set a breakpoint (after listener is registered)
             if (args.url && args.lineNumber !== undefined) {
               // Resolve source maps for TypeScript files
               const resolved = await resolveBreakpointLocation(
@@ -1245,23 +1264,6 @@ export function createBreakpointTools(
             }
 
             try {
-              // Create a promise that resolves when paused or aborted
-              const timeout = args.timeout || 300000; // Default 5 minutes
-
-              const waitPromise = new Promise<{ type: 'paused' | 'aborted' | 'timeout' }>((resolve) => {
-                // Set up abort handler
-                if (abortSignal) {
-                  abortSignal.addEventListener('abort', () => {
-                    resolve({ type: 'aborted' });
-                  }, { once: true });
-                }
-
-                // Wait for pause
-                targetCdpManager.waitForPause(timeout)
-                  .then(() => resolve({ type: 'paused' }))
-                  .catch(() => resolve({ type: 'timeout' }));
-              });
-
               const result = await waitPromise;
 
               if (result.type === 'aborted') {

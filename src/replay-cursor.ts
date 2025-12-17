@@ -15,17 +15,36 @@ export async function injectReplayCursor(page: Page): Promise<void> {
     const existing = doc.getElementById('__cdp-replay-cursor');
     if (existing) existing.remove();
 
-    // Create cursor element
+    // Create cursor element using DOM methods (Trusted Types compatible)
     const cursor = doc.createElement('div');
     cursor.id = '__cdp-replay-cursor';
-    cursor.innerHTML = `
-      <div class="cdp-cursor-pointer">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M5.5 3.21V20.8C5.5 21.51 6.37 21.88 6.88 21.37L10.73 17.52L14.25 22.5L17.5 20.5L14 15.5H19.5C20.21 15.5 20.58 14.63 20.07 14.12L6.08 3.08C5.57 2.57 5.5 2.5 5.5 3.21Z" fill="black" stroke="white" stroke-width="1.5"/>
-        </svg>
-      </div>
-      <div class="cdp-cursor-ripple"></div>
-    `;
+
+    // Create pointer container
+    const pointer = doc.createElement('div');
+    pointer.className = 'cdp-cursor-pointer';
+
+    // Create SVG cursor icon using DOM methods
+    const svg = doc.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('width', '24');
+    svg.setAttribute('height', '24');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('fill', 'none');
+
+    const path = doc.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', 'M5.5 3.21V20.8C5.5 21.51 6.37 21.88 6.88 21.37L10.73 17.52L14.25 22.5L17.5 20.5L14 15.5H19.5C20.21 15.5 20.58 14.63 20.07 14.12L6.08 3.08C5.57 2.57 5.5 2.5 5.5 3.21Z');
+    path.setAttribute('fill', 'black');
+    path.setAttribute('stroke', 'white');
+    path.setAttribute('stroke-width', '1.5');
+
+    svg.appendChild(path);
+    pointer.appendChild(svg);
+
+    // Create ripple element
+    const ripple = doc.createElement('div');
+    ripple.className = 'cdp-cursor-ripple';
+
+    cursor.appendChild(pointer);
+    cursor.appendChild(ripple);
 
     const style = doc.createElement('style');
     style.id = '__cdp-replay-cursor-style';

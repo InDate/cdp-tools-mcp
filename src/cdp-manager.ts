@@ -6,6 +6,7 @@
 import CDP from 'chrome-remote-interface';
 import type { BreakpointInfo, CallFrame, DebuggerState, RuntimeType, CDPConsoleMessage, ConsoleMessageCallback, DOMBreakpointInfo, DOMBreakpointType, EventListenerBreakpointInfo, XHRBreakpointInfo } from './types.js';
 import type { SourceMapHandler } from './sourcemap-handler.js';
+import { debugLog } from './debug-logger.js';
 
 export class CDPManager {
   private client: any = null;
@@ -139,21 +140,9 @@ export class CDPManager {
 
       const { Debugger, Runtime, DOM } = this.client;
 
-      // Enable the Debugger domain
-      await Debugger.enable();
-      await Runtime.enable();
-      // Enable DOM domain (required for DOMDebugger breakpoints to work)
-      // Note: DOM domain is not available in Node.js, only in browsers
-      try {
-        await DOM.enable();
-      } catch {
-        // DOM domain not available (e.g., Node.js runtime)
-      }
-
-      // Detect runtime type
-      this.state.runtimeType = await this.detectRuntimeType();
-
-      // Set up event listeners
+      // Set up event listeners BEFORE enabling domains
+      // This ensures we capture scriptParsed events for already-loaded scripts
+      // (which are emitted immediately when Debugger.enable() is called)
       Debugger.scriptParsed((params: any) => {
         this.scriptIdToUrl.set(params.scriptId, params.url);
 
@@ -184,11 +173,13 @@ export class CDPManager {
       });
 
       Debugger.paused((params: any) => {
+        debugLog('cdp-manager', `Debugger.paused event received, resolvers count: ${this.pauseResolvers.length}`);
         this.state.paused = true;
         this.state.currentCallFrames = params.callFrames;
 
         // Resolve all pending pause promises
         const resolvers = this.pauseResolvers.splice(0);
+        debugLog('cdp-manager', `Resolving ${resolvers.length} pause resolvers`);
         resolvers.forEach(resolve => resolve());
 
         // Inject clickable console link when paused at breakpoint
@@ -223,6 +214,21 @@ export class CDPManager {
           this.consoleMessageCallback(params);
         }
       });
+
+      // Enable domains AFTER setting up event listeners
+      // This ensures we capture all events including scriptParsed for already-loaded scripts
+      await Debugger.enable();
+      await Runtime.enable();
+      // Enable DOM domain (required for DOMDebugger breakpoints to work)
+      // Note: DOM domain is not available in Node.js, only in browsers
+      try {
+        await DOM.enable();
+      } catch {
+        // DOM domain not available (e.g., Node.js runtime)
+      }
+
+      // Detect runtime type
+      this.state.runtimeType = await this.detectRuntimeType();
 
       this.state.connected = true;
     } catch (error) {
@@ -1383,26 +1389,44 @@ export class CDPManager {
    * Returns a promise that resolves when debugger pauses, or rejects on timeout
    */
   waitForPause(timeoutMs: number = 30000): Promise<void> {
+    debugLog('cdp-manager', `waitForPause called, already paused: ${this.state.paused}, timeout: ${timeoutMs}ms`);
     if (this.state.paused) {
+      debugLog('cdp-manager', 'waitForPause: already paused, resolving immediately');
       return Promise.resolve();
     }
 
     return new Promise((resolve, reject) => {
+      let resolved = false;
+
+      const wrappedResolve = () => {
+        if (resolved) return;
+        resolved = true;
+        debugLog('cdp-manager', 'waitForPause: wrappedResolve called, resolving promise');
+        clearTimeout(timeout);
+        resolve();
+      };
+
       const timeout = setTimeout(() => {
+        if (resolved) return;
+        resolved = true;
+        debugLog('cdp-manager', `waitForPause: timeout after ${timeoutMs}ms, state.paused=${this.state.paused}`);
         // Remove resolver from list
-        const index = this.pauseResolvers.indexOf(resolve);
+        const index = this.pauseResolvers.indexOf(wrappedResolve);
         if (index > -1) {
           this.pauseResolvers.splice(index, 1);
         }
         reject(new Error('Timeout waiting for pause'));
       }, timeoutMs);
 
-      const wrappedResolve = () => {
-        clearTimeout(timeout);
-        resolve();
-      };
-
       this.pauseResolvers.push(wrappedResolve);
+      debugLog('cdp-manager', `waitForPause: resolver added, total resolvers: ${this.pauseResolvers.length}`);
+
+      // Re-check after adding resolver to handle race condition
+      // where pause happened between initial check and push
+      if (this.state.paused) {
+        debugLog('cdp-manager', 'waitForPause: paused detected after adding resolver, resolving');
+        wrappedResolve();
+      }
     });
   }
 
