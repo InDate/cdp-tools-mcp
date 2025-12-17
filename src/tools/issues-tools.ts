@@ -32,6 +32,7 @@ import {
   type IssueType,
   type IssueStatus,
 } from '../issue-tracker.js';
+import { checkUrlPort } from '../utils/port-check.js';
 const issuesSchema = z.object({
   action: z.enum(['list', 'create', 'workOn', 'resolve', 'acknowledge'])
     .describe('Issue action: list (list all issues), create (create new issue), workOn (start working on issue), resolve (mark as fixed/implemented), acknowledge (acknowledge pending bugs)'),
@@ -55,6 +56,8 @@ const issuesSchema = z.object({
     .describe('Search term to filter issues by description or recording name (for list)'),
   includeCompleted: z.boolean().optional()
     .describe('Include fixed/implemented issues in list (default: false, only shows active issues)'),
+  includeSequence: z.boolean().optional()
+    .describe('Include sequence recording for issue (default: true). When false, no sequence is created and Chrome does not open.'),
 }).strict();
 
 type IssuesArgs = z.infer<typeof issuesSchema>;
@@ -166,6 +169,7 @@ export function createIssuesTools(
             if (args.search) {
               const searchLower = args.search.toLowerCase();
               issues = issues.filter(i =>
+                i.id.toString() === args.search ||
                 i.description.toLowerCase().includes(searchLower) ||
                 i.recordingName.toLowerCase().includes(searchLower)
               );
@@ -200,10 +204,32 @@ export function createIssuesTools(
               });
             }
 
-            // Require startUrl when no sequence is provided
-            if (!args.sequenceName && !args.startUrl) {
+            // Check if sequence should be included (default: true)
+            const includeSequence = args.includeSequence !== false;
+
+            // Reject about:blank as user-provided startUrl (reserved as sentinel for includeSequence: false)
+            if (args.startUrl === 'about:blank') {
+              return createErrorResponse('ISSUES_INVALID_START_URL', {
+                message: 'about:blank is not allowed as startUrl. Use includeSequence: false to create an issue without sequence recording.',
+              });
+            }
+
+            // Check if localhost URL has an active server
+            if (args.startUrl) {
+              const portCheck = await checkUrlPort(args.startUrl);
+              if (portCheck && !portCheck.open) {
+                return createErrorResponse('ISSUES_LOCALHOST_NOT_ACTIVE', {
+                  startUrl: args.startUrl,
+                  port: portCheck.port,
+                  message: `No server running on localhost:${portCheck.port}. Start the server before creating the issue.`,
+                });
+              }
+            }
+
+            // Require startUrl when no sequence is provided and includeSequence is true
+            if (includeSequence && !args.sequenceName && !args.startUrl) {
               return createErrorResponse('ISSUES_MISSING_START_URL', {
-                message: 'startUrl is required when no sequenceName is provided (needed for verification)',
+                message: 'startUrl is required when no sequenceName is provided (needed for verification). Use includeSequence: false to skip sequence creation.',
               });
             }
 
@@ -239,13 +265,15 @@ export function createIssuesTools(
             }
 
             // Manually created issues start as acknowledged (no blocking)
+            // When includeSequence is false, use about:blank as sentinel to skip recording on resolve
+            const effectiveStartUrl = !includeSequence ? 'about:blank' : (args.startUrl || '');
             const issue = await addIssue(
               args.type,
               args.description,
               sequenceFile,
               args.sequenceName || 'manual',
               'acknowledged',
-              args.startUrl || ''
+              effectiveStartUrl
             );
 
             // If we created a sequence file with temp ID, rename it with real ID
@@ -467,14 +495,18 @@ export function createIssuesTools(
             }
 
             const hasSequence = !!issue.sequenceFile;
+            // about:blank with no sequence means skip straight to completion overlay
+            const skipToCompletion = !hasSequence && issue.startUrl === 'about:blank';
 
             // Navigate to startUrl first (before showing overlay) if no sequence
-            if (!hasSequence && issue.startUrl) {
+            if (!hasSequence) {
+              // Use startUrl if available, otherwise about:blank
+              const targetUrl = issue.startUrl || 'about:blank';
               // executeToolCall throws on error
               await executeToolCall('navigate', {
                 action: 'goto',
                 connectionReason: connectionRef,
-                url: issue.startUrl,
+                url: targetUrl,
                 waitUntil: 'load',
               });
 
@@ -487,8 +519,13 @@ export function createIssuesTools(
               }
             }
 
-            // Show "Ready to begin?" overlay
-            const readyAction = await showTestReadyOverlay(page, issue.type, issue.description, issue.id, hasSequence);
+            // Skip "Ready to begin?" overlay if this is a no-sequence issue
+            let readyAction: string | undefined;
+            if (skipToCompletion) {
+              readyAction = 'begin'; // Simulate clicking begin
+            } else {
+              readyAction = await showTestReadyOverlay(page, issue.type, issue.description, issue.id, hasSequence);
+            }
 
             if (readyAction === 'cancel') {
               return createSuccessResponse('ISSUES_VERIFICATION_CANCELLED', {
@@ -577,8 +614,8 @@ export function createIssuesTools(
                   replayDetails: replayText,
                 });
               }
-            } else {
-              // No sequence - start recording user's actions (executeToolCall throws on error)
+            } else if (!skipToCompletion) {
+              // No sequence and not skipping - start recording user's actions (executeToolCall throws on error)
               const recordingResult = await executeToolCall('replay', {
                 action: 'recordInteraction',
                 connectionReason: connectionRef,
@@ -603,6 +640,7 @@ export function createIssuesTools(
                 recordingDetails: resultText,
               });
             }
+            // If skipToCompletion, we fall through directly to verification overlay
 
             // Refresh page reference after replay (in case it changed)
             page = await getPageForConnection(connectionRef);
