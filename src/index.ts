@@ -1789,15 +1789,42 @@ async function main() {
     }
   });
 
-  // Catch uncaught exceptions and unhandled rejections for debugging
+  // Catch uncaught exceptions and unhandled rejections for debugging.
+  //
+  // This handler must NOT re-enter the V8 inspector console path that can itself
+  // throw (issue #74): a page emitting frequent `console.error` could make a
+  // `console.error(error)` here re-trigger `uncaughtException` in a tight ~1ms
+  // loop that saturates a CPU core forever. So we:
+  //   1. write raw to stderr (no `console` / inspector hook),
+  //   2. wrap all logging in try/catch (touching `error.stack` can itself throw
+  //      via a custom Error.prepareStackTrace / inspector wrapper),
+  //   3. dedupe and hard-exit if the SAME exception storms, as a last-resort
+  //      circuit breaker.
+  const writeErr = (line: string) => { try { process.stderr.write(line + '\n'); } catch { /* never crash the handler */ } };
+  let lastUncaughtMsg = '';
+  let lastUncaughtAt = 0;
+  let uncaughtCount = 0;
   process.on('uncaughtException', (error, origin) => {
-    console.error(`[cdp-tools] UNCAUGHT EXCEPTION (${origin}):`, error);
-    console.error('[cdp-tools] Stack:', error.stack);
+    const now = Date.now();
+    const msg = (error && (error as Error).message) ? (error as Error).message : String(error);
+    if (msg === lastUncaughtMsg && now - lastUncaughtAt < 1000) {
+      if (++uncaughtCount > 50) {
+        writeErr('[cdp-tools] Same uncaught exception >50x in <1s — exiting to break the loop.');
+        process.exit(1);
+      }
+      return;
+    }
+    lastUncaughtMsg = msg;
+    lastUncaughtAt = now;
+    uncaughtCount = 0;
+    writeErr(`[cdp-tools] UNCAUGHT EXCEPTION (${origin}): ${msg}`);
+    try { const s = (error as Error)?.stack; if (s) writeErr(`[cdp-tools] Stack: ${s}`); } catch { /* stack getter can throw */ }
   });
 
-  process.on('unhandledRejection', (reason, promise) => {
-    console.error('[cdp-tools] UNHANDLED REJECTION:', reason);
-    console.error('[cdp-tools] Promise:', promise);
+  process.on('unhandledRejection', (reason) => {
+    const msg = (reason && (reason as Error).message) ? (reason as Error).message : String(reason);
+    writeErr(`[cdp-tools] UNHANDLED REJECTION: ${msg}`);
+    try { const s = (reason as Error)?.stack; if (s) writeErr(`[cdp-tools] Stack: ${s}`); } catch { /* stack getter can throw */ }
   });
 }
 
