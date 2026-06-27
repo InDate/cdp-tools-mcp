@@ -238,6 +238,9 @@ export class CommandRecorder {
       createdAt: Date.now(),
     };
 
+    // Dedupe by name so re-creating a sequence replaces the old in-memory copy
+    // rather than leaving a stale one that loadSequence({name}) would resolve (#75).
+    this.removeSequenceByName(name);
     this.sequences.set(sequence.id, sequence);
     await debugLog('command-recorder', `Created sequence "${name}" with ${commands.length} commands${startUrl ? `, startUrl: ${startUrl}` : ''}`);
     return sequence;
@@ -272,6 +275,8 @@ export class CommandRecorder {
       createdAt: Date.now(),
     };
 
+    // Dedupe by name (see createSequence / #75).
+    this.removeSequenceByName(name);
     this.sequences.set(sequence.id, sequence);
     await debugLog('command-recorder', `Created sequence "${name}" from commands with ${commands.length} commands${startUrl ? `, startUrl: ${startUrl}` : ''}`);
     return sequence;
@@ -310,13 +315,14 @@ export class CommandRecorder {
   }
 
   /**
-   * Remove a sequence by name (used when reloading to avoid duplicates with different IDs)
+   * Remove ALL in-memory sequences with the given name. Used on create/reload so a
+   * name maps to exactly one sequence — otherwise `loadSequence({name})` resolves the
+   * oldest insertion-order match and re-created sequences are silently ignored (#75).
    */
   private removeSequenceByName(name: string): void {
     for (const [id, seq] of this.sequences.entries()) {
       if (seq.name === name) {
         this.sequences.delete(id);
-        break;
       }
     }
   }
