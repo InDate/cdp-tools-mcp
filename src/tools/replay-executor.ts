@@ -743,7 +743,27 @@ export async function executeCommandWithRetry(
   const retryDelayMs = 500;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    const result = await executeToolCall(tool, params);
+    // executeToolCall (index.ts) THROWS a ToolError when a tool returns an error
+    // response (result.isError), so a tool error arrives here as an exception, not
+    // a returned value. Handle BOTH: the catch is what actually drives element-not-
+    // found retries (e.g. an async-rendered button that hasn't mounted yet); the
+    // returned-isError branch is kept defensively in case a caller doesn't throw.
+    let result: any;
+    try {
+      result = await executeToolCall(tool, params);
+    } catch (err: any) {
+      const errorText = err?.response?.content?.[0]?.text || err?.message || '';
+      const isElementNotFound = errorText.includes('Element not found') ||
+                                errorText.includes('not found') ||
+                                errorText.includes('No element matches');
+
+      if (isRetryableAction && isElementNotFound && attempt < maxRetries) {
+        debugLog(logPrefix, `Element not found, retrying... (attempt ${attempt}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+        continue;
+      }
+      return { success: false, error: errorText.split('\n')[0] || 'Unknown error' };
+    }
 
     if (result && result.isError) {
       const errorText = result.content?.[0]?.text || '';
