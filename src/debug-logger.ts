@@ -47,8 +47,11 @@ export function getStartupMetrics(): StartupMetrics | null {
 /**
  * Enable debug logging
  */
-export async function enableDebugLogging(): Promise<void> {
+export async function enableDebugLogging(options?: { clearOnStartup?: boolean }): Promise<void> {
   debugEnabled = true;
+  if (options?.clearOnStartup) {
+    try { await fs.writeFile(LOG_FILE, ''); } catch { /* best-effort truncate */ }
+  }
   console.error('[DebugLogger] Debug logging enabled');
 
   // Log startup metrics if available

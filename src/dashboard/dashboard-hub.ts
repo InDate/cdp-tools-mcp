@@ -19,6 +19,7 @@ import type {
   MCPMessage,
   MCPHeartbeatMessage,
 } from './types.js';
+import type { Orchestrator } from '../log-processor/orchestrator.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -30,6 +31,22 @@ export class DashboardHub {
   private mcpClients: Map<WebSocket, number> = new Map();  // MCP clients (ws -> pid)
   private port: number = DEFAULT_PORT;
   private startedAt: number = Date.now();
+
+  // --- Log-processor integration (STUBS) ---------------------------------------
+  // The real wiring fed the Orchestrator's processed output into the hub and
+  // loaded custom dashboard routes from `.cdp-tools/config/dashboard/`. That
+  // implementation was never committed (see log-processor/orchestrator.ts header);
+  // these satisfy index.ts's calls so the build works with the feature inert.
+
+  /** Connect a running Orchestrator so the hub can surface its processed logs. */
+  connectLogProcessor(_orchestrator: Orchestrator): void {
+    // intentionally inert — stub
+  }
+
+  /** Load custom dashboard routes from the given config dir. */
+  async startRouteLoader(_dashboardConfigDir: string): Promise<void> {
+    // intentionally inert — stub
+  }
 
   async start(startPort = DEFAULT_PORT): Promise<boolean> {
     // Try ports until we find one available
