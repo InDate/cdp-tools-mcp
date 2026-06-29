@@ -198,7 +198,7 @@ export class ChromeLauncher {
    * Uses atomic release-and-launch to prevent race conditions
    * Waits for Chrome to actually bind to the port before resolving
    */
-  async launch(port: number = 9222, url?: string, portReserver?: PortReserver, headless: boolean = false): Promise<{ port: number; pid: number }> {
+  async launch(port: number = 9222, url?: string, portReserver?: PortReserver, headless: boolean = false, extraArgs: string[] = []): Promise<{ port: number; pid: number }> {
     await debugLog('ChromeLauncher', `launch() called with port ${port}, portReserver=${!!portReserver}, isReserved=${portReserver?.isReserved()}`);
 
     // CRITICAL: Check if another launch is in progress for this port
@@ -216,7 +216,7 @@ export class ChromeLauncher {
 
     // Create a promise for this launch and store it in the lock map
     // This prevents concurrent launches on the same port
-    const launchPromise = this.performLaunch(port, url, portReserver, headless);
+    const launchPromise = this.performLaunch(port, url, portReserver, headless, extraArgs);
     this.launchLocks.set(port, launchPromise);
 
     try {
@@ -232,7 +232,7 @@ export class ChromeLauncher {
    * Internal method that performs the actual Chrome launch
    * Separated from launch() to allow mutex/locking logic
    */
-  private async performLaunch(port: number, url?: string, portReserver?: PortReserver, headless: boolean = false): Promise<{ port: number; pid: number }> {
+  private async performLaunch(port: number, url?: string, portReserver?: PortReserver, headless: boolean = false, extraArgs: string[] = []): Promise<{ port: number; pid: number }> {
     await debugLog('ChromeLauncher', `performLaunch() starting for port ${port}`);
 
     // Check if port is in use by something OTHER than our port reserver
@@ -286,6 +286,18 @@ export class ChromeLauncher {
       args.push('--headless=new'); // Use new headless mode
     } else {
       args.push('--start-minimized'); // Launch minimized to reduce focus stealing
+    }
+
+    // Pass-through: any extra Chrome flags from the launchChrome call (extraArgs)
+    // and/or the CDP_TOOLS_EXTRA_CHROME_ARGS env var (space-separated). Merged
+    // after the managed defaults and before the URL (Chrome treats the trailing
+    // positional arg as the page to open). Lets callers enable things like a fake
+    // camera (--use-fake-device-for-media-stream) without patching this file.
+    const envExtra = (process.env.CDP_TOOLS_EXTRA_CHROME_ARGS || '').split(/\s+/).filter(Boolean);
+    const passthrough = [...extraArgs, ...envExtra];
+    if (passthrough.length) {
+      await debugLog('ChromeLauncher', `Passing through extra Chrome args: ${passthrough.join(' ')}`);
+      args.push(...passthrough);
     }
 
     if (url) {

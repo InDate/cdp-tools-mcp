@@ -268,6 +268,7 @@ const connectionTools = {
       reference: z.string().optional().describe('Connection reference name (3 descriptive words). If not provided, defaults to "unnamed-connection-default". Use this to identify the connection when calling other tools.'),
       width: z.number().optional().describe('Viewport width in pixels (optional). If set, the browser viewport will be resized after launch.'),
       height: z.number().optional().describe('Viewport height in pixels (optional). If set, the browser viewport will be resized after launch.'),
+      chromeArgs: z.array(z.string()).optional().describe('Extra Chrome command-line flags to pass through at launch, e.g. ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"]. Merged after the managed defaults. The CDP_TOOLS_EXTRA_CHROME_ARGS env var (space-separated) is also always merged. Only applies when this call actually launches Chrome (ignored when an existing instance on the port is reused).'),
     }).strict(),
     async (args) => {
       // Validate reference FIRST, before launching Chrome
@@ -325,7 +326,7 @@ const connectionTools = {
           // Don't pass URL to launch if auto-connect is enabled - let Puppeteer handle navigation
           // This prevents race condition where Chrome starts loading before monitors are set up
           const launchUrl = autoConnect ? undefined : url;
-          const result = await chromeLauncher.launch(port, launchUrl, portReserver, args.headless);
+          const result = await chromeLauncher.launch(port, launchUrl, portReserver, args.headless, args.chromeArgs ?? []);
           await debugLog('index', `Chrome launched successfully: ${JSON.stringify(result)}`);
           isNewBrowser = true;
         }
