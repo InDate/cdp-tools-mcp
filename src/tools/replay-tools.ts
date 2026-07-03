@@ -10,7 +10,7 @@ import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import { showReplayOverlay } from '../interaction-recorder.js';
 import { getIssue } from '../issue-tracker.js';
-import { sanitizeReference } from '../reference-validator.js';
+import { deriveConnectionReference } from '../reference-validator.js';
 
 import {
   loadSequence,
@@ -583,7 +583,7 @@ async function handleRun(
   // sequence name so we can auto-launch Chrome instead of erroring out
   const needsConnection = sequenceNeedsConnection(commands);
   if (!connectionReason && !analysis.hasLaunchBeforeConnection && needsConnection) {
-    connectionReason = sanitizeReference(sequence.name);
+    connectionReason = deriveConnectionReference(sequence.name);
   }
 
   // Handle variable extraction and prompting
@@ -706,12 +706,17 @@ async function handleRun(
 
   // Handle abort - return early (cleanup already handled by abort signal listener)
   if (abortSignal?.aborted) {
-    return createSuccessResponse('REPLAY_ABORTED', {
+    const abortedResponse = createSuccessResponse('REPLAY_ABORTED', {
       name: sequence.name,
       completedSteps: execResult.results.length,
       totalSteps: sequence.commands.length,
       message: 'Replay aborted by user'
     });
+    abortedResponse._meta = {
+      tool: 'replay', action: 'run', timestamp: Date.now(),
+      replay: { success: false, totalSteps: sequence.commands.length, failedSteps: execResult.results.filter(r => !r.success).length, paused: true }
+    };
+    return abortedResponse;
   }
 
   // Handle breakpoint hit
@@ -723,7 +728,12 @@ async function handleRun(
       execResult.durationMs,
       execResult.breakpointHit,
       connectionReason
-    ) }] };
+    ) }],
+      _meta: {
+        tool: 'replay', action: 'run', timestamp: Date.now(),
+        replay: { success: false, totalSteps: sequence.commands.length, failedSteps: execResult.results.filter(r => !r.success).length, paused: true }
+      }
+    };
   }
 
   // Handle click validation failure (pause for inspection/retry)
@@ -747,13 +757,23 @@ async function handleRun(
       execResult.durationMs,
       execResult.clickValidationFailure,
       connectionReason
-    ) }] };
+    ) }],
+      _meta: {
+        tool: 'replay', action: 'run', timestamp: Date.now(),
+        replay: { success: false, totalSteps: sequence.commands.length, failedSteps: execResult.results.filter(r => !r.success).length, paused: true }
+      }
+    };
   }
 
   // Handle paused state (stepTo)
   if (execResult.pausedAtStep && execResult.activeSequenceState) {
     recorder.setActiveSequence(execResult.activeSequenceState);
-    return { content: [{ type: 'text', text: formatPausedResponse(sequence, execResult.results, execResult.pausedAtStep, execResult.durationMs) }] };
+    return { content: [{ type: 'text', text: formatPausedResponse(sequence, execResult.results, execResult.pausedAtStep, execResult.durationMs) }],
+      _meta: {
+        tool: 'replay', action: 'run', timestamp: Date.now(),
+        replay: { success: false, totalSteps: sequence.commands.length, failedSteps: execResult.results.filter(r => !r.success).length, paused: true }
+      }
+    };
   }
 
   // Clean up cursor and overlay
@@ -775,15 +795,22 @@ async function handleRun(
   if (args.killChromeOnFinish && connectionReason && getConnectionPort) {
     const port = await getConnectionPort(connectionReason);
     if (port !== null) {
-      await executeToolCall('killChrome', {
+      const killResult = await executeToolCall('killChrome', {
         reason: `killChromeOnFinish: sequence "${sequence.name}" completed`,
         port,
-      }).catch(() => {});
-      response += `\n\n**Chrome killed** (port ${port}, killChromeOnFinish)`;
+      }).catch((error: any) => ({ isError: true, error }));
+      response += killResult?.isError
+        ? `\n\n**Chrome kill failed** (port ${port}, killChromeOnFinish)`
+        : `\n\n**Chrome killed** (port ${port}, killChromeOnFinish)`;
     }
   }
 
-  return { content: [{ type: 'text', text: response }] };
+  return { content: [{ type: 'text', text: response }],
+    _meta: {
+      tool: 'replay', action: 'run', timestamp: Date.now(),
+      replay: { success: failed === 0, totalSteps: execResult.totalCommands, failedSteps: failed, paused: false }
+    }
+  };
 }
 
 async function handleStatus(recorder: CommandRecorder) {

@@ -67,7 +67,7 @@ import { readFile } from 'fs/promises';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { debugLog, enableDebugLogging, disableDebugLogging, isDebugEnabled, enableHistoryLogging, disableHistoryLogging, setStartupMetrics } from './debug-logger.js';
-import { validateReference, requireValidReference, UNNAMED_CONNECTION, InvalidReferenceError } from './reference-validator.js';
+import { validateReference, requireValidReference, deriveConnectionReference, UNNAMED_CONNECTION, InvalidReferenceError } from './reference-validator.js';
 import { initializePaths, getOutputPath } from './helpers/paths.js';
 import { cleanupStaleTempFiles, cleanupStaleTempFilesSync } from './atomic-write.js';
 import { createSessionDetector, type SessionInfo, type SessionDetector } from './session-detector.js';
@@ -1431,7 +1431,93 @@ Edit ${configPath} to resolve, then restart the MCP server.`,
 }
 
 // Start the server
+/**
+ * CLI mode: `cdp-tools-mcp run <sequenceName> [--connectionReason=X] [--headed] [--keep-chrome]`
+ * Runs a saved sequence directly from the shell, no MCP client needed.
+ * Pre-launches Chrome itself (headless by default, forceNewInstance) so
+ * replay run's own auto-launch (always headed) never triggers.
+ */
+async function runCliSequence(argv: string[]): Promise<void> {
+  const sequenceName = argv[0];
+  if (!sequenceName || sequenceName.startsWith('--')) {
+    console.error('Usage: cdp-tools-mcp run <sequenceName> [--connectionReason=X] [--headed] [--keep-chrome]');
+    process.exit(1);
+  }
+
+  const flags = new Set(
+    argv.slice(1)
+      .filter(a => a.startsWith('--') && !a.includes('='))
+      .map(a => a.slice(2))
+  );
+  const kv: Record<string, string> = {};
+  for (const arg of argv.slice(1)) {
+    if (arg.startsWith('--') && arg.includes('=')) {
+      const [key, ...rest] = arg.slice(2).split('=');
+      kv[key] = rest.join('=');
+    }
+  }
+  const headed = flags.has('headed');
+  const keepChrome = flags.has('keep-chrome');
+  const connectionReason = kv.connectionReason || deriveConnectionReference(sequenceName);
+
+  initializePaths();
+  await configManager.load();
+
+  // Reserve a Chrome debug port (same retry loop the MCP server bootstrap uses)
+  let reservationSucceeded = false;
+  let attempts = 0;
+  const maxAttempts = 10;
+  while (!reservationSucceeded && attempts < maxAttempts) {
+    const port = await findStartingPort();
+    configManager.setCurrentPort(port);
+    try {
+      await portReserver.reserve(port);
+      reservationSucceeded = true;
+    } catch {
+      attempts++;
+      if (attempts >= maxAttempts) {
+        console.error(`[cdp-tools] Failed to reserve a port after ${maxAttempts} attempts`);
+        process.exit(1);
+      }
+      process.env.MCP_DEBUG_PORT = String(port + 1);
+    }
+  }
+
+  try {
+    const launchResult = await executeToolCall('launchChrome', {
+      reference: connectionReason,
+      headless: !headed,
+      forceNewInstance: true,
+    });
+    if (launchResult?.isError) {
+      console.error(launchResult.content?.[0]?.text || 'Failed to launch Chrome');
+      process.exit(1);
+    }
+
+    const runResult = await executeToolCall('replay', {
+      action: 'run',
+      name: sequenceName,
+      connectionReason,
+      killChromeOnFinish: !keepChrome,
+    });
+
+    console.log(runResult?.content?.[0]?.text || '');
+    process.exit(runResult?._meta?.replay?.success === true ? 0 : 1);
+  } catch (error: any) {
+    console.error(error?.message || String(error));
+    process.exit(1);
+  }
+}
+
 async function main() {
+  // CLI mode bypasses the MCP stdio server entirely - session detection, the
+  // dashboard hub, and the log-processor orchestrator are all multi-session-
+  // coordination features irrelevant to a one-shot process.
+  if (process.argv[2] === 'run') {
+    await runCliSequence(process.argv.slice(3));
+    return;
+  }
+
   console.error(`[cdp-tools] main() called (PID: ${process.pid})`);
 
   // Initialize path configuration early (before any file operations)

@@ -117,6 +117,19 @@ export interface AssertToolMeta {
 }
 
 /**
+ * Replay run metadata - structured completion signal, since a "run" can
+ * finish with failed steps or pause (stepTo/breakpoint/click-validation)
+ * while still returning a non-isError response (a caller has to read this
+ * to tell those apart from a clean run instead of text-scraping the reply).
+ */
+export interface ReplayRunMeta {
+  success: boolean;
+  totalSteps: number;
+  failedSteps: number;
+  paused: boolean;
+}
+
+/**
  * Root metadata structure for tool responses
  * This provides structured data for programmatic use (validation, replay)
  * while keeping text content free to evolve for human/LLM display
@@ -133,6 +146,7 @@ export interface ToolResponseMeta {
   network?: NetworkToolMeta;
   request?: RequestToolMeta;
   assert?: AssertToolMeta;
+  replay?: ReplayRunMeta;
 }
 
 /**

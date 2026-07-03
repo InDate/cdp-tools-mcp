@@ -22,6 +22,18 @@ export function sanitizeReference(ref: string): string {
 }
 
 /**
+ * Derive a valid 3-word connection reference from an arbitrary name (e.g. a
+ * sequence filename), which has no guaranteed word count. Deterministic per
+ * input name, so repeated runs of the same sequence reuse the same reference.
+ */
+export function deriveConnectionReference(name: string): string {
+  const parts = sanitizeReference(name).split('-').filter(Boolean);
+  if (parts.length === 3) return parts.join('-');
+  if (parts.length > 3) return `${parts[0]}-${parts[1]}-run`;
+  return [...parts, 'seq', 'run'].slice(0, 3).join('-');
+}
+
+/**
  * Validate a reference string (legacy API)
  * Returns the sanitized reference if valid, or an error if invalid
  *
