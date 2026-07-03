@@ -6,7 +6,7 @@
 import * as fs from 'fs';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
-import { getConfigSavePath, getOutputPath } from './helpers/paths.js';
+import { getConfigSavePath, getOutputPath, setWorkingDirOverride } from './helpers/paths.js';
 import { debugLog } from './debug-logger.js';
 import { atomicWriteFile } from './atomic-write.js';
 
@@ -723,8 +723,18 @@ export class ConfigManager {
 
   /**
    * Switch to using local config (creates if needed, optionally seeds from global)
+   *
+   * @param seedFromGlobal - seed new local config from global if it exists
+   * @param projectPath - explicit project directory to treat as "local".
+   *   Needed when the MCP server's process.cwd() doesn't reflect the
+   *   project the user is currently working in (e.g. a shared long-lived
+   *   server process spawned from the home directory).
    */
-  async useLocal(seedFromGlobal: boolean = true): Promise<{ path: string; seeded: boolean }> {
+  async useLocal(seedFromGlobal: boolean = true, projectPath?: string): Promise<{ path: string; seeded: boolean }> {
+    if (projectPath) {
+      setWorkingDirOverride(projectPath);
+    }
+
     const localPath = getOutputPath('config.json');
     const globalPath = join(homedir(), '.cdp-tools', 'config.json');
     const localDir = dirname(localPath);

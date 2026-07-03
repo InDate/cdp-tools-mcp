@@ -13,6 +13,8 @@ const configSchema = z.object({
     .describe('Config action: status (show config location info), useLocal (switch to project config), useGlobal (switch to global config), reset (reset to defaults), backup (backup current config), cloneFromGlobal (copy global to local), show (display current config), listTools (list all toggleable tools with status and dependencies)'),
   seedFromGlobal: z.boolean().optional()
     .describe('For useLocal action: if true (default), seeds new local config from global if it exists'),
+  path: z.string().optional()
+    .describe('For useLocal action: explicit project directory to use as "local", overriding the server process\'s working directory. Needed when the MCP server runs as a shared long-lived process (e.g. launched by Claude Desktop from the home directory) instead of per-project.'),
 }).strict();
 
 type ConfigArgs = z.infer<typeof configSchema>;
@@ -38,11 +40,17 @@ export function createConfigTools() {
 
           case 'useLocal': {
             const seedFromGlobal = args.seedFromGlobal !== false; // default true
-            const result = await configManager.useLocal(seedFromGlobal);
-            return createSuccessResponse('CONFIG_USE_LOCAL_SUCCESS', {
-              path: result.path,
-              seeded: result.seeded,
-            });
+            try {
+              const result = await configManager.useLocal(seedFromGlobal, args.path);
+              return createSuccessResponse('CONFIG_USE_LOCAL_SUCCESS', {
+                path: result.path,
+                seeded: result.seeded,
+              });
+            } catch (error) {
+              return createErrorResponse('CONFIG_USE_LOCAL_FAILED', {
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
           }
 
           case 'useGlobal': {

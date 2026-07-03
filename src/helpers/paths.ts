@@ -61,6 +61,22 @@ export function initializePaths(): PathConfig {
 }
 
 /**
+ * Override the working-directory base at runtime.
+ * Needed because MCP clients (e.g. Claude Desktop) spawn one long-lived
+ * server process shared across projects — process.cwd() reflects wherever
+ * the client happened to launch from, not the project the user is in.
+ *
+ * @throws if dir does not exist or is not writable
+ */
+export function setWorkingDirOverride(dir: string): void {
+  if (!isValidWorkingDirectory(dir)) {
+    throw new Error(`Not a valid, writable directory: ${dir}`);
+  }
+  if (!pathConfig) initializePaths();
+  pathConfig!.workingDirBase = join(dir, OUTPUT_DIR);
+}
+
+/**
  * Get path for cdp-tools data.
  * Defaults to working directory, use global: true for ~/.cdp-tools/
  *
