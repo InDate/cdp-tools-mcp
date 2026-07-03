@@ -10,8 +10,14 @@ import { promises as fs } from 'fs';
 import { join, basename, normalize } from 'path';
 import { getOutputPath } from '../helpers/paths.js';
 
-const DOWNLOADS_DIR = getOutputPath('downloads');
-const QUARANTINE_DIR = join(DOWNLOADS_DIR, 'quarantine');
+// Computed fresh on each call (not cached) so they follow a later
+// setWorkingDirOverride() / config useLocal(path) switch.
+function getDownloadsDir(): string {
+  return getOutputPath('downloads');
+}
+function getQuarantineDir(): string {
+  return join(getDownloadsDir(), 'quarantine');
+}
 
 // Security limits
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
@@ -103,11 +109,12 @@ async function quarantineFile(
   contentType: string | null,
   buffer: Buffer
 ): Promise<void> {
-  await fs.mkdir(QUARANTINE_DIR, { recursive: true });
+  const quarantineDir = getQuarantineDir();
+  await fs.mkdir(quarantineDir, { recursive: true });
 
   // Add .quarantined extension to prevent execution on all platforms (especially Windows)
   const quarantinedFilename = `${filename}.quarantined`;
-  const quarantinePath = join(QUARANTINE_DIR, quarantinedFilename);
+  const quarantinePath = join(quarantineDir, quarantinedFilename);
   await fs.writeFile(quarantinePath, buffer);
 
   // Remove executable permissions for security (Unix systems)
@@ -161,9 +168,10 @@ export function createDownloadTools() {
           }
 
           // Ensure downloads directory exists
-          await fs.mkdir(DOWNLOADS_DIR, { recursive: true });
+          const downloadsDir = getDownloadsDir();
+          await fs.mkdir(downloadsDir, { recursive: true });
 
-          const filepath = join(DOWNLOADS_DIR, args.filename);
+          const filepath = join(downloadsDir, args.filename);
 
           // Check if file already exists BEFORE fetching
           let existingFileStats = null;
@@ -262,7 +270,7 @@ export function createDownloadTools() {
               reason: suspiciousCheck.reason!,
               size: `${newFileSizeKB} KB`,
               contentType: contentType || 'Unknown',
-              quarantinePath: join(QUARANTINE_DIR, quarantinedFilename)
+              quarantinePath: join(getQuarantineDir(), quarantinedFilename)
             });
           }
 

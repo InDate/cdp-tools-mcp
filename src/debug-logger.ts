@@ -7,9 +7,17 @@ import { promises as fs } from 'fs';
 import { join } from 'path';
 import { getOutputPath } from './helpers/paths.js';
 
-const LOG_DIR = getOutputPath('logs');
-const LOG_FILE = join(LOG_DIR, 'debug.log');
-const HISTORY_FILE = join(LOG_DIR, 'history.log');
+// Computed fresh on each call (not cached) so they follow a later
+// setWorkingDirOverride() / config useLocal(path) switch.
+function getLogDir(): string {
+  return getOutputPath('logs');
+}
+function getLogFile(): string {
+  return join(getLogDir(), 'debug.log');
+}
+function getHistoryFile(): string {
+  return join(getLogDir(), 'history.log');
+}
 
 // Global debug state - can be toggled via MCP tool or config
 let debugEnabled = false;
@@ -50,7 +58,7 @@ export function getStartupMetrics(): StartupMetrics | null {
 export async function enableDebugLogging(options?: { clearOnStartup?: boolean }): Promise<void> {
   debugEnabled = true;
   if (options?.clearOnStartup) {
-    try { await fs.writeFile(LOG_FILE, ''); } catch { /* best-effort truncate */ }
+    try { await fs.writeFile(getLogFile(), ''); } catch { /* best-effort truncate */ }
   }
   console.error('[DebugLogger] Debug logging enabled');
 
@@ -115,13 +123,13 @@ export async function debugLog(module: string, message: string): Promise<void> {
 
   try {
     // Ensure log directory exists
-    await fs.mkdir(LOG_DIR, { recursive: true });
+    await fs.mkdir(getLogDir(), { recursive: true });
 
     const timestamp = new Date().toISOString();
     const logEntry = `[${timestamp}] [${module}] ${message}\n`;
 
     // Append to log file
-    await fs.appendFile(LOG_FILE, logEntry);
+    await fs.appendFile(getLogFile(), logEntry);
 
     // Also write to stderr for immediate visibility
     console.error(logEntry.trim());
@@ -142,17 +150,17 @@ export async function logToHistoryFile(entry: string): Promise<void> {
   }
 
   try {
-    await fs.mkdir(LOG_DIR, { recursive: true });
+    await fs.mkdir(getLogDir(), { recursive: true });
 
     // Read existing content and prepend new entry
     let existingContent = '';
     try {
-      existingContent = await fs.readFile(HISTORY_FILE, 'utf-8');
+      existingContent = await fs.readFile(getHistoryFile(), 'utf-8');
     } catch {
       // File doesn't exist yet, that's fine
     }
 
-    await fs.writeFile(HISTORY_FILE, entry + '\n' + existingContent);
+    await fs.writeFile(getHistoryFile(), entry + '\n' + existingContent);
   } catch (error) {
     console.error(`[DebugLogger] Failed to write history: ${error}`);
   }
@@ -162,7 +170,7 @@ export async function logToHistoryFile(entry: string): Promise<void> {
  * Get the path to the history log file
  */
 export function getHistoryFilePath(): string {
-  return HISTORY_FILE;
+  return getHistoryFile();
 }
 
 /**
@@ -175,7 +183,7 @@ export async function readHistoryLine(lineNumber: number): Promise<{ tool: strin
   }
 
   try {
-    const content = await fs.readFile(HISTORY_FILE, 'utf-8');
+    const content = await fs.readFile(getHistoryFile(), 'utf-8');
     const lines = content.split('\n').filter(line => line.trim());
 
     if (lineNumber > lines.length) {
@@ -197,7 +205,7 @@ export async function readHistoryLines(lineNumbers: number[]): Promise<Array<{ l
   const results: Array<{ line: number; tool: string; params: Record<string, any> } | { line: number; error: string }> = [];
 
   try {
-    const content = await fs.readFile(HISTORY_FILE, 'utf-8');
+    const content = await fs.readFile(getHistoryFile(), 'utf-8');
     const lines = content.split('\n').filter(line => line.trim());
 
     for (const lineNum of lineNumbers) {

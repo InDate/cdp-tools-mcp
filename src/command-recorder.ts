@@ -52,13 +52,8 @@ export class CommandRecorder {
   private sequences: Map<string, CommandSequence> = new Map();
   private commandCounter = 0;
   private maxHistorySize = 1000; // Keep last 1000 commands
-  private sequencesDir: string;
   private activeSequence: ActiveSequenceState | null = null;
   private historyViewedWhilePaused: boolean = false;
-
-  constructor() {
-    this.sequencesDir = getOutputPath('sequences');
-  }
 
   /**
    * Get the sequences directory for a specific scope
@@ -492,7 +487,7 @@ export class CommandRecorder {
         return null;
       }
 
-      const filepath = join(this.sequencesDir, match.filename);
+      const filepath = match.fullPath;
       await debugLog('command-recorder', `Matched "${filename}" to "${match.filename}" (${match.matchType})`);
 
       const content = await fs.readFile(filepath, 'utf-8');
@@ -627,7 +622,7 @@ export class CommandRecorder {
         return false;
       }
 
-      const filepath = join(this.sequencesDir, match.filename);
+      const filepath = match.fullPath;
       await debugLog('command-recorder', `Matched "${filename}" to "${match.filename}" (${match.matchType})`);
 
       await fs.unlink(filepath);
