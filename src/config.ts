@@ -125,6 +125,7 @@ export const TOGGLEABLE_TOOLS = [
   'modal',       // Modal detection/dismissal
   'storage',     // Cookies, localStorage
   'download',    // File downloads
+  'request',     // HTTP requests (node or browser) as sequence steps
   'replay',      // Sequence recording/playback
   'server',      // Dev server management
   'issues',      // Issue tracking
