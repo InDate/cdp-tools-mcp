@@ -2895,13 +2895,9 @@ Dashboard is not available: {{reason}}
 **Type:** success
 **Summary:** {{method}} {{url}} -> {{status}} {{statusText}}
 
-**Destination:** {{destination}} | **OK:** {{ok}} | **Duration:** {{durationMs}}ms{{#truncated}}
-**Note:** response body truncated{{/truncated}}
+**Destination:** {{destination}} | **OK:** {{ok}} | **Duration:** {{durationMs}}ms{{#truncated}} (body truncated){{/truncated}}
 
-**Body:**
-```
-{{body}}
-```
+**Body:** {{body}}
 
 ---
 
