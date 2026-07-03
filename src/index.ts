@@ -265,6 +265,7 @@ const connectionTools = {
       url: z.string().optional().describe('URL to open (default: blank page)'),
       autoConnect: z.boolean().optional().default(true).describe('Automatically connect debugger after launch'),
       port: z.number().optional().describe('The debugging port (optional, defaults to this session\'s reserved port). Use this to launch multiple Chrome instances on different ports.'),
+      forceNewInstance: z.boolean().optional().describe('Always spawn a fresh Chrome process on a new port instead of reusing/tabbing into an existing instance'),
       headless: z.boolean().optional().default(false).describe('Launch in headless mode (no visible window, prevents focus stealing). Default: false'),
       reference: z.string().optional().describe('Connection reference name (3 descriptive words). If not provided, defaults to "unnamed-connection-default". Use this to identify the connection when calling other tools.'),
       width: z.number().optional().describe('Viewport width in pixels (optional). If set, the browser viewport will be resized after launch.'),
@@ -279,14 +280,20 @@ const connectionTools = {
       }
 
       // Use reserved port unless explicitly specified
-      const port = args.port || configManager.getCurrentPort();
-      await debugLog('index', `launchChrome called: port=${port}, requested=${args.port}, reserved=${configManager.getCurrentPort()}, url=${args.url}, autoConnect=${args.autoConnect}, reference=${args.reference}`);
+      let port = args.port || configManager.getCurrentPort();
+      if (args.forceNewInstance) {
+        // Ignore any reserved/requested port - always find a genuinely free one
+        // so this launch can't tab into an already-running instance
+        port = await findAvailablePort(configManager.getChromeConfig().startingDebugPort);
+      }
+      await debugLog('index', `launchChrome called: port=${port}, requested=${args.port}, reserved=${configManager.getCurrentPort()}, forceNewInstance=${args.forceNewInstance}, url=${args.url}, autoConnect=${args.autoConnect}, reference=${args.reference}`);
       const url = args.url;
       const autoConnect = args.autoConnect ?? true;
 
       // Check if a connection with this reference already exists - reuse it instead of creating a new tab
       // Use validated lookup to auto-cleanup dead connections (e.g., if Chrome was killed externally)
-      if (userReference) {
+      // Skipped entirely when forceNewInstance is set - that always wants a fresh process
+      if (userReference && !args.forceNewInstance) {
         const existingConnection = await connectionManager.findConnectionByReferenceValidated(userReference);
         if (existingConnection) {
           const sanitizedRef = validateReference(userReference).sanitized!;
@@ -1138,6 +1145,9 @@ const allTools = {
     const resolved = await resolveConnectionFromReason(connectionReason);
     if (!resolved?.puppeteerManager) return null;
     return resolved.puppeteerManager.getPage();
+  }, async (connectionReason: string) => {
+    const resolved = await resolveConnectionFromReason(connectionReason);
+    return resolved?.connection.port ?? null;
   }) : {}),
   // Server management tools
   ...(configManager.isToolEnabled('server') ? createServerTools(serverManager) : {}),

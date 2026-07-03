@@ -10,6 +10,7 @@ import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import { showReplayOverlay } from '../interaction-recorder.js';
 import { getIssue } from '../issue-tracker.js';
+import { sanitizeReference } from '../reference-validator.js';
 
 import {
   loadSequence,
@@ -128,6 +129,7 @@ const replaySchema = z.object({
   issueDescription: z.string().optional(),
   showReplayOverlay: z.boolean().optional(),
   showAll: z.boolean().optional().describe('Show all sequences including completed/fixed issues'),
+  killChromeOnFinish: z.boolean().optional().describe('run: kill Chrome after finishing (skipped on pause/abort)'),
 }).strict();
 
 // =============================================================================
@@ -561,7 +563,8 @@ async function handleRun(
   recorder: CommandRecorder,
   executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>,
   getPageForConnection: (connectionReason: string) => Promise<any>,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  getConnectionPort?: (connectionReason: string) => Promise<number | null>
 ) {
   // Load sequence
   const loadResult = await loadSequence({ name: args.name, sequenceId: args.sequenceId }, recorder);
@@ -576,14 +579,11 @@ async function handleRun(
   // Determine connection reason
   let connectionReason = args.connectionReason || extractConnectionFromSequence(commands, analysis);
 
-  // Validate connection requirement
+  // Validate connection requirement - fall back to a reason derived from the
+  // sequence name so we can auto-launch Chrome instead of erroring out
   const needsConnection = sequenceNeedsConnection(commands);
   if (!connectionReason && !analysis.hasLaunchBeforeConnection && needsConnection) {
-    return createErrorResponse('MISSING_PARAMETER', {
-      action: 'run',
-      missing: 'connectionReason',
-      message: 'The "run" action requires a "connectionReason" parameter to name the browser connection. Provide a connection name - the system will auto-launch Chrome if it doesn\'t exist. Alternatively: ensure sequence starts with launchChrome, or use replay({ action: \'get\', name: \'...\' }) to preview.'
-    });
+    connectionReason = sanitizeReference(sequence.name);
   }
 
   // Handle variable extraction and prompting
@@ -767,6 +767,18 @@ async function handleRun(
     const debugState = await getDebugState(ctx);
     if (debugState) {
       response += formatDebugState(debugState, connectionReason);
+    }
+  }
+
+  // Kill the Chrome instance for this connection if requested
+  if (args.killChromeOnFinish && connectionReason && getConnectionPort) {
+    const port = await getConnectionPort(connectionReason);
+    if (port !== null) {
+      await executeToolCall('killChrome', {
+        reason: `killChromeOnFinish: sequence "${sequence.name}" completed`,
+        port,
+      }).catch(() => {});
+      response += `\n\n**Chrome killed** (port ${port}, killChromeOnFinish)`;
     }
   }
 
@@ -1451,7 +1463,8 @@ function generatePlaywrightCode(commands: Array<{ tool: string; params: Record<s
 export function createReplayTools(
   commandRecorder: CommandRecorder,
   executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>,
-  getPageForConnection?: (connectionReason: string) => Promise<any>
+  getPageForConnection?: (connectionReason: string) => Promise<any>,
+  getConnectionPort?: (connectionReason: string) => Promise<number | null>
 ) {
   return {
     replay: createTool(
@@ -1478,7 +1491,7 @@ export function createReplayTools(
           case 'deleteSaved':
             return handleDeleteSaved(args, commandRecorder);
           case 'run':
-            return handleRun(args, commandRecorder, executeToolCall, getPageForConnection!, abortSignal);
+            return handleRun(args, commandRecorder, executeToolCall, getPageForConnection!, abortSignal, getConnectionPort);
           case 'status':
             return handleStatus(commandRecorder);
           case 'step':

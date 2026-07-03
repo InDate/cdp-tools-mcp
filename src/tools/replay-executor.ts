@@ -594,13 +594,14 @@ export type AutoLaunchResult = {
 export async function autoLaunchChrome(
   executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>,
   connectionReason: string,
-  logPrefix: string = 'auto-launch'
+  logPrefix: string = 'auto-launch',
+  forceNewInstance: boolean = false
 ): Promise<AutoLaunchResult> {
   // Validate connectionReason before launch (throws InvalidReferenceError if invalid)
   requireValidReference(connectionReason);
 
-  await debugLog(logPrefix, `Auto-launching Chrome with reference: ${connectionReason}`);
-  const launchResult = await executeToolCall('launchChrome', { reference: connectionReason });
+  await debugLog(logPrefix, `Auto-launching Chrome with reference: ${connectionReason} (forceNewInstance=${forceNewInstance})`);
+  const launchResult = await executeToolCall('launchChrome', { reference: connectionReason, forceNewInstance });
 
   if (launchResult?.isError) {
     const errorText = launchResult?.content?.[0]?.text || 'Unknown error';
@@ -644,7 +645,8 @@ export async function ensureConnection(
     return { success: true, didAutoLaunch: false };
   } catch {
     await debugLog(logPrefix, `Connection ${connectionReason} not active, launching Chrome...`);
-    const launchResult = await autoLaunchChrome(executeToolCall, connectionReason, logPrefix);
+    // Sequence runs always get a fresh Chrome process, not a tab in an existing one
+    const launchResult = await autoLaunchChrome(executeToolCall, connectionReason, logPrefix, true);
     if (!launchResult.success) {
       return { success: false, error: launchResult.error };
     }

@@ -14,7 +14,7 @@ const configSchema = z.object({
   seedFromGlobal: z.boolean().optional()
     .describe('For useLocal action: if true (default), seeds new local config from global if it exists'),
   path: z.string().optional()
-    .describe('For useLocal action: explicit project directory to use as "local", overriding the server process\'s working directory. Needed when the MCP server runs as a shared long-lived process (e.g. launched by Claude Desktop from the home directory) instead of per-project.'),
+    .describe('useLocal: explicit project dir to use as "local" (overrides server cwd)'),
 }).strict();
 
 type ConfigArgs = z.infer<typeof configSchema>;
