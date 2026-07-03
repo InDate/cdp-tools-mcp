@@ -8,10 +8,18 @@
  * value's real type is preserved (number/object/boolean/etc). If the token
  * is embedded in a larger string (e.g. "seqkit{{timestamp}}"), the resolved
  * value is coerced with String().
+ *
+ * {{timestamp}} accepts an optional +N/-N millisecond offset (e.g.
+ * {{timestamp+3600000}}) for expiry-style fields computed relative to the
+ * run's fixed timestamp - still resolved once per run, not per token.
+ *
+ * {{var:...}} paths are plain dot-separated segments (a.b.c) except where a
+ * real key contains a literal dot (e.g. a response field keyed 'exec.t1.s2')
+ * - use bracket notation for that segment: a.b['exec.t1.s2'].c
  */
 
-const TOKEN_RE = /\{\{\s*(var:[^}]+|timestamp)\s*\}\}/g;
-const WHOLE_TOKEN_RE = /^\{\{\s*(var:[^}]+|timestamp)\s*\}\}$/;
+const TOKEN_RE = /\{\{\s*(var:[^}]+|timestamp(?:[+-]\d+)?)\s*\}\}/g;
+const WHOLE_TOKEN_RE = /^\{\{\s*(var:[^}]+|timestamp(?:[+-]\d+)?)\s*\}\}$/;
 
 export class InterpolationError extends Error {
   constructor(public token: string, reason: string) {
@@ -20,15 +28,47 @@ export class InterpolationError extends Error {
 }
 
 /**
+ * Split a var path into segments, honoring bracket notation for segments
+ * containing characters (like literal dots) that would otherwise be
+ * misread as nesting: a.b['exec.t1.s2'].c -> ['a','b','exec.t1.s2','c']
+ */
+function tokenizePath(path: string): string[] {
+  const segments: string[] = [];
+  const re = /^[^.[\]]+|\.[^.[\]]+|\['([^']*)'\]|\["([^"]*)"\]/g;
+  let match: RegExpExecArray | null;
+  let lastIndex = 0;
+  while ((match = re.exec(path)) !== null) {
+    if (match.index !== lastIndex) {
+      throw new Error(`invalid path syntax near "${path.slice(lastIndex)}"`);
+    }
+    if (match[1] !== undefined) segments.push(match[1]);
+    else if (match[2] !== undefined) segments.push(match[2]);
+    else segments.push(match[0].replace(/^\./, ''));
+    lastIndex = re.lastIndex;
+  }
+  if (lastIndex !== path.length) {
+    throw new Error(`invalid path syntax near "${path.slice(lastIndex)}"`);
+  }
+  return segments;
+}
+
+/**
  * Resolve a single token (without the {{ }} wrapper) against the variable store.
  */
 function resolveToken(token: string, store: Record<string, any>, runTimestamp: number): unknown {
-  if (token === 'timestamp') {
-    return runTimestamp;
+  if (token.startsWith('timestamp')) {
+    const offsetMatch = token.match(/^timestamp([+-]\d+)?$/);
+    const offset = offsetMatch?.[1] ? parseInt(offsetMatch[1], 10) : 0;
+    return runTimestamp + offset;
   }
 
   const path = token.slice('var:'.length);
-  const parts = path.split('.');
+  let parts: string[];
+  try {
+    parts = tokenizePath(path);
+  } catch (e: any) {
+    throw new InterpolationError(token, e.message);
+  }
   const varName = parts[0];
   if (!(varName in store)) {
     throw new InterpolationError(token, `no variable named "${varName}" in the run's captured store (use a prior request({ saveAs: "${varName}" }) step)`);
