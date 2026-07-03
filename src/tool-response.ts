@@ -95,6 +95,28 @@ export interface NetworkToolMeta {
 }
 
 /**
+ * Request tool metadata (HTTP request/response, capturable via saveAs)
+ */
+export interface RequestToolMeta {
+  ok: boolean;
+  status: number;
+  statusText: string;
+  headers: Record<string, string>;
+  body: string;
+  durationMs: number;
+}
+
+/**
+ * Assert tool metadata
+ */
+export interface AssertToolMeta {
+  left: unknown;
+  operator: string;
+  right?: unknown;
+  passed: boolean;
+}
+
+/**
  * Root metadata structure for tool responses
  * This provides structured data for programmatic use (validation, replay)
  * while keeping text content free to evolve for human/LLM display
@@ -109,6 +131,8 @@ export interface ToolResponseMeta {
   navigate?: NavigateActionMeta;
   console?: ConsoleToolMeta;
   network?: NetworkToolMeta;
+  request?: RequestToolMeta;
+  assert?: AssertToolMeta;
 }
 
 /**

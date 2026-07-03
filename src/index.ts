@@ -46,6 +46,7 @@ import { createStorageTools } from './tools/storage-tools.js';
 import { createTabTools } from './tools/tab-tools.js';
 import { createDownloadTools } from './tools/download-tools.js';
 import { createRequestTools } from './tools/request-tools.js';
+import { createAssertTools } from './tools/assert-tools.js';
 import { createModalTools } from './tools/modal-tools.js';
 import { createReplayTools } from './tools/replay-tools.js';
 import { createServerTools } from './tools/server-tools.js';
@@ -1140,6 +1141,8 @@ const allTools = {
   ...(configManager.isToolEnabled('download') ? createDownloadTools() : {}),
   // Request tools (HTTP requests as sequence steps, node or browser destination)
   ...(configManager.isToolEnabled('request') ? createRequestTools(resolveConnectionFromReason) : {}),
+  // Assert tool (inline assertions as sequence steps)
+  ...(configManager.isToolEnabled('assert') ? createAssertTools() : {}),
   // Replay tools
   ...(configManager.isToolEnabled('replay') ? createReplayTools(commandRecorder, executeToolCall, async (connectionReason: string) => {
     const resolved = await resolveConnectionFromReason(connectionReason);

@@ -6,7 +6,8 @@
 
 import { z } from 'zod';
 import { createTool } from '../validation-helpers.js';
-import { createSuccessResponse, createErrorResponse } from '../messages.js';
+import { createErrorResponse, getFormattedResponse } from '../messages.js';
+import type { ToolResponseMeta } from '../tool-response.js';
 
 const MAX_RESPONSE_BODY_CHARS = 100_000;
 
@@ -18,6 +19,7 @@ const requestSchema = z.object({
   destination: z.enum(['browser', 'node']).describe('browser: fetch inside the connected tab (shares cookies/session/origin). node: fetch directly from the MCP server process'),
   connectionReason: z.string().optional().describe('Required when destination is "browser" - which tab runs the fetch'),
   timeoutMs: z.number().optional().describe('Request timeout in ms (default 30000)'),
+  saveAs: z.string().optional().describe('Sequence step only: captures {ok,status,statusText,headers,body,durationMs} into the run\'s variable store under this name, for later {{var:name.path}} use'),
 }).strict();
 
 type RequestArgs = z.infer<typeof requestSchema>;
@@ -130,22 +132,37 @@ function formatRequestResult(
   const truncated = result.body.length > MAX_RESPONSE_BODY_CHARS;
   const body = truncated ? result.body.slice(0, MAX_RESPONSE_BODY_CHARS) : result.body;
 
-  return createSuccessResponse('REQUEST_SUCCESS', {
-    url: args.url,
-    method: args.method,
-    destination,
-    ok: result.ok ? 'yes' : 'no',
-    status: result.status.toString(),
-    statusText: result.statusText,
-    durationMs: durationMs.toString(),
-    body,
-    truncated: truncated ? 'yes' : 'no',
-  }, {
-    ok: result.ok,
-    status: result.status,
-    statusText: result.statusText,
-    headers: result.headers,
-    body,
-    durationMs,
-  });
+  const requestMeta: ToolResponseMeta = {
+    tool: 'request',
+    action: destination,
+    timestamp: Date.now(),
+    request: {
+      ok: result.ok,
+      status: result.status,
+      statusText: result.statusText,
+      headers: result.headers,
+      body,
+      durationMs,
+    },
+  };
+
+  return {
+    content: [
+      {
+        type: 'text',
+        text: getFormattedResponse('REQUEST_SUCCESS', {
+          url: args.url,
+          method: args.method,
+          destination,
+          ok: result.ok ? 'yes' : 'no',
+          status: result.status.toString(),
+          statusText: result.statusText,
+          durationMs: durationMs.toString(),
+          body,
+          truncated,
+        }),
+      },
+    ],
+    _meta: requestMeta,
+  };
 }

@@ -45,6 +45,12 @@ export interface ActiveSequenceState {
   totalSteps: number;
   pausedAt: number;           // Timestamp when paused
   historyIndexAtPause: number; // History index when we paused (to track new commands)
+  /** Variable store for {{var:name.path}} interpolation, shared by reference
+   *  with the ExecutionContext across run/step/finish calls for this pause. */
+  capturedVariables?: Record<string, any>;
+  /** {{timestamp}} value for this run, fixed at first resolution so it stays
+   *  stable across every step of the same run (including step/finish calls). */
+  runTimestamp?: number;
 }
 
 export class CommandRecorder {

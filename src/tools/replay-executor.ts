@@ -8,6 +8,7 @@ import { sanitizeReference, requireValidReference } from '../reference-validator
 import { checkUrlPort } from '../utils/port-check.js';
 import { configManager, ClickValidationConfig } from '../config.js';
 import type { ClickActionMeta, ConsoleToolMeta, NetworkToolMeta } from '../tool-response.js';
+import { interpolateParams } from './interpolation.js';
 
 // Re-export replay cursor functions
 export { injectReplayCursor, showClickEffect, showKeyPress, removeReplayCursor } from '../replay-cursor.js';
@@ -40,6 +41,11 @@ export interface ExecutionContext {
   conditionalDepth?: number;
   /** Call stack of sequence names for circular reference detection */
   conditionalCallStack?: string[];
+  /** Per-run variable store for {{var:name.path}} interpolation. Populated by
+   *  request({ saveAs }) steps, consumed by later steps' param interpolation. */
+  variableStore?: Record<string, any>;
+  /** {{timestamp}} value for this run, computed once and cached (not per-step). */
+  runTimestamp?: number;
 }
 
 export interface StepResult {
@@ -1199,6 +1205,10 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
   const results: StepResult[] = [];
   const startTime = Date.now();
 
+  // {{timestamp}} must be stable across every step of a run (including a
+  // later step/finish call), not recomputed per-step - cache once on ctx.
+  const runTimestamp = ctx.runTimestamp ?? (ctx.runTimestamp = Date.now());
+
   // Track breakpoints set during this sequence run (url:line format)
   const expectedBreakpoints: Set<string> = new Set();
 
@@ -1290,6 +1300,11 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
       // Build params
       let params = { ...cmd.params };
 
+      // Resolve {{var:name.path}} / {{timestamp}} tokens against the run's
+      // variable store. Throws InterpolationError on an unresolvable token -
+      // caught by this step's try/catch below, same as any other step failure.
+      params = interpolateParams(params, ctx.variableStore ?? {}, runTimestamp);
+
       // Apply variable substitutions
       if (variables && cmd.tool === 'input' && params.action === 'type' && params.text) {
         const varName = `var_${i}_${params.selector?.replace(/[^a-zA-Z0-9]/g, '_') || 'text'}`;
@@ -1301,6 +1316,13 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
 
       // Inject connectionReason for tools that need it
       if (connectionReason && TOOLS_NEEDING_CONNECTION.includes(cmd.tool) && !cmd.params.connectionReason) {
+        params.connectionReason = connectionReason;
+      }
+
+      // request({ destination: 'browser' }) needs a connectionReason too, but request
+      // is deliberately NOT in TOOLS_NEEDING_CONNECTION (destination:'node' sequences
+      // must not force a Chrome auto-launch)
+      if (cmd.tool === 'request' && params.destination === 'browser' && !params.connectionReason && connectionReason) {
         params.connectionReason = connectionReason;
       }
 
@@ -1526,6 +1548,12 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
       results.push({ step: i + 1, tool: cmd.tool, success: true });
       debugLog(logPrefix, `Step ${i + 1} completed successfully`);
 
+      // Capture request({ saveAs }) result into the run's variable store
+      if (cmd.tool === 'request' && params.saveAs && execResult.result?._meta?.request) {
+        (ctx.variableStore ??= {})[params.saveAs] = execResult.result._meta.request;
+        debugLog(logPrefix, `Captured variable "${params.saveAs}" from step ${i + 1}`);
+      }
+
       // Check if we hit a breakpoint after this step
       if (connectionReason) {
         const breakpointInfo = await checkIfPaused(ctx);
@@ -1610,6 +1638,8 @@ export async function executeSequenceWithPause(
         totalSteps: sequence.commands.length,
         pausedAt: Date.now(),
         historyIndexAtPause: commandRecorder.getCurrentHistoryIndex(),
+        capturedVariables: ctx.variableStore,
+        runTimestamp: ctx.runTimestamp,
       };
 
       result.pausedAtStep = lastResult.step;

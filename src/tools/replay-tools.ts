@@ -598,7 +598,8 @@ async function handleRun(
     executeToolCall,
     commandRecorder: recorder,
     connectionReason: connectionReason!,
-    logPrefix: 'run'
+    logPrefix: 'run',
+    variableStore: {}
   };
 
   // Ensure connection is ready
@@ -840,7 +841,9 @@ async function handleStep(
     executeToolCall,
     commandRecorder: recorder,
     connectionReason: activeSeq.connectionReason,
-    logPrefix: 'step'
+    logPrefix: 'step',
+    variableStore: activeSeq.capturedVariables ?? (activeSeq.capturedVariables = {}),
+    runTimestamp: activeSeq.runTimestamp ?? (activeSeq.runTimestamp = Date.now())
   };
 
   const execResult = await executeSteps({
@@ -894,7 +897,9 @@ async function handleFinish(
     executeToolCall,
     commandRecorder: recorder,
     connectionReason: activeSeq.connectionReason,
-    logPrefix: 'finish'
+    logPrefix: 'finish',
+    variableStore: activeSeq.capturedVariables ?? (activeSeq.capturedVariables = {}),
+    runTimestamp: activeSeq.runTimestamp ?? (activeSeq.runTimestamp = Date.now())
   };
 
   const execResult = await executeSteps({

@@ -2890,3 +2890,59 @@ Dashboard is not available: {{reason}}
 
 ---
 
+## REQUEST_SUCCESS
+
+**Type:** success
+**Summary:** {{method}} {{url}} -> {{status}} {{statusText}}
+
+**Destination:** {{destination}} | **OK:** {{ok}} | **Duration:** {{durationMs}}ms{{#truncated}}
+**Note:** response body truncated{{/truncated}}
+
+**Body:**
+```
+{{body}}
+```
+
+---
+
+## REQUEST_FAILED
+
+**Type:** error
+**Code:** REQUEST_FAILED
+
+Request to {{url}} failed ({{destination}}): {{error}}
+
+**Suggestions:**
+- Check the URL is reachable and the server is running
+- destination "browser" requires an active connection (use connectionReason)
+- destination "node" cannot resolve relative URLs - use a full URL (http://localhost:PORT/path)
+
+---
+
+## ASSERT_SUCCESS
+
+**Type:** success
+**Summary:** Assertion passed: {{left}} {{operator}} {{right}}
+
+---
+
+## ASSERT_FAILED
+
+**Type:** error
+**Code:** ASSERT_FAILED
+
+{{message}}
+
+**Assertion:** {{left}} {{operator}} {{right}}
+
+---
+
+## CONFIG_USE_LOCAL_FAILED
+
+**Type:** error
+**Code:** CONFIG_USE_LOCAL_FAILED
+
+Failed to switch to local config: {{error}}
+
+---
+
