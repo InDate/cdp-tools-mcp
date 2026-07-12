@@ -450,6 +450,52 @@ export async function loadSequence(
 }
 
 // =============================================================================
+// Run-time Rebasing
+// =============================================================================
+
+/**
+ * Return a deep copy of the sequence retargeted at another deployment:
+ * every absolute http(s) URL — the startUrl and any string param in any
+ * command (navigate goto, request url, ...) — keeps its path/query/hash but
+ * takes `baseUrl`'s origin. Relative URLs are untouched (they already follow
+ * the page origin). An explicit `startUrl` replaces the sequence's startUrl
+ * wholesale, after rebasing, for runs whose entry point differs per target
+ * (e.g. a freshly minted share link). The stored sequence is never mutated —
+ * loadSequence can return the recorder's in-memory object.
+ */
+export function rebaseSequence(
+  sequence: CommandSequence,
+  overrides: { baseUrl?: string; startUrl?: string }
+): CommandSequence {
+  const origin = overrides.baseUrl ? new URL(overrides.baseUrl).origin : null;
+  const rebase = (value: string): string => {
+    if (!origin || !/^https?:\/\//i.test(value)) return value;
+    try {
+      const u = new URL(value);
+      return origin + u.pathname + u.search + u.hash;
+    } catch {
+      return value;
+    }
+  };
+  const walk = (value: unknown): unknown => {
+    if (typeof value === 'string') return rebase(value);
+    if (Array.isArray(value)) return value.map(walk);
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, walk(v)]));
+    }
+    return value;
+  };
+  return {
+    ...sequence,
+    startUrl: overrides.startUrl ?? (sequence.startUrl ? rebase(sequence.startUrl) : sequence.startUrl),
+    commands: sequence.commands.map(cmd => ({
+      ...cmd,
+      params: walk(cmd.params) as RecordedCommand['params'],
+    })),
+  };
+}
+
+// =============================================================================
 // Connection Analysis
 // =============================================================================
 

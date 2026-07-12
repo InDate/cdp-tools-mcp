@@ -14,6 +14,7 @@ import { deriveConnectionReference } from '../reference-validator.js';
 
 import {
   loadSequence,
+  rebaseSequence,
   analyzeSequenceConnections,
   extractConnectionFromSequence,
   sequenceNeedsConnection,
@@ -97,7 +98,8 @@ const replaySchema = z.object({
   name: z.string().optional(),
   description: z.string().optional(),
   expectedOutcome: z.string().optional(),
-  startUrl: z.string().optional(),
+  startUrl: z.string().optional().describe('create: sequence start URL. run: replace the stored startUrl for this run only (e.g. a freshly minted link)'),
+  baseUrl: z.string().optional().describe('run: retarget the sequence at another deployment — every absolute URL (startUrl + command params) keeps its path/query but takes this origin. Not preserved across a mid-run pause/step resume'),
   indices: z.array(z.number()).optional().describe('Command indices'),
   lines: z.array(z.number()).optional().describe('Log line numbers'),
   sequenceId: z.string().optional(),
@@ -572,7 +574,12 @@ async function handleRun(
     return handleLoadSequenceError(loadResult, 'run');
   }
 
-  const sequence = loadResult.sequence;
+  // Run-time retarget: baseUrl swaps the origin of every absolute URL in the
+  // sequence (startUrl + command params); startUrl replaces the entry URL
+  // wholesale. Lets one recorded sequence run against any deployment.
+  const sequence = (args.baseUrl || args.startUrl)
+    ? rebaseSequence(loadResult.sequence, { baseUrl: args.baseUrl, startUrl: args.startUrl })
+    : loadResult.sequence;
   const commands = sequence.commands;
   const analysis = analyzeSequenceConnections(commands);
 

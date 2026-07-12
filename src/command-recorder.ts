@@ -400,7 +400,7 @@ export class CommandRecorder {
 
       // Add usage comment to exported file
       const exportData = {
-        _comment: 'CDP Tools replay sequence. Load with: replay({ action: "load", filename: "<this-file>" }), then run with: replay({ action: "replay", sequenceId: "<id>" })',
+        _comment: 'CDP Tools replay sequence. Load with: replay({ action: "load", filename: "<this-file>" }), then run with: replay({ action: "run", name: "<this-file>" })',
         ...sequence
       };
       await atomicWriteFile(filepath, JSON.stringify(exportData, null, 2));
