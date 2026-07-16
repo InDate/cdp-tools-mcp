@@ -7,6 +7,4 @@ build/
 */__pycache__/*
 dev-notes/*
 .cdp-tools/*
-!.cdp-tools/parsers
-!.cdp-tools/parsers/**
 .claude/commands/commit.md
