@@ -14,6 +14,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import type { ClickableCache, ClickableElement } from '../clickable-cache.js';
 import { getOutputPath } from '../helpers/paths.js';
+import { listParsers, loadParser } from '../helpers/parser-plugins.js';
 import { collectInteractiveElements } from '../element-collector.js';
 import { UIVerifier, type UICheckType, type UIIssue } from '../ui-verifier.js';
 
@@ -24,7 +25,7 @@ const elementTypes = ['link', 'button', 'text', 'email', 'password', 'number', '
 const verifyCheckTypes = ['handlers', 'viewport', 'touch', 'overflow', 'clickability', 'links', 'scroll'] as const;
 
 const contentSchema = z.object({
-  action: z.enum(['extractText', 'findInteractive', 'verify']).describe('Content action: extractText (extract webpage text), findInteractive (find all interactive elements), verify (run UI verification checks)'),
+  action: z.enum(['extractText', 'findInteractive', 'verify', 'parse']).describe('Content action: extractText (extract webpage text), findInteractive (find all interactive elements), verify (run UI verification checks), parse (run a page-parser plugin from .cdp-tools/parsers/ against the current page; omit name to list available plugins)'),
   connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 
   // extractText parameters
@@ -42,6 +43,10 @@ const contentSchema = z.object({
 
   // verify parameters
   checks: z.array(z.enum(verifyCheckTypes)).optional().describe('UI checks to run (for verify action): handlers (dead buttons via CDP), viewport (position), touch (target size), overflow (clipping), clickability (z-index blocking - expensive), links (dead hrefs), scroll (horizontal). Default: all except clickability'),
+
+  // parse parameters
+  name: z.string().optional().describe('Parser plugin name to run (for parse action). Omit to list available plugins in .cdp-tools/parsers/.'),
+  waitMs: z.number().optional().describe("Max ms to wait for the plugin's waitFor predicate before extracting (for parse action, default: 8000; 0 to skip waiting)"),
 }).strict();
 
 export function createContentTools(puppeteerManager: PuppeteerManager, cdpManager: CDPManager, connectionManager: ConnectionManager, resolveConnectionFromReason: (connectionReason: string) => Promise<any>, clickableCache: ClickableCache) {
@@ -70,7 +75,7 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
    */
   return {
     content: createTool(
-      'Primary tool for page content. Prefer over screenshots. Actions: extractText (extract webpage text with outline/full/section modes), findInteractive (find all interactive elements like links, buttons, inputs with summary or filtered view), verify (run CDP-based UI verification for dead buttons, viewport issues, touch targets, overflow clipping)',
+      'Primary tool for page content. Prefer over screenshots. Actions: extractText (extract webpage text with outline/full/section modes), findInteractive (find all interactive elements like links, buttons, inputs with summary or filtered view), verify (run CDP-based UI verification for dead buttons, viewport issues, touch targets, overflow clipping), parse (run a page-parser plugin from .cdp-tools/parsers/ against the current page — omit name to list available plugins)',
       contentSchema,
       async (args) => {
         const { action } = args;
@@ -304,6 +309,69 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
             return {
               content: [{ type: 'text', text: response }],
             };
+          }
+
+          case 'parse': {
+            const url = page.url();
+
+            // List mode: no name -> enumerate available plugins.
+            if (!args.name) {
+              const parsers = await listParsers(url);
+              if (parsers.length === 0) {
+                return {
+                  content: [{
+                    type: 'text',
+                    text: 'No parser plugins found.\n\n' +
+                      'Add one at .cdp-tools/parsers/<name>.mjs that default-exports ' +
+                      '{ name, description, match?, waitFor?, extract }.\n' +
+                      "extract() runs in the page and returns JSON.",
+                  }],
+                };
+              }
+              let out = `Available parser plugins (${parsers.length}):\n\n`;
+              for (const p of parsers) {
+                const flag = p.matches === true ? '  ✓ matches current URL' : '';
+                out += `- ${p.name}: ${p.description ?? '(no description)'}${flag}\n`;
+              }
+              out += `\nRun: content({ action: 'parse', name: '<name>' })`;
+              return { content: [{ type: 'text', text: out }] };
+            }
+
+            // Run mode: load and execute the named plugin in the page.
+            let plugin;
+            try {
+              plugin = await loadParser(args.name);
+            } catch (e: any) {
+              return createErrorResponse('INVALID_PARAMS', { message: e?.message || String(e) });
+            }
+
+            const run = await executeWithPauseDetection(
+              targetCdpManager,
+              async () => {
+                const waitMs = args.waitMs ?? 8000;
+                if (plugin.waitFor && waitMs > 0) {
+                  try {
+                    await page.waitForFunction(plugin.waitFor as any, { timeout: waitMs });
+                  } catch {
+                    // Proceed even if the predicate never became true (extract may
+                    // still return a useful "not found" result).
+                  }
+                }
+                // plugin.extract runs in the page; Puppeteer serializes it.
+                return await page.evaluate(plugin.extract as any);
+              },
+              'parse'
+            );
+
+            const payload = JSON.stringify(run.result ?? null, null, 2);
+            let response = `Parser: ${args.name}\nURL: ${url}\n\n${payload}`;
+
+            if (args.save) {
+              const filepath = await saveExtractedContent(response, url);
+              response += `\n\n---\n\n**Saved to:** ${filepath}`;
+            }
+
+            return { content: [{ type: 'text', text: response }] };
           }
 
           case 'findInteractive': {
