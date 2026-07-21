@@ -306,11 +306,34 @@ export class ConnectionManager {
 
   /**
    * Close a connection (tab)
+   * @param options.reason - Why this connection is being closed. 'inactivity' triggers a
+   *   last-chance activity check (see below) and tags the resulting Chrome kill correctly
+   *   instead of it being misreported as an 'external' close.
+   * @param options.inactivityThresholdMs - Required when reason is 'inactivity'; used for
+   *   the last-chance activity check.
    */
-  async closeConnection(id: string): Promise<boolean> {
+  async closeConnection(
+    id: string,
+    options?: { reason?: 'manual' | 'inactivity'; inactivityThresholdMs?: number }
+  ): Promise<boolean> {
     const connection = this.connections.get(id);
     if (!connection) {
       return false;
+    }
+
+    // Last-chance check for automatic inactivity sweeps only: lastActivityAt only tracks
+    // explicit tool calls, but the browser can still be genuinely in use via background
+    // console/network traffic (e.g. a logpoint firing on an interval) with no tool call in
+    // between. Check the monitors - which are still alive at this point - before tearing
+    // anything down, instead of after (by which point they'd already be destroyed below).
+    if (options?.reason === 'inactivity' && options.inactivityThresholdMs !== undefined) {
+      const stillActive =
+        connection.networkMonitor?.hasRecentActivity(options.inactivityThresholdMs) ||
+        connection.consoleMonitor?.hasRecentActivity(options.inactivityThresholdMs);
+      if (stillActive) {
+        connection.lastActivityAt = Date.now();
+        return false;
+      }
     }
 
     // Stop monitoring if applicable
@@ -343,6 +366,9 @@ export class ConnectionManager {
         // Kill Chrome instance if this was the last connection to it
         if (this.chromeLauncher && connection.type === 'chrome') {
           try {
+            if (options?.reason === 'inactivity') {
+              this.chromeLauncher.setPendingCloseReason(connection.port, 'inactivity');
+            }
             await this.chromeLauncher.kill(connection.port);
             console.error(`[ConnectionManager] Killed Chrome on port ${connection.port} (last connection closed)`);
           } catch (error) {
@@ -414,11 +440,15 @@ export class ConnectionManager {
       }
     }
 
+    let closedCount = 0;
     for (const id of connectionsToClose) {
-      await this.closeConnection(id);
+      const closed = await this.closeConnection(id, { reason: 'inactivity', inactivityThresholdMs: inactivityMs });
+      if (closed) {
+        closedCount++;
+      }
     }
 
-    return connectionsToClose.length;
+    return closedCount;
   }
 
   /**

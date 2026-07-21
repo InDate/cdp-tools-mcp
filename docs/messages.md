@@ -53,7 +53,7 @@ Title: {{title}}, URL: {{url}}{{#viewport}}, Viewport: {{viewport.width}}x{{view
 
 Console: {{consoleStats}}{{/consoleStats}}
 
-{{#hasUserReference}}Ready to use! Use connectionReason: "{{reference}}" in tool calls.{{/hasUserReference}}{{^hasUserReference}}Ready to use! Use connectionReason: "{{reference}}" in tool calls, or rename with tab({ action: 'rename' }) first.{{/hasUserReference}}
+{{#hasUserReference}}Ready to use! Use connectionReason: "{{reference}}" in tool calls.{{/hasUserReference}}{{^hasUserReference}}Ready to use! Use connectionReason: "{{reference}}" in tool calls, or rename with tab({ action: 'rename' }) first.{{/hasUserReference}}{{inactivityNote}}
 
 ---
 
