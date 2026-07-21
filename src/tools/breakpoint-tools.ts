@@ -650,111 +650,102 @@ export function createBreakpointTools(
               expressions.push(match[1]);
             }
 
-            // Build the log expression with execution limiting
-            // Use a unique key for this logpoint based on location
+            // Build the log expression in Chrome DevTools' own native logpoint format:
+            // a `console.log(...)` call immediately preceded by the exact
+            // `/** DEVTOOLS_LOGPOINT */` sentinel comment, with a trailing
+            // `//# sourceURL=debugger://logpoint` marker - verified against
+            // devtools-frontend's BreakpointManager.ts (LOGPOINT_PREFIX/LOGPOINT_SUFFIX
+            // + addSourceUrl()). This is exactly how Chrome's Sources panel implements
+            // logpoints, so the resulting console output is attributed/broadcast the
+            // same way for any DevTools/CDP client attached to the page, not just this
+            // tool's own connection.
             const logpointKey = `${targetUrl}:${targetLine}`;
+            const escapedKey = logpointKey.replace(/'/g, "\\'");
 
-            let logExpression = `
-          (function() {
-            try {
-              // Initialize global storage if needed
+            // Computes the formatted log message; always returns a string so the
+            // outer console.log() call fires exactly once per (allowed) hit.
+            const messageExpression = `(function() {
+              try {
+                const values = {};
+                ${expressions.map(expr => {
+                  const escapedExpr = expr.replace(/'/g, "\\'");
+                  return `
+                try {
+                  values['${escapedExpr}'] = ${expr};
+                } catch (e) {
+                  values['${escapedExpr}'] = '[Error: ' + e.message + ']';
+                }`;
+                }).join('')}
+
+                const safeStringify = (value) => {
+                  if (value === null) return 'null';
+                  if (value === undefined) return 'undefined';
+                  if (typeof value === 'string') return value;
+                  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+                  try {
+                    return JSON.stringify(value, null, 2);
+                  } catch (e) {
+                    return String(value);
+                  }
+                };
+
+                let message = ${JSON.stringify(args.logMessage)};
+                ${expressions.map(expr => {
+                  const escapedExpr = expr.replace(/'/g, "\\'");
+                  return `message = message.replace('{${expr}}', safeStringify(values['${escapedExpr}']));`;
+                }).join('\n                ')}
+
+                ${includeCallStack ? `
+                message += '\\n  Call stack: ' + new Error().stack.split('\\n').slice(2, 5).join(' | ');
+                ` : ''}
+                ${includeVariables ? `
+                message += '\\n  Variables: ' + safeStringify(values);
+                ` : ''}
+
+                if (globalThis.__llmCdpLogpointCounters['${escapedKey}'] === ${maxExecutions}) {
+                  message += '\\n  [Logpoint] Execution limit reached (${maxExecutions}/${maxExecutions}). Further hits will not be logged.';
+                }
+
+                return message;
+              } catch (e) {
+                if (typeof globalThis.__llmCdpLogpointErrors === 'undefined') {
+                  globalThis.__llmCdpLogpointErrors = [];
+                }
+                globalThis.__llmCdpLogpointErrors.push({
+                  type: 'logpoint-error',
+                  location: '${targetUrl}:${targetLine}:${targetColumn || 'auto'}',
+                  expressions: ${JSON.stringify(expressions)},
+                  error: e.message,
+                  stack: e.stack || e.toString(),
+                  timestamp: new Date().toISOString()
+                });
+                if (globalThis.__llmCdpLogpointErrors.length > 50) {
+                  globalThis.__llmCdpLogpointErrors.shift();
+                }
+                return '[Logpoint Error] ' + e.message;
+              }
+            })()`;
+
+            // Counting/capping happens in a guard evaluated before the real
+            // console.log call, so we stop logging once maxExecutions is hit
+            // instead of spamming the console forever. The Node-side
+            // LogpointExecutionTracker (see logpoint-execution-tracker.ts) still
+            // detects the maxExecutions-th message and pauses the debuggee as a
+            // safety net - this condition itself never returns true anymore,
+            // since its overall value must stay falsy to match the native
+            // never-pause logpoint semantics above.
+            let logExpression = `(function() {
               if (typeof globalThis.__llmCdpLogpointCounters === 'undefined') {
                 globalThis.__llmCdpLogpointCounters = {};
               }
-              if (typeof globalThis.__llmCdpLogpointErrors === 'undefined') {
-                globalThis.__llmCdpLogpointErrors = [];
-              }
-
-              // Get/increment counter for this logpoint
-              const key = '${logpointKey.replace(/'/g, "\\'")}';
+              const key = '${escapedKey}';
               globalThis.__llmCdpLogpointCounters[key] = (globalThis.__llmCdpLogpointCounters[key] || 0) + 1;
-              const executionCount = globalThis.__llmCdpLogpointCounters[key];
+              return globalThis.__llmCdpLogpointCounters[key] <= ${maxExecutions};
+            })() && (/** DEVTOOLS_LOGPOINT */ console.log('[Logpoint] ${targetUrl}:${targetLine}:${targetColumn || 'auto'}:', ${messageExpression}))
 
-              // Check if limit exceeded
-              if (executionCount > ${maxExecutions}) {
-                return true; // PAUSE - limit exceeded
-              }
+//# sourceURL=debugger://logpoint`;
 
-              // Evaluate expressions safely - wrap each in try-catch to prevent one failure from breaking all
-              const values = {};
-              ${expressions.map(expr => {
-                const escapedExpr = expr.replace(/'/g, "\\'");
-                return `
-              try {
-                values['${escapedExpr}'] = ${expr};
-              } catch (e) {
-                values['${escapedExpr}'] = '[Error: ' + e.message + ']';
-              }`;
-              }).join('')}
-
-              // Helper to safely stringify values (handles objects, arrays, circular refs)
-              const safeStringify = (value) => {
-                if (value === null) return 'null';
-                if (value === undefined) return 'undefined';
-                if (typeof value === 'string') return value;
-                if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-
-                // Try JSON.stringify for objects/arrays
-                try {
-                  return JSON.stringify(value, null, 2);
-                } catch (e) {
-                  // Fall back to String() for circular refs or other errors
-                  return String(value);
-                }
-              };
-
-              // Build log message (using JSON.stringify to safely escape the template)
-              let message = ${JSON.stringify(args.logMessage)};
-              ${expressions.map(expr => {
-                // Escape single quotes in the expression key for safe string literal
-                const escapedExpr = expr.replace(/'/g, "\\'");
-                return `message = message.replace('{${expr}}', safeStringify(values['${escapedExpr}']));`;
-              }).join('\n              ')}
-
-              // Log to console
-              console.log('[Logpoint] ${targetUrl}:${targetLine}:${targetColumn || 'auto'}:', message);
-
-              ${includeCallStack ? `
-              // Add call stack
-              const stack = new Error().stack.split('\\n').slice(2, 5).join('\\n');
-              console.log('  Call stack:', stack);
-              ` : ''}
-
-              ${includeVariables ? `
-              // Add local variables (limited to what's in scope)
-              console.log('  Variables:', values);
-              ` : ''}
-
-              // Check if this is the last allowed execution
-              if (executionCount === ${maxExecutions}) {
-                console.warn('[Logpoint] Execution limit reached (${maxExecutions}/${maxExecutions}). Will pause on next execution.');
-              }
-
-            } catch(e) {
-              // Store error in global array for retrieval via searchConsoleLogs
-              const errorInfo = {
-                type: 'logpoint-error',
-                location: '${targetUrl}:${targetLine}:${targetColumn || 'auto'}',
-                expressions: ${JSON.stringify(expressions)},
-                error: e.message,
-                stack: e.stack || e.toString(),
-                timestamp: new Date().toISOString()
-              };
-              globalThis.__llmCdpLogpointErrors.push(errorInfo);
-
-              // Keep only last 50 errors to prevent memory issues
-              if (globalThis.__llmCdpLogpointErrors.length > 50) {
-                globalThis.__llmCdpLogpointErrors.shift();
-              }
-
-              // Log error to console with warning level for visibility
-              console.warn('[Logpoint Error] ' + '${targetUrl}:${targetLine}' + ': ' + e.message + ' | Expressions: ' + ${JSON.stringify(expressions)}.join(', '));
-            }
-            return false; // Don't pause (unless limit exceeded above)
-          })()
-        `;
-
-            // If condition is provided, wrap it
+            // If a user condition is provided, only log/count when it's true
             if (args.condition) {
               logExpression = `(${args.condition}) && ${logExpression}`;
             }
