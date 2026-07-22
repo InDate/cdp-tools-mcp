@@ -57,7 +57,7 @@ import { createDashboardTools, setDashboardInstance, getDashboardInstance, setSe
 import { initializeDashboard, shutdownDashboard, type DashboardInstance, type ConnectionInfo as DashboardConnectionInfo } from './dashboard/index.js';
 import { Orchestrator } from './log-processor/orchestrator.js';
 import { mkdirSync } from 'fs';
-import { ServerManager } from './server-manager.js';
+import { ServerManager, detectAutoRestartCommand } from './server-manager.js';
 import { configManager } from './config.js';
 import { checkPortFailures, checkBreakpointPause, checkBugBlocking, checkPendingStartups, checkDuplicateSession, prependToResponse, appendToResponse, buildStatusSuffix, type StatusLineItem } from './tool-response.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock, getMessage, getFormattedResponse } from './messages.js';
@@ -191,7 +191,9 @@ async function createMCPServer(): Promise<Server> {
     },
     {
       capabilities: {
-        tools: {},
+        // listChanged: true so mcp-supervisor.ts's notifications/tools/list_changed
+        // (sent after a hot-restart) is spec-compliant to send.
+        tools: { listChanged: true },
       },
       instructions,
     }
@@ -712,6 +714,19 @@ const connectionTools = {
         await cdpManager.connect(host, port);
         const runtimeType = cdpManager.getRuntimeType();
 
+        // If this port belongs to a server cdp-tools is managing, and its start
+        // command looks auto-restarting (--watch, nodemon, etc.), warn: pausing
+        // at a breakpoint on that process while it can self-restart on file
+        // changes is a known-bad combination.
+        let autoRestartWarning = '';
+        if (runtimeType === 'node') {
+          const managedServer = await serverManager.getManagedServerByInspectorPort(port);
+          const autoRestartMatch = managedServer ? detectAutoRestartCommand(managedServer.command) : null;
+          if (autoRestartMatch) {
+            autoRestartWarning = `\n\n**Warning:** Server "${managedServer!.id}" on this port matches "${autoRestartMatch}", which auto-restarts its own process on file changes. Pausing at a breakpoint here while it can self-restart is a known-bad combination (can cause EADDRINUSE crash-loops and ambiguous failed-but-still-listening states). Prefer disabling auto-restart while breakpoint debugging and calling server({ action: 'restart' }) explicitly instead.`;
+          }
+        }
+
         // Set up pause/resume callbacks to control port monitoring
         const portMonitor = serverManager.getPortMonitor();
         cdpManager.setPauseCallback(() => portMonitor.pauseMonitoring());
@@ -816,7 +831,8 @@ const connectionTools = {
           features: features.join(', '),
           consoleStats,
           isChrome: runtimeType === 'chrome',
-          isNode: runtimeType === 'node'
+          isNode: runtimeType === 'node',
+          autoRestartWarning,
         });
       } catch (error) {
         return createErrorResponse('DEBUGGER_CONNECT_FAILED', {

@@ -1,8 +1,10 @@
 /**
- * Unit tests for CDPManager getVariables token budget logic
+ * Unit tests for CDPManager getVariables token budget logic, and for
+ * disconnect()'s resume-callback handling.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { CDPManager } from './cdp-manager.js';
 
 // We can't directly test the private methods, but we can test the logic
 // by extracting and testing the calculations
@@ -248,5 +250,51 @@ describe('Token Budget Calculations', () => {
       // to provide a safety buffer
       expect(200).toBeGreaterThanOrEqual(overhead);
     });
+  });
+});
+
+describe('CDPManager.disconnect() resume-callback handling', () => {
+  // `client` and `state` are private, but typed loosely enough (client: any)
+  // that poking them directly is the simplest way to exercise disconnect()'s
+  // cleanup logic without standing up a real CDP connection.
+  function withMockClient(cdpManager: CDPManager, close: () => Promise<void>, paused: boolean) {
+    (cdpManager as any).client = { close };
+    (cdpManager as any).state.paused = paused;
+  }
+
+  it('fires resumeCallback when disconnecting a paused connection', async () => {
+    const cdpManager = new CDPManager();
+    const resumeCallback = vi.fn();
+    cdpManager.setResumeCallback(resumeCallback);
+    const close = vi.fn().mockResolvedValue(undefined);
+    withMockClient(cdpManager, close, true);
+
+    await cdpManager.disconnect();
+
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(resumeCallback).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not fire resumeCallback when disconnecting a connection that was not paused', async () => {
+    const cdpManager = new CDPManager();
+    const resumeCallback = vi.fn();
+    cdpManager.setResumeCallback(resumeCallback);
+    const close = vi.fn().mockResolvedValue(undefined);
+    withMockClient(cdpManager, close, false);
+
+    await cdpManager.disconnect();
+
+    expect(resumeCallback).not.toHaveBeenCalled();
+  });
+
+  it('still fires resumeCallback even if client.close() throws', async () => {
+    const cdpManager = new CDPManager();
+    const resumeCallback = vi.fn();
+    cdpManager.setResumeCallback(resumeCallback);
+    const close = vi.fn().mockRejectedValue(new Error('socket already closed'));
+    withMockClient(cdpManager, close, true);
+
+    await expect(cdpManager.disconnect()).rejects.toThrow('socket already closed');
+    expect(resumeCallback).toHaveBeenCalledTimes(1);
   });
 });

@@ -5,10 +5,11 @@
   "type": "module",
   "main": "build/index.js",
   "bin": {
-    "cdp-tools-mcp": "build/index.js"
+    "cdp-tools-mcp": "build/mcp-supervisor.js"
   },
   "scripts": {
     "build": "tsc && npm run build:dashboard",
+    "postbuild": "node scripts/signal-supervisor.mjs",
     "build:dashboard": "node scripts/build-dashboard.mjs",
     "build:verify": "npm run build && node scripts/verify-mcp.js && node scripts/measure-startup.mjs",
     "dev": "tsc --watch",

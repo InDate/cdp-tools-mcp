@@ -26,6 +26,52 @@ import {
 } from './runners/index.js';
 
 /**
+ * Patterns for commands that auto-restart their own process on file changes
+ * (Node's --watch, nodemon, etc.). Pairing one of these with an attached CDP
+ * debugger on the same process is a known-bad combination: the auto-restart
+ * supervisor races with a paused (frozen) process, which can produce
+ * EADDRINUSE crash-loops and ambiguous "failed but still listening" states,
+ * since the restart happens entirely outside anything cdp-tools tracks.
+ */
+const AUTO_RESTART_PATTERNS: Array<{ name: string; regex: RegExp }> = [
+  { name: '--watch', regex: /(^|\s)--watch(\b|=)/ },
+  { name: 'nodemon', regex: /\bnodemon\b/ },
+  { name: 'tsx watch', regex: /\btsx\s+watch\b/ },
+  { name: 'ts-node-dev', regex: /\bts-node-dev\b/ },
+  { name: 'node-dev', regex: /\bnode-dev\b/ },
+  { name: 'bun --hot/--watch', regex: /\bbun\b.*(--hot\b|--watch\b)/ },
+  { name: 'deno run --watch', regex: /\bdeno\s+run\b.*--watch\b/ },
+];
+
+/**
+ * Returns the matched auto-restart pattern name if `command` looks like it
+ * self-restarts on file changes, or null otherwise.
+ */
+export function detectAutoRestartCommand(command: string): string | null {
+  for (const { name, regex } of AUTO_RESTART_PATTERNS) {
+    if (regex.test(command)) {
+      return name;
+    }
+  }
+  return null;
+}
+
+/**
+ * Extract the Node inspector port from a `--inspect`/`--inspect-brk` flag in
+ * a command string, if present. Falls back to Node's default port (9229)
+ * when the flag is given with no explicit port. Does not handle a separate
+ * `--inspect-port=` flag overriding a bare `--inspect`'s port - a rare
+ * combination not worth the extra complexity here.
+ */
+export function extractInspectorPort(command: string): number | null {
+  const match = command.match(/--inspect(?:-brk)?(?:=(?:[\w.]+:)?(\d+))?/);
+  if (!match) {
+    return null;
+  }
+  return match[1] ? parseInt(match[1], 10) : 9229;
+}
+
+/**
  * Validate server ID to prevent security issues.
  * Server IDs are used in container names, file paths, and project names.
  * Only alphanumeric characters, dashes, and underscores are allowed.
@@ -173,6 +219,10 @@ export class PortMonitor {
   private ports: Map<number, MonitoredPort> = new Map();
   private onFailureCallback?: (port: number, level: MonitoringLevel) => void;
   private getIntervalForLevel: GetIntervalForLevel;
+  // Refcount so multiple paused CDP connections can share one PortMonitor safely:
+  // monitoring only actually stops on the first pause and only actually resumes
+  // once every pause has a matching resume.
+  private pauseCount = 0;
 
   constructor(getIntervalForLevel?: GetIntervalForLevel) {
     // Default intervals if no config provided
@@ -198,6 +248,12 @@ export class PortMonitor {
       existing.interval = interval;
       if (existing.status === 'down' && existing.acknowledged) {
         existing.acknowledged = false;
+      }
+      // Self-heal: if this port's monitor is dormant (no active socket and no
+      // pending reconnect - e.g. left stuck by an imbalanced pause/resume),
+      // reconnect it rather than silently staying dead.
+      if (!existing.socket && !existing.reconnectTimer) {
+        this.connectToPort(port);
       }
       await debugLog('PortMonitor', `Updated monitoring for port ${port}: level=${level}, interval=${interval ?? 'default'}`);
       return;
@@ -429,6 +485,12 @@ export class PortMonitor {
    * Stops reconnection attempts but preserves port state
    */
   pauseMonitoring(): void {
+    this.pauseCount++;
+    if (this.pauseCount > 1) {
+      // Another connection already has monitoring paused; nothing new to do.
+      debugLog('PortMonitor', `Port monitoring pause count now ${this.pauseCount}`);
+      return;
+    }
     for (const monitored of this.ports.values()) {
       // Clear any pending reconnect timers
       if (monitored.reconnectTimer) {
@@ -447,9 +509,19 @@ export class PortMonitor {
 
   /**
    * Resume all port monitoring (e.g., when resuming from a breakpoint)
-   * Restarts connection attempts for all monitored ports
+   * Restarts connection attempts for all monitored ports, once every
+   * outstanding pauseMonitoring() call has a matching resumeMonitoring().
    */
   resumeMonitoring(): void {
+    if (this.pauseCount === 0) {
+      // Unbalanced resume (shouldn't normally happen) - nothing to do.
+      return;
+    }
+    this.pauseCount--;
+    if (this.pauseCount > 0) {
+      debugLog('PortMonitor', `Port monitoring still paused by ${this.pauseCount} other connection(s)`);
+      return;
+    }
     for (const port of this.ports.keys()) {
       this.connectToPort(port);
     }
@@ -804,6 +876,25 @@ export class ServerManager {
     return '';
   }
 
+  /**
+   * Find the managed server whose command's --inspect/--inspect-brk port
+   * matches `port` - i.e. the server a CDP debugger connection at that port
+   * actually belongs to. This is deliberately NOT the server's own detected
+   * app/service port (e.g. an HTTP port parsed from "listening on port
+   * 3000") - a Node process's inspector port and its own app port are
+   * normally different numbers, so matching on the app port would almost
+   * never find anything real.
+   */
+  async getManagedServerByInspectorPort(port: number): Promise<{ id: string; command: string } | null> {
+    for (const managed of this.servers.values()) {
+      const command = this.getRunnerCommand(managed.runner);
+      if (extractInspectorPort(command) === port) {
+        return { id: managed.id, command };
+      }
+    }
+    return null;
+  }
+
   private async isPortInUse(port: number): Promise<boolean> {
     return new Promise((resolve) => {
       const socket = new net.Socket();
@@ -927,7 +1018,7 @@ export class ServerManager {
   /**
    * Start a server
    */
-  async startServer(options: StartServerOptions): Promise<{ id: string; pid: number; runnerType: RunnerType; containerId?: string }> {
+  async startServer(options: StartServerOptions): Promise<{ id: string; pid: number; runnerType: RunnerType; containerId?: string; autoRestartWarning?: string }> {
     const { command, cwd, id: serverId, autoRun, env, port, monitorPort, global: isGlobal } = options;
 
     // Validate server ID for security (prevents command injection via container names)
@@ -981,6 +1072,11 @@ export class ServerManager {
       global: isGlobal ?? false,
     });
 
+    const autoRestartMatch = detectAutoRestartCommand(command);
+    if (autoRestartMatch) {
+      await debugLog('ServerManager', `Server ${serverId} command looks auto-restarting (matched: ${autoRestartMatch}) - flagging as risky to pair with an attached breakpoint debugger`);
+    }
+
     // Create pending startup entry for timeout tracking
     const now = new Date();
     const timeoutMs = 30000; // 30 seconds
@@ -1003,6 +1099,9 @@ export class ServerManager {
       pid: result.pid,
       runnerType,
       containerId: result.containerId,
+      autoRestartWarning: autoRestartMatch
+        ? `Command matches "${autoRestartMatch}", which auto-restarts its own process on file changes. Attaching a CDP debugger and pausing at a breakpoint while this is running is a known-bad combination (can cause EADDRINUSE crash-loops and ambiguous failed-but-still-listening states) - the restart happens entirely outside anything cdp-tools tracks. Prefer disabling auto-restart while breakpoint debugging and calling server({ action: 'restart' }) explicitly instead.`
+        : undefined,
     };
   }
 

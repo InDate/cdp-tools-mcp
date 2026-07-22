@@ -236,6 +236,17 @@ export class ConnectionManager {
 
     console.error(`[ConnectionManager] Removing stale connection: ${connection.reference || connectionId}`);
 
+    // Best-effort: let the CDP manager release its state and fire any pending
+    // resume callback (e.g. to un-pause port monitoring) even though the
+    // underlying connection is already dead - this is the more common path a
+    // paused-then-killed process actually gets cleaned up through (discovered
+    // as dead on the next tool call, rather than an explicit disconnect).
+    try {
+      await connection.cdpManager.disconnect();
+    } catch (error) {
+      console.error(`[ConnectionManager] Error disconnecting stale cdpManager: ${error}`);
+    }
+
     // Remove from browser tracking
     const browserKey = `${connection.host}:${connection.port}`;
     const browser = this.browsers.get(browserKey);
@@ -350,8 +361,15 @@ export class ConnectionManager {
       }
     }
 
-    // Disconnect managers only for this connection
-    await connection.cdpManager.disconnect();
+    // Disconnect managers only for this connection. Best-effort: the underlying
+    // connection may already be dead (e.g. the process was killed), and we
+    // still need the rest of this cleanup (browser tracking, Chrome kill,
+    // registry removal below) to run either way.
+    try {
+      await connection.cdpManager.disconnect();
+    } catch (error) {
+      console.error(`[ConnectionManager] Error disconnecting cdpManager for ${id}: ${error}`);
+    }
     // Note: Don't disconnect puppeteerManager as it's shared across tabs
 
     // Remove from browser tracking

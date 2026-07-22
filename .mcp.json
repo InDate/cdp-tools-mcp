@@ -2,7 +2,7 @@
   "mcpServers": {
     "cdp-tools": {
       "command": "node",
-      "args": ["build/index.js"]
+      "args": ["build/mcp-supervisor.js"]
     }
   }
 }

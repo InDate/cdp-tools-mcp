@@ -152,6 +152,10 @@ export function createServerTools(serverManager: ServerManager) {
               const status = await serverManager.getStatus(result.id);
               const serverStatus = status[0];
 
+              const autoRestartWarning = result.autoRestartWarning
+                ? `\n\n**Warning:** ${result.autoRestartWarning}`
+                : '';
+
               // Check if port was detected
               if (serverStatus?.port) {
                 // Port detected - server fully started
@@ -162,6 +166,7 @@ export function createServerTools(serverManager: ServerManager) {
                   containerId: result.containerId,
                   port: serverStatus.port,
                   autoRun: serverStatus?.autoRun,
+                  autoRestartWarning,
                 }));
               } else {
                 // Port not yet detected - server starting, pending detection
@@ -171,6 +176,7 @@ export function createServerTools(serverManager: ServerManager) {
                   runnerType: result.runnerType,
                   containerId: result.containerId,
                   autoRun: serverStatus?.autoRun,
+                  autoRestartWarning,
                 }));
               }
             } catch (err) {

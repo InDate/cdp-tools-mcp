@@ -101,7 +101,7 @@ Note: Console monitoring auto-enabled. Page auto-reloaded to capture initial log
 IMPORTANT: Please provide a reference name for this tab using the renameTab tool.{{/isChrome}}{{#isNode}}
 
 Note: Browser automation features are not available for Node.js debugging.
-Console Monitoring: Enabled via CDP (logpoint output and console.log calls will be captured).{{/isNode}}
+Console Monitoring: Enabled via CDP (logpoint output and console.log calls will be captured).{{/isNode}}{{autoRestartWarning}}
 
 ---
 
@@ -2294,7 +2294,7 @@ Missing required parameter: {{missing}}
 
 {{id}} (PID: {{pid}}){{#port}}, Port: {{port}}{{/port}}{{#autoRun}}, Auto-run: enabled{{/autoRun}}
 
-Logs: server({ action: "logs", serverId: "{{id}}" })
+Logs: server({ action: "logs", serverId: "{{id}}" }){{autoRestartWarning}}
 
 ---
 
@@ -2309,7 +2309,7 @@ Logs: server({ action: "logs", serverId: "{{id}}" })
 The server process started but hasn't reported its port yet.
 - Check logs: `server({ action: 'logs', serverId: '{{id}}' })`
 - Port detection continues in background (30s timeout)
-- If port not detected, tools will be blocked until acknowledged
+- If port not detected, tools will be blocked until acknowledged{{autoRestartWarning}}
 
 ---
 

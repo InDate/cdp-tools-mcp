@@ -267,19 +267,30 @@ export class CDPManager {
    */
   async disconnect(): Promise<void> {
     if (this.client) {
-      await this.client.close();
-      this.client = null;
-      this.state.connected = false;
-      this.state.paused = false;
-      this.state.currentCallFrames = undefined;
-      this.state.runtimeType = undefined;
-      this.state.breakpoints.clear();
-      this.scriptIdToUrl.clear();
-      this.urlToScriptId.clear();
-      // Clear DOMDebugger state
-      this.domBreakpoints.clear();
-      this.eventBreakpoints.clear();
-      this.xhrBreakpoints.clear();
+      const wasPaused = this.state.paused;
+      try {
+        await this.client.close();
+      } finally {
+        this.client = null;
+        this.state.connected = false;
+        this.state.paused = false;
+        this.state.currentCallFrames = undefined;
+        this.state.runtimeType = undefined;
+        this.state.breakpoints.clear();
+        this.scriptIdToUrl.clear();
+        this.urlToScriptId.clear();
+        // Clear DOMDebugger state
+        this.domBreakpoints.clear();
+        this.eventBreakpoints.clear();
+        this.xhrBreakpoints.clear();
+
+        // A connection torn down while paused would otherwise never fire
+        // Debugger.resumed, leaving anything gated on it (e.g. port monitoring)
+        // stuck paused forever.
+        if (wasPaused && this.resumeCallback) {
+          this.resumeCallback();
+        }
+      }
     }
   }
 
