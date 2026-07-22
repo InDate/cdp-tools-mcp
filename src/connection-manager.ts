@@ -124,6 +124,14 @@ export class ConnectionManager {
   }
 
   /**
+   * Find a connection by host/port (e.g. a Node --inspect port). Returns the
+   * first match if more than one connection somehow shares the same port.
+   */
+  findConnectionByPort(host: string, port: number): Connection | null {
+    return this.getConnectionsForBrowser(host, port)[0] ?? null;
+  }
+
+  /**
    * Get all connections
    */
   getAllConnections(): Connection[] {

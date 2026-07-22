@@ -146,6 +146,15 @@ const serverManager = new ServerManager();
 // Configure connection manager to kill Chrome when last connection closes
 connectionManager.setChromeLauncher(chromeLauncher);
 
+// Let ServerManager's watch mode check whether a connection at a given
+// inspector port is paused at a breakpoint, so it can defer a file-change
+// restart until the debugger resumes (see requestWatchRestart()). Watched
+// processes are always local, so 'localhost' matches how connectDebugger
+// registers them by default.
+serverManager.setPauseChecker((port) => {
+  return connectionManager.findConnectionByPort('localhost', port)?.cdpManager.isPaused() ?? false;
+});
+
 // Set ChromeLauncher reference for error-helpers (used to verify Chrome is running)
 setChromeLauncher(chromeLauncher);
 
@@ -1145,7 +1154,7 @@ const allTools = {
   ...(configManager.isToolEnabled('tab') ? createTabTools(connectionManager, sourceMapHandler, updateActiveManagers, logpointTracker, serverManager) : {}),
   // CDP Debugging tools
   ...(configManager.isToolEnabled('breakpoint') ? createBreakpointTools(proxyCdpManager, sourceMapHandler, logpointTracker, resolveConnectionFromReason) : {}),
-  ...(configManager.isToolEnabled('execution') ? createExecutionTools(proxyCdpManager, resolveConnectionFromReason, connectionManager) : {}),
+  ...(configManager.isToolEnabled('execution') ? createExecutionTools(proxyCdpManager, resolveConnectionFromReason, connectionManager, (port) => serverManager.retryPendingRestartByInspectorPort(port)) : {}),
   ...(configManager.isToolEnabled('inspection') ? createInspectionTools(proxyCdpManager, sourceMapHandler, resolveConnectionFromReason) : {}),
   ...(configManager.isToolEnabled('source') ? createSourceTools(proxyCdpManager, sourceMapHandler, resolveConnectionFromReason) : {}),
   // Browser Automation tools
@@ -1298,7 +1307,12 @@ Edit ${configPath} to resolve, then restart the MCP server.`,
 
     // Check for breakpoint pauses (block tools until acknowledged or resumed)
     const allConnections = connectionManager.getAllConnections();
-    const breakpointCheck = checkBreakpointPause(allConnections, toolName);
+    const breakpointCheck = checkBreakpointPause(
+      allConnections,
+      toolName,
+      (port) => serverManager.getPendingRestartByInspectorPort(port),
+      (validation.data as Record<string, unknown>)?.action as string | undefined
+    );
 
     if (breakpointCheck.blocked) {
       return breakpointCheck.response;

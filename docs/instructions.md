@@ -113,6 +113,10 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 - **File paths**: Full URLs (`http://localhost:3000/app.js`) or `file://`
 - **Network monitoring**: Must enable with `enableNetworkMonitoring`
 
+## Restarting cdp-tools
+
+If cdp-tools itself seems stuck or broken (not the target app), restart it yourself rather than asking the user to reconnect: `kill -USR2 $(cat .cdp-tools/mcp-supervisor.pid)` (editing cdp-tools-mcp's own source and running `npm run build` triggers this the same way, via its postbuild hook). This kills any Chrome instances it launched (relaunch with `launchChrome`) but managed dev servers (`server` tool) survive and reattach automatically.
+
 ## Tool Categories
 
 **Connection**: `launchChrome`, `killChrome`, `connectDebugger`, `disconnectDebugger`, `getChromeStatus`, `getDebuggerStatus`, `listConnections`, `switchConnection`
@@ -143,8 +147,9 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 
 **Storage**: `getCookies`, `setCookie`, `getLocalStorage`, `setLocalStorage`, `clearStorage`
 
-**Server**: `server` (actions: start, stop, restart, list, logs, stopAll, setAutoRun, clearLogs, remove, monitorPort, unmonitorPort, listMonitored, acknowledgePort)
+**Server**: `server` (actions: start, stop, restart, list, logs, stopAll, setAutoRun, clearLogs, remove, monitorPort, unmonitorPort, listMonitored, acknowledgePort, acknowledgeStartup, extendStartup, cancelPendingRestart)
 - Use `global: true` to access servers started from a different working directory
+- `start({ watch: true, watchPaths?: [...] })`: cdp-tools watches the given paths (default: cwd) and auto-restarts the server on file changes, instead of relying on `--watch`/nodemon. Pause-aware: if a breakpoint debugger is paused on that server's inspector port, the restart queues instead of firing immediately - `cancelPendingRestart` discards a queued restart to keep debugging without it firing on resume
 
 **Replay**: `replay` (actions: repeat, history, create, list, get, delete, export, load, listSaved, deleteSaved, run, step, finish, insert, status, cancel, recordInteraction, stopInteraction)
 - `recordInteraction`: Start recording mouse, keyboard, and navigation events with visual overlay

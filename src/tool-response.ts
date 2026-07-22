@@ -3,7 +3,7 @@
  * Functions for modifying tool responses with pre/post content
  */
 
-import type { PortFailureInfo, PendingStartupFailureInfo } from './server-manager.js';
+import type { PortFailureInfo, PendingStartupFailureInfo, PendingRestartInfo } from './server-manager.js';
 import type { Connection } from './connection-manager.js';
 import { hasPendingBugs, getPendingBugs } from './issue-tracker.js';
 import { createErrorResponse } from './messages.js';
@@ -279,6 +279,8 @@ export interface BreakpointPauseInfo {
     lineNumber: number;
   };
   callFrameId?: string;
+  /** Set when a watch-mode restart is queued behind this pause - see server-manager's WatchRestartState. */
+  pendingRestart?: PendingRestartInfo;
 }
 
 /**
@@ -293,12 +295,24 @@ const BREAKPOINT_ALLOWED_TOOLS = new Set([
 ]);
 
 /**
+ * Specific tool+action combos allowed even when otherwise blocked - narrower
+ * than BREAKPOINT_ALLOWED_TOOLS, for actions that need to run precisely
+ * because a pause is blocking things (e.g. discarding a restart that's
+ * queued behind this very pause - blocking it would make it uncancellable).
+ */
+const BREAKPOINT_ALLOWED_TOOL_ACTIONS: Record<string, Set<string>> = {
+  server: new Set(['cancelPendingRestart']),
+};
+
+/**
  * Check for breakpoint pauses and determine pre-execution behavior
  * Similar to checkPortFailures, but for breakpoint blocking
  */
 export function checkBreakpointPause(
   connections: Connection[],
-  toolName: string
+  toolName: string,
+  getPendingRestart?: (port: number) => PendingRestartInfo | null,
+  action?: string
 ): PreExecutionResult {
   // Find connections that are paused and not acknowledged
   const pausedConnections: BreakpointPauseInfo[] = [];
@@ -311,6 +325,7 @@ export function checkBreakpointPause(
         reference: conn.reference || conn.id,
         location: pauseInfo.location,
         callFrameId: topFrame?.callFrameId,
+        pendingRestart: getPendingRestart?.(conn.port) ?? undefined,
       });
     }
   }
@@ -325,7 +340,7 @@ export function checkBreakpointPause(
   }
 
   // Check if tool is allowed when paused
-  if (BREAKPOINT_ALLOWED_TOOLS.has(toolName)) {
+  if (BREAKPOINT_ALLOWED_TOOLS.has(toolName) || (action !== undefined && BREAKPOINT_ALLOWED_TOOL_ACTIONS[toolName]?.has(action))) {
     // Allow but prepend info about paused state
     const pauseList = pausedConnections.map(p => {
       const loc = p.location
@@ -334,9 +349,14 @@ export function checkBreakpointPause(
       return `"${p.reference}"${loc}`;
     }).join(', ');
 
+    const restartNotes = pausedConnections
+      .filter(p => p.pendingRestart)
+      .map(p => `⚠️ A file change was detected for "${p.reference}" - its watch-mode restart is queued and will run as soon as you resume. Use \`server({ action: 'cancelPendingRestart', serverId: '${p.pendingRestart!.serverId}' })\` to discard it and keep debugging.`)
+      .join('\n');
+
     return {
       blocked: false,
-      prefix: `**Paused at breakpoint:** ${pauseList}\n\n`,
+      prefix: `**Paused at breakpoint:** ${pauseList}\n\n${restartNotes ? restartNotes + '\n\n' : ''}`,
       markAsError: false
     };
   }
@@ -349,7 +369,10 @@ export function checkBreakpointPause(
     const frameId = p.callFrameId
       ? `\n  callFrameId: "${p.callFrameId}"`
       : '';
-    return `- "${p.reference}"${loc}${frameId}`;
+    const restart = p.pendingRestart
+      ? `\n  ⚠️ Watch-mode restart queued (server "${p.pendingRestart.serverId}") - will run once resumed`
+      : '';
+    return `- "${p.reference}"${loc}${frameId}${restart}`;
   }).join('\n');
 
   // Build getVariables hint with callFrameId if available
@@ -357,6 +380,11 @@ export function checkBreakpointPause(
   const getVariablesHint = firstCallFrameId
     ? `\`inspect({ action: 'getVariables', callFrameId: '${firstCallFrameId}' })\``
     : `\`inspect({ action: 'getVariables' })\``;
+
+  const firstPendingRestart = pausedConnections.find(p => p.pendingRestart)?.pendingRestart;
+  const cancelRestartHint = firstPendingRestart
+    ? `\n- A watch-mode restart is queued for server "${firstPendingRestart.serverId}" - use \`server({ action: 'cancelPendingRestart', serverId: '${firstPendingRestart.serverId}' })\` to discard it and keep debugging, instead of resuming into a restart`
+    : '';
 
   return {
     blocked: true,
@@ -372,7 +400,7 @@ ${pauseDetails}
 **To continue:**
 - Use \`execution({ action: 'resume' })\` to resume execution
 - Use \`execution({ action: 'acknowledge' })\` to acknowledge and continue using other tools while paused
-- Use \`inspect({ action: 'getCallStack' })\` or ${getVariablesHint} to examine state
+- Use \`inspect({ action: 'getCallStack' })\` or ${getVariablesHint} to examine state${cancelRestartHint}
 
 Other tools are blocked until execution is resumed or acknowledged.`,
         },

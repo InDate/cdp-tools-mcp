@@ -2536,6 +2536,30 @@ Server `{{serverId}}` removed from config.
 
 ---
 
+## PENDING_RESTART_CANCELLED
+
+**Type:** success
+**Summary:** Watch-mode restart cancelled
+
+Discarded the queued watch-mode restart for `{{serverId}}`. The server keeps running its current (paused) process - debug as usual.
+
+**Note:** A later file change will queue a new restart the same way.
+
+---
+
+## PENDING_RESTART_NOT_FOUND
+
+**Type:** error
+**Code:** PENDING_RESTART_NOT_FOUND
+
+No watch-mode restart is queued for `{{serverId}}`.
+
+**Suggestions:**
+- Use `server({ action: "list" })` to check whether watch mode is enabled for this server
+- This clears itself once the queued restart runs, so there may simply be nothing to cancel
+
+---
+
 ## Port Monitoring Messages
 
 ## PORT_MONITOR_STARTED

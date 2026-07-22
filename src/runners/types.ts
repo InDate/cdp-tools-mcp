@@ -129,6 +129,10 @@ export interface PersistedRunnerState {
   monitorPort?: boolean;
   /** Whether this server is stored in global ~/.cdp-tools/ */
   global?: boolean;
+  /** Whether cdp-tools watches this server's files and auto-restarts it on change */
+  watch?: boolean;
+  /** Paths to watch when `watch` is true (default: [cwd]) */
+  watchPaths?: string[];
 }
 
 /**

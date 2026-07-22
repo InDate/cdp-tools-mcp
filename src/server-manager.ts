@@ -13,6 +13,7 @@ import { debugLog } from './debug-logger.js';
 import { getOutputPath } from './helpers/paths.js';
 import { atomicWriteFile } from './atomic-write.js';
 import { configManager } from './config.js';
+import { ServerFileWatcher } from './server-watcher.js';
 import {
   type Runner,
   type RunnerType,
@@ -108,6 +109,7 @@ export interface ServerStatus {
   autoRun: boolean;
   runnerType: RunnerType;
   global: boolean;
+  watch: boolean;
 }
 
 export interface StartServerOptions {
@@ -123,6 +125,10 @@ export interface StartServerOptions {
   monitorPort?: boolean;
   /** If true, store server state in global ~/.cdp-tools/ instead of project directory */
   global?: boolean;
+  /** If true, watch this server's files and auto-restart it (pause-aware) on change instead of relying on --watch/nodemon */
+  watch?: boolean;
+  /** Paths to watch when `watch` is true (default: [cwd]) */
+  watchPaths?: string[];
 }
 
 export interface LogStats {
@@ -137,6 +143,35 @@ interface ManagedServer {
   autoRun: boolean;
   monitorPort?: boolean;
   global?: boolean; // Whether this server is stored in global ~/.cdp-tools/
+  watch?: boolean;
+  watchPaths?: string[];
+  // In-memory only. Owned by the current ManagedServer instance since a
+  // fresh one is created by every startServer() call (including the one
+  // inside restartServer()), and a fresh watcher should indeed be created
+  // each time. Restart-guard/pending-restart state is deliberately NOT
+  // stored here - see `watchState` below - because it needs to survive
+  // exactly the restartServer() call that replaces this object.
+  watcher?: ServerFileWatcher;
+}
+
+/**
+ * Watch-mode restart coordination state, keyed by serverId (stable across
+ * restarts, unlike the ManagedServer object itself which restartServer()
+ * replaces wholesale on every restart).
+ */
+interface WatchRestartState {
+  restarting: boolean;
+  restartQueued: boolean;
+  pendingRestart?: { queuedAt: Date };
+  /** The in-flight restart's own promise, so a second caller (watch-triggered
+   * or explicit) arriving mid-restart can share it instead of racing it. */
+  inFlight?: Promise<{ id: string; pid: number; runnerType: RunnerType; containerId?: string }>;
+}
+
+/** A watch-triggered restart that's queued behind a paused breakpoint debugger. */
+export interface PendingRestartInfo {
+  serverId: string;
+  queuedAt: Date;
 }
 
 // ============================================================================
@@ -539,6 +574,19 @@ export class ServerManager {
   private pendingStartups: Map<string, PendingStartup> = new Map();
   /** Mutex to serialize saveState calls - prevents concurrent file writes */
   private saveMutex: Promise<void> = Promise.resolve();
+  /** Injected from index.ts - decouples ServerManager from ConnectionManager directly */
+  private pauseChecker: ((inspectorPort: number) => boolean) | null = null;
+  /** Watch-mode restart coordination, keyed by serverId - see WatchRestartState */
+  private watchState: Map<string, WatchRestartState> = new Map();
+
+  /**
+   * Set the function used to check whether a CDP connection at a given
+   * inspector port is currently paused at a breakpoint. Mirrors the existing
+   * setChromeLauncher() injection pattern.
+   */
+  setPauseChecker(fn: (inspectorPort: number) => boolean): void {
+    this.pauseChecker = fn;
+  }
 
   /**
    * Get the port monitor instance (lazy-initialized)
@@ -614,13 +662,23 @@ export class ServerManager {
       const isRunning = await runner.isRunning();
 
       if (isRunning) {
-        this.servers.set(server.id, {
+        const managed: ManagedServer = {
           id: server.id,
           runner,
           autoRun: server.autoRun,
           monitorPort: server.monitorPort,
           global: server.global,
-        });
+          watch: server.watch,
+          watchPaths: server.watchPaths,
+        };
+        this.servers.set(server.id, managed);
+
+        // The process survived, but any watcher was tied to the previous
+        // ServerManager instance (e.g. before cdp-tools-mcp's own supervisor
+        // restarted it) - re-establish it now.
+        if (server.watch) {
+          this.startWatcher(managed, server.watchPaths && server.watchPaths.length > 0 ? server.watchPaths : [server.cwd]);
+        }
 
         // For native runner, init cursor to EOF (native-specific method)
         if (runner.type === 'native' && 'initializeCursorToEOF' in runner) {
@@ -648,6 +706,8 @@ export class ServerManager {
               runner: runnerType,
               monitorPort: server.monitorPort,
               global: server.global,
+              watch: server.watch,
+              watchPaths: server.watchPaths,
             });
             started.push(server.id);
             success = true;
@@ -669,6 +729,8 @@ export class ServerManager {
             autoRun: server.autoRun,
             monitorPort: server.monitorPort,
             global: server.global,
+            watch: server.watch,
+            watchPaths: server.watchPaths,
           });
 
           // Create a pending startup failure to block tools until acknowledged
@@ -690,6 +752,8 @@ export class ServerManager {
           autoRun: false,
           monitorPort: server.monitorPort,
           global: server.global,
+          watch: server.watch,
+          watchPaths: server.watchPaths,
         });
       }
     }
@@ -805,6 +869,8 @@ export class ServerManager {
         autoRun: managed.autoRun,
         startedAt: status.startedAt?.toISOString() ?? new Date().toISOString(),
         monitorPort: managed.monitorPort,
+        watch: managed.watch,
+        watchPaths: managed.watchPaths,
       };
 
       if (managed.global) {
@@ -886,6 +952,11 @@ export class ServerManager {
    * never find anything real.
    */
   async getManagedServerByInspectorPort(port: number): Promise<{ id: string; command: string } | null> {
+    return this.findManagedServerByInspectorPortSync(port);
+  }
+
+  /** Sync core of getManagedServerByInspectorPort() - reused by watch-restart lookups, which run in a sync pre-execution hot path (checkBreakpointPause) and can't await. */
+  private findManagedServerByInspectorPortSync(port: number): { id: string; command: string } | null {
     for (const managed of this.servers.values()) {
       const command = this.getRunnerCommand(managed.runner);
       if (extractInspectorPort(command) === port) {
@@ -1019,7 +1090,7 @@ export class ServerManager {
    * Start a server
    */
   async startServer(options: StartServerOptions): Promise<{ id: string; pid: number; runnerType: RunnerType; containerId?: string; autoRestartWarning?: string }> {
-    const { command, cwd, id: serverId, autoRun, env, port, monitorPort, global: isGlobal } = options;
+    const { command, cwd, id: serverId, autoRun, env, port, monitorPort, global: isGlobal, watch, watchPaths } = options;
 
     // Validate server ID for security (prevents command injection via container names)
     validateServerId(serverId);
@@ -1064,13 +1135,21 @@ export class ServerManager {
 
     const result = await runner.start({ command, cwd, id: serverId, env, port });
 
-    this.servers.set(serverId, {
+    const resolvedWatchPaths = watchPaths && watchPaths.length > 0 ? watchPaths : [cwd];
+    const managed: ManagedServer = {
       id: serverId,
       runner,
       autoRun: autoRun ?? false,
       monitorPort: monitorPort ?? true, // Default to monitoring server port
       global: isGlobal ?? false,
-    });
+      watch: watch ?? false,
+      watchPaths: resolvedWatchPaths,
+    };
+    this.servers.set(serverId, managed);
+
+    if (watch) {
+      this.startWatcher(managed, resolvedWatchPaths);
+    }
 
     const autoRestartMatch = detectAutoRestartCommand(command);
     if (autoRestartMatch) {
@@ -1094,14 +1173,19 @@ export class ServerManager {
 
     await debugLog('ServerManager', `Server started: ${serverId} (${runnerType}, PID: ${result.pid})`);
 
+    let autoRestartWarning: string | undefined;
+    if (autoRestartMatch && watch) {
+      autoRestartWarning = `Command matches "${autoRestartMatch}" AND cdp-tools' own watch mode is also enabled for this server - that's redundant and risky, since both could try to restart the process at once. Recommend removing "${autoRestartMatch}" from the command and relying on cdp-tools' watch mode instead, which already coordinates safely with an attached breakpoint debugger.`;
+    } else if (autoRestartMatch) {
+      autoRestartWarning = `Command matches "${autoRestartMatch}", which auto-restarts its own process on file changes. Attaching a CDP debugger and pausing at a breakpoint while this is running is a known-bad combination (can cause EADDRINUSE crash-loops and ambiguous failed-but-still-listening states) - the restart happens entirely outside anything cdp-tools tracks. Prefer disabling auto-restart and using cdp-tools' own watch mode instead (server({ action: 'start', watch: true })), which coordinates safely with a paused debugger, or call server({ action: 'restart' }) explicitly.`;
+    }
+
     return {
       id: serverId,
       pid: result.pid,
       runnerType,
       containerId: result.containerId,
-      autoRestartWarning: autoRestartMatch
-        ? `Command matches "${autoRestartMatch}", which auto-restarts its own process on file changes. Attaching a CDP debugger and pausing at a breakpoint while this is running is a known-bad combination (can cause EADDRINUSE crash-loops and ambiguous failed-but-still-listening states) - the restart happens entirely outside anything cdp-tools tracks. Prefer disabling auto-restart while breakpoint debugging and calling server({ action: 'restart' }) explicitly instead.`
-        : undefined,
+      autoRestartWarning,
     };
   }
 
@@ -1381,6 +1465,11 @@ export class ServerManager {
     // Clean up pending startup state
     this.removePendingStartup(serverId);
 
+    // Stop watching and drop any queued/in-flight watch-restart state - a
+    // leaked watcher could otherwise fire a restart on an already-stopped
+    // server.
+    this.stopWatcher(managed);
+
     const isRunning = await managed.runner.isRunning();
     if (!isRunning) {
       await this.saveState();
@@ -1413,6 +1502,8 @@ export class ServerManager {
     const autoRun = persistedConfig?.autoRun ?? managed.autoRun;
     const monitorPort = persistedConfig?.monitorPort ?? managed.monitorPort;
     const runnerType = persistedConfig?.type ?? managed.runner.type;
+    const watch = persistedConfig?.watch ?? managed.watch ?? false;
+    const watchPaths = persistedConfig?.watchPaths ?? managed.watchPaths;
 
     // Get current status for the old port (to clean up if different from new port)
     const currentStatus = await managed.runner.getStatus();
@@ -1463,7 +1554,138 @@ export class ServerManager {
       autoRun,
       runner: runnerType,
       monitorPort,
+      watch,
+      watchPaths,
     });
+  }
+
+  private getOrCreateWatchState(serverId: string): WatchRestartState {
+    let state = this.watchState.get(serverId);
+    if (!state) {
+      state = { restarting: false, restartQueued: false };
+      this.watchState.set(serverId, state);
+    }
+    return state;
+  }
+
+  private startWatcher(managed: ManagedServer, watchPaths: string[]): void {
+    managed.watcher?.stop();
+    managed.watcher = new ServerFileWatcher({
+      paths: watchPaths,
+      onChange: () => {
+        void this.requestWatchRestart(managed.id);
+      },
+    });
+    managed.watcher.start();
+  }
+
+  private stopWatcher(managed: ManagedServer): void {
+    managed.watcher?.stop();
+    managed.watcher = undefined;
+    this.watchState.delete(managed.id);
+  }
+
+  /**
+   * Single entry point for every watch-triggered restart (file-change,
+   * resume-triggered auto-fire, and its own re-entrant re-check once an
+   * in-flight restart finishes). Always re-checks pause state fresh rather
+   * than trusting a cached value - see issue #88.
+   */
+  async requestWatchRestart(serverId: string): Promise<void> {
+    const managed = this.servers.get(serverId);
+    if (!managed) {
+      return;
+    }
+    const state = this.getOrCreateWatchState(serverId);
+
+    if (state.restarting) {
+      // Queue one more pass for after the in-flight restart finishes, rather
+      // than piggybacking on it - the file that triggered THIS call might not
+      // be reflected in whatever the in-flight restart already read from disk.
+      state.restartQueued = true;
+      return;
+    }
+
+    const command = this.getRunnerCommand(managed.runner);
+    const inspectorPort = extractInspectorPort(command);
+    const isPaused = inspectorPort !== null && this.pauseChecker ? this.pauseChecker(inspectorPort) : false;
+
+    if (isPaused) {
+      state.pendingRestart = { queuedAt: new Date() };
+      return;
+    }
+
+    try {
+      await this.performGuardedRestart(serverId);
+    } catch (err) {
+      await debugLog('ServerManager', `Watch-triggered restart of ${serverId} failed: ${err}`);
+    }
+  }
+
+  /**
+   * Explicit, forced restart (bypasses the pause-check entirely - the caller
+   * has already decided to end any paused debug session). Shares the same
+   * in-flight guard as requestWatchRestart(): if a watch-triggered restart is
+   * already running, piggybacks on its result instead of racing it.
+   */
+  async forceRestart(serverId: string): Promise<{ id: string; pid: number; runnerType: RunnerType; containerId?: string }> {
+    const state = this.getOrCreateWatchState(serverId);
+    state.pendingRestart = undefined;
+    if (state.restarting && state.inFlight) {
+      return state.inFlight;
+    }
+    return await this.performGuardedRestart(serverId);
+  }
+
+  /** Shared restart guard used by both requestWatchRestart() and forceRestart(). */
+  private async performGuardedRestart(serverId: string): Promise<{ id: string; pid: number; runnerType: RunnerType; containerId?: string }> {
+    const state = this.getOrCreateWatchState(serverId);
+    state.restarting = true;
+    state.pendingRestart = undefined;
+    const promise = this.restartServer(serverId).finally(() => {
+      state.restarting = false;
+      state.inFlight = undefined;
+      if (state.restartQueued) {
+        state.restartQueued = false;
+        void this.requestWatchRestart(serverId);
+      }
+    });
+    state.inFlight = promise;
+    return promise;
+  }
+
+  /** For checkBreakpointPause's lookup (via a paused connection's inspector port). */
+  getPendingRestartByInspectorPort(port: number): PendingRestartInfo | null {
+    const managed = this.findManagedServerByInspectorPortSync(port);
+    if (!managed) {
+      return null;
+    }
+    const state = this.watchState.get(managed.id);
+    return state?.pendingRestart ? { serverId: managed.id, queuedAt: state.pendingRestart.queuedAt } : null;
+  }
+
+  /** Discard a queued watch-restart without performing it - keep debugging. */
+  cancelPendingRestart(serverId: string): boolean {
+    const state = this.watchState.get(serverId);
+    if (!state?.pendingRestart) {
+      return false;
+    }
+    state.pendingRestart = undefined;
+    return true;
+  }
+
+  /**
+   * Re-check a port's pause state and let its queued watch-restart (if any)
+   * fire now that the debugger has resumed. Call this after any resume that
+   * un-pauses a connection - requestWatchRestart() only re-fires on the next
+   * file change otherwise, so without this hook a restart deferred by a
+   * pause would sit queued forever if no further edits happen.
+   */
+  retryPendingRestartByInspectorPort(port: number): void {
+    const managed = this.findManagedServerByInspectorPortSync(port);
+    if (managed && this.watchState.get(managed.id)?.pendingRestart) {
+      void this.requestWatchRestart(managed.id);
+    }
   }
 
   /**
@@ -1508,6 +1730,7 @@ export class ServerManager {
         autoRun: managed.autoRun,
         runnerType: managed.runner.type,
         global: managed.global ?? false,
+        watch: managed.watch ?? false,
       };
     };
 
@@ -1623,6 +1846,11 @@ export class ServerManager {
     const isRunning = await managed.runner.isRunning();
     if (isRunning) {
       await this.stopServer(serverId);
+    } else {
+      // stopServer() (which also closes the watcher) is only called above
+      // when running - make sure a leaked watcher/pending state can't
+      // outlive removal either way.
+      this.stopWatcher(managed);
     }
 
     this.servers.delete(serverId);

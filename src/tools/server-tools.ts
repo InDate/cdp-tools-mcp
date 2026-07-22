@@ -11,7 +11,7 @@ import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import { getDashboardInstance } from './dashboard-tools.js';
 
 const serverSchema = z.object({
-  action: z.enum(['start', 'stop', 'restart', 'list', 'logs', 'stopAll', 'setAutoRun', 'clearLogs', 'remove', 'monitorPort', 'unmonitorPort', 'listMonitored', 'acknowledgePort', 'acknowledgeStartup', 'extendStartup']),
+  action: z.enum(['start', 'stop', 'restart', 'list', 'logs', 'stopAll', 'setAutoRun', 'clearLogs', 'remove', 'monitorPort', 'unmonitorPort', 'listMonitored', 'acknowledgePort', 'acknowledgeStartup', 'extendStartup', 'cancelPendingRestart']),
   command: z.string().optional().describe('Command: npm run dev, flask run, docker compose up'),
   cwd: z.string().optional(),
   id: z.string().optional().describe('Server name'),
@@ -25,6 +25,8 @@ const serverSchema = z.object({
   description: z.string().optional(),
   interval: z.number().optional().describe('Check interval ms'),
   global: z.boolean().optional().describe('Use ~/.cdp-tools/'),
+  watch: z.boolean().optional().describe('Watch this server\'s files and auto-restart it on change (pause-aware: defers the restart while a breakpoint debugger is paused)'),
+  watchPaths: z.array(z.string()).optional().describe('Paths to watch when watch=true (default: [cwd])'),
 }).strict();
 
 type ServerArgs = z.infer<typeof serverSchema>;
@@ -60,7 +62,7 @@ function formatServerList(servers: ServerStatus[]): string {
     return str;
   };
 
-  const headers = ['status', 'id', 'storage', 'port', 'runner', 'pid', 'uptime', 'autoRun', 'cwd', 'command'];
+  const headers = ['status', 'id', 'storage', 'port', 'runner', 'pid', 'uptime', 'autoRun', 'watch', 'cwd', 'command'];
   const rows = servers.map(s => [
     s.running ? 'running' : 'stopped',
     s.id,
@@ -70,6 +72,7 @@ function formatServerList(servers: ServerStatus[]): string {
     s.runnerType === 'native' ? s.pid : (s.containerId ?? ''),
     s.uptime,
     s.autoRun ? 'yes' : 'no',
+    s.watch ? 'yes' : 'no',
     s.cwd,
     s.command,
   ].map(escapeCSV).join(','));
@@ -119,7 +122,7 @@ export function createServerTools(serverManager: ServerManager) {
 
   return {
     server: createTool(
-      'Manage development servers. Actions: start (start a server from npm script), stop (stop a running server), restart (restart a server), list (list running servers with status), logs (get log file paths or docker command), stopAll (stop all servers), setAutoRun (enable/disable auto-start on MCP startup)',
+      'Manage development servers. Actions: start (start a server from npm script; pass watch: true to auto-restart it on file changes instead of --watch/nodemon - coordinates with a paused breakpoint debugger by deferring the restart), stop (stop a running server), restart (restart a server), list (list running servers with status), logs (get log file paths or docker command), stopAll (stop all servers), setAutoRun (enable/disable auto-start on MCP startup), cancelPendingRestart (discard a watch-mode restart that\'s queued behind a paused debugger, to keep debugging)',
       serverSchema,
       async (args: ServerArgs) => {
         switch (args.action) {
@@ -144,6 +147,8 @@ export function createServerTools(serverManager: ServerManager) {
                 runner: args.runner as RunnerType | undefined,
                 monitorPort: args.monitorPort,
                 global: args.global,
+                watch: args.watch,
+                watchPaths: args.watchPaths,
               });
 
               // Wait briefly for port detection
@@ -209,7 +214,7 @@ export function createServerTools(serverManager: ServerManager) {
             }
 
             try {
-              const result = await serverManager.restartServer(args.serverId);
+              const result = await serverManager.forceRestart(args.serverId);
 
               // Wait briefly for port detection
               await new Promise(resolve => setTimeout(resolve, 1500));
@@ -252,6 +257,7 @@ export function createServerTools(serverManager: ServerManager) {
                 autoRun: false,
                 runnerType: 'native' as const,
                 global: false,
+                watch: false,
               });
             }
 
@@ -495,6 +501,24 @@ export function createServerTools(serverManager: ServerManager) {
             }
 
             return createSuccessResponse('STARTUP_ACKNOWLEDGED', withLogStatus({
+              serverId: args.serverId,
+            }));
+          }
+
+          case 'cancelPendingRestart': {
+            if (!args.serverId) {
+              return createErrorResponse('SERVER_MISSING_SERVER_ID', withLogStatus({}));
+            }
+
+            const cancelled = serverManager.cancelPendingRestart(args.serverId);
+
+            if (!cancelled) {
+              return createErrorResponse('PENDING_RESTART_NOT_FOUND', withLogStatus({
+                serverId: args.serverId,
+              }));
+            }
+
+            return createSuccessResponse('PENDING_RESTART_CANCELLED', withLogStatus({
               serverId: args.serverId,
             }));
           }

@@ -23,7 +23,9 @@ export function createExecutionTools(
     consoleMonitor: any;
     networkMonitor: any;
   } | null>,
-  connectionManager?: ConnectionManager
+  connectionManager?: ConnectionManager,
+  /** Give a watch-mode restart deferred by this connection's pause a chance to fire now that it's resuming. */
+  retryPendingRestart?: (port: number) => void
 ) {
   return {
     execution: createTool(
@@ -85,6 +87,19 @@ export function createExecutionTools(
 
             // Normal resume
             await targetCdpManager.resume();
+
+            // A watch-mode restart may have been queued while this
+            // connection was paused - give it a chance to fire now.
+            if (retryPendingRestart) {
+              if (resolvedConnection) {
+                retryPendingRestart(resolvedConnection.port);
+              } else if (connectionManager) {
+                for (const conn of connectionManager.getAllConnections()) {
+                  retryPendingRestart(conn.port);
+                }
+              }
+            }
+
             return createSuccessResponse('EXECUTION_RESUMED');
           }
 
