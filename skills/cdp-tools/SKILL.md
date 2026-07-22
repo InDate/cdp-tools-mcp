@@ -1,3 +1,9 @@
+---
+name: cdp-tools
+description: Debug JavaScript/TypeScript running in Chrome or Node.js via the cdp-tools MCP server - set breakpoints and logpoints, inspect call stacks and variables, monitor console/network activity, automate browser interactions (navigate, click, type, screenshot), manage dev servers, and record/replay reproduction sequences with automated fix verification. Use whenever a task involves debugging a running app, reproducing or verifying a bug, tracing runtime behavior, or the user mentions breakpoints, Chrome DevTools, CDP, replay sequences, or cdp-tools MCP tools (launchChrome, navigate, breakpoint, inspect, replay, server, issues, etc.).
+compatibility: Requires the cdp-tools-mcp MCP server to be connected (tools such as launchChrome, breakpoint, inspect, replay, server, issues).
+---
+
 # cdp-tools Debugger Usage
 
 Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js, or CDP-compatible environments.
@@ -115,55 +121,18 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 
 ## Restarting cdp-tools
 
-If cdp-tools itself seems stuck or broken (not the target app), restart it yourself rather than asking the user to reconnect: `config({ action: 'restart' })`. Falls back to `kill -USR2 $(cat .cdp-tools/mcp-supervisor.pid)` via Bash if that action reports `CONFIG_RESTART_NOT_SUPERVISED` (e.g. a bare `node build/index.js`, not through the supervisor). Editing cdp-tools-mcp's own source and running `npm run build` triggers the same restart automatically via its postbuild hook. Either way, this kills any Chrome instances it launched (relaunch with `launchChrome`) but managed dev servers (`server` tool) survive and reattach automatically.
+If cdp-tools itself seems stuck or broken (not the target app), restart it yourself rather than asking the user to reconnect - don't wait to be told to.
+
+- **Preferred**: `config({ action: 'restart' })`. Under the hood this reads `.cdp-tools/mcp-supervisor.pid` and sends the running mcp-supervisor process a `SIGUSR2`, the same signal `npm run build`'s postbuild hook sends automatically after a rebuild. The supervisor replays the original MCP `initialize` handshake to the freshly spawned child, so the host session never needs to reconnect.
+- If that returns `CONFIG_RESTART_NOT_SUPERVISED` (this server isn't running through the supervisor - e.g. a bare `node build/index.js`), fall back to Bash: `kill -USR2 $(cat .cdp-tools/mcp-supervisor.pid)`.
+- If it returns `CONFIG_RESTART_STALE_PID`, the supervisor died without cleaning up its pidfile - ask the user to run `/mcp` to reconnect.
+
+**Expect the triggering call itself to come back as an error - that's normal, not a failure.** In practice `config({ action: 'restart' })` almost never returns its own `CONFIG_RESTART_REQUESTED` success message: the old process gets torn down before it can flush that response, so the supervisor's restart-coordinator answers with a synthesized `MCP error -32000: MCP server is restarting; this request will not receive a response from the previous process. Please retry.` instead. Just retry the next call - it'll hit the freshly restarted (and by then ready) process. Two things to expect on that next call: it runs against a new PID (visible in tool response footers), and any acknowledged monitored-port failures (`server({ action: 'acknowledgePort' })`) reset and may need re-acknowledging, since that state lived in the process that just got replaced.
+
+Either way, a restart kills any Chrome instances this session launched (relaunch with `launchChrome`), but managed dev servers (`server` tool) survive and reattach automatically. `config({ action: 'reload' })` is different and lighter-weight - it hot-applies most `config.json` edits without a restart; a restart is only needed for `tools.enabled`/`tools.disabled` changes (the tool list is frozen at server startup) or when the process itself is actually stuck.
 
 ## Tool Categories
 
-**Connection**: `launchChrome`, `killChrome`, `connectDebugger`, `disconnectDebugger`, `getChromeStatus`, `getDebuggerStatus`, `listConnections`, `switchConnection`
+The full list of tools grouped by category (connection, breakpoint, execution, inspection, source, console, network, page, DOM, content, screenshot, input, modal, storage, server, replay, config) is not needed for most tasks. Load it only when you need to look up a specific tool name or action:
 
-**Breakpoint**: `setBreakpoint`, `removeBreakpoint`, `listBreakpoints`, `setLogpoint`, `validateLogpoint`, `resetLogpointCounter`, `setDOMBreakpoint`, `setEventBreakpoint`, `setXHRBreakpoint`
-
-**Execution**: `pause`, `resume`, `stepOver`, `stepInto`, `stepOut`
-
-**Inspection**: `getCallStack`, `getVariables`, `evaluateExpression`
-
-**Source**: `loadSourceMaps`, `searchCode`, `searchFunctions`, `getSourceCode`
-
-**Console**: `listConsoleLogs`, `getConsoleLog`, `getRecentConsoleLogs`, `searchConsoleLogs`, `clearConsole`
-
-**Network**: `enableNetworkMonitoring`, `disableNetworkMonitoring`, `listNetworkRequests`, `getNetworkRequest`, `searchNetworkRequests`, `setNetworkConditions`
-
-**Page**: `navigateTo`, `reloadPage`, `goBack`, `goForward`, `getPageInfo`
-
-**DOM**: `querySelector`, `getElementProperties`, `getDOMSnapshot`
-
-**Content**: `extractText`, `findInteractive`, `verify`
-
-**Screenshot**: `takeScreenshot`, `takeViewportScreenshot`, `takeElementScreenshot`
-
-**Input**: `clickElement`, `typeText`, `pressKey`, `hoverElement`
-
-**Modal**: `detectModals`, `dismissModal`
-
-**Storage**: `getCookies`, `setCookie`, `getLocalStorage`, `setLocalStorage`, `clearStorage`
-
-**Server**: `server` (actions: start, stop, restart, list, logs, stopAll, setAutoRun, clearLogs, remove, monitorPort, unmonitorPort, listMonitored, acknowledgePort, acknowledgeStartup, extendStartup, cancelPendingRestart)
-- Use `global: true` to access servers started from a different working directory
-- `start({ watch: true, watchPaths?: [...] })`: cdp-tools watches the given paths (default: cwd) and auto-restarts the server on file changes, instead of relying on `--watch`/nodemon. Pause-aware: if a breakpoint debugger is paused on that server's inspector port, the restart queues instead of firing immediately - `cancelPendingRestart` discards a queued restart to keep debugging without it firing on resume
-
-**Replay**: `replay` (actions: repeat, history, create, list, get, delete, export, load, listSaved, deleteSaved, run, step, finish, insert, status, cancel, recordInteraction, stopInteraction)
-- `recordInteraction`: Start recording mouse, keyboard, and navigation events with visual overlay
-- `stopInteraction`: Stop recording and create sequence (uses connectionReason as default name)
-- `export`: Export sequence to file - supports format: sequence/playwright/puppeteer
-- `repeat`: Instantly re-execute commands by history index - `replay({ action: 'repeat', indices: [0, 1, 2] })`
-- Each tool response shows its history index in the "Repeat" hint for easy repetition
-- Use `global: true` with `export` action to save to ~/.cdp-tools/sequences/ instead of working directory
-
-**Config**: `config` (actions: status, useLocal, useGlobal, reset, backup, cloneFromGlobal, show)
-- `status`: Show where config is loaded from (local vs global)
-- `useLocal`: Switch to project-local config (.cdp-tools/config.json)
-- `useGlobal`: Switch to global config (~/.cdp-tools/config.json)
-- `reset`: Reset config to defaults
-- `backup`: Create timestamped backup
-- `cloneFromGlobal`: Copy global config to local project
-- `show`: Display current configuration
+[references/tool-categories.md](references/tool-categories.md)

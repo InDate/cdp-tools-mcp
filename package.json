@@ -54,6 +54,7 @@
   "files": [
     "build/",
     "docs/",
+    "skills/",
     "README.md",
     "LICENSE"
   ],

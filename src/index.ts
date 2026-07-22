@@ -56,7 +56,8 @@ import { createIssuesTools } from './tools/issues-tools.js';
 import { createDashboardTools, setDashboardInstance, getDashboardInstance, setSessionInfo, getDuplicateSessionInfo } from './tools/dashboard-tools.js';
 import { initializeDashboard, shutdownDashboard, type DashboardInstance, type ConnectionInfo as DashboardConnectionInfo } from './dashboard/index.js';
 import { Orchestrator } from './log-processor/orchestrator.js';
-import { mkdirSync } from 'fs';
+import { mkdirSync, existsSync } from 'fs';
+import { homedir } from 'os';
 import { ServerManager, detectAutoRestartCommand } from './server-manager.js';
 import { configManager } from './config.js';
 import { checkPortFailures, checkBreakpointPause, checkBugBlocking, checkPendingStartups, checkDuplicateSession, prependToResponse, appendToResponse, buildStatusSuffix, type StatusLineItem } from './tool-response.js';
@@ -121,12 +122,51 @@ async function findStartingPort(): Promise<number> {
 }
 
 /**
- * Load instructions from docs/instructions.md
+ * Locations a skills-aware client (Claude Code and others following the
+ * agentskills.io convention) would scan for the bundled cdp-tools skill.
+ * Checked at both project- and user-level, and both the client-native
+ * `.claude/skills/` path and the cross-client `.agents/skills/` convention.
+ */
+function findSkillInstallCandidates(): string[] {
+  return [
+    join(process.cwd(), '.claude', 'skills', 'cdp-tools'),
+    join(process.cwd(), '.agents', 'skills', 'cdp-tools'),
+    join(homedir(), '.claude', 'skills', 'cdp-tools'),
+    join(homedir(), '.agents', 'skills', 'cdp-tools'),
+  ];
+}
+
+function isSkillInstalled(): boolean {
+  return findSkillInstallCandidates().some((dir) => existsSync(join(dir, 'SKILL.md')));
+}
+
+/**
+ * Load the MCP `instructions` payload from docs/mcp-instructions.md.
+ *
+ * Kept short and separate from docs/instructions.md (the full human-readable
+ * reference): many MCP clients inject this field into the model's context
+ * unconditionally at session start, so it shouldn't carry the full tool
+ * catalog. The full reference is instead shipped as a progressive-disclosure
+ * Agent Skill (skills/cdp-tools/) that skills-aware clients load on demand.
+ *
+ * If that skill isn't installed anywhere a client would scan for it, append
+ * a one-time nudge asking the model to offer setting it up - but only ask,
+ * never symlink it in unprompted. Once installed, isSkillInstalled() is
+ * true on future connections and this stops appearing.
  */
 async function loadInstructions(): Promise<string | undefined> {
   try {
-    const instructionsPath = join(__dirname, '..', 'docs', 'instructions.md');
-    return await readFile(instructionsPath, 'utf-8');
+    const instructionsPath = join(__dirname, '..', 'docs', 'mcp-instructions.md');
+    const instructions = await readFile(instructionsPath, 'utf-8');
+
+    if (isSkillInstalled()) {
+      return instructions;
+    }
+
+    const skillSourcePath = join(__dirname, '..', 'skills', 'cdp-tools');
+    const nudge = `\n\n---\n\n**Setup nudge (one-time):** No cdp-tools Agent Skill was found in this project or your home directory (checked \`.claude/skills/\`, \`.agents/skills/\`). Ask the user if they'd like it installed - if they agree, run:\n\n\`\`\`bash\nmkdir -p .claude/skills\nln -s "${skillSourcePath}" .claude/skills/cdp-tools\n\`\`\`\n\nDo not create the symlink without asking first. This message stops appearing once the skill is installed anywhere it would be scanned.\n`;
+
+    return instructions + nudge;
   } catch (error) {
     console.error('[cdp-tools] Failed to load instructions file:', error instanceof Error ? error.message : error);
     return undefined;

@@ -7,10 +7,11 @@ import { z } from 'zod';
 import { createTool } from '../validation-helpers.js';
 import { configManager } from '../config.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
+import { requestSelfRestart } from '../self-restart.js';
 
 const configSchema = z.object({
-  action: z.enum(['status', 'useLocal', 'useGlobal', 'reset', 'backup', 'cloneFromGlobal', 'show', 'listTools', 'reload'])
-    .describe('Config action: status (show config location info), useLocal (switch to project config), useGlobal (switch to global config), reset (reset to defaults), backup (backup current config), cloneFromGlobal (copy global to local), show (display current config), listTools (list all toggleable tools with status and dependencies), reload (re-read config.json from disk now - also happens automatically on file edits)'),
+  action: z.enum(['status', 'useLocal', 'useGlobal', 'reset', 'backup', 'cloneFromGlobal', 'show', 'listTools', 'reload', 'restart'])
+    .describe('Config action: status (show config location info), useLocal (switch to project config), useGlobal (switch to global config), reset (reset to defaults), backup (backup current config), cloneFromGlobal (copy global to local), show (display current config), listTools (list all toggleable tools with status and dependencies), reload (re-read config.json from disk now - also happens automatically on file edits), restart (restart cdp-tools itself if stuck or broken)'),
   seedFromGlobal: z.boolean().optional()
     .describe('For useLocal action: if true (default), seeds new local config from global if it exists'),
   path: z.string().optional()
@@ -22,7 +23,7 @@ type ConfigArgs = z.infer<typeof configSchema>;
 export function createConfigTools() {
   return {
     config: createTool(
-      'Manage cdp-tools configuration. Actions: status (show where config is loaded from), useLocal (switch to project-local config), useGlobal (switch to global ~/.cdp-tools config), reset (reset to defaults), backup (create timestamped backup), cloneFromGlobal (copy global config to local), show (display current settings), listTools (list all toggleable tools with their status and dependencies), reload (re-read config.json now; edits also hot-reload automatically within ~250ms)',
+      'Manage cdp-tools configuration. Actions: status (show where config is loaded from), useLocal (switch to project-local config), useGlobal (switch to global ~/.cdp-tools config), reset (reset to defaults), backup (create timestamped backup), cloneFromGlobal (copy global config to local), show (display current settings), listTools (list all toggleable tools with their status and dependencies), reload (re-read config.json now; edits also hot-reload automatically within ~250ms), restart (restart cdp-tools itself if stuck or broken)',
       configSchema,
       async (args: ConfigArgs) => {
         switch (args.action) {
@@ -97,6 +98,22 @@ export function createConfigTools() {
             return createSuccessResponse('CONFIG_RELOAD', {
               changed: result.changed,
               path: result.path || 'in-memory defaults (no file)',
+            });
+          }
+
+          case 'restart': {
+            const result = await requestSelfRestart();
+            if (!result.ok) {
+              if (result.reason === 'not-supervised') {
+                return createErrorResponse('CONFIG_RESTART_NOT_SUPERVISED', {});
+              }
+              return createErrorResponse('CONFIG_RESTART_STALE_PID', {
+                pid: String(result.pid),
+                error: result.error ?? 'unknown error',
+              });
+            }
+            return createSuccessResponse('CONFIG_RESTART_REQUESTED', {
+              pid: String(result.pid),
             });
           }
 

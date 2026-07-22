@@ -111,6 +111,15 @@ claude mcp add cdp-tools -- npx cdp-tools-mcp@latest
 - **[Tool Instructions](./docs/instructions.md)** - MCP tool reference and best practices
 - **[Message Templates](./docs/messages.md)** - Response formats and error messages
 
+### Agent Skill
+
+This package bundles an [Agent Skills](https://agentskills.io)-compatible skill at `skills/cdp-tools/` covering the same guidance as the Tool Instructions above, but split for progressive disclosure (name + description load at session start; the full workflow guide and tool catalog load only when a debugging task is underway). To enable it in a skills-aware client (e.g. Claude Code), symlink or copy it into a scanned skills directory:
+
+```bash
+mkdir -p .claude/skills
+ln -s ../../node_modules/cdp-tools-mcp/skills/cdp-tools .claude/skills/cdp-tools
+```
+
 ## Why cdp-tools-mcp?
 
 **vs Chrome DevTools MCP:**

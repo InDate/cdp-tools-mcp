@@ -2851,7 +2851,40 @@ No global config exists to clone from.
 
 {{#changed}}Reloaded config from {{path}} - changes applied live.{{/changed}}{{^changed}}Reloaded config from {{path}} - no changes since last load.{{/changed}}
 
-Note: `tools.enabled`/`tools.disabled` changes still require an MCP server restart to take effect.
+Note: `tools.enabled`/`tools.disabled` changes still require an MCP server restart to take effect - use `config({action: 'restart'})`.
+
+---
+
+## CONFIG_RESTART_REQUESTED
+
+**Type:** success
+**Summary:** Restart requested
+
+Sent a restart signal to the cdp-tools supervisor (PID {{pid}}). The server restarts shortly - no reconnect needed.
+
+Note: any Chrome instances this session launched will be killed (call `launchChrome` again). Managed dev servers (the `server` tool) survive and reattach automatically.
+
+---
+
+## CONFIG_RESTART_NOT_SUPERVISED
+
+**Type:** error
+
+No mcp-supervisor pidfile found - this session isn't running through the hot-reload supervisor, so there's nothing to signal.
+
+**Suggestions:**
+- Ask the user to run `/mcp` to reconnect instead
+
+---
+
+## CONFIG_RESTART_STALE_PID
+
+**Type:** error
+
+Found a supervisor pidfile (PID {{pid}}) but couldn't signal it: {{error}}
+
+**Suggestions:**
+- The supervisor process may have died without cleaning up its pidfile - ask the user to run `/mcp` to reconnect
 
 ---
 

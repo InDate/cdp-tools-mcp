@@ -20,8 +20,14 @@ Instead of just analyzing static code, AI assistants can now:
 | [Automation](./automation.md) | Navigation, element interaction, screenshots, storage, server management |
 | [Replay](./replay.md) | Record interactions, replay sequences, export Playwright/Puppeteer tests |
 | [Troubleshooting](./troubleshooting.md) | Common issues and solutions |
-| [API Reference](./instructions.md) | Tool schemas and MCP instructions |
+| [API Reference](./instructions.md) | Full tool reference and best practices (human-readable) |
 | [Message Templates](./messages.md) | Response format templates |
+
+### Agent Skill
+
+This package also ships an [Agent Skills](https://agentskills.io)-compatible skill at [`skills/cdp-tools/`](../skills/cdp-tools/SKILL.md), containing the same guidance as the API Reference above but structured for progressive disclosure. Copy or symlink it into a scanned skills directory (e.g. `.claude/skills/cdp-tools` or `.agents/skills/cdp-tools`) so Agent-Skills-aware clients load it only when a debugging task is actually underway, instead of paying the full token cost every session. The MCP server's own `instructions` field (`./mcp-instructions.md`) stays intentionally short for this reason - it's sent to every client on connect, whether or not that client supports Agent Skills.
+
+You don't have to set this up by hand: on startup, the server checks whether the skill is already installed anywhere a client would scan for it (project- or user-level, `.claude/skills/` or `.agents/skills/`). If it isn't found, the `instructions` payload asks the connected agent to offer installing it - the agent will propose the symlink command and only run it if you agree. Once installed, this nudge stops appearing.
 
 ## Quick Start
 
