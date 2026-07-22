@@ -44,7 +44,7 @@ export interface OverlayResult {
 export function getWorkOnNoSequenceConfig(
   issueType: 'bug' | 'feature',
   issueId: number,
-  issueDescription: string
+  issueTitle: string
 ): OverlayConfig {
   const typeLabel = issueType === 'bug' ? 'Bug' : 'Feature';
   const actionLabel = issueType === 'bug' ? 'Reproduce' : 'Test';
@@ -52,7 +52,7 @@ export function getWorkOnNoSequenceConfig(
   return {
     id: '__cdp-workon-overlay',
     title: `${typeLabel} #${issueId}`,
-    description: issueDescription,
+    description: issueTitle,
     instructions: 'No recording exists for this issue. Choose how to proceed:',
     buttons: [
       { id: 'cancel', label: 'CANCEL', action: 'cancel' },
@@ -68,14 +68,14 @@ export function getWorkOnNoSequenceConfig(
 export function getTestReadyConfig(
   issueType: 'bug' | 'feature',
   issueId: number,
-  issueDescription: string
+  issueTitle: string
 ): OverlayConfig {
   const typeLabel = issueType === 'bug' ? 'Bug' : 'Feature';
 
   return {
     id: '__cdp-test-ready-overlay',
     title: `Testing ${typeLabel} #${issueId}`,
-    description: issueDescription,
+    description: issueTitle,
     instructions: 'The recorded sequence will replay. Watch for the issue.',
     buttons: [
       { id: 'cancel', label: 'CANCEL', action: 'cancel' },
@@ -90,7 +90,7 @@ export function getTestReadyConfig(
 export function getVerificationConfig(
   issueType: 'bug' | 'feature',
   issueId: number,
-  issueDescription: string
+  issueTitle: string
 ): OverlayConfig {
   const typeLabel = issueType === 'bug' ? 'Bug' : 'Feature';
   const questionText = issueType === 'bug'
@@ -102,7 +102,7 @@ export function getVerificationConfig(
   return {
     id: '__cdp-verification-overlay',
     title: `${typeLabel} #${issueId}`,
-    description: issueDescription,
+    description: issueTitle,
     instructions: questionText,
     buttons: [
       { id: 'no', label: noLabel, action: 'no' },
@@ -345,14 +345,14 @@ export async function showOverlay(
 export async function showReplayBanner(
   page: Page,
   issueType: 'bug' | 'feature',
-  issueDescription: string,
+  issueTitle: string,
   issueId: number
 ): Promise<() => Promise<void>> {
   const typeLabel = issueType === 'bug' ? 'Bug' : 'Feature';
 
   await page.evaluate((params: {
     typeLabel: string;
-    issueDescription: string;
+    issueTitle: string;
     issueId: number;
   }) => {
     const doc = (globalThis as any).document;
@@ -479,7 +479,7 @@ export async function showReplayBanner(
       feedbackEvents,
       silentBlockEvents
     };
-  }, { typeLabel, issueDescription, issueId });
+  }, { typeLabel, issueTitle, issueId });
 
   // Return cleanup function
   return async () => {

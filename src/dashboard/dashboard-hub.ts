@@ -5,10 +5,11 @@
 
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { getOutputPath } from '../helpers/paths.js';
+import { parseIssueFrontmatter } from '../issue-tracker.js';
 import { writeLock, removeLock, DEFAULT_PORT, MAX_PORT_ATTEMPTS } from './hub-lock.js';
 import type {
   SessionInfo,
@@ -611,30 +612,26 @@ export class DashboardHub {
 
   private getIssuesForProject(cwd: string): { bugs: number; features: number } {
     try {
-      const issuesPath = join(cwd, '.cdp-tools', 'issues', 'issues.csv');
-      if (!existsSync(issuesPath)) {
+      const itemsDir = join(cwd, '.cdp-tools', 'issues', 'items');
+      if (!existsSync(itemsDir)) {
         return { bugs: 0, features: 0 };
       }
-
-      const content = readFileSync(issuesPath, 'utf-8');
-      const lines = content.trim().split('\n').slice(1); // Skip header
 
       let bugs = 0;
       let features = 0;
 
-      for (const line of lines) {
-        // CSV format: id,type,status,description,sequenceName,startUrl,createdAt
-        const parts = line.split(',');
-        if (parts.length < 3) continue;
+      for (const entry of readdirSync(itemsDir)) {
+        if (!entry.endsWith('.md')) continue;
 
-        const type = parts[1];
-        const status = parts[2];
+        const raw = readFileSync(join(itemsDir, entry), 'utf-8');
+        const fm = parseIssueFrontmatter(raw);
+        if (!fm) continue;
 
         // Only count active issues
-        if (status === 'fixed' || status === 'implemented') continue;
+        if (fm.status === 'fixed' || fm.status === 'implemented') continue;
 
-        if (type === 'bug') bugs++;
-        else if (type === 'feature') features++;
+        if (fm.type === 'bug') bugs++;
+        else if (fm.type === 'feature') features++;
       }
 
       return { bugs, features };

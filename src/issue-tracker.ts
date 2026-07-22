@@ -1,8 +1,14 @@
 /**
- * Issue Tracker - Persistent bug/feature tracking with CSV storage
+ * Issue Tracker - persistent bug/feature tracking with one Markdown file
+ * per issue (YAML-ish frontmatter + Markdown body + appended comments).
+ *
+ * Issues are cached in memory after first load and kept fresh via a native
+ * fs.watch on the items directory (debounced full rescan) - see
+ * ensureIndexLoaded()/startWatcher() below. This mirrors the dependency-free
+ * watcher convention used by src/server-watcher.ts.
  */
 
-import { promises as fs } from 'fs';
+import { promises as fs, watch as fsWatch, type FSWatcher } from 'fs';
 import { join } from 'path';
 import { getOutputPath } from './helpers/paths.js';
 import { atomicWriteFile } from './atomic-write.js';
@@ -14,11 +20,19 @@ import { atomicWriteFile } from './atomic-write.js';
 export type IssueType = 'bug' | 'feature';
 export type IssueStatus = 'pending' | 'acknowledged' | 'in_progress' | 'fixed' | 'implemented';
 
+export interface IssueComment {
+  timestamp: Date;
+  text: string;
+}
+
 export interface TrackedIssue {
   id: number;
   type: IssueType;
   status: IssueStatus;
-  description: string;
+  title: string;
+  body: string;
+  labels: string[];
+  comments: IssueComment[];
   sequenceFile: string;
   startUrl: string;
   reportedAt: Date;
@@ -26,20 +40,17 @@ export interface TrackedIssue {
   startedAt?: Date;
   resolvedAt?: Date;
   recordingName: string;
+  /** Absolute path to the issue's .md file on disk. */
+  filePath: string;
 }
 
 export interface IssueFilter {
   type?: IssueType;
   status?: IssueStatus;
   includeCompleted?: boolean;
+  /** Match issues that have ANY of these labels. */
+  labels?: string[];
 }
-
-// =============================================================================
-// State - minimal, only tracks next ID
-// =============================================================================
-
-let nextIssueId = 1;
-let nextIdInitialized = false;
 
 // =============================================================================
 // File Paths
@@ -53,91 +64,228 @@ function getSequencesDir(): string {
   return getOutputPath('issues', 'sequences');
 }
 
-function getIssuesFilePath(): string {
+function getItemsDir(): string {
+  return getOutputPath('issues', 'items');
+}
+
+function getLegacyCsvPath(): string {
   return join(getIssuesDir(), 'issues.csv');
 }
 
 // =============================================================================
-// CSV Helpers
+// Frontmatter (restricted YAML subset - bare token / JSON-quoted scalar /
+// JSON-quoted array). Valid standard YAML, so the files open correctly in
+// Obsidian/Jekyll/gray-matter/js-yaml too - we just never need a parser that
+// handles more than what we ourselves write.
 // =============================================================================
 
-function escapeCSV(value: string | undefined): string {
-  if (value === undefined || value === null) return '';
-  const str = String(value);
-  if (str.includes(',') || str.includes('"') || str.includes('\n')) {
-    return `"${str.replace(/"/g, '""')}"`;
-  }
-  return str;
+const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
+
+function yamlQuote(value: string): string {
+  return JSON.stringify(value);
 }
 
-function parseCSVLine(line: string): string[] {
+function yamlStringArray(values: string[]): string {
+  return `[${values.map(v => JSON.stringify(v)).join(', ')}]`;
+}
+
+function parseFrontmatterBlock(block: string): Record<string, any> {
+  const result: Record<string, any> = {};
+  for (const line of block.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const idx = line.indexOf(':');
+    if (idx === -1) continue;
+
+    const key = line.slice(0, idx).trim();
+    const rawValue = line.slice(idx + 1).trim();
+    if (!rawValue) continue;
+
+    if (rawValue.startsWith('"') || rawValue.startsWith('[')) {
+      try {
+        result[key] = JSON.parse(rawValue);
+      } catch {
+        result[key] = rawValue;
+      }
+    } else if (/^-?\d+$/.test(rawValue)) {
+      result[key] = parseInt(rawValue, 10);
+    } else {
+      result[key] = rawValue; // bare token: enum or ISO date
+    }
+  }
+  return result;
+}
+
+/**
+ * Pure, I/O-free frontmatter parse - exported for reuse by callers (e.g. the
+ * dashboard) that need to read issue metadata from an arbitrary project's
+ * directory without going through this module's own path config.
+ */
+export function parseIssueFrontmatter(raw: string): Record<string, any> | null {
+  const match = raw.match(FRONTMATTER_RE);
+  if (!match) return null;
+  return parseFrontmatterBlock(match[1]);
+}
+
+function parseDate(value: unknown): Date | undefined {
+  if (typeof value !== 'string' || !value) return undefined;
+  const date = new Date(value);
+  return isNaN(date.getTime()) ? undefined : date;
+}
+
+const COMMENT_MARKER_RE = /^<!-- comment: (.+?) -->\r?$/gm;
+
+function parseBodyAndComments(rest: string): { body: string; comments: IssueComment[] } {
+  const text = rest.replace(/^\r?\n+/, '');
+
+  const markers: { index: number; timestamp: string }[] = [];
+  const re = new RegExp(COMMENT_MARKER_RE.source, 'gm');
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    markers.push({ index: match.index, timestamp: match[1] });
+  }
+
+  if (markers.length === 0) {
+    return { body: text.trimEnd(), comments: [] };
+  }
+
+  const body = text.slice(0, markers[0].index).trimEnd();
+  const comments: IssueComment[] = [];
+  for (let i = 0; i < markers.length; i++) {
+    const lineEnd = text.indexOf('\n', markers[i].index);
+    const start = lineEnd === -1 ? text.length : lineEnd + 1;
+    const end = i + 1 < markers.length ? markers[i + 1].index : text.length;
+    comments.push({
+      timestamp: parseDate(markers[i].timestamp) || new Date(),
+      text: text.slice(start, end).trim(),
+    });
+  }
+
+  return { body, comments };
+}
+
+function parseIssueFile(raw: string, filePath: string): TrackedIssue | null {
+  const match = raw.match(FRONTMATTER_RE);
+  if (!match) return null;
+
+  const fm = parseFrontmatterBlock(match[1]);
+  const id = typeof fm.id === 'number' ? fm.id : parseInt(String(fm.id), 10);
+  if (!Number.isFinite(id)) return null;
+
+  const { body, comments } = parseBodyAndComments(match[2] ?? '');
+
+  return {
+    id,
+    type: fm.type as IssueType,
+    status: fm.status as IssueStatus,
+    title: typeof fm.title === 'string' ? fm.title : '',
+    body,
+    labels: Array.isArray(fm.labels) ? fm.labels : [],
+    comments,
+    sequenceFile: typeof fm.sequenceFile === 'string' ? fm.sequenceFile : '',
+    startUrl: typeof fm.startUrl === 'string' ? fm.startUrl : '',
+    recordingName: typeof fm.recordingName === 'string' ? fm.recordingName : '',
+    reportedAt: parseDate(fm.reportedAt) || new Date(),
+    acknowledgedAt: parseDate(fm.acknowledgedAt),
+    startedAt: parseDate(fm.startedAt),
+    resolvedAt: parseDate(fm.resolvedAt),
+    filePath,
+  };
+}
+
+function serializeIssueFile(issue: TrackedIssue): string {
+  const fm: string[] = ['---'];
+  fm.push(`id: ${issue.id}`);
+  fm.push(`type: ${issue.type}`);
+  fm.push(`status: ${issue.status}`);
+  fm.push(`title: ${yamlQuote(issue.title)}`);
+  if (issue.labels.length > 0) fm.push(`labels: ${yamlStringArray(issue.labels)}`);
+  if (issue.sequenceFile) fm.push(`sequenceFile: ${yamlQuote(issue.sequenceFile)}`);
+  if (issue.startUrl) fm.push(`startUrl: ${yamlQuote(issue.startUrl)}`);
+  if (issue.recordingName) fm.push(`recordingName: ${yamlQuote(issue.recordingName)}`);
+  fm.push(`reportedAt: ${issue.reportedAt.toISOString()}`);
+  if (issue.acknowledgedAt) fm.push(`acknowledgedAt: ${issue.acknowledgedAt.toISOString()}`);
+  if (issue.startedAt) fm.push(`startedAt: ${issue.startedAt.toISOString()}`);
+  if (issue.resolvedAt) fm.push(`resolvedAt: ${issue.resolvedAt.toISOString()}`);
+  fm.push('---');
+
+  const bodySections = [issue.body.trim()];
+  for (const c of issue.comments) {
+    bodySections.push(`<!-- comment: ${c.timestamp.toISOString()} -->\n${c.text.trim()}`);
+  }
+
+  return fm.join('\n') + '\n\n' + bodySections.join('\n\n') + '\n';
+}
+
+function slugifyTitle(title: string): string {
+  const sanitized = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .substring(0, 30);
+  return sanitized || 'untitled';
+}
+
+/** Filename for an issue's repro sequence JSON (lives in issues/sequences/). */
+export function generateSequenceFilename(type: IssueType, id: number, title: string): string {
+  return `${type}-${String(id).padStart(3, '0')}-${slugifyTitle(title)}.json`;
+}
+
+/** Filename for an issue's own Markdown file (lives in issues/items/). */
+export function generateIssueFilename(type: IssueType, id: number, title: string): string {
+  return `${type}-${String(id).padStart(3, '0')}-${slugifyTitle(title)}.md`;
+}
+
+// =============================================================================
+// Legacy CSV migration (one-time, runs while issues.csv still exists)
+// =============================================================================
+
+function legacyParseCSVLine(line: string): string[] {
   const values: string[] = [];
   let current = '';
   let inQuotes = false;
 
   for (let i = 0; i < line.length; i++) {
     const char = line[i];
-
     if (inQuotes) {
       if (char === '"') {
         if (line[i + 1] === '"') {
           current += '"';
-          i++; // Skip next quote
+          i++;
         } else {
           inQuotes = false;
         }
       } else {
         current += char;
       }
+    } else if (char === '"') {
+      inQuotes = true;
+    } else if (char === ',') {
+      values.push(current);
+      current = '';
     } else {
-      if (char === '"') {
-        inQuotes = true;
-      } else if (char === ',') {
-        values.push(current);
-        current = '';
-      } else {
-        current += char;
-      }
+      current += char;
     }
   }
   values.push(current);
   return values;
 }
 
-function formatDate(date: Date | undefined): string {
-  return date ? date.toISOString() : '';
+interface LegacyCsvRow {
+  id: number;
+  type: IssueType;
+  status: IssueStatus;
+  description: string;
+  sequenceFile: string;
+  startUrl: string;
+  reportedAt?: Date;
+  acknowledgedAt?: Date;
+  startedAt?: Date;
+  resolvedAt?: Date;
+  recordingName: string;
 }
 
-function parseDate(str: string): Date | undefined {
-  if (!str) return undefined;
-  const date = new Date(str);
-  return isNaN(date.getTime()) ? undefined : date;
-}
-
-// =============================================================================
-// CSV Read/Write
-// =============================================================================
-
-const CSV_HEADER = 'id,type,status,description,sequence_file,start_url,reported_at,acknowledged_at,started_at,resolved_at,recording_name';
-
-function issueToCSVRow(issue: TrackedIssue): string {
-  return [
-    issue.id,
-    issue.type,
-    issue.status,
-    escapeCSV(issue.description),
-    escapeCSV(issue.sequenceFile),
-    escapeCSV(issue.startUrl),
-    formatDate(issue.reportedAt),
-    formatDate(issue.acknowledgedAt),
-    formatDate(issue.startedAt),
-    formatDate(issue.resolvedAt),
-    escapeCSV(issue.recordingName)
-  ].join(',');
-}
-
-function csvRowToIssue(row: string): TrackedIssue | null {
-  const values = parseCSVLine(row);
+function legacyCsvRowToFields(row: string): LegacyCsvRow | null {
+  const values = legacyParseCSVLine(row);
   if (values.length < 11) return null;
 
   const id = parseInt(values[0], 10);
@@ -150,273 +298,308 @@ function csvRowToIssue(row: string): TrackedIssue | null {
     description: values[3],
     sequenceFile: values[4],
     startUrl: values[5],
-    reportedAt: parseDate(values[6]) || new Date(),
+    reportedAt: parseDate(values[6]),
     acknowledgedAt: parseDate(values[7]),
     startedAt: parseDate(values[8]),
     resolvedAt: parseDate(values[9]),
-    recordingName: values[10]
+    recordingName: values[10],
   };
 }
 
 /**
- * Read all issues from CSV, optionally filtering
- * Does NOT modify any global state except nextIssueId
+ * Migrate any remaining rows from the legacy issues.csv into issues/items/.
+ * Idempotent and resumable: each row is skipped if its target file already
+ * exists, and issues.csv is only renamed to .bak once every row in it has a
+ * corresponding file on disk (so a partial failure just retries on the next
+ * process start instead of losing rows).
  */
-async function readIssuesFromCSV(filter?: { includeCompleted?: boolean }): Promise<TrackedIssue[]> {
-  const filepath = getIssuesFilePath();
-  const includeCompleted = filter?.includeCompleted ?? false;
-
+async function migrateCsvIfNeeded(): Promise<void> {
+  const csvPath = getLegacyCsvPath();
+  let csvContent: string;
   try {
-    const content = await fs.readFile(filepath, 'utf-8');
-    const lines = content.split('\n').filter(line => line.trim());
+    csvContent = await fs.readFile(csvPath, 'utf-8');
+  } catch {
+    return; // no legacy CSV - nothing to migrate
+  }
 
-    // Skip header
-    if (lines.length > 0 && lines[0].startsWith('id,')) {
-      lines.shift();
+  const itemsDir = getItemsDir();
+  const lines = csvContent.split('\n').filter(l => l.trim());
+  if (lines.length && lines[0].startsWith('id,')) lines.shift();
+
+  let attempted = 0;
+  let failed = 0;
+
+  for (const line of lines) {
+    const row = legacyCsvRowToFields(line);
+    if (!row) continue;
+    attempted++;
+
+    const filePath = join(itemsDir, generateIssueFilename(row.type, row.id, row.description));
+
+    try {
+      await fs.access(filePath);
+      continue; // already migrated
+    } catch {
+      // doesn't exist yet - proceed to write
     }
 
-    const result: TrackedIssue[] = [];
-    let maxId = 0;
+    const issue: TrackedIssue = {
+      id: row.id,
+      type: row.type,
+      status: row.status,
+      title: row.description,
+      body: '',
+      labels: [],
+      comments: [],
+      sequenceFile: row.sequenceFile,
+      startUrl: row.startUrl,
+      recordingName: row.recordingName,
+      reportedAt: row.reportedAt ?? new Date(),
+      acknowledgedAt: row.acknowledgedAt,
+      startedAt: row.startedAt,
+      resolvedAt: row.resolvedAt,
+      filePath,
+    };
 
-    for (const line of lines) {
-      const issue = csvRowToIssue(line);
-      if (issue) {
-        // Filter completed issues only for return value, but always track maxId
-        if (includeCompleted || (issue.status !== 'fixed' && issue.status !== 'implemented')) {
-          result.push(issue);
-        }
-        if (issue.id > maxId) maxId = issue.id;
-      }
+    try {
+      await atomicWriteFile(filePath, serializeIssueFile(issue));
+    } catch (err) {
+      failed++;
+      console.error(`[cdp-tools] Failed to migrate issue #${row.id} from legacy CSV:`, err);
     }
+  }
 
-    // Update nextIssueId based on what's in the file
-    if (maxId >= nextIssueId) {
-      nextIssueId = maxId + 1;
+  if (attempted > 0 && failed === 0) {
+    try {
+      await fs.rename(csvPath, `${csvPath}.bak`);
+    } catch (err) {
+      console.error('[cdp-tools] Migrated issues but failed to rename legacy issues.csv to .bak:', err);
     }
-    nextIdInitialized = true;
-
-    return result;
-  } catch (error: any) {
-    if (error.code === 'ENOENT') {
-      // File doesn't exist yet
-      nextIdInitialized = true;
-      return [];
-    }
-    throw error;
   }
 }
 
+// =============================================================================
+// In-memory index + watcher
+// =============================================================================
+
+let index: Map<number, TrackedIssue> | null = null;
+let nextIssueId = 1;
+let watcher: FSWatcher | null = null;
+let reloadTimer: ReturnType<typeof setTimeout> | null = null;
+const RELOAD_DEBOUNCE_MS = 250;
+
 /**
- * Initialize nextIssueId by scanning the file (if not already done)
+ * Test-only: resets in-memory state (closing any active watcher) so the next
+ * ensureIndexLoaded() re-scans from disk. Not part of the tool-facing API.
  */
-async function ensureNextIdInitialized(): Promise<void> {
-  if (nextIdInitialized) return;
-
-  const filepath = getIssuesFilePath();
-  try {
-    const content = await fs.readFile(filepath, 'utf-8');
-    const lines = content.split('\n').filter(line => line.trim());
-
-    let maxId = 0;
-    for (const line of lines) {
-      if (line.startsWith('id,')) continue; // skip header
-      const issue = csvRowToIssue(line);
-      if (issue && issue.id > maxId) {
-        maxId = issue.id;
-      }
-    }
-    nextIssueId = maxId + 1;
-  } catch (error: any) {
-    if (error.code !== 'ENOENT') throw error;
-    nextIssueId = 1;
+export function __resetForTests(): void {
+  if (watcher) {
+    watcher.close();
+    watcher = null;
   }
-  nextIdInitialized = true;
+  if (reloadTimer) {
+    clearTimeout(reloadTimer);
+    reloadTimer = null;
+  }
+  index = null;
+  nextIssueId = 1;
 }
 
-/**
- * Append a single issue to the CSV file (does not rewrite existing data)
- */
-async function appendIssueToCSV(issue: TrackedIssue): Promise<void> {
-  const filepath = getIssuesFilePath();
+async function scanIssuesDir(): Promise<Map<number, TrackedIssue>> {
+  const dir = getItemsDir();
+  const map = new Map<number, TrackedIssue>();
 
-  // Check if file exists and has content
-  // Note: atomicWriteFile handles directory creation
-  let needsHeader = false;
+  let entries: string[];
   try {
-    const stat = await fs.stat(filepath);
-    if (stat.size === 0) needsHeader = true;
-  } catch (error: any) {
-    if (error.code === 'ENOENT') needsHeader = true;
-    else throw error;
+    entries = await fs.readdir(dir);
+  } catch {
+    return map;
   }
 
-  const row = issueToCSVRow(issue);
-  if (needsHeader) {
-    await atomicWriteFile(filepath, CSV_HEADER + '\n' + row + '\n');
-  } else {
-    await fs.appendFile(filepath, row + '\n', 'utf-8');
-  }
-}
-
-/**
- * Update a specific issue in the CSV by ID (reads file, modifies line, writes back)
- * This preserves ALL other lines exactly as they are
- */
-async function updateIssueInCSV(id: number, updater: (issue: TrackedIssue) => TrackedIssue): Promise<TrackedIssue | null> {
-  const filepath = getIssuesFilePath();
-
-  let content: string;
-  try {
-    content = await fs.readFile(filepath, 'utf-8');
-  } catch (error: any) {
-    if (error.code === 'ENOENT') return null;
-    throw error;
-  }
-
-  const lines = content.split('\n');
-  let updated: TrackedIssue | null = null;
-  let foundIndex = -1;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line || line.startsWith('id,')) continue; // skip empty and header
-
-    const issue = csvRowToIssue(lines[i]);
-    if (issue && issue.id === id) {
-      updated = updater(issue);
-      lines[i] = issueToCSVRow(updated);
-      foundIndex = i;
-      break;
+  for (const entry of entries) {
+    if (!entry.endsWith('.md')) continue;
+    const filePath = join(dir, entry);
+    try {
+      const raw = await fs.readFile(filePath, 'utf-8');
+      const issue = parseIssueFile(raw, filePath);
+      if (issue) map.set(issue.id, issue);
+    } catch (err) {
+      console.error(`[cdp-tools] Failed to parse issue file ${entry}:`, err);
     }
   }
 
-  if (updated && foundIndex >= 0) {
-    await atomicWriteFile(filepath, lines.join('\n'));
-  }
+  return map;
+}
 
-  return updated;
+function recomputeNextIssueId(map: Map<number, TrackedIssue>): void {
+  let maxId = 0;
+  for (const id of map.keys()) {
+    if (id > maxId) maxId = id;
+  }
+  nextIssueId = maxId + 1;
+}
+
+async function reloadIndex(): Promise<void> {
+  try {
+    const fresh = await scanIssuesDir();
+    index = fresh;
+    recomputeNextIssueId(fresh);
+  } catch (err) {
+    console.error('[cdp-tools] Issue index reload failed, keeping previous state:', err);
+  }
+}
+
+function startWatcher(): void {
+  if (watcher) return;
+  try {
+    watcher = fsWatch(getItemsDir(), () => {
+      if (reloadTimer) clearTimeout(reloadTimer);
+      reloadTimer = setTimeout(() => {
+        reloadTimer = null;
+        void reloadIndex();
+      }, RELOAD_DEBOUNCE_MS);
+    });
+  } catch {
+    // Not watchable on this platform/filesystem - external edits just won't auto-reload.
+  }
+}
+
+async function ensureIndexLoaded(): Promise<void> {
+  if (index) return;
+
+  await fs.mkdir(getItemsDir(), { recursive: true });
+  await fs.mkdir(getSequencesDir(), { recursive: true });
+  await migrateCsvIfNeeded();
+
+  index = await scanIssuesDir();
+  recomputeNextIssueId(index);
+  startWatcher();
 }
 
 // =============================================================================
 // Public API
 // =============================================================================
 
-/**
- * Initialize the issue tracker - ensures directories exist
- * No longer loads issues into memory; they're read on demand
- */
-export async function initializeTracker(_includeCompleted: boolean = false): Promise<void> {
-  // Ensure directories exist
-  await fs.mkdir(getIssuesDir(), { recursive: true });
-  await fs.mkdir(getSequencesDir(), { recursive: true });
-
-  // Initialize next ID from file if needed
-  await ensureNextIdInitialized();
+/** Initialize the issue tracker - ensures the index is loaded (migrating legacy CSV data if present). */
+export async function initializeTracker(): Promise<void> {
+  await ensureIndexLoaded();
 }
 
-/**
- * Add a new issue - appends to CSV without rewriting existing data
- */
-export async function addIssue(
-  type: IssueType,
-  description: string,
-  sequenceFile: string,
-  recordingName: string,
-  initialStatus: IssueStatus = 'pending',
-  startUrl: string = ''
-): Promise<TrackedIssue> {
-  await initializeTracker();
+export async function addIssue(params: {
+  type: IssueType;
+  title: string;
+  sequenceFile?: string;
+  recordingName?: string;
+  initialStatus?: IssueStatus;
+  startUrl?: string;
+  body?: string;
+  labels?: string[];
+}): Promise<TrackedIssue> {
+  await ensureIndexLoaded();
+
+  const status = params.initialStatus ?? 'pending';
+  const now = new Date();
+  const id = nextIssueId++;
 
   const issue: TrackedIssue = {
-    id: nextIssueId++,
-    type,
-    status: initialStatus,
-    description,
-    sequenceFile,
-    startUrl,
-    reportedAt: new Date(),
-    recordingName,
-    acknowledgedAt: initialStatus === 'acknowledged' ? new Date() : undefined
+    id,
+    type: params.type,
+    status,
+    title: params.title,
+    body: params.body ?? '',
+    labels: params.labels ?? [],
+    comments: [],
+    sequenceFile: params.sequenceFile ?? '',
+    startUrl: params.startUrl ?? '',
+    recordingName: params.recordingName ?? '',
+    reportedAt: now,
+    acknowledgedAt: status === 'acknowledged' ? now : undefined,
+    filePath: join(getItemsDir(), generateIssueFilename(params.type, id, params.title)),
   };
 
-  // Append only - does not rewrite existing data
-  await appendIssueToCSV(issue);
+  await atomicWriteFile(issue.filePath, serializeIssueFile(issue));
+  index!.set(issue.id, issue);
 
   return issue;
 }
 
-/**
- * Get a single issue by ID - reads directly from CSV
- */
 export async function getIssue(id: number): Promise<TrackedIssue | undefined> {
-  await initializeTracker();
-  // Read all issues (including completed) to find by ID
-  const allIssues = await readIssuesFromCSV({ includeCompleted: true });
-  return allIssues.find(i => i.id === id);
+  await ensureIndexLoaded();
+  return index!.get(id);
 }
 
-/**
- * Get all issues, optionally filtered - reads directly from CSV
- */
 export async function getIssues(filter?: IssueFilter): Promise<TrackedIssue[]> {
-  await initializeTracker();
+  await ensureIndexLoaded();
 
-  // Read from CSV with completed filter
-  let result = await readIssuesFromCSV({ includeCompleted: filter?.includeCompleted });
+  let result = Array.from(index!.values());
 
+  if (!filter?.includeCompleted) {
+    result = result.filter(i => i.status !== 'fixed' && i.status !== 'implemented');
+  }
   if (filter?.type) {
     result = result.filter(i => i.type === filter.type);
   }
-
   if (filter?.status) {
     result = result.filter(i => i.status === filter.status);
   }
+  if (filter?.labels && filter.labels.length > 0) {
+    const wanted = new Set(filter.labels);
+    result = result.filter(i => i.labels.some(l => wanted.has(l)));
+  }
 
+  result.sort((a, b) => a.id - b.id);
   return result;
 }
 
-/**
- * Update issue status with appropriate timestamp - modifies only the specific line
- */
-export async function updateIssueStatus(id: number, status: IssueStatus): Promise<TrackedIssue | undefined> {
-  await initializeTracker();
-
-  const updated = await updateIssueInCSV(id, (issue) => {
-    issue.status = status;
-
-    // Set appropriate timestamp
-    const now = new Date();
-    switch (status) {
-      case 'acknowledged':
-        issue.acknowledgedAt = now;
-        break;
-      case 'in_progress':
-        issue.startedAt = now;
-        break;
-      case 'fixed':
-      case 'implemented':
-        issue.resolvedAt = now;
-        break;
-    }
-
-    return issue;
-  });
-
-  return updated ?? undefined;
+async function writeAndCacheIssue(issue: TrackedIssue): Promise<TrackedIssue> {
+  await atomicWriteFile(issue.filePath, serializeIssueFile(issue));
+  index!.set(issue.id, issue);
+  return issue;
 }
 
-/**
- * Update the sequence file for an issue - modifies only the specific line
- */
+export async function updateIssueStatus(id: number, status: IssueStatus): Promise<TrackedIssue | undefined> {
+  await ensureIndexLoaded();
+  const issue = index!.get(id);
+  if (!issue) return undefined;
+
+  issue.status = status;
+  const now = new Date();
+  switch (status) {
+    case 'acknowledged':
+      issue.acknowledgedAt = now;
+      break;
+    case 'in_progress':
+      issue.startedAt = now;
+      break;
+    case 'fixed':
+    case 'implemented':
+      issue.resolvedAt = now;
+      break;
+  }
+
+  return writeAndCacheIssue(issue);
+}
+
 export async function updateIssueSequenceFile(id: number, sequenceFile: string): Promise<TrackedIssue | undefined> {
-  await initializeTracker();
+  await ensureIndexLoaded();
+  const issue = index!.get(id);
+  if (!issue) return undefined;
 
-  const updated = await updateIssueInCSV(id, (issue) => {
-    issue.sequenceFile = sequenceFile;
-    return issue;
-  });
+  issue.sequenceFile = sequenceFile;
+  return writeAndCacheIssue(issue);
+}
 
-  return updated ?? undefined;
+/** Append a comment to an issue's Markdown timeline. */
+export async function addIssueComment(id: number, text: string): Promise<TrackedIssue | undefined> {
+  await ensureIndexLoaded();
+  const issue = index!.get(id);
+  if (!issue) return undefined;
+
+  const trimmed = text.trim();
+  if (!trimmed) return issue;
+
+  issue.comments.push({ timestamp: new Date(), text: trimmed });
+  return writeAndCacheIssue(issue);
 }
 
 /**
@@ -424,29 +607,22 @@ export async function updateIssueSequenceFile(id: number, sequenceFile: string):
  */
 export async function saveIssueSequence(
   issueId: number,
-  issueType: 'bug' | 'feature',
-  issueDescription: string,
+  issueType: IssueType,
+  issueTitle: string,
   sequenceData: Record<string, any>,
   comment?: string
 ): Promise<{ success: boolean; filename?: string; error?: string }> {
-  const { promises: fs } = await import('fs');
-  const { join } = await import('path');
-
   const sequencesDir = getIssueSequencesDir();
-  const filename = generateSequenceFilename(issueType, issueId, issueDescription);
+  const filename = generateSequenceFilename(issueType, issueId, issueTitle);
   const sequenceNameForFile = filename.replace(/\.json$/, '');
 
   try {
     const dataToSave = {
       ...sequenceData,
       name: sequenceNameForFile,
-      _comment: comment || `CDP Tools sequence for ${issueType} #${issueId}: ${issueDescription}`,
+      _comment: comment || `CDP Tools sequence for ${issueType} #${issueId}: ${issueTitle}`,
     };
-    // atomicWriteFile handles directory creation
-    await atomicWriteFile(
-      join(sequencesDir, filename),
-      JSON.stringify(dataToSave, null, 2)
-    );
+    await atomicWriteFile(join(sequencesDir, filename), JSON.stringify(dataToSave, null, 2));
     await updateIssueSequenceFile(issueId, filename);
     return { success: true, filename };
   } catch (e: any) {
@@ -458,20 +634,13 @@ export async function saveIssueSequence(
  * Acknowledge all pending bugs (sets status to 'acknowledged')
  */
 export async function acknowledgeAllBugs(): Promise<TrackedIssue[]> {
-  await initializeTracker();
+  await ensureIndexLoaded();
 
-  // Read all issues to find pending bugs
-  const allIssues = await readIssuesFromCSV({ includeCompleted: true });
-  const pendingBugs = allIssues.filter(i => i.type === 'bug' && i.status === 'pending');
+  const pendingBugs = Array.from(index!.values()).filter(i => i.type === 'bug' && i.status === 'pending');
 
-  // Update each pending bug individually
   const acknowledged: TrackedIssue[] = [];
   for (const bug of pendingBugs) {
-    const updated = await updateIssueInCSV(bug.id, (issue) => {
-      issue.status = 'acknowledged';
-      issue.acknowledgedAt = new Date();
-      return issue;
-    });
+    const updated = await updateIssueStatus(bug.id, 'acknowledged');
     if (updated) acknowledged.push(updated);
   }
 
@@ -482,18 +651,16 @@ export async function acknowledgeAllBugs(): Promise<TrackedIssue[]> {
  * Check if there are pending bugs that should block tools
  */
 export async function hasPendingBugs(): Promise<boolean> {
-  await initializeTracker();
-  const allIssues = await readIssuesFromCSV({ includeCompleted: true });
-  return allIssues.some(i => i.type === 'bug' && i.status === 'pending');
+  await ensureIndexLoaded();
+  return Array.from(index!.values()).some(i => i.type === 'bug' && i.status === 'pending');
 }
 
 /**
  * Get pending bugs for blocking message
  */
 export async function getPendingBugs(): Promise<TrackedIssue[]> {
-  await initializeTracker();
-  const allIssues = await readIssuesFromCSV({ includeCompleted: true });
-  return allIssues.filter(i => i.type === 'bug' && i.status === 'pending');
+  await ensureIndexLoaded();
+  return Array.from(index!.values()).filter(i => i.type === 'bug' && i.status === 'pending');
 }
 
 /**
@@ -503,22 +670,15 @@ export function getIssueSequencesDir(): string {
   return getSequencesDir();
 }
 
+/**
+ * Get the items directory path for issues (one .md file per issue)
+ */
+export function getIssueItemsDir(): string {
+  return getItemsDir();
+}
+
 // Alias for backwards compatibility
 export const getInteractionSequencesDir = getIssueSequencesDir;
-
-/**
- * Generate a sequence filename for an issue
- */
-export function generateSequenceFilename(type: IssueType, id: number, description: string): string {
-  // Sanitize description for filename
-  const sanitized = description
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .substring(0, 30);
-
-  return `${type}-${String(id).padStart(3, '0')}-${sanitized || 'untitled'}.json`;
-}
 
 /**
  * Get issues indexed by their sequence filename

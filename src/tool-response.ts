@@ -261,7 +261,7 @@ export async function checkBugBlocking(toolName: string, toolArgs?: Record<strin
   }
 
   const pendingBugs = await getPendingBugs();
-  const bugList = pendingBugs.map(b => `- [#${b.id}] "${b.description}" (from ${b.recordingName})`).join('\n');
+  const bugList = pendingBugs.map(b => `- [#${b.id}] "${b.title}" (from ${b.recordingName})`).join('\n');
 
   return {
     blocked: true,

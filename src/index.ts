@@ -1708,6 +1708,9 @@ async function main() {
   if (debugConfig.historyLogEnabled) {
     enableHistoryLogging();
   }
+  // Hot-reload config.json edits made after startup (see config.ts reload()
+  // for what can/can't apply live - tool enable/disable still needs a restart).
+  configManager.startWatching();
 
   // Initialize log processor orchestrator (hub only)
   if (dashboardInstance?.hub) {

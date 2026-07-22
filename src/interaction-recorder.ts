@@ -1729,7 +1729,7 @@ export interface VerificationResult {
 export async function showVerificationOverlay(
   page: Page,
   issueType: 'bug' | 'feature',
-  issueDescription: string,
+  issueTitle: string,
   issueId: number
 ): Promise<VerificationResult> {
   const typeLabel = issueType === 'bug' ? 'Bug' : 'Feature';
@@ -1739,7 +1739,7 @@ export async function showVerificationOverlay(
 
   return await page.evaluate((params: {
     typeLabel: string;
-    issueDescription: string;
+    issueTitle: string;
     issueId: number;
     questionText: string;
   }) => {
@@ -1814,7 +1814,7 @@ export async function showVerificationOverlay(
       `;
 
       const description = doc.createElement('div');
-      description.textContent = params.issueDescription;
+      description.textContent = params.issueTitle;
       description.style.cssText = `
         font-size: 20px !important;
         font-weight: 500 !important;
@@ -1947,7 +1947,7 @@ export async function showVerificationOverlay(
         resolve({ resolved: false, comment });
       });
     });
-  }, { typeLabel, issueDescription, issueId, questionText });
+  }, { typeLabel, issueTitle, issueId, questionText });
 }
 
 export type TestReadyAction = 'cancel' | 'begin' | 'rerecord';
@@ -1960,7 +1960,7 @@ export type TestReadyAction = 'cancel' | 'begin' | 'rerecord';
 export async function showTestReadyOverlay(
   page: Page,
   issueType: 'bug' | 'feature',
-  issueDescription: string,
+  issueTitle: string,
   issueId: number,
   hasSequence: boolean = true
 ): Promise<TestReadyAction> {
@@ -1968,7 +1968,7 @@ export async function showTestReadyOverlay(
 
   return await page.evaluate((params: {
     typeLabel: string;
-    issueDescription: string;
+    issueTitle: string;
     issueId: number;
     hasSequence: boolean;
   }) => {
@@ -2025,7 +2025,7 @@ export async function showTestReadyOverlay(
       `;
 
       const description = doc.createElement('div');
-      description.textContent = params.issueDescription;
+      description.textContent = params.issueTitle;
       description.style.cssText = `
         font-size: 18px !important;
         font-weight: 500 !important;
@@ -2133,7 +2133,7 @@ export async function showTestReadyOverlay(
         resolve('begin');
       });
     });
-  }, { typeLabel, issueDescription, issueId, hasSequence });
+  }, { typeLabel, issueTitle, issueId, hasSequence });
 }
 
 /**
@@ -2143,14 +2143,14 @@ export async function showTestReadyOverlay(
 export async function showReplayOverlay(
   page: Page,
   issueType: 'bug' | 'feature',
-  issueDescription: string,
+  issueTitle: string,
   issueId: number
 ): Promise<() => Promise<void>> {
   const typeLabel = issueType === 'bug' ? 'Bug' : 'Feature';
 
   await page.evaluate((params: {
     typeLabel: string;
-    issueDescription: string;
+    issueTitle: string;
     issueId: number;
   }) => {
     const doc = (globalThis as any).document;
@@ -2279,7 +2279,7 @@ export async function showReplayOverlay(
       feedbackEvents,
       silentBlockEvents
     };
-  }, { typeLabel, issueDescription, issueId });
+  }, { typeLabel, issueTitle, issueId });
 
   // Return cleanup function
   return async () => {

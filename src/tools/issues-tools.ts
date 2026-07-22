@@ -1,6 +1,6 @@
 /**
  * Issues Tools
- * MCP tools for tracking bugs and features with persistent CSV storage
+ * MCP tools for tracking bugs and features as Markdown files (title + body + labels + comments)
  */
 
 import { z } from 'zod';
@@ -24,6 +24,7 @@ import {
   getIssues,
   updateIssueStatus,
   updateIssueSequenceFile,
+  addIssueComment,
   acknowledgeAllBugs,
   getPendingBugs,
   getIssueSequencesDir,
@@ -34,16 +35,22 @@ import {
 } from '../issue-tracker.js';
 import { checkUrlPort } from '../utils/port-check.js';
 const issuesSchema = z.object({
-  action: z.enum(['list', 'create', 'workOn', 'resolve', 'acknowledge'])
-    .describe('Issue action: list (list all issues), create (create new issue), workOn (start working on issue), resolve (mark as fixed/implemented), acknowledge (acknowledge pending bugs)'),
+  action: z.enum(['list', 'create', 'workOn', 'resolve', 'acknowledge', 'comment'])
+    .describe('Issue action: list (list all issues), create (create new issue), workOn (start working on issue), resolve (mark as fixed/implemented), acknowledge (acknowledge pending bugs), comment (append a comment to an issue)'),
   id: z.number().optional()
-    .describe('Issue ID (for workOn, resolve actions)'),
+    .describe('Issue ID (for workOn, resolve, comment actions)'),
   type: z.enum(['bug', 'feature']).optional()
     .describe('Issue type (required for create, optional filter for list)'),
   status: z.enum(['pending', 'acknowledged', 'in_progress', 'fixed', 'implemented']).optional()
     .describe('Issue status (optional filter for list)'),
-  description: z.string().optional()
-    .describe('Issue description (required for create)'),
+  title: z.string().optional()
+    .describe('Short one-line issue title (required for create)'),
+  body: z.string().optional()
+    .describe('Markdown body: steps to reproduce, expected/actual, code blocks, etc (optional for create)'),
+  labels: z.array(z.string()).optional()
+    .describe('Labels to attach (create) or filter by - matches issues with ANY of the given labels (list)'),
+  text: z.string().optional()
+    .describe('Comment text in Markdown (required for comment action)'),
   sequenceName: z.string().optional()
     .describe('Name of existing sequence to link (for create - moves sequence to issues folder)'),
   startUrl: z.string().optional()
@@ -53,7 +60,7 @@ const issuesSchema = z.object({
   keepBrowserOpen: z.boolean().optional()
     .describe('Keep browser tab open after verification (default: false, closes tab after resolve)'),
   search: z.string().optional()
-    .describe('Search term to filter issues by description or recording name (for list)'),
+    .describe('Search term to filter issues by title, body, comments, or recording name (for list)'),
   includeCompleted: z.boolean().optional()
     .describe('Include fixed/implemented issues in list (default: false, only shows active issues)'),
   includeSequence: z.boolean().optional()
@@ -86,12 +93,14 @@ function formatIssuesList(issues: TrackedIssue[]): string {
     const id = String(issue.id).padEnd(idWidth);
     const status = issue.status.toUpperCase().padEnd(statusWidth);
     const type = issue.type.padEnd(typeWidth);
-    // Truncate description to ~60 chars for readability
-    const title = issue.description.length > 60
-      ? issue.description.substring(0, 57) + '...'
-      : issue.description;
+    const labelSuffix = issue.labels.length > 0 ? ` [${issue.labels.join(', ')}]` : '';
+    // Truncate title to ~60 chars (minus label suffix) for readability
+    const maxTitleLen = Math.max(10, 60 - labelSuffix.length);
+    const title = issue.title.length > maxTitleLen
+      ? issue.title.substring(0, maxTitleLen - 3) + '...'
+      : issue.title;
 
-    lines.push(`${id}  ${status}  ${type}  ${title}`);
+    lines.push(`${id}  ${status}  ${type}  ${title}${labelSuffix}`);
   }
 
   return lines.join('\n');
@@ -115,10 +124,22 @@ function formatIssueDetails(issue: TrackedIssue): string {
   const lines = [
     `${typeIcon} **Issue #${issue.id}** - ${issue.type.toUpperCase()}`,
     `**Status:** ${statusIcon} ${issue.status}`,
-    `**Description:** ${issue.description}`,
+    `**Title:** ${issue.title}`,
+  ];
+
+  if (issue.labels.length > 0) {
+    lines.push(`**Labels:** ${issue.labels.join(', ')}`);
+  }
+
+  if (issue.body) {
+    lines.push('', '**Body:**', '', issue.body);
+  }
+
+  lines.push(
+    '',
     `**Recording:** ${issue.recordingName || 'none'}`,
     `**Reported:** ${issue.reportedAt.toISOString()}`,
-  ];
+  );
 
   if (issue.sequenceFile) {
     lines.push(`**Sequence:** \`${issue.sequenceFile}\``);
@@ -136,7 +157,19 @@ function formatIssueDetails(issue: TrackedIssue): string {
     lines.push(`**Resolved:** ${issue.resolvedAt.toISOString()}`);
   }
 
+  if (issue.comments.length > 0) {
+    lines.push('', '**Comments:**');
+    for (const c of issue.comments) {
+      lines.push(`- ${c.timestamp.toISOString()}: ${c.text}`);
+    }
+  }
+
   return lines.join('\n');
+}
+
+function formatCommentTimeline(issue: TrackedIssue): string {
+  if (issue.comments.length === 0) return 'No comments yet.';
+  return issue.comments.map(c => `- ${c.timestamp.toISOString()}: ${c.text}`).join('\n');
 }
 
 // =============================================================================
@@ -150,7 +183,7 @@ export function createIssuesTools(
 ) {
   return {
     issues: createTool(
-      'Track and manage bugs and features. Actions: list (show all issues with optional filters), create (create new issue, optionally linking a sequence), workOn (start working on issue with auto-replay), resolve (mark as fixed/implemented), acknowledge (acknowledge pending bugs to unblock tools)',
+      'Track and manage bugs and features as Markdown issues (title, Markdown body, labels, comments). Actions: list (show all issues with optional filters), create (create new issue with title/body/labels, optionally linking a sequence), workOn (start working on issue with auto-replay), resolve (mark as fixed/implemented), acknowledge (acknowledge pending bugs to unblock tools), comment (append a Markdown comment to an issue)',
       issuesSchema,
       async (args, abortSignal) => {
         // Initialize tracker on first use
@@ -158,10 +191,11 @@ export function createIssuesTools(
 
         switch (args.action) {
           case 'list': {
-            const filter: { type?: IssueType; status?: IssueStatus; includeCompleted?: boolean } = {};
+            const filter: { type?: IssueType; status?: IssueStatus; includeCompleted?: boolean; labels?: string[] } = {};
             if (args.type) filter.type = args.type;
             if (args.status) filter.status = args.status;
             if (args.includeCompleted) filter.includeCompleted = true;
+            if (args.labels && args.labels.length > 0) filter.labels = args.labels;
 
             let issues = await getIssues(filter);
 
@@ -170,8 +204,10 @@ export function createIssuesTools(
               const searchLower = args.search.toLowerCase();
               issues = issues.filter(i =>
                 i.id.toString() === args.search ||
-                i.description.toLowerCase().includes(searchLower) ||
-                i.recordingName.toLowerCase().includes(searchLower)
+                i.title.toLowerCase().includes(searchLower) ||
+                i.body.toLowerCase().includes(searchLower) ||
+                i.recordingName.toLowerCase().includes(searchLower) ||
+                i.comments.some(c => c.text.toLowerCase().includes(searchLower))
               );
             }
 
@@ -198,9 +234,9 @@ export function createIssuesTools(
               });
             }
 
-            if (!args.description) {
-              return createErrorResponse('ISSUES_MISSING_DESCRIPTION', {
-                message: 'Issue description is required',
+            if (!args.title) {
+              return createErrorResponse('ISSUES_MISSING_TITLE', {
+                message: 'Issue title is required',
               });
             }
 
@@ -243,7 +279,7 @@ export function createIssuesTools(
                 // Generate new filename for issues folder
                 // We'll use a temporary ID, then update after creating the issue
                 const tempId = Date.now();
-                const newFilename = generateSequenceFilename(args.type, tempId, args.description);
+                const newFilename = generateSequenceFilename(args.type, tempId, args.title);
                 const destPath = join(getIssueSequencesDir(), newFilename);
 
                 try {
@@ -267,25 +303,27 @@ export function createIssuesTools(
             // Manually created issues start as acknowledged (no blocking)
             // When includeSequence is false, use about:blank as sentinel to skip recording on resolve
             const effectiveStartUrl = !includeSequence ? 'about:blank' : (args.startUrl || '');
-            const issue = await addIssue(
-              args.type,
-              args.description,
+            const issue = await addIssue({
+              type: args.type,
+              title: args.title,
               sequenceFile,
-              args.sequenceName || 'manual',
-              'acknowledged',
-              effectiveStartUrl
-            );
+              recordingName: args.sequenceName || 'manual',
+              initialStatus: 'acknowledged',
+              startUrl: effectiveStartUrl,
+              body: args.body,
+              labels: args.labels,
+            });
 
             // If we created a sequence file with temp ID, rename it with real ID
             if (sequenceFile && args.sequenceName) {
-              const correctFilename = generateSequenceFilename(args.type, issue.id, args.description);
+              const correctFilename = generateSequenceFilename(args.type, issue.id, args.title);
               if (correctFilename !== sequenceFile) {
                 const oldPath = join(getIssueSequencesDir(), sequenceFile);
                 const newPath = join(getIssueSequencesDir(), correctFilename);
                 try {
                   await fs.rename(oldPath, newPath);
+                  await updateIssueSequenceFile(issue.id, correctFilename);
                   issue.sequenceFile = correctFilename;
-                  // Note: Would need to save again, but for now this is okay
                 } catch {
                   // Keep old filename if rename fails
                 }
@@ -295,7 +333,7 @@ export function createIssuesTools(
             return createSuccessResponse('ISSUES_CREATED', {
               id: issue.id,
               type: issue.type,
-              description: issue.description,
+              title: issue.title,
               sequenceFile: issue.sequenceFile || null,
             });
           }
@@ -354,7 +392,7 @@ export function createIssuesTools(
                 showReplayOverlay: true,
                 issueId: issue.id,
                 issueType: issue.type,
-                issueDescription: issue.description,
+                issueTitle: issue.title,
               });
             } else if (issue.startUrl && getPageForConnection) {
               // No sequence but has startUrl - launch browser, navigate, and show options overlay
@@ -396,14 +434,14 @@ export function createIssuesTools(
               }
 
               // Show overlay with options: Cancel, Explore, or Record
-              const overlayConfig = getWorkOnNoSequenceConfig(issue.type, issue.id, issue.description);
+              const overlayConfig = getWorkOnNoSequenceConfig(issue.type, issue.id, issue.title);
               const result = await showOverlay(page, overlayConfig);
 
               if (result.action === 'cancel') {
                 return createSuccessResponse('ISSUES_WORK_CANCELLED', {
                   id: issue.id,
                   type: issue.type,
-                  description: issue.description,
+                  title: issue.title,
                   message: 'Work session cancelled by user',
                 });
               }
@@ -417,7 +455,7 @@ export function createIssuesTools(
                   startUrl: issue.startUrl,
                   issueId: issue.id,
                   issueType: issue.type,
-                  issueDescription: issue.description,
+                  issueTitle: issue.title,
                 });
 
                 // Return the recording result directly so user sees what was recorded
@@ -430,7 +468,7 @@ export function createIssuesTools(
             return createSuccessResponse('ISSUES_WORK_STARTED', {
               id: issue.id,
               type: issue.type,
-              description: issue.description,
+              title: issue.title,
               sequenceFile: issue.sequenceFile || null,
               details: formatIssueDetails(issue),
               replayStarted: hasSequence,
@@ -524,14 +562,14 @@ export function createIssuesTools(
             if (skipToCompletion) {
               readyAction = 'begin'; // Simulate clicking begin
             } else {
-              readyAction = await showTestReadyOverlay(page, issue.type, issue.description, issue.id, hasSequence);
+              readyAction = await showTestReadyOverlay(page, issue.type, issue.title, issue.id, hasSequence);
             }
 
             if (readyAction === 'cancel') {
               return createSuccessResponse('ISSUES_VERIFICATION_CANCELLED', {
                 id: issue.id,
                 type: issue.type,
-                description: issue.description,
+                title: issue.title,
                 message: 'Verification cancelled by user',
               });
             }
@@ -547,7 +585,7 @@ export function createIssuesTools(
                 startUrl: issue.startUrl || 'about:blank',
                 issueId: issue.id,
                 issueType: issue.type,
-                issueDescription: issue.description,
+                issueTitle: issue.title,
                 overwrite: true,
               });
 
@@ -586,7 +624,7 @@ export function createIssuesTools(
                 showReplayOverlay: true,
                 issueId: issue.id,
                 issueType: issue.type,
-                issueDescription: issue.description,
+                issueTitle: issue.title,
               });
 
               // Check if replay failed - look for "Failed" in the result text
@@ -610,7 +648,7 @@ export function createIssuesTools(
                 return createErrorResponse('ISSUES_REPLAY_FAILED', {
                   id: issue.id,
                   type: issue.type,
-                  description: issue.description,
+                  title: issue.title,
                   replayDetails: replayText,
                 });
               }
@@ -624,7 +662,7 @@ export function createIssuesTools(
                 // Pass issue info so recording saves to issues folder
                 issueId: issue.id,
                 issueType: issue.type,
-                issueDescription: issue.description,
+                issueTitle: issue.title,
               });
 
               // Check if recording was successful (not cancelled)
@@ -654,7 +692,7 @@ export function createIssuesTools(
             const verification = await showVerificationOverlay(
               page,
               issue.type,
-              issue.description,
+              issue.title,
               issue.id
             );
 
@@ -676,6 +714,11 @@ export function createIssuesTools(
               replayDetails = replayResult.content[0].text;
             }
 
+            // Fold the verification comment into the issue's permanent Markdown timeline
+            if (verification.comment) {
+              await addIssueComment(args.id, verification.comment);
+            }
+
             if (verification.resolved) {
               // User confirmed resolution
               const newStatus: IssueStatus = issue.type === 'bug' ? 'fixed' : 'implemented';
@@ -685,7 +728,7 @@ export function createIssuesTools(
                 id: issue.id,
                 type: issue.type,
                 status: newStatus,
-                description: issue.description,
+                title: issue.title,
                 userComment: verification.comment || null,
                 replayDetails,
               });
@@ -695,7 +738,7 @@ export function createIssuesTools(
                 id: issue.id,
                 type: issue.type,
                 status: issue.status,
-                description: issue.description,
+                title: issue.title,
                 userComment: verification.comment || null,
                 replayDetails,
               });
@@ -711,11 +754,43 @@ export function createIssuesTools(
               });
             }
 
-            const bugList = acknowledged.map(b => `- #${b.id}: ${b.description}`).join('\n');
+            const bugList = acknowledged.map(b => `- #${b.id}: ${b.title}`).join('\n');
 
             return createSuccessResponse('ISSUES_ACKNOWLEDGED', {
               count: acknowledged.length,
               bugList,
+            });
+          }
+
+          case 'comment': {
+            if (!args.id) {
+              return createErrorResponse('ISSUES_MISSING_ID', {
+                message: 'Issue ID is required',
+              });
+            }
+
+            if (!args.text) {
+              return createErrorResponse('ISSUES_MISSING_TEXT', {
+                message: 'Comment text is required',
+              });
+            }
+
+            const issue = await getIssue(args.id);
+            if (!issue) {
+              return createErrorResponse('ISSUES_NOT_FOUND', {
+                id: args.id,
+                message: `Issue #${args.id} not found`,
+              });
+            }
+
+            const updated = await addIssueComment(args.id, args.text);
+
+            return createSuccessResponse('ISSUES_COMMENT_ADDED', {
+              id: issue.id,
+              type: issue.type,
+              title: issue.title,
+              commentCount: updated?.comments.length ?? issue.comments.length,
+              timeline: formatCommentTimeline(updated ?? issue),
             });
           }
 

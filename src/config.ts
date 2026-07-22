@@ -7,7 +7,15 @@ import * as fs from 'fs';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
 import { getConfigSavePath, getOutputPath, setWorkingDirOverride } from './helpers/paths.js';
-import { debugLog } from './debug-logger.js';
+import {
+  debugLog,
+  enableDebugLogging,
+  disableDebugLogging,
+  isDebugEnabled,
+  enableHistoryLogging,
+  disableHistoryLogging,
+  isHistoryLogEnabled,
+} from './debug-logger.js';
 import { atomicWriteFile } from './atomic-write.js';
 
 /**
@@ -282,6 +290,11 @@ export class ConfigManager {
   // Dependency conflict state - blocks all tool access if set
   private dependencyConflicts: string[] = [];
 
+  // Live-reload watcher state
+  private configWatchers: fs.FSWatcher[] = [];
+  private reloadTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly RELOAD_DEBOUNCE_MS = 250;
+
   constructor() {
     // Sync load config at construction for early access (e.g., tool registration)
     this.loadSync();
@@ -459,6 +472,135 @@ export class ConfigManager {
     }
 
     this.loaded = true;
+  }
+
+  /**
+   * Re-read config.json from disk and apply it to the running process.
+   * Unlike load(), this never writes back (no discover-and-persist) - it's
+   * meant to pick up a manual edit live, not to run the one-time bootstrap,
+   * and writing back here would re-trigger the file watcher that calls it.
+   */
+  async reload(): Promise<{ changed: boolean; path: string | null }> {
+    const localConfigPath = getOutputPath('config.json');
+    const globalConfigPath = join(homedir(), '.cdp-tools', 'config.json');
+
+    const previousSnapshot = JSON.stringify(this.config);
+    const previousDebug = { ...this.config.debug };
+
+    let nextConfig: CdpToolsConfig;
+    let nextPath: string;
+
+    try {
+      if (fs.existsSync(localConfigPath)) {
+        const content = await fs.promises.readFile(localConfigPath, 'utf-8');
+        const loaded = JSON.parse(content);
+
+        if (loaded.configLocation === 'global' && fs.existsSync(globalConfigPath)) {
+          const globalContent = await fs.promises.readFile(globalConfigPath, 'utf-8');
+          nextConfig = this.mergeConfig(DEFAULT_CONFIG, JSON.parse(globalContent));
+          nextPath = globalConfigPath;
+        } else {
+          nextConfig = this.mergeConfig(DEFAULT_CONFIG, loaded);
+          nextPath = localConfigPath;
+        }
+      } else if (fs.existsSync(globalConfigPath)) {
+        const content = await fs.promises.readFile(globalConfigPath, 'utf-8');
+        nextConfig = this.mergeConfig(DEFAULT_CONFIG, JSON.parse(content));
+        nextPath = globalConfigPath;
+      } else {
+        // Nothing on disk (e.g. deleted) - keep the current in-memory config.
+        return { changed: false, path: this.loadedFromPath };
+      }
+    } catch (err) {
+      await debugLog('ConfigManager', `Config reload failed: ${err}`);
+      return { changed: false, path: this.loadedFromPath };
+    }
+
+    this.config = nextConfig;
+    this.loadedFromPath = nextPath;
+    this.validateDependencies();
+
+    const changed = JSON.stringify(this.config) !== previousSnapshot;
+    if (changed) {
+      await debugLog('ConfigManager', `Config reloaded from ${nextPath}`);
+      this.applyLiveDebugSettings(previousDebug);
+    }
+
+    return { changed, path: nextPath };
+  }
+
+  /**
+   * debug.enabled/historyLogEnabled are otherwise only applied once at
+   * server startup (see main() in index.ts) - mirror that here so a live
+   * edit actually flips debug-logger.ts's module state.
+   */
+  private applyLiveDebugSettings(previousDebug: DebugConfig): void {
+    const next = this.config.debug;
+
+    if (next.enabled !== previousDebug.enabled) {
+      if (next.enabled && !isDebugEnabled()) {
+        void enableDebugLogging();
+      } else if (!next.enabled && isDebugEnabled()) {
+        disableDebugLogging();
+      }
+    }
+
+    if (next.historyLogEnabled !== previousDebug.historyLogEnabled) {
+      if (next.historyLogEnabled && !isHistoryLogEnabled()) {
+        enableHistoryLogging();
+      } else if (!next.historyLogEnabled && isHistoryLogEnabled()) {
+        disableHistoryLogging();
+      }
+    }
+  }
+
+  /**
+   * Watch the local and global config directories for edits and hot-reload
+   * config.json into the running process. Watches the parent directory
+   * (not the file itself) and ignores the event payload, debouncing to a
+   * full reload() - same pattern as issue-tracker.ts's watcher, and safe
+   * against atomic saves (write-temp + rename) losing the watch descriptor.
+   *
+   * Note: tools.enabled/tools.disabled cannot be hot-applied this way - the
+   * MCP tool list is built once at server startup. Everything else this
+   * class exposes (portMonitoring, replay, changeDetection, clickValidation,
+   * debug) is read live from getConfig() and picks up a reload immediately.
+   */
+  startWatching(): void {
+    if (this.configWatchers.length > 0) return;
+
+    const dirsToWatch = new Set<string>([
+      dirname(getOutputPath('config.json')),
+      dirname(join(homedir(), '.cdp-tools', 'config.json')),
+    ]);
+
+    for (const dir of dirsToWatch) {
+      try {
+        const watcher = fs.watch(dir, () => this.scheduleReload());
+        this.configWatchers.push(watcher);
+      } catch {
+        // Directory doesn't exist yet / not watchable on this platform - skip silently.
+      }
+    }
+  }
+
+  stopWatching(): void {
+    for (const watcher of this.configWatchers) {
+      watcher.close();
+    }
+    this.configWatchers = [];
+    if (this.reloadTimer) {
+      clearTimeout(this.reloadTimer);
+      this.reloadTimer = null;
+    }
+  }
+
+  private scheduleReload(): void {
+    if (this.reloadTimer) clearTimeout(this.reloadTimer);
+    this.reloadTimer = setTimeout(() => {
+      this.reloadTimer = null;
+      void this.reload();
+    }, ConfigManager.RELOAD_DEBOUNCE_MS);
   }
 
   /**

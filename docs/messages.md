@@ -2004,7 +2004,7 @@ Use `issues({ action: 'acknowledge' })` to acknowledge.
 
 **Issue #{{id}} created** ({{type}})
 
-{{description}}{{#sequenceFile}}
+{{title}}{{#sequenceFile}}
 
 Sequence: `{{sequenceFile}}`{{/sequenceFile}}
 
@@ -2039,10 +2039,19 @@ Issue #{{id}} not found
 
 ---
 
-## ISSUES_MISSING_DESCRIPTION
+## ISSUES_MISSING_TITLE
 
 **Type:** error
-**Code:** ISSUES_MISSING_DESCRIPTION
+**Code:** ISSUES_MISSING_TITLE
+
+{{message}}
+
+---
+
+## ISSUES_MISSING_TEXT
+
+**Type:** error
+**Code:** ISSUES_MISSING_TEXT
 
 {{message}}
 
@@ -2078,7 +2087,7 @@ Connection: `{{connectionReason}}`{{/connectionReason}}
 
 Work session cancelled for {{type}} #{{id}}.
 
-{{description}}
+{{title}}
 
 ---
 
@@ -2089,7 +2098,7 @@ Work session cancelled for {{type}} #{{id}}.
 
 Verification cancelled for {{type}} #{{id}}.
 
-{{description}}
+{{title}}
 
 ---
 
@@ -2100,7 +2109,7 @@ Verification cancelled for {{type}} #{{id}}.
 
 **{{type}} #{{id}} marked as {{status}}**
 
-{{description}}
+{{title}}
 {{#userComment}}
 
 **User comment:** {{userComment}}
@@ -2122,7 +2131,7 @@ Verification cancelled for {{type}} #{{id}}.
 
 User indicated this issue is not yet resolved. Status remains: {{status}}
 
-{{description}}
+{{title}}
 {{#userComment}}
 
 **User comment:** {{userComment}}
@@ -2257,6 +2266,18 @@ Failed to copy sequence "{{sequenceName}}"
 {{recordingDetails}}
 
 **ACTION REQUIRED:** The sequence has been updated. Run `issues({ action: 'resolve', id: {{id}} })` again to verify the fix with the new sequence.
+
+---
+
+## ISSUES_COMMENT_ADDED
+
+**Type:** success
+**Summary:** Comment added to {{type}} #{{id}}
+
+**Comment added to {{type}} #{{id}}** - {{title}}
+
+**Comments ({{commentCount}}):**
+{{timeline}}
 
 ---
 
@@ -2820,6 +2841,17 @@ No global config exists to clone from.
 ```json
 {{config}}
 ```
+
+---
+
+## CONFIG_RELOAD
+
+**Type:** success
+**Summary:** Config reloaded
+
+{{#changed}}Reloaded config from {{path}} - changes applied live.{{/changed}}{{^changed}}Reloaded config from {{path}} - no changes since last load.{{/changed}}
+
+Note: `tools.enabled`/`tools.disabled` changes still require an MCP server restart to take effect.
 
 ---
 

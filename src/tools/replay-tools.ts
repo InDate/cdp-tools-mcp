@@ -128,7 +128,7 @@ const replaySchema = z.object({
   recordingId: z.number().optional(),
   issueId: z.number().optional(),
   issueType: z.enum(['bug', 'feature']).optional(),
-  issueDescription: z.string().optional(),
+  issueTitle: z.string().optional(),
   showReplayOverlay: z.boolean().optional(),
   showAll: z.boolean().optional().describe('Show all sequences including completed/fixed issues'),
   killChromeOnFinish: z.boolean().optional().describe('run: kill Chrome after finishing (skipped on pause/abort)'),
@@ -660,7 +660,7 @@ async function handleRun(
       cleanupReplayOverlay = await showReplayOverlay(
         overlayPage,
         args.issueType,
-        args.issueDescription || 'Verifying issue...',
+        args.issueTitle || 'Verifying issue...',
         args.issueId
       );
     }
@@ -1066,7 +1066,7 @@ async function handleRecordInteraction(
   // If issueId is provided, look up the issue and use its details
   let issueId = args.issueId;
   let issueType = args.issueType;
-  let issueDescription = args.issueDescription;
+  let issueTitle = args.issueTitle;
   let startUrl = args.startUrl;
 
   if (issueId) {
@@ -1079,7 +1079,7 @@ async function handleRecordInteraction(
     }
     // Use issue details (override any provided args)
     issueType = issue.type;
-    issueDescription = issue.description;
+    issueTitle = issue.title;
     startUrl = startUrl || issue.startUrl;  // Use provided startUrl or fall back to issue's startUrl
   }
 
@@ -1233,7 +1233,7 @@ async function handleRecordInteraction(
     });
   }
 
-  const createdIssues: Array<{ id: number; type: string; description: string }> = [];
+  const createdIssues: Array<{ id: number; type: string; title: string }> = [];
 
   // Initialize issue tracker
   await initializeTracker();
@@ -1244,7 +1244,14 @@ async function handleRecordInteraction(
     const issueType = comment.category as 'bug' | 'feature';
 
     // Create the issue first (with temp filename, will be updated by saveIssueSequence)
-    const issue = await addIssue(issueType, comment.text, '', sequenceName, 'pending', recording.startUrl || '');
+    const issue = await addIssue({
+      type: issueType,
+      title: comment.text,
+      sequenceFile: '',
+      recordingName: sequenceName,
+      initialStatus: 'pending',
+      startUrl: recording.startUrl || '',
+    });
 
     // Create a unique sequence for this issue (each issue gets its own copy)
     const issueSequenceData: CommandSequence = {
@@ -1259,18 +1266,18 @@ async function handleRecordInteraction(
     createdIssues.push({
       id: issue.id,
       type: issueType,
-      description: comment.text,
+      title: comment.text,
     });
   }
 
   // If issueId provided, save sequence to issues folder and link to existing issue
-  if (issueId && issueType && issueDescription) {
+  if (issueId && issueType && issueTitle) {
     await saveIssueSequence(
       issueId,
       issueType,
-      issueDescription,
+      issueTitle,
       sequenceData,
-      `CDP Tools verification sequence for ${issueType} #${issueId}: ${issueDescription}`
+      `CDP Tools verification sequence for ${issueType} #${issueId}: ${issueTitle}`
     );
   }
 
