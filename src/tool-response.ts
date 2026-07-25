@@ -192,7 +192,8 @@ export function checkPortFailures(
   // - server: needed to acknowledge/manage ports
   // - execution: needed to resume from breakpoints (otherwise deadlock with breakpoint blocking)
   // - breakpoint: needed to manage breakpoints while debugging
-  const portFailureExemptTools = new Set(['server', 'execution', 'breakpoint']);
+  // - issues: logging/tracking bugs shouldn't be gated on unrelated server health
+  const portFailureExemptTools = new Set(['server', 'execution', 'breakpoint', 'issues']);
 
   if (blockingPorts.length > 0 && !portFailureExemptTools.has(toolName)) {
     // Block all tools except exempt tools
@@ -428,7 +429,8 @@ export function checkPendingStartups(
   }
 
   // Server tool is always allowed (needed to acknowledge/manage servers)
-  if (toolName === 'server') {
+  // Issues tool is always allowed (logging/tracking bugs shouldn't be gated on unrelated server health)
+  if (toolName === 'server' || toolName === 'issues') {
     return {
       blocked: false,
       prefix: '',

@@ -119,6 +119,26 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 - **File paths**: Full URLs (`http://localhost:3000/app.js`) or `file://`
 - **Network monitoring**: Must enable with `enableNetworkMonitoring`
 
+## Recovering from a failed tool call
+
+Two different mechanisms fix two different failure points - don't confuse them.
+
+**1. Missing/invalid parameters -> `continuationToken` (fix and resubmit, cheaply)**
+
+If a call fails validation (`code: 'MISSING_PARAMETERS'` or `'INVALID_PARAMS'`), the error includes a `continuationToken` and a `missingParameters` list (name/type/description/enum). Don't resend the whole call - retry with just:
+```
+{ continuationToken: '<token>', <only the missing/bad field(s)> }
+```
+The server merges this with what you already sent and re-validates. Repeat (same token) until it succeeds. The token expires after 5 minutes. This only applies to calls that never passed validation in the first place - it has nothing to do with guard blocks below.
+
+**2. A validated call gets blocked by a guard (port failure, dead server, breakpoint pause, etc.) -> `replay`**
+
+Once a call passes validation, cdp-tools records it (even if a guard then blocks it before the handler runs) and every response footer includes a hint like:
+```
+**Repeat:** `replay({ action: 'repeat', indices: [N] })`
+```
+Acknowledge whatever blocked it (e.g. `server({ action: 'acknowledgePort' })`, `server({ action: 'acknowledgeStartup' })`), then use that `replay` hint to resume the exact same call - do not reconstruct the arguments by hand, and do not try to reuse a `continuationToken` for this case (that mechanism is for fixing bad input, not for retrying a call that was already valid).
+
 ## Restarting cdp-tools
 
 If cdp-tools itself seems stuck or broken (not the target app), restart it yourself rather than asking the user to reconnect - don't wait to be told to.
