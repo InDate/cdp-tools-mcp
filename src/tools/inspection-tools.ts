@@ -3,7 +3,7 @@
  */
 
 import { z } from 'zod';
-import { CDPManager } from '../cdp-manager.js';
+import { CDPManager, EvaluateExpressionExceptionError, EvaluateExpressionTimeoutError } from '../cdp-manager.js';
 import { SourceMapHandler } from '../sourcemap-handler.js';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
@@ -379,6 +379,26 @@ export function createInspectionTools(
                 result: formattedResult
               });
             } catch (error) {
+              // The evaluated expression itself threw (CDP exceptionDetails,
+              // e.g. a stack-exhaustion RangeError) - report it as an
+              // ordinary outcome, not a tool malfunction.
+              if (error instanceof EvaluateExpressionExceptionError) {
+                return createErrorResponse('EVALUATE_EXPRESSION_EXCEPTION', {
+                  expression: error.expression,
+                  errorType: error.exceptionType,
+                  errorMessage: error.exceptionMessage,
+                  stack: error.exceptionStack || '(no stack available)',
+                });
+              }
+              // The execution context never responded within the bounded
+              // timeout - report explicitly instead of hanging forever.
+              if (error instanceof EvaluateExpressionTimeoutError) {
+                return createErrorResponse('EVALUATE_CONTEXT_UNRESPONSIVE', {
+                  connectionReason: args.connectionReason || 'unknown',
+                  expression: error.expression,
+                  timeoutMs: error.timeoutMs,
+                });
+              }
               return createErrorResponse('EVALUATE_EXPRESSION_FAILED', {
                 expression,
                 error: String(error),
