@@ -635,20 +635,24 @@ async function handleLoad(args: ReplayArgs, recorder: CommandRecorder, getKnownT
     });
   }
 
-  const sequence = await recorder.loadSequenceFromDisk(args.filename);
+  // Reject unknown tool names up front rather than failing mid-run (bug-010).
+  // Validation runs on the parsed candidate BEFORE it replaces any same-named
+  // sequence in memory, so a bad file can't evict a good in-memory sequence.
+  let invalid: ReturnType<typeof validateSequenceToolNames> = null;
+  const sequence = await recorder.loadSequenceFromDisk(args.filename, {
+    validate: (candidate) => {
+      invalid = validateSequenceToolNames(candidate, 'load', getKnownToolNames);
+      return invalid === null;
+    },
+  });
+
+  if (invalid) return invalid;
+
   if (!sequence) {
     return createErrorResponse('LOAD_FAILED', {
       filename: args.filename,
       error: 'File may not exist or be invalid.'
     });
-  }
-
-  // Reject unknown tool names up front rather than failing mid-run (bug-010).
-  // The sequence is dropped from memory again so it can't be run by id.
-  const invalid = validateSequenceToolNames(sequence, 'load', getKnownToolNames);
-  if (invalid) {
-    recorder.deleteSequence(sequence.id);
-    return invalid;
   }
 
   // If intoHistory is true, load commands into history without executing

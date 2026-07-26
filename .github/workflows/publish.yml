@@ -28,6 +28,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Nothing gated publishing on the test suite before this - build:verify
+      # only checks that the server starts and registers its tools.
+      # `npm test` is vitest in watch mode; test:run is the single-pass variant.
+      - name: Run test suite
+        run: npm run test:run
+
       - name: Build and verify
         run: npm run build:verify
 

@@ -489,17 +489,52 @@ export class CommandRecorder {
   }
 
   /**
-   * Load a sequence from disk (supports fuzzy filename matching)
+   * Parse a sequence file from disk WITHOUT touching in-memory state.
+   * Split out from registration so a caller can validate the parsed candidate
+   * before anything same-named is evicted (see registerLoadedSequence).
    */
-  async loadSequenceFromDisk(filename: string): Promise<CommandSequence | null> {
+  private async parseSequenceFile(filepath: string): Promise<CommandSequence> {
+    const content = await fs.readFile(filepath, 'utf-8');
+    return JSON.parse(content) as CommandSequence;
+  }
+
+  /**
+   * Register a parsed sequence in memory, replacing any same-named copy.
+   * Validation (if supplied) runs BEFORE the removal, so a rejected load leaves
+   * the pre-existing sequence completely intact instead of deleting the good copy
+   * and then rejecting the bad one, leaving the user with neither.
+   */
+  private registerLoadedSequence(
+    sequence: CommandSequence,
+    validate?: (candidate: CommandSequence) => boolean
+  ): boolean {
+    if (validate && !validate(sequence)) return false;
+
+    // Remove any existing sequence with the same name (may have different ID)
+    this.removeSequenceByName(sequence.name);
+    this.sequences.set(sequence.id, sequence);
+    return true;
+  }
+
+  /**
+   * Load a sequence from disk (supports fuzzy filename matching)
+   *
+   * @param options.validate - Called with the parsed candidate BEFORE it replaces any
+   *   same-named in-memory sequence. Return false to reject: nothing is removed and
+   *   nothing is stored, and this method returns null.
+   */
+  async loadSequenceFromDisk(
+    filename: string,
+    options?: { validate?: (candidate: CommandSequence) => boolean }
+  ): Promise<CommandSequence | null> {
     try {
       // Support absolute paths directly
       if (filename.startsWith('/') || filename.includes(':\\')) {
-        const content = await fs.readFile(filename, 'utf-8');
-        const sequence: CommandSequence = JSON.parse(content);
-        // Remove any existing sequence with the same name (may have different ID)
-        this.removeSequenceByName(sequence.name);
-        this.sequences.set(sequence.id, sequence);
+        const sequence = await this.parseSequenceFile(filename);
+        if (!this.registerLoadedSequence(sequence, options?.validate)) {
+          await debugLog('command-recorder', `Rejected sequence "${sequence.name}" from ${filename} (validation failed) - existing sequence left intact`);
+          return null;
+        }
         await debugLog('command-recorder', `Loaded sequence "${sequence.name}" from ${filename}`);
         return sequence;
       }
@@ -514,13 +549,11 @@ export class CommandRecorder {
       const filepath = match.fullPath;
       await debugLog('command-recorder', `Matched "${filename}" to "${match.filename}" (${match.matchType})`);
 
-      const content = await fs.readFile(filepath, 'utf-8');
-      const sequence: CommandSequence = JSON.parse(content);
-
-      // Remove any existing sequence with the same name (may have different ID)
-      this.removeSequenceByName(sequence.name);
-      // Add sequence to memory
-      this.sequences.set(sequence.id, sequence);
+      const sequence = await this.parseSequenceFile(filepath);
+      if (!this.registerLoadedSequence(sequence, options?.validate)) {
+        await debugLog('command-recorder', `Rejected sequence "${sequence.name}" from ${filepath} (validation failed) - existing sequence left intact`);
+        return null;
+      }
 
       await debugLog('command-recorder', `Loaded sequence "${sequence.name}" from ${filepath}`);
       return sequence;

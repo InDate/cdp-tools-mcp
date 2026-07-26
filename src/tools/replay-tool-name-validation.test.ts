@@ -2,7 +2,10 @@
  * bug-010: sequence steps naming a nonexistent tool must be rejected at
  * create/load time, before any step has mutated browser state.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import { promises as fsp } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 import { createReplayTools, findUnknownStepTools } from './replay-tools.js';
 import { CommandRecorder } from '../command-recorder.js';
 import type { CommandSequence, RecordedCommand } from '../command-recorder.js';
@@ -18,7 +21,12 @@ const seq = (commands: RecordedCommand[], name = 'hand-authored'): CommandSequen
 
 function makeRecorder(sequence: CommandSequence | null) {
   return {
-    loadSequenceFromDisk: vi.fn(async () => sequence),
+    // Mirrors the real recorder: the parsed candidate is validated BEFORE it
+    // replaces any same-named sequence, and a rejected candidate is never stored.
+    loadSequenceFromDisk: vi.fn(async (_filename: string, options?: any) => {
+      if (sequence && options?.validate && !options.validate(sequence)) return null;
+      return sequence;
+    }),
     // Mirrors the real recorder: the candidate is validated BEFORE it is stored,
     // and a rejected candidate is never stored at all (nothing to delete after).
     createSequence: vi.fn(async (_name: string, _indices: number[], options?: any) => {
@@ -103,8 +111,8 @@ describe('replay load - tool name validation', () => {
     expect(text(res)).toContain('Step 2');
     expect(text(res)).toContain('inpsect');
     expect(text(res)).toContain('inspect');
-    // sequence must not linger in memory where it could still be run by id
-    expect(recorder.deleteSequence).toHaveBeenCalledWith('seq-1');
+    // rejected before storage, so there is nothing to clean up afterwards
+    expect(recorder.deleteSequence).not.toHaveBeenCalled();
     // and nothing was pushed into history
     expect(recorder.recordCommand).not.toHaveBeenCalled();
   });
@@ -245,6 +253,117 @@ describe('replay create - a rejected create must not destroy the existing sequen
     expect(res.isError).toBeUndefined();
     const remaining = recorder.listSequences();
     expect(remaining).toHaveLength(1);
+    expect(remaining[0].commands.map(c => c.tool)).toEqual(['navigate', 'inspect']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// load ordering: validation must run before the same-name replace
+// (same defect class as the create path above, on the disk-load path)
+// ---------------------------------------------------------------------------
+
+describe('replay load - a rejected load must not destroy the existing sequence', () => {
+  let dir: string;
+
+  beforeAll(async () => {
+    dir = await fsp.mkdtemp(join(tmpdir(), 'replay-load-order-'));
+  });
+
+  afterAll(async () => {
+    await fsp.rm(dir, { recursive: true, force: true });
+  });
+
+  /** Write a sequence file and return its absolute path (load takes absolute paths as-is). */
+  async function writeSequenceFile(file: string, sequence: CommandSequence): Promise<string> {
+    const filepath = join(dir, file);
+    await fsp.writeFile(filepath, JSON.stringify(sequence), 'utf-8');
+    return filepath;
+  }
+
+  /** Real recorder holding one good in-memory sequence named "login". */
+  async function withGoodSequence() {
+    const recorder = new CommandRecorder();
+    await recorder.recordCommand('navigate', { action: 'goto', url: 'http://example.test/' });
+    const { replay } = createReplayTools(recorder, vi.fn(), undefined, undefined, () => KNOWN_TOOLS);
+
+    const created = await replay.handler({ action: 'create', name: 'login', indices: [0] } as any);
+    expect(created.isError).toBeUndefined();
+    const goodId = recorder.listSequences()[0].id;
+    return { recorder, replay, goodId };
+  }
+
+  it('keeps the good in-memory sequence when a same-named load is rejected', async () => {
+    const { recorder, replay, goodId } = await withGoodSequence();
+    const filepath = await writeSequenceFile('bad.json', {
+      id: 'seq-from-disk-bad',
+      name: 'login',
+      commands: [{ tool: 'ntavigate', params: {} }],
+      createdAt: 2,
+    });
+
+    const res = await replay.handler({ action: 'load', filename: filepath } as any);
+
+    expect(res.isError).toBe(true);
+    expect(text(res)).toContain('ntavigate');
+
+    // the original survives, unchanged, under the same id - and nothing else was stored
+    const remaining = recorder.listSequences();
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].id).toBe(goodId);
+    expect(remaining[0].commands.map(c => c.tool)).toEqual(['navigate']);
+    expect(recorder.getSequence('seq-from-disk-bad')).toBeUndefined();
+  });
+
+  it('still resolves the pre-existing sequence by name after a rejected load', async () => {
+    const { replay } = await withGoodSequence();
+    const filepath = await writeSequenceFile('bad-get.json', {
+      id: 'seq-from-disk-bad-2',
+      name: 'login',
+      commands: [{ tool: 'ntavigate', params: {} }],
+      createdAt: 2,
+    });
+
+    await replay.handler({ action: 'load', filename: filepath } as any);
+
+    const got = await replay.handler({ action: 'get', name: 'login' } as any);
+    expect(got.isError).toBeUndefined();
+    expect(text(got)).toContain('navigate');
+    expect(text(got)).not.toContain('ntavigate');
+  });
+
+  it('records nothing into history when a load with intoHistory is rejected', async () => {
+    const { recorder, replay, goodId } = await withGoodSequence();
+    const before = recorder.getStats().historyCount;
+    const filepath = await writeSequenceFile('bad-history.json', {
+      id: 'seq-from-disk-bad-3',
+      name: 'login',
+      commands: [{ tool: 'ntavigate', params: {} }],
+      createdAt: 2,
+    });
+
+    const res = await replay.handler({ action: 'load', filename: filepath, intoHistory: true } as any);
+
+    expect(res.isError).toBe(true);
+    expect(recorder.getStats().historyCount).toBe(before);
+    expect(recorder.listSequences()).toHaveLength(1);
+    expect(recorder.listSequences()[0].id).toBe(goodId);
+  });
+
+  it('replaces the existing same-named sequence when the loaded one is valid', async () => {
+    const { recorder, replay } = await withGoodSequence();
+    const filepath = await writeSequenceFile('good.json', {
+      id: 'seq-from-disk-good',
+      name: 'login',
+      commands: [{ tool: 'navigate', params: {} }, { tool: 'inspect', params: {} }],
+      createdAt: 2,
+    });
+
+    const res = await replay.handler({ action: 'load', filename: filepath } as any);
+
+    expect(res.isError).toBeUndefined();
+    const remaining = recorder.listSequences();
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].id).toBe('seq-from-disk-good');
     expect(remaining[0].commands.map(c => c.tool)).toEqual(['navigate', 'inspect']);
   });
 });
