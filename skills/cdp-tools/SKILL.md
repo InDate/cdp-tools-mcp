@@ -118,6 +118,7 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 - **Source maps**: Auto-handled. Use `loadSourceMaps` for manual
 - **File paths**: Full URLs (`http://localhost:3000/app.js`) or `file://`
 - **Network monitoring**: Must enable with `network({ action: 'enable' })`
+- **Working an issue**: `comment` on it as you go - once when you start (what you're about to change and why) and once when you finish (what you actually changed, files touched, tests added, and anything that contradicts the issue as written). The issue is the durable record; someone reviewing later reads the timeline, not your diff
 - **Closing an issue**: `issues({ action: 'resolve' })` waits on a browser overlay only a human can click - don't call it unattended, use `issues({ action: 'comment' })` to record findings instead
 
 ## Recovering from a failed tool call

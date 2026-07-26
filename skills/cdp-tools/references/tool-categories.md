@@ -51,6 +51,7 @@ runs against (see the skill's Quick Start).
 **Issues**: `issues` (actions: list, create, workOn, resolve, acknowledge, comment)
 - `create`/`comment`: track bugs and features as Markdown issues, optionally linked to a replay sequence
 - `workOn`: start on an issue, auto-replaying its linked sequence
+- **Comment as you go.** When working an issue, `comment` on it at the start (what you're about to change and why) and again when done (what you actually changed, files touched, tests added, and anything you found that contradicts the issue as written). The issue becomes the durable record - someone reviewing later reads the timeline, not your diff. Comment on surprises too: a repro that doesn't reproduce, a root cause elsewhere, or a fix you rejected and why
 - `resolve` is **human-gated**: it opens a browser overlay and only a person clicking Fixed/Not Fixed can close the issue. Don't call it unattended - it will wait ~150s and then fail with `ISSUES_RESOLVE_TIMEOUT`. Record what you found with `comment` and ask the user to run `resolve` themselves
 - `acknowledge`: acknowledge pending bugs to unblock other tools
 
