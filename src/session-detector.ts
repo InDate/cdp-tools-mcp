@@ -308,3 +308,40 @@ export function createSessionDetector(cwd: string): SessionDetector {
     stop,
   };
 }
+
+/**
+ * Classify whether THIS server process's own connected MCP client is an
+ * autonomous agent (a Task-tool subagent, transcript file `agent-*.jsonl`)
+ * rather than the main interactive session (plain `{uuid}.jsonl`) a human is
+ * driving directly.
+ *
+ * This is the most reliable signal actually available: every tool response
+ * this process emits is tagged with its own PID (see index.ts), and that PID
+ * shows up verbatim in whichever Claude Code transcript file is logging this
+ * process's output - a bare-UUID file for the main session, an `agent-`
+ * prefixed file for a subagent invoked via the Task tool. Once
+ * `verify(pid)` (called after this process's first tool response) has
+ * matched that PID against a transcript file, `getState()` reflects which
+ * kind of file matched.
+ *
+ * Because the match happens asynchronously (it requires at least one
+ * completed tool call whose response the client has already written to its
+ * transcript, plus an fs.watch callback), a session can briefly be
+ * unclassifiable right after startup. This function treats "not yet
+ * classified" as NOT an agent (i.e. it does not block a human) since:
+ *   - `resolve` (the only caller of this today) is essentially never the
+ *     first tool call of a session, so verification has almost always
+ *     already resolved by the time it matters, and
+ *   - failing open here only affects an edge case at startup, whereas
+ *     failing closed would incorrectly block a genuine human on their very
+ *     first call.
+ *
+ * A `mainSession` match always wins over any `activeAgents` entries - if
+ * both are somehow present, treat the caller as human. `activeAgents` is
+ * populated by watching every project transcript file, but only a
+ * transcript that itself echoes this process's own PID indicates that file
+ * belongs to whatever is invoking this process (see `verify()` above).
+ */
+export function isAgentSession(state: SessionState): boolean {
+  return state.mainSession === null && state.activeAgents.length > 0;
+}

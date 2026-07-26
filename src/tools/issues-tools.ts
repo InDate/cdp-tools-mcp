@@ -36,7 +36,7 @@ import {
 import { checkUrlPort } from '../utils/port-check.js';
 const issuesSchema = z.object({
   action: z.enum(['list', 'create', 'workOn', 'resolve', 'acknowledge', 'comment'])
-    .describe('Issue action: list (list all issues), create (create new issue), workOn (start working on issue), resolve (mark as fixed/implemented), acknowledge (acknowledge pending bugs), comment (append a comment to an issue)'),
+    .describe('Issue action: list (list all issues), create (create new issue), workOn (start working on issue), resolve (HUMAN ONLY - opens an interactive browser verification flow and waits for a person to click Fixed/Not Fixed; a human must physically confirm the fix before the issue is marked fixed/implemented; agents calling this get an immediate ISSUES_RESOLVE_REQUIRES_HUMAN error and should use `comment` instead to record findings), acknowledge (acknowledge pending bugs), comment (append a comment to an issue)'),
   id: z.number().optional()
     .describe('Issue ID (for workOn, resolve, comment actions)'),
   type: z.enum(['bug', 'feature']).optional()
@@ -68,6 +68,42 @@ const issuesSchema = z.object({
 }).strict();
 
 type IssuesArgs = z.infer<typeof issuesSchema>;
+
+// =============================================================================
+// resolve() human-verification timeout
+// =============================================================================
+
+/**
+ * Upper bound on how long `resolve` will wait for a human to respond to the
+ * interactive "ready to begin?" / "is this fixed?" overlays. Kept comfortably
+ * under Puppeteer's default protocolTimeout (180_000ms) so that a human
+ * simply walking away surfaces as our own typed ISSUES_RESOLVE_TIMEOUT error
+ * instead of a raw `Runtime.callFunctionOn timed out` leaking through from
+ * the underlying page.evaluate() call that waits on the overlay's Promise.
+ * Exported so tests can pass a much shorter value.
+ */
+export const DEFAULT_RESOLVE_VERIFICATION_TIMEOUT_MS = 150_000;
+
+/** Internal marker so the resolve handler can distinguish "human never answered" from other failures. */
+class IssuesResolveTimeoutError extends Error {
+  constructor(public readonly issueId: number, public readonly timeoutMs: number) {
+    super(`Timed out after ${timeoutMs}ms waiting for human verification on issue #${issueId}`);
+    this.name = 'IssuesResolveTimeoutError';
+  }
+}
+
+/** Race a human-response promise (overlay click) against a bounded timeout. */
+async function withVerificationTimeout<T>(promise: Promise<T>, timeoutMs: number, issueId: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new IssuesResolveTimeoutError(issueId, timeoutMs)), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer!);
+  }
+}
 
 // =============================================================================
 // Helper Functions
@@ -179,11 +215,17 @@ function formatCommentTimeline(issue: TrackedIssue): string {
 export function createIssuesTools(
   executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>,
   getSequencePath?: (name: string) => Promise<string | null>,
-  getPageForConnection?: (connectionReason: string) => Promise<any>
+  getPageForConnection?: (connectionReason: string) => Promise<any>,
+  // Returns true when this MCP server's own connected client has been
+  // identified as an autonomous agent (no human present to answer the
+  // interactive verification overlay). See session-detector.ts:isAgentSession
+  // for how this is determined and why. Optional so tests/other embedders
+  // that don't wire it up keep today's behavior (never blocked).
+  isAgentCaller?: () => boolean
 ) {
   return {
     issues: createTool(
-      'Track and manage bugs and features as Markdown issues (title, Markdown body, labels, comments). Actions: list (show all issues with optional filters), create (create new issue with title/body/labels, optionally linking a sequence), workOn (start working on issue with auto-replay), resolve (mark as fixed/implemented), acknowledge (acknowledge pending bugs to unblock tools), comment (append a Markdown comment to an issue)',
+      'Track and manage bugs and features as Markdown issues (title, Markdown body, labels, comments). Actions: list (show all issues with optional filters), create (create new issue with title/body/labels, optionally linking a sequence), workOn (start working on issue with auto-replay), resolve (HUMAN-ONLY interactive verification: opens a browser overlay and waits for a person to confirm the fix before marking fixed/implemented - agents are refused immediately, use `comment` instead), acknowledge (acknowledge pending bugs to unblock tools), comment (append a Markdown comment to an issue)',
       issuesSchema,
       async (args, abortSignal) => {
         // Initialize tracker on first use
@@ -484,6 +526,18 @@ export function createIssuesTools(
               });
             }
 
+            // resolve is human-only: closing an issue is a human judgement call
+            // (a person verifies the fix, then closes it). Agents - including an
+            // agent verifying its own work - must never be able to do this. If
+            // this server's own connected client has been classified as an
+            // autonomous agent (see session-detector.ts:isAgentSession), fail
+            // immediately and do not touch issue state or open a browser at all.
+            if (isAgentCaller?.()) {
+              return createErrorResponse('ISSUES_RESOLVE_REQUIRES_HUMAN', {
+                id: args.id,
+              });
+            }
+
             if (!getPageForConnection) {
               return createErrorResponse('ISSUES_NO_PAGE_ACCESS', {
                 message: 'Cannot access browser page for verification',
@@ -562,7 +616,32 @@ export function createIssuesTools(
             if (skipToCompletion) {
               readyAction = 'begin'; // Simulate clicking begin
             } else {
-              readyAction = await showTestReadyOverlay(page, issue.type, issue.title, issue.id, hasSequence);
+              // Bound the wait for a human response: if nobody ever clicks the
+              // overlay (e.g. the person walked away), fail with a typed error
+              // instead of letting Puppeteer's own ~180s protocolTimeout leak
+              // through as a raw "Runtime.callFunctionOn timed out".
+              try {
+                readyAction = await withVerificationTimeout(
+                  showTestReadyOverlay(page, issue.type, issue.title, issue.id, hasSequence),
+                  DEFAULT_RESOLVE_VERIFICATION_TIMEOUT_MS,
+                  issue.id
+                );
+              } catch (error) {
+                if (error instanceof IssuesResolveTimeoutError) {
+                  if (!args.keepBrowserOpen) {
+                    try {
+                      await executeToolCall('tab', { action: 'close', reference: connectionRef });
+                    } catch {
+                      // Non-fatal
+                    }
+                  }
+                  return createErrorResponse('ISSUES_RESOLVE_TIMEOUT', {
+                    id: issue.id,
+                    timeoutSeconds: Math.round(DEFAULT_RESOLVE_VERIFICATION_TIMEOUT_MS / 1000),
+                  });
+                }
+                throw error;
+              }
             }
 
             if (readyAction === 'cancel') {
@@ -688,13 +767,31 @@ export function createIssuesTools(
               });
             }
 
-            // Show verification overlay and wait for user response
-            const verification = await showVerificationOverlay(
-              page,
-              issue.type,
-              issue.title,
-              issue.id
-            );
+            // Show verification overlay and wait for user response - bounded
+            // the same way as the "ready to begin?" overlay above.
+            let verification: Awaited<ReturnType<typeof showVerificationOverlay>>;
+            try {
+              verification = await withVerificationTimeout(
+                showVerificationOverlay(page, issue.type, issue.title, issue.id),
+                DEFAULT_RESOLVE_VERIFICATION_TIMEOUT_MS,
+                issue.id
+              );
+            } catch (error) {
+              if (error instanceof IssuesResolveTimeoutError) {
+                if (!args.keepBrowserOpen) {
+                  try {
+                    await executeToolCall('tab', { action: 'close', reference: connectionRef });
+                  } catch {
+                    // Non-fatal
+                  }
+                }
+                return createErrorResponse('ISSUES_RESOLVE_TIMEOUT', {
+                  id: issue.id,
+                  timeoutSeconds: Math.round(DEFAULT_RESOLVE_VERIFICATION_TIMEOUT_MS / 1000),
+                });
+              }
+              throw error;
+            }
 
             // Close the tab after verification (unless keepBrowserOpen is true)
             if (!args.keepBrowserOpen) {

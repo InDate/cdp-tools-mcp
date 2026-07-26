@@ -71,7 +71,7 @@ import { debugLog, enableDebugLogging, disableDebugLogging, isDebugEnabled, enab
 import { validateReference, requireValidReference, deriveConnectionReference, UNNAMED_CONNECTION, InvalidReferenceError } from './reference-validator.js';
 import { initializePaths, getOutputPath } from './helpers/paths.js';
 import { cleanupStaleTempFiles, cleanupStaleTempFilesSync } from './atomic-write.js';
-import { createSessionDetector, type SessionInfo, type SessionDetector } from './session-detector.js';
+import { createSessionDetector, isAgentSession, type SessionInfo, type SessionDetector } from './session-detector.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1249,7 +1249,12 @@ const allTools = {
       const resolved = await resolveConnectionFromReason(connectionReason);
       if (!resolved?.puppeteerManager) return null;
       return resolved.puppeteerManager.getPage();
-    }
+    },
+    // isAgentCaller: read live (not captured at module-init time, since
+    // sessionDetectorInstance is only assigned once main() runs) whether this
+    // process's own MCP client has been classified as an autonomous agent
+    // rather than the human-driven main session. See session-detector.ts.
+    () => sessionDetectorInstance !== null && isAgentSession(sessionDetectorInstance.getState())
   ) : {}),
   // Dashboard tools (lazy-initialized in main())
   ...(configManager.isToolEnabled('dashboard') ? createDashboardTools() : {}),

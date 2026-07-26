@@ -8,6 +8,45 @@ import type { BreakpointInfo, CallFrame, DebuggerState, RuntimeType, CDPConsoleM
 import type { SourceMapHandler } from './sourcemap-handler.js';
 import { debugLog } from './debug-logger.js';
 
+/**
+ * Thrown by evaluateExpression() when the evaluated code itself threw
+ * (CDP reports this via `exceptionDetails` on an otherwise-successful
+ * Runtime.evaluate/Debugger.evaluateOnCallFrame response, NOT as a rejected
+ * promise) - e.g. `Math.max(...bigArray)` throwing a stack-exhaustion
+ * RangeError. This is an ordinary outcome of evaluating arbitrary user code
+ * and must be surfaced as a normal tool error rather than silently ignored.
+ */
+export class EvaluateExpressionExceptionError extends Error {
+  constructor(
+    public readonly expression: string,
+    public readonly exceptionType: string,
+    public readonly exceptionMessage: string,
+    public readonly exceptionStack?: string
+  ) {
+    super(`${exceptionType}: ${exceptionMessage}`);
+    this.name = 'EvaluateExpressionExceptionError';
+  }
+}
+
+/**
+ * Thrown by evaluateExpression() when the underlying CDP call does not
+ * return within the bounded client-side timeout. This is the backstop for
+ * cases where the renderer/execution context stops responding entirely (no
+ * result, no exception, no CDP-level timeout) - see the RangeError
+ * stack-exhaustion hang this was written to fix.
+ */
+export class EvaluateExpressionTimeoutError extends Error {
+  constructor(public readonly expression: string, public readonly timeoutMs: number) {
+    super(`Evaluation timed out after ${timeoutMs}ms - the execution context may be unresponsive`);
+    this.name = 'EvaluateExpressionTimeoutError';
+  }
+}
+
+/** Truncate a long expression for inclusion in error messages/telemetry. */
+function truncateExpression(expression: string, maxLength: number = 200): string {
+  return expression.length > maxLength ? `${expression.slice(0, maxLength)}...` : expression;
+}
+
 export class CDPManager {
   private client: any = null;
   private state: DebuggerState = {
@@ -960,7 +999,35 @@ export class CDPManager {
   }
 
   /**
-   * Evaluate an expression in the current context
+   * Bounded upper limit on how long evaluateExpression() will wait for CDP to
+   * respond, in milliseconds. Exported as an instance property (rather than a
+   * module constant) so tests can override it on a per-manager basis without
+   * needing real wall-clock waits. Kept comfortably below the 180s default
+   * Puppeteer protocolTimeout that would otherwise leak through as a raw,
+   * untyped "Runtime.callFunctionOn timed out" error on this path.
+   */
+  evaluateExpressionTimeoutMs: number = 10_000;
+
+  /**
+   * Evaluate an expression in the current context.
+   *
+   * Two distinct failure modes are handled explicitly (this method used to
+   * handle neither, which is how a stack-exhaustion RangeError thrown by
+   * evaluated code could hang a caller forever with no result, no error, and
+   * no timeout):
+   *
+   * 1. The evaluated code throws. CDP reports this via `exceptionDetails` on
+   *    an otherwise-successful response - it is NOT a rejected promise - so
+   *    it must be checked explicitly and surfaced as
+   *    EvaluateExpressionExceptionError instead of being formatted as if it
+   *    were a normal return value.
+   * 2. The CDP call itself never resolves (a wedged renderer/execution
+   *    context). A bounded client-side timeout (racing the CDP call against
+   *    a timer) guarantees this method always settles, throwing
+   *    EvaluateExpressionTimeoutError instead of hanging indefinitely. We
+   *    also pass CDP's own `timeout` param so well-behaved renderers abort
+   *    the runaway script themselves and return exceptionDetails cleanly
+   *    (case 1) rather than relying solely on our client-side timer.
    */
   async evaluateExpression(
     expression: string,
@@ -972,19 +1039,56 @@ export class CDPManager {
       throw new Error('Not connected to debugger');
     }
 
-    const { Debugger } = this.client;
+    const timeoutMs = this.evaluateExpressionTimeoutMs;
+    // Leave CDP's own timeout slightly shorter than ours so a well-behaved
+    // renderer's own abort (which yields a clean exceptionDetails response)
+    // has a chance to win the race against our client-side backstop.
+    const cdpTimeoutMs = Math.max(1000, timeoutMs - 1000);
 
-    if (callFrameId) {
-      const result = await Debugger.evaluateOnCallFrame({
-        callFrameId,
-        expression,
-      });
-      return await this.formatValue(result.result, expandObjects, maxDepth);
-    } else {
-      const { Runtime } = this.client;
-      const result = await Runtime.evaluate({ expression });
-      return await this.formatValue(result.result, expandObjects, maxDepth);
+    let timer: ReturnType<typeof setTimeout>;
+    const timeoutGuard = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new EvaluateExpressionTimeoutError(truncateExpression(expression), timeoutMs)),
+        timeoutMs
+      );
+    });
+
+    let result: { result: any; exceptionDetails?: any };
+    try {
+      if (callFrameId) {
+        const { Debugger } = this.client;
+        result = await Promise.race([
+          Debugger.evaluateOnCallFrame({ callFrameId, expression, timeout: cdpTimeoutMs }),
+          timeoutGuard,
+        ]);
+      } else {
+        const { Runtime } = this.client;
+        result = await Promise.race([
+          Runtime.evaluate({ expression, timeout: cdpTimeoutMs }),
+          timeoutGuard,
+        ]);
+      }
+    } finally {
+      clearTimeout(timer!);
     }
+
+    if (result.exceptionDetails) {
+      const details = result.exceptionDetails;
+      const exceptionObject = details.exception;
+      const exceptionType = exceptionObject?.className || exceptionObject?.subtype || 'Error';
+      // `description` on an Error RemoteObject is "Message\n    at stack...".
+      const description: string | undefined = exceptionObject?.description;
+      const exceptionMessage = description?.split('\n')[0] || details.text || 'Unknown error';
+      const exceptionStack = description?.includes('\n') ? description : undefined;
+      throw new EvaluateExpressionExceptionError(
+        truncateExpression(expression),
+        exceptionType,
+        exceptionMessage,
+        exceptionStack
+      );
+    }
+
+    return await this.formatValue(result.result, expandObjects, maxDepth);
   }
 
   /**

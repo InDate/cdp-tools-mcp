@@ -595,6 +595,40 @@ Failed to evaluate expression: {{error}}
 
 ---
 
+## EVALUATE_EXPRESSION_EXCEPTION
+
+**Type:** error
+**Code:** EVALUATE_EXPRESSION_EXCEPTION
+
+The evaluated expression threw {{errorType}}: {{errorMessage}}
+
+**Expression:** `{{expression}}`
+
+**Stack:**
+{{stack}}
+
+**Suggestions:**
+- This is the expression's own runtime error, not a tool failure - fix the expression and try again
+- A RangeError here usually means a call stack was exhausted (e.g. spreading a very large array into `Math.max`/`Math.min`) - reduce/chunk the data instead of spreading it all at once
+
+---
+
+## EVALUATE_CONTEXT_UNRESPONSIVE
+
+**Type:** error
+**Code:** EVALUATE_CONTEXT_UNRESPONSIVE
+
+Evaluation on connection "{{connectionReason}}" did not respond within {{timeoutMs}}ms - the execution context may be unresponsive.
+
+**Expression:** `{{expression}}`
+
+**Suggestions:**
+- The renderer/execution context may be wedged by the expression itself - try reloading the page or reconnecting
+- Simplify the expression (e.g. avoid spreading very large arrays or deeply recursive calls) and retry
+- Use `getChromeStatus()` or `listConnections()` to check whether the connection is still healthy
+
+---
+
 ## NOT_PAUSED
 
 **Type:** error
@@ -2027,6 +2061,39 @@ Issue #{{id}} not found
 **Code:** ISSUES_MISSING_ID
 
 {{message}}
+
+---
+
+## ISSUES_RESOLVE_REQUIRES_HUMAN
+
+**Type:** error
+**Code:** ISSUES_RESOLVE_REQUIRES_HUMAN
+
+resolve requires human verification and cannot be called by an agent.
+
+Ask the user to verify and close issue #{{id}}. Use action 'comment' to record findings.
+
+**Suggestions:**
+- Use `issues({ action: 'comment', id: {{id}}, text: '...' })` to record what you found or fixed
+- Ask the user (a human) to run `issues({ action: 'resolve', id: {{id}} })` themselves to verify and close it
+
+**Note:** No state was changed - the issue is exactly as it was before this call. Closing an issue is a human judgement call, including for issues covering your own work.
+
+---
+
+## ISSUES_RESOLVE_TIMEOUT
+
+**Type:** error
+**Code:** ISSUES_RESOLVE_TIMEOUT
+
+Timed out after {{timeoutSeconds}}s waiting for a human to respond to the verification overlay for issue #{{id}}.
+
+**Suggestions:**
+- Nobody answered the "ready to begin?" / "is this fixed?" prompt in the browser tab - make sure a person is available to click through it
+- Use `issues({ action: 'comment', id: {{id}}, text: '...' })` in the meantime to record findings without blocking
+- Run `issues({ action: 'resolve', id: {{id}} })` again once a human is ready to verify
+
+**Note:** No state was changed - the issue is exactly as it was before this call.
 
 ---
 

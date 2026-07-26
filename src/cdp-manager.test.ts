@@ -3,8 +3,8 @@
  * disconnect()'s resume-callback handling.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { CDPManager } from './cdp-manager.js';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { CDPManager, EvaluateExpressionExceptionError, EvaluateExpressionTimeoutError } from './cdp-manager.js';
 
 // We can't directly test the private methods, but we can test the logic
 // by extracting and testing the calculations
@@ -296,5 +296,116 @@ describe('CDPManager.disconnect() resume-callback handling', () => {
 
     await expect(cdpManager.disconnect()).rejects.toThrow('socket already closed');
     expect(resumeCallback).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('CDPManager.evaluateExpression() - bug-004 (hang on thrown RangeError)', () => {
+  // Root cause: Runtime.evaluate()/Debugger.evaluateOnCallFrame() report a
+  // thrown exception via `exceptionDetails` on an otherwise *successful*
+  // response, not via promise rejection. The old code never looked at
+  // exceptionDetails, so a genuinely wedged CDP response (e.g. triggered by
+  // a stack-exhaustion RangeError) had no code path that could ever produce
+  // a result, an error, or a timeout - it just hung.
+  function withMockRuntime(cdpManager: CDPManager, evaluate: (...args: any[]) => Promise<any>) {
+    (cdpManager as any).client = { Runtime: { evaluate }, Debugger: {} };
+    (cdpManager as any).state.connected = true;
+  }
+
+  beforeEach(() => {
+    vi.useRealTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('surfaces a thrown RangeError (exceptionDetails) as EvaluateExpressionExceptionError instead of hanging or swallowing it', async () => {
+    const cdpManager = new CDPManager();
+    const evaluate = vi.fn().mockResolvedValue({
+      result: { type: 'undefined' },
+      exceptionDetails: {
+        text: 'Uncaught RangeError',
+        exception: {
+          type: 'object',
+          subtype: 'error',
+          className: 'RangeError',
+          description: 'RangeError: Maximum call stack size exceeded\n    at <anonymous>:1:1',
+        },
+      },
+    });
+    withMockRuntime(cdpManager, evaluate);
+
+    await expect(
+      cdpManager.evaluateExpression('Math.max(...new Float32Array(32768))')
+    ).rejects.toMatchObject({
+      name: 'EvaluateExpressionExceptionError',
+      exceptionType: 'RangeError',
+      exceptionMessage: 'RangeError: Maximum call stack size exceeded',
+    });
+  });
+
+  it('does not treat a thrown-exception response as a successful result', async () => {
+    const cdpManager = new CDPManager();
+    const evaluate = vi.fn().mockResolvedValue({
+      result: { type: 'undefined' },
+      exceptionDetails: {
+        text: 'Uncaught RangeError',
+        exception: { className: 'RangeError', description: 'RangeError: boom' },
+      },
+    });
+    withMockRuntime(cdpManager, evaluate);
+
+    let threw = false;
+    try {
+      await cdpManager.evaluateExpression('boom()');
+    } catch (error) {
+      threw = true;
+      expect(error).toBeInstanceOf(EvaluateExpressionExceptionError);
+    }
+    expect(threw).toBe(true);
+  });
+
+  it('rejects with EvaluateExpressionTimeoutError instead of hanging forever when CDP never responds', async () => {
+    vi.useFakeTimers();
+    const cdpManager = new CDPManager();
+    cdpManager.evaluateExpressionTimeoutMs = 5_000; // short bound, driven by fake timers
+    const evaluate = vi.fn().mockReturnValue(new Promise(() => {})); // never resolves - simulates the wedged renderer
+    withMockRuntime(cdpManager, evaluate);
+
+    const resultPromise = cdpManager.evaluateExpression('while(true){}');
+    // Attach a rejection handler immediately so Node doesn't complain about
+    // an unhandled rejection while fake timers are advanced below.
+    const assertion = expect(resultPromise).rejects.toMatchObject({
+      name: 'EvaluateExpressionTimeoutError',
+      timeoutMs: 5_000,
+    });
+
+    await vi.advanceTimersByTimeAsync(6_000);
+    await assertion;
+  });
+
+  it('still returns a normal formatted value when evaluation succeeds without an exception', async () => {
+    const cdpManager = new CDPManager();
+    const evaluate = vi.fn().mockResolvedValue({ result: { type: 'number', value: 42 } });
+    withMockRuntime(cdpManager, evaluate);
+
+    const result = await cdpManager.evaluateExpression('40 + 2');
+    expect(result).toBe('42');
+  });
+
+  it('passes CDP\'s own timeout param so well-behaved renderers can abort the runaway script themselves', async () => {
+    const cdpManager = new CDPManager();
+    cdpManager.evaluateExpressionTimeoutMs = 10_000;
+    const evaluate = vi.fn().mockResolvedValue({ result: { type: 'number', value: 1 } });
+    withMockRuntime(cdpManager, evaluate);
+
+    await cdpManager.evaluateExpression('1');
+
+    expect(evaluate).toHaveBeenCalledWith(
+      expect.objectContaining({ expression: '1', timeout: expect.any(Number) })
+    );
+    const passedTimeout = evaluate.mock.calls[0][0].timeout;
+    expect(passedTimeout).toBeLessThan(10_000); // strictly less than our own client-side bound
+    expect(passedTimeout).toBeGreaterThan(0);
   });
 });
