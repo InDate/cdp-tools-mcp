@@ -63,6 +63,40 @@ function documentedToolNames(markdown) {
  * a stale doc still builds and still passes tests.
  */
 /**
+ * A grouped tool's description lists its actions in prose: "Actions: run
+ * (...), step (...)". That prose is what an agent actually reads when choosing
+ * a call, and it rots independently of the schema - the replay tool advertised
+ * save/startMouseRecording/stopMouseRecording/mouseRecordingStatus long after
+ * all four were removed from its enum, so agents were being pointed at calls
+ * that could only fail. Every `name (` mentioned after "Actions:" must exist
+ * in that tool's own action enum.
+ */
+function verifyDescribedActions(tools) {
+  let ok = true;
+
+  for (const tool of tools) {
+    const actions = tool.inputSchema?.properties?.action?.enum;
+    if (!Array.isArray(actions)) continue;
+
+    const described = tool.description?.match(/Actions?:\s*([\s\S]*)$/)?.[1];
+    if (!described) continue;
+
+    const valid = new Set(actions);
+    const phantom = [...new Set(
+      [...described.matchAll(/([A-Za-z][A-Za-z0-9]*)\s*\(/g)].map((m) => m[1])
+    )].filter((name) => !valid.has(name));
+
+    if (phantom.length > 0) {
+      console.error(`✗ ${tool.name} description advertises ${phantom.length} action(s) not in its schema: ${phantom.join(', ')}`);
+      ok = false;
+    }
+  }
+
+  if (ok) console.log('✓ Tool descriptions only advertise actions that exist');
+  return ok;
+}
+
+/**
  * The skill's stamped version is what lets the server spot an installed copy
  * left behind by an older release. If it drifts from package.json the stamp
  * silently stops meaning anything, so treat a mismatch as a build failure.
@@ -210,7 +244,9 @@ serverProcess.stdout.on('data', (data) => {
         console.log('✓ All key tools registered');
 
         // Shipped catalogs must match the real surface (see comment above).
-        if (!verifyDocumentedToolSurface(toolNames)) {
+        const surfaceOk = verifyDocumentedToolSurface(toolNames);
+        const actionsOk = verifyDescribedActions(tools);
+        if (!surfaceOk || !actionsOk) {
           console.error('');
           console.error('✗ Shipped tool documentation is out of sync with the registered tools.');
           console.error('  Update the files listed above, then re-run. These ship to users.');
