@@ -237,8 +237,18 @@ export function createNetworkTools(
                   message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
                 });
               }
-              targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
-              targetNetworkMonitor = resolved.networkMonitor || networkMonitor;
+              // No silent fallback to the default managers. A connection can
+              // resolve without a puppeteerManager - a Node.js connectDebugger
+              // target has no page - and falling back would start monitoring
+              // the DEFAULT connection while reporting success for the named
+              // one, which is the misrouting this whole change set out to fix.
+              if (!resolved.puppeteerManager || !resolved.networkMonitor) {
+                return createErrorResponse('CONNECTION_NOT_FOUND', {
+                  message: `Connection "${args.connectionReason}" has no browser page to monitor (a Node.js debugger target has no page). Network monitoring requires a browser connection.`
+                });
+              }
+              targetPuppeteerManager = resolved.puppeteerManager;
+              targetNetworkMonitor = resolved.networkMonitor;
             }
 
             if (!targetPuppeteerManager.isConnected()) {

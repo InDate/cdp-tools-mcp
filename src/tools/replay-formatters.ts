@@ -931,6 +931,8 @@ export function formatInsertResult(
     response += `\n**Total commands:** ${newTotal}`;
   }
 
-  response += `\n\nSave to disk: \`replay({ action: 'save', sequenceId: '${sequenceId}' })\``;
+  // `export`, not `save` - the latter was removed from the action enum and a
+  // hint naming it sends the caller into a validation error.
+  response += `\n\nSave to disk: \`replay({ action: 'export', sequenceId: '${sequenceId}' })\``;
   return response;
 }
