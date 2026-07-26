@@ -8,6 +8,7 @@ import { promises as fs } from 'fs';
 import { join } from 'path';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
+import type { ExecuteToolCall } from '../types.js';
 import { showVerificationOverlay, showTestReadyOverlay } from '../interaction-recorder.js';
 import {
   showOverlay,
@@ -213,7 +214,7 @@ function formatCommentTimeline(issue: TrackedIssue): string {
 // =============================================================================
 
 export function createIssuesTools(
-  executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>,
+  executeToolCall: ExecuteToolCall,
   getSequencePath?: (name: string) => Promise<string | null>,
   getPageForConnection?: (connectionReason: string) => Promise<any>
 ) {
@@ -402,118 +403,129 @@ export function createIssuesTools(
 
             const hasSequence = !!issue.sequenceFile;
 
-            // Register cleanup on abort signal to close browser tab if tool is cancelled
+            // Register cleanup on abort signal to close browser tab if the
+            // call is cancelled mid-work. The listener MUST be detached once
+            // this handler settles: as a sequence step the signal is the
+            // RUN's long-lived signal, so a permanent listener would (a)
+            // accumulate one per issues step and (b) close this step's tab
+            // when the run is cancelled minutes after the step finished.
+            let detachAbortListener: (() => void) | undefined;
             if (abortSignal && connectionRef) {
-              const cleanupOnAbort = async () => {
-                await executeToolCall('tab', { action: 'close', reference: connectionRef }).catch(() => {});
+              const onAbort = () => {
+                executeToolCall('tab', { action: 'close', reference: connectionRef }).catch(() => {});
               };
-              abortSignal.addEventListener('abort', () => { cleanupOnAbort(); }, { once: true });
+              abortSignal.addEventListener('abort', onAbort, { once: true });
+              detachAbortListener = () => abortSignal.removeEventListener('abort', onAbort);
             }
 
-            if (hasSequence) {
-              // Auto-replay sequence if available
-              const sequencePath = join(getIssueSequencesDir(), issue.sequenceFile!);
-              const sequenceName = issue.sequenceFile!.replace(/\.json$/, '');
+            try {
+              if (hasSequence) {
+                // Auto-replay sequence if available
+                const sequencePath = join(getIssueSequencesDir(), issue.sequenceFile!);
+                const sequenceName = issue.sequenceFile!.replace(/\.json$/, '');
 
-              // Load and run sequence (errors propagate via ToolError)
-              await executeToolCall('replay', {
-                action: 'load',
-                filename: sequencePath,
-              });
-
-              await executeToolCall('replay', {
-                action: 'run',
-                // Blocking: workOn's response reports the replay's outcome, so
-                // the run must complete (or fail) before we return.
-                wait: true,
-                name: sequenceName,
-                connectionReason: connectionRef,
-                showReplayOverlay: true,
-                issueId: issue.id,
-                issueType: issue.type,
-                issueTitle: issue.title,
-              });
-            } else if (issue.startUrl && getPageForConnection) {
-              // No sequence but has startUrl - launch browser, navigate, and show options overlay
-              let page = await getPageForConnection(connectionRef);
-              if (!page) {
-                // Auto-launch Chrome
-                try {
-                  await executeToolCall('launchChrome', {
-                    reference: connectionRef,
-                  });
-                  page = await getPageForConnection(connectionRef);
-                } catch (error: any) {
-                  return createErrorResponse('ISSUES_CHROME_LAUNCH_FAILED', {
-                    message: `Failed to launch Chrome: ${error.message}`,
-                  });
-                }
-              }
-
-              if (!page) {
-                return createErrorResponse('ISSUES_PAGE_ERROR', {
-                  message: 'Failed to get browser page after launch',
+                // Load and run sequence (errors propagate via ToolError)
+                await executeToolCall('replay', {
+                  action: 'load',
+                  filename: sequencePath,
                 });
-              }
 
-              // Navigate to startUrl
-              await executeToolCall('navigate', {
-                action: 'goto',
-                connectionReason: connectionRef,
-                url: issue.startUrl,
-                waitUntil: 'load',
-              });
-
-              // Refresh page reference after navigation
-              page = await getPageForConnection(connectionRef);
-              if (!page) {
-                return createErrorResponse('ISSUES_PAGE_ERROR', {
-                  message: 'Lost browser page after navigation',
-                });
-              }
-
-              // Show overlay with options: Cancel, Explore, or Record
-              const overlayConfig = getWorkOnNoSequenceConfig(issue.type, issue.id, issue.title);
-              const result = await showOverlay(page, overlayConfig);
-
-              if (result.action === 'cancel') {
-                return createSuccessResponse('ISSUES_WORK_CANCELLED', {
-                  id: issue.id,
-                  type: issue.type,
-                  title: issue.title,
-                  message: 'Work session cancelled by user',
-                });
-              }
-
-              if (result.action === 'record') {
-                // Start recording user's actions - this blocks until recording completes
-                const recordingResult = await executeToolCall('replay', {
-                  action: 'recordInteraction',
+                await executeToolCall('replay', {
+                  action: 'run',
+                  // Blocking: workOn's response reports the replay's outcome, so
+                  // the run must complete (or fail) before we return.
+                  wait: true,
+                  name: sequenceName,
                   connectionReason: connectionRef,
-                  name: `${issue.type}-${issue.id}-repro`,
-                  startUrl: issue.startUrl,
+                  showReplayOverlay: true,
                   issueId: issue.id,
                   issueType: issue.type,
                   issueTitle: issue.title,
                 });
+              } else if (issue.startUrl && getPageForConnection) {
+                // No sequence but has startUrl - launch browser, navigate, and show options overlay
+                let page = await getPageForConnection(connectionRef);
+                if (!page) {
+                  // Auto-launch Chrome
+                  try {
+                    await executeToolCall('launchChrome', {
+                      reference: connectionRef,
+                    });
+                    page = await getPageForConnection(connectionRef);
+                  } catch (error: any) {
+                    return createErrorResponse('ISSUES_CHROME_LAUNCH_FAILED', {
+                      message: `Failed to launch Chrome: ${error.message}`,
+                    });
+                  }
+                }
 
-                // Return the recording result directly so user sees what was recorded
-                return recordingResult;
+                if (!page) {
+                  return createErrorResponse('ISSUES_PAGE_ERROR', {
+                    message: 'Failed to get browser page after launch',
+                  });
+                }
+
+                // Navigate to startUrl
+                await executeToolCall('navigate', {
+                  action: 'goto',
+                  connectionReason: connectionRef,
+                  url: issue.startUrl,
+                  waitUntil: 'load',
+                });
+
+                // Refresh page reference after navigation
+                page = await getPageForConnection(connectionRef);
+                if (!page) {
+                  return createErrorResponse('ISSUES_PAGE_ERROR', {
+                    message: 'Lost browser page after navigation',
+                  });
+                }
+
+                // Show overlay with options: Cancel, Explore, or Record
+                const overlayConfig = getWorkOnNoSequenceConfig(issue.type, issue.id, issue.title);
+                const result = await showOverlay(page, overlayConfig);
+
+                if (result.action === 'cancel') {
+                  return createSuccessResponse('ISSUES_WORK_CANCELLED', {
+                    id: issue.id,
+                    type: issue.type,
+                    title: issue.title,
+                    message: 'Work session cancelled by user',
+                  });
+                }
+
+                if (result.action === 'record') {
+                  // Start recording user's actions - this blocks until recording completes
+                  const recordingResult = await executeToolCall('replay', {
+                    action: 'recordInteraction',
+                    connectionReason: connectionRef,
+                    name: `${issue.type}-${issue.id}-repro`,
+                    startUrl: issue.startUrl,
+                    issueId: issue.id,
+                    issueType: issue.type,
+                    issueTitle: issue.title,
+                  });
+
+                  // Return the recording result directly so user sees what was recorded
+                  return recordingResult;
+                }
+
+                // action === 'explore' - just leave browser open for manual exploration
               }
 
-              // action === 'explore' - just leave browser open for manual exploration
+              return createSuccessResponse('ISSUES_WORK_STARTED', {
+                id: issue.id,
+                type: issue.type,
+                title: issue.title,
+                sequenceFile: issue.sequenceFile || null,
+                details: formatIssueDetails(issue),
+                replayStarted: hasSequence,
+                browserLaunched: !hasSequence && !!issue.startUrl,
+                connectionReason: connectionRef,
+              });
+            } finally {
+              detachAbortListener?.();
             }
-
-            return createSuccessResponse('ISSUES_WORK_STARTED', {
-              id: issue.id,
-              type: issue.type,
-              title: issue.title,
-              sequenceFile: issue.sequenceFile || null,
-              details: formatIssueDetails(issue),
-              replayStarted: hasSequence,
-              browserLaunched: !hasSequence && !!issue.startUrl,
-              connectionReason: connectionRef,
-            });
           }
 
           case 'resolve': {

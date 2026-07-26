@@ -16,6 +16,7 @@ import { autoLaunchChrome } from './replay-executor.js';
 import type { ClickableCache, ClickableElement } from '../clickable-cache.js';
 import { collectInteractiveElements } from '../element-collector.js';
 import type { ToolResponseMeta, NavigateActionMeta } from '../tool-response.js';
+import type { ExecuteToolCall } from '../types.js';
 
 // =============================================================================
 // Types
@@ -147,7 +148,7 @@ export function createPageTools(
   connectionManager: ConnectionManager,
   resolveConnectionFromReason: (connectionReason: string) => Promise<any>,
   clickableCache: ClickableCache,
-  executeToolCall?: (toolName: string, params: Record<string, any>) => Promise<any>
+  executeToolCall?: ExecuteToolCall
 ) {
   /**
    * Auto-restart console and network monitoring after navigation

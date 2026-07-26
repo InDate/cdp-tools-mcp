@@ -1781,7 +1781,7 @@ Runs are held in memory only: results expire 30 minutes after a run settles, and
 
 **Cancel requested:** {{name}} (`{{runId}}`)
 
-The run stops at the next step boundary - a tool call already in flight cannot be interrupted and may still take effect. Check `replay({ action: 'status', runId: '{{runId}}' })` until the status is `cancelled`.
+Steps that support cancellation are interrupted promptly; other steps stop at the next step boundary. Work already dispatched to the browser may still take effect. Check `replay({ action: 'status', runId: '{{runId}}' })` until the status is `cancelled`.
 
 ---
 
@@ -1883,7 +1883,7 @@ Sequence: {{sequenceName}}
 
 Step {{step}} ({{tool}}) timed out after {{timeoutMs}}ms ({{limitSource}} limit)
 
-**Note:** The underlying tool call cannot be cancelled and may still complete in the background; the run stops at this step.
+**Note:** The run stops at this step. Work already dispatched to the browser may still take effect.
 
 ---
 

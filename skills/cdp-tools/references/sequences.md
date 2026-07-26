@@ -87,9 +87,14 @@ executes in the background.
 
 ```
 replay({ action: 'status', runId: 'run-3-...' })   // progress; full result once settled
-replay({ action: 'cancel', runId: 'run-3-...' })   // stop it (takes effect at the
-                                                   // next step boundary)
+replay({ action: 'cancel', runId: 'run-3-...' })   // stop it
 ```
+
+`cancel` interrupts a `wait` step promptly (any form - the run's abort signal
+reaches the wait handler mid-poll, including inside nested `conditional`
+sequences). Other steps' handlers don't observe the signal yet, so those stop
+at the next step boundary, and work already dispatched to the browser may
+still take effect.
 
 Several runs can execute concurrently - even of the same sequence - and the
 run id is what tells them apart. Settled runs and their results are kept in

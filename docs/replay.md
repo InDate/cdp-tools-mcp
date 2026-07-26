@@ -377,10 +377,17 @@ Lifetime and limits:
   most 50 records). After that, or after a server restart (including the
   supervisor's hot-restart on rebuild, which also kills any in-flight run),
   `status`/`cancel` with that id return `REPLAY_RUN_NOT_FOUND`.
-- `cancel` with a `runId` aborts the run's controller. Today that takes
-  effect **at the next step boundary**: a tool call already in flight is not
-  interrupted and its side effects may still land (per-step cancellation is
-  tracked in #110). Status shows `cancelling` until the boundary is reached.
+- `cancel` with a `runId` aborts the run's controller. The run's signal is
+  forwarded to every step's tool handler; steps whose handler honours it are
+  **interrupted promptly** - today that is `wait` (all forms: `selector`,
+  `selectorGone`, `expression`, `ms`), by far the longest-lived kind of step.
+  Steps whose handler ignores the signal (`input`, `navigate`, `request`, ...)
+  finish their in-flight tool call first, so cancel takes effect **at the next
+  step boundary** for them, and work already dispatched to the browser may
+  still take effect (extending prompt interruption to more tools is tracked
+  in #110). Cancellation also reaches nested sequences (`conditional` flows,
+  nested `replay run` steps) - they share the parent run's signal. Status
+  shows `cancelling` until the run actually stops.
 - A nested run started by a sequence step (a `conditional` flow, or a
   `replay run` step - which is forced to `wait: true`) is part of its parent
   run, never a separate top-level run.
@@ -438,8 +445,8 @@ replay({
 Each step's tool call is bounded by `min(stepTimeout, remaining totalTimeout)`.
 A step that exceeds its bound fails the run at that step, like any other step
 failure - the error names the step, the tool, and the limit that fired. The
-underlying tool call cannot be cancelled and may still complete in the
-background, but the run stops immediately.
+run stops immediately; the timed-out tool call is not interrupted and may
+still complete in the background (its side effects can still land).
 
 Exceptions:
 

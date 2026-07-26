@@ -1348,7 +1348,7 @@ logpointTracker.setLimitExceededCallback((metadata) => {
 /**
  * Execute a tool call - used by replay system
  */
-async function executeToolCall(toolName: string, params: Record<string, any>): Promise<any> {
+async function executeToolCall(toolName: string, params: Record<string, any>, abortSignal?: AbortSignal): Promise<any> {
   const tool = allTools[toolName as keyof typeof allTools];
 
   if (!tool) {
@@ -1361,7 +1361,7 @@ async function executeToolCall(toolName: string, params: Record<string, any>): P
     throw new Error(`Validation failed: ${JSON.stringify(validation.error)}`);
   }
 
-  const result = await tool.handler(validation.data);
+  const result = await tool.handler(validation.data, abortSignal);
 
   // If tool returned an error, throw it as a ToolError so it propagates correctly
   if (result?.isError) {

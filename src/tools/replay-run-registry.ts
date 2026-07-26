@@ -12,7 +12,7 @@ import type { StepResult } from './replay-executor.js';
 
 export type RunStatus =
   | 'running'     // executing steps
-  | 'cancelling'  // cancel requested; stops at the next step boundary
+  | 'cancelling'  // cancel requested; steps that honour the signal stop promptly, others at the next step boundary
   | 'paused'      // stopped mid-sequence (stepTo / breakpoint / click validation) - drive with step/finish
   | 'completed'   // finished, all steps succeeded
   | 'failed'      // finished, at least one step failed (or setup failed)

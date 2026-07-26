@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import type { CommandRecorder, ActiveSequenceState, CommandSequence } from '../command-recorder.js';
+import type { ExecuteToolCall } from '../types.js';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import { showReplayOverlay } from '../interaction-recorder.js';
@@ -286,7 +287,7 @@ async function handleHistory(args: ReplayArgs, recorder: CommandRecorder) {
 async function handleRepeat(
   args: ReplayArgs,
   recorder: CommandRecorder,
-  executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>
+  executeToolCall: ExecuteToolCall
 ) {
   if (!args.indices || args.indices.length === 0) {
     return createErrorResponse('MISSING_PARAMETER', {
@@ -373,7 +374,7 @@ async function handleRepeat(
 
 async function handleRunFromLog(
   args: ReplayArgs,
-  executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>
+  executeToolCall: ExecuteToolCall
 ) {
   if (!args.lines || args.lines.length === 0) {
     return createErrorResponse('MISSING_PARAMETER', {
@@ -747,7 +748,7 @@ type RunOutcome = 'completed' | 'failed' | 'paused' | 'cancelled';
 interface PerformRunDeps {
   args: ReplayArgs;
   recorder: CommandRecorder;
-  executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>;
+  executeToolCall: ExecuteToolCall;
   getPageForConnection: (connectionReason: string) => Promise<any>;
   getConnectionPort?: (connectionReason: string) => Promise<number | null>;
   sequence: CommandSequence;
@@ -759,7 +760,7 @@ interface PerformRunDeps {
 async function handleRun(
   args: ReplayArgs,
   recorder: CommandRecorder,
-  executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>,
+  executeToolCall: ExecuteToolCall,
   getPageForConnection: (connectionReason: string) => Promise<any>,
   abortSignal?: AbortSignal,
   getConnectionPort?: (connectionReason: string) => Promise<number | null>
@@ -1144,7 +1145,7 @@ function formatRunRecord(record: RunRecord): any {
     if (record.status === 'running') {
       text += ` or stop it with \`replay({ action: 'cancel', runId: '${record.runId}' })\`.`;
     } else {
-      text += `. Cancel was requested; the run stops at the next step boundary.`;
+      text += `. Cancel was requested; steps that support cancellation stop promptly, others at the next step boundary.`;
     }
   } else if (record.finalResponse?.content?.[0]?.text) {
     text += `\n\n${record.finalResponse.content[0].text}`;
@@ -1270,7 +1271,7 @@ async function handleCancel(args: ReplayArgs, recorder: CommandRecorder) {
 async function handleStep(
   args: ReplayArgs,
   recorder: CommandRecorder,
-  executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>
+  executeToolCall: ExecuteToolCall
 ) {
   const activeSeq = recorder.getActiveSequence();
   if (!activeSeq) {
@@ -1328,7 +1329,7 @@ async function handleStep(
 
 async function handleFinish(
   recorder: CommandRecorder,
-  executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>
+  executeToolCall: ExecuteToolCall
 ) {
   const activeSeq = recorder.getActiveSequence();
   if (!activeSeq) {
@@ -1470,7 +1471,7 @@ async function handleInsert(args: ReplayArgs, recorder: CommandRecorder) {
 
 async function handleRecordInteraction(
   args: ReplayArgs,
-  executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>,
+  executeToolCall: ExecuteToolCall,
   getPageForConnection?: (connectionReason: string) => Promise<any>,
   recorder?: CommandRecorder,
   abortSignal?: AbortSignal
@@ -1962,7 +1963,7 @@ function generatePlaywrightCode(commands: Array<{ tool: string; params: Record<s
 
 export function createReplayTools(
   commandRecorder: CommandRecorder,
-  executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>,
+  executeToolCall: ExecuteToolCall,
   getPageForConnection?: (connectionReason: string) => Promise<any>,
   getConnectionPort?: (connectionReason: string) => Promise<number | null>,
   /**

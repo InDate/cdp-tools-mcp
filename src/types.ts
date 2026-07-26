@@ -2,6 +2,19 @@
  * Type definitions for the CDP debugger
  */
 
+/**
+ * Executes a registered tool by name (the replay/issues subsystems' way of
+ * calling tools internally). The optional signal is forwarded to the tool's
+ * handler; handlers that honour it THROW an abort-shaped error (see
+ * utils/abort.ts isAbortError) rather than returning an isError response.
+ * One shared type so the next parameter is not added in twelve places again.
+ */
+export type ExecuteToolCall = (
+  toolName: string,
+  params: Record<string, any>,
+  abortSignal?: AbortSignal
+) => Promise<any>;
+
 export interface BreakpointInfo {
   breakpointId: string;
   location: {

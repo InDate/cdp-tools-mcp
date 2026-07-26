@@ -3,6 +3,8 @@
  */
 
 import type { CommandRecorder, RecordedCommand, CommandSequence, ActiveSequenceState } from '../command-recorder.js';
+import type { ExecuteToolCall } from '../types.js';
+import { abortableDelayResult } from '../utils/abort.js';
 import { debugLog } from '../debug-logger.js';
 import { sanitizeReference, requireValidReference } from '../reference-validator.js';
 import { checkUrlPort } from '../utils/port-check.js';
@@ -34,7 +36,7 @@ export function setReplayCursorCallbacks(callbacks: ReplayCursorCallbacks): void
 // =============================================================================
 
 export interface ExecutionContext {
-  executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>;
+  executeToolCall: ExecuteToolCall;
   commandRecorder: CommandRecorder;
   connectionReason: string;
   logPrefix?: string;
@@ -379,7 +381,13 @@ export async function executeConditionalFlow(
    * way to extend the total, and a caller who set a tight bound to fail fast
    * would not get it.
    */
-  budget?: { stepTimeout?: number; totalTimeout?: number }
+  budget?: { stepTimeout?: number; totalTimeout?: number },
+  /**
+   * The parent RUN's signal. Without it a nested sequence is deaf to
+   * `replay cancel` even at its own step boundaries - the substep loop would
+   * run to completion after the user cancelled.
+   */
+  abortSignal?: AbortSignal
 ): Promise<ConditionalFlowResult> {
   const { logPrefix = 'executor' } = ctx;
   const replayConfig = configManager.getReplayConfig();
@@ -452,6 +460,7 @@ export async function executeConditionalFlow(
     // caller behaves exactly as before.
     ...(budget?.stepTimeout !== undefined ? { stepTimeout: budget.stepTimeout } : {}),
     ...(budget?.totalTimeout !== undefined ? { totalTimeout: budget.totalTimeout } : {}),
+    abortSignal,
   });
 
   // Check for failures
@@ -757,7 +766,7 @@ export type AutoLaunchResult = {
  * This is the shared helper for all auto-launch scenarios.
  */
 export async function autoLaunchChrome(
-  executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>,
+  executeToolCall: ExecuteToolCall,
   connectionReason: string,
   logPrefix: string = 'auto-launch',
   forceNewInstance: boolean = false
@@ -900,10 +909,18 @@ export async function navigateToStartUrl(
  * Execute a single command with retry logic for element not found errors
  */
 export async function executeCommandWithRetry(
-  executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>,
+  executeToolCall: ExecuteToolCall,
   tool: string,
   params: Record<string, any>,
-  logPrefix: string = 'executor'
+  logPrefix: string = 'executor',
+  /**
+   * The RUN's signal, forwarded to the tool handler so handlers that honour
+   * it (currently `wait`) are interrupted mid-step by `replay cancel`. Note
+   * this helper still RESOLVES `{ success: false }` when a handler throws an
+   * abort - executeSteps consults the signal on the failure path to classify
+   * it as "Replay aborted by user" rather than a genuine step failure.
+   */
+  abortSignal?: AbortSignal
 ): Promise<{ success: boolean; result?: any; error?: string }> {
   const isRetryableAction = tool === 'input' && ['click', 'type', 'hover'].includes(params.action);
   const maxRetries = isRetryableAction ? 5 : 1;
@@ -917,7 +934,7 @@ export async function executeCommandWithRetry(
     // returned-isError branch is kept defensively in case a caller doesn't throw.
     let result: any;
     try {
-      result = await executeToolCall(tool, params);
+      result = await executeToolCall(tool, params, abortSignal);
     } catch (err: any) {
       const errorText = err?.response?.content?.[0]?.text || err?.message || '';
       const isElementNotFound = errorText.includes('Element not found') ||
@@ -1390,11 +1407,12 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
     await resumeIfPaused(ctx);
   }
 
-  // Timeout helper. On timeout the losing tool call CANNOT be cancelled
-  // (executeToolCall's handlers take no AbortSignal), so it may still settle in
-  // the background - swallow its eventual rejection so it can't surface as an
-  // unhandled rejection after the run has already reported the timeout. The run
-  // stops at the timed-out step, so no later step races against the orphan.
+  // Timeout helper. On timeout the losing tool call is NOT cancelled (handlers
+  // receive the RUN's signal, but the step timer is not wired to it), so it may
+  // still settle in the background - swallow its eventual rejection so it can't
+  // surface as an unhandled rejection after the run has already reported the
+  // timeout. The run stops at the timed-out step, so no later step races
+  // against the orphan.
   const executeWithTimeout = async <T>(
     promise: Promise<T>,
     timeoutMs: number,
@@ -1414,23 +1432,6 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
     }
   };
 
-  // Abortable delay helper - properly cleans up listeners
-  const abortableDelay = (ms: number): Promise<boolean> => {
-    return new Promise((resolve) => {
-      const timeoutId = setTimeout(() => resolve(false), ms);
-      if (abortSignal) {
-        const onAbort = () => {
-          clearTimeout(timeoutId);
-          resolve(true); // true = was aborted
-        };
-        abortSignal.addEventListener('abort', onAbort, { once: true });
-        // Clean up listener if timeout completes normally
-        setTimeout(() => {
-          abortSignal.removeEventListener('abort', onAbort);
-        }, ms + 1);
-      }
-    });
-  };
 
   for (let i = startStep; i < targetEnd; i++) {
     const cmd = commands[i];
@@ -1463,7 +1464,7 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
     // Wait for delay if specified (for recorded interactions)
     if (cmd.delay && cmd.delay > 0) {
       debugLog(logPrefix, `Waiting ${cmd.delay}ms before step ${i + 1}`);
-      const wasAborted = await abortableDelay(cmd.delay);
+      const wasAborted = await abortableDelayResult(cmd.delay, abortSignal);
       if (wasAborted) continue;
     }
 
@@ -1612,7 +1613,9 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
           stepCtx,
           commandRecorder,
           // Remaining, not the original: nesting must not extend the total.
-          { stepTimeout, totalTimeout: Math.max(0, totalTimeout - (Date.now() - startTime)) }
+          { stepTimeout, totalTimeout: Math.max(0, totalTimeout - (Date.now() - startTime)) },
+          // The run's signal, so cancel reaches the nested sequence too.
+          abortSignal
         );
 
         // Build the step result with substeps
@@ -1665,7 +1668,7 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
       const boundedByTotal = cmd.tool === 'wait' || remainingTotal < stepTimeout;
       const stepBound = cmd.tool === 'wait' ? remainingTotal : Math.min(stepTimeout, remainingTotal);
       const execResult = await executeWithTimeout(
-        executeCommandWithRetry(executeToolCall, cmd.tool, params, logPrefix),
+        executeCommandWithRetry(executeToolCall, cmd.tool, params, logPrefix, abortSignal),
         stepBound,
         getMessage('REPLAY_STEP_TIMEOUT', {
           step: i + 1,
@@ -1676,6 +1679,21 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
       );
 
       if (!execResult.success) {
+        // A step that failed while the run signal is aborted is the CANCEL
+        // surfacing (e.g. the wait handler throwing an abort mid-poll), not a
+        // genuine failure: report the canonical abort message and skip
+        // diagnostics - the user cancelled, don't interrogate a browser they
+        // may already be tearing down.
+        if (abortSignal?.aborted) {
+          debugLog(logPrefix, `Replay aborted during step ${i + 1}`);
+          results.push({
+            step: i + 1,
+            tool: cmd.tool,
+            success: false,
+            error: 'Replay aborted by user'
+          });
+          break;
+        }
         const diagnostics = await gatherDiagnostics(stepCtx);
         results.push({
           step: i + 1,
@@ -1843,6 +1861,18 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
       }
 
     } catch (error: any) {
+      // Same classification as the resolved-failure path above: an exception
+      // thrown while the run signal is aborted is the cancel surfacing.
+      if (abortSignal?.aborted) {
+        debugLog(logPrefix, `Replay aborted during step ${i + 1}`);
+        results.push({
+          step: i + 1,
+          tool: cmd.tool,
+          success: false,
+          error: 'Replay aborted by user'
+        });
+        break;
+      }
       debugLog(logPrefix, `Error at step ${i + 1}: ${error.message}`);
       results.push({
         step: i + 1,

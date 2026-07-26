@@ -27,6 +27,7 @@ import { createTool } from '../validation-helpers.js';
 import { createErrorResponse, createSuccessResponse } from '../messages.js';
 import type { ToolResponseMeta } from '../tool-response.js';
 import { isExtendedSelector, parseExtendedSelector } from '../utils/selector-resolver.js';
+import { abortableSleep, isAbortError, throwIfAborted } from '../utils/abort.js';
 
 const waitSchema = z.object({
   selector: z.string().optional().describe('Wait until an element matching this CSS selector exists. Supports extended selectors: :has-text("text") partial match, :text("text") exact match. Survives navigations that happen mid-wait.'),
@@ -43,9 +44,6 @@ type WaitArgs = z.infer<typeof waitSchema>;
 const DEFAULT_TIMEOUT_MS = 15000;
 const DEFAULT_POLL_INTERVAL_MS = 100;
 
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
 
 /**
  * Build a self-contained synchronous in-page expression that evaluates to
@@ -104,7 +102,12 @@ export function createWaitTools(
     wait: createTool(
       'Wait as a sequence step - the primitive for "the previous step kicked off async work". Exactly one of: selector (element appears), selectorGone (element disappears), expression (synchronous JS predicate polls truthy), ms (fixed sleep, last resort). Condition forms poll from the MCP side, so they survive navigations mid-wait and never depend on in-page timers or promises; on timeout the step fails cleanly instead of hanging.',
       waitSchema,
-      async (args: WaitArgs) => {
+      // abortSignal: in a sequence this is the RUN's signal - a long wait is
+      // the most cancellable thing a run does, so `replay cancel` must
+      // interrupt it mid-poll instead of letting it run out its own
+      // timeoutMs. On abort the handler THROWS an abort-shaped error (never
+      // returns an isError response); the executor classifies it.
+      async (args: WaitArgs, abortSignal?: AbortSignal) => {
         const { selector, selectorGone, expression, ms, connectionReason } = args;
         const timeoutMs = args.timeoutMs ?? DEFAULT_TIMEOUT_MS;
         const pollIntervalMs = args.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
@@ -141,7 +144,7 @@ export function createWaitTools(
         // ---- wait({ ms }): plain sleep, no browser involved -----------------
         if (form === 'ms') {
           const start = Date.now();
-          await sleep(ms!);
+          await abortableSleep(ms!, abortSignal);
           const response = createSuccessResponse('WAIT_SLEEP_COMPLETE', { ms: ms! });
           return { ...response, _meta: buildMeta(true, Date.now() - start, 0) };
         }
@@ -194,6 +197,10 @@ export function createWaitTools(
         let lastError: string | undefined;
 
         while (true) {
+          // Cancelled (e.g. `replay cancel` aborting the run) - stop polling
+          // NOW, not at this wait's own timeoutMs.
+          throwIfAborted(abortSignal);
+
           // A paused debugger stops the event loop: the DOM cannot change and
           // no predicate can flip. Burn no time - fail fast with the reason.
           if (cdpManager.isPaused?.()) {
@@ -226,6 +233,10 @@ export function createWaitTools(
             }
             lastError = undefined; // predicate evaluated cleanly, just false
           } catch (err: any) {
+            // An abort is a cancellation, not an evaluation error - rethrow
+            // it or the loop below would swallow the user's cancel and keep
+            // polling until this wait's own timeoutMs.
+            if (isAbortError(err)) throw err;
             // Evaluation errors are expected mid-wait (execution context
             // destroyed by a navigation; a global that does not exist yet).
             // Swallow and keep polling - but keep the last one for the
@@ -254,7 +265,7 @@ export function createWaitTools(
               _meta: buildMeta(false, elapsed, polls),
             };
           }
-          await sleep(pollIntervalMs);
+          await abortableSleep(pollIntervalMs, abortSignal);
         }
       }
     ),
