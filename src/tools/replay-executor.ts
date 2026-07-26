@@ -369,7 +369,17 @@ export async function executeConditionalFlow(
   condition: string,
   sequenceName: string,
   ctx: ExecutionContext,
-  recorder: CommandRecorder
+  recorder: CommandRecorder,
+  /**
+   * The parent run's timeout budget, so substeps are bounded the way the
+   * caller asked rather than silently falling back to the defaults.
+   *
+   * `totalTimeout` must be the parent's REMAINING budget, not a fresh copy of
+   * its original value - otherwise wrapping steps in a conditional becomes a
+   * way to extend the total, and a caller who set a tight bound to fail fast
+   * would not get it.
+   */
+  budget?: { stepTimeout?: number; totalTimeout?: number }
 ): Promise<ConditionalFlowResult> {
   const { logPrefix = 'executor' } = ctx;
   const replayConfig = configManager.getReplayConfig();
@@ -438,6 +448,10 @@ export async function executeConditionalFlow(
       conditionalDepth: currentDepth + 1,
       conditionalCallStack: [...callStack, sequenceName]
     },
+    // Omitted keys fall back to executeSteps' own defaults, so an unbudgeted
+    // caller behaves exactly as before.
+    ...(budget?.stepTimeout !== undefined ? { stepTimeout: budget.stepTimeout } : {}),
+    ...(budget?.totalTimeout !== undefined ? { totalTimeout: budget.totalTimeout } : {}),
   });
 
   // Check for failures
@@ -1577,7 +1591,9 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
           params.if,
           params.then,
           stepCtx,
-          commandRecorder
+          commandRecorder,
+          // Remaining, not the original: nesting must not extend the total.
+          { stepTimeout, totalTimeout: Math.max(0, totalTimeout - (Date.now() - startTime)) }
         );
 
         // Build the step result with substeps
