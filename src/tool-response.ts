@@ -119,6 +119,12 @@ export interface InspectToolMeta {
   value: unknown;
   /** typeof `value` ('undefined' when the expression evaluated to undefined) */
   valueType: string;
+  /**
+   * How `value` was obtained: 'exact' = by-value CDP capture (faithful
+   * machine-readable value); 'display' = reconstructed from the rendered
+   * display text (best effort - non-serializable values only).
+   */
+  valueSource?: 'exact' | 'display';
   /** Set when the expression was evaluated against a paused call frame */
   callFrameId?: string;
 }

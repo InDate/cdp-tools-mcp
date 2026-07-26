@@ -42,6 +42,54 @@ export class EvaluateExpressionTimeoutError extends Error {
   }
 }
 
+/**
+ * Thrown by evaluateExpression() when the expression returned a Promise that
+ * is still pending while the debugger is paused. The paused event loop can
+ * never run the microtask queue, so the promise can never settle - awaiting
+ * it would only burn the full client-side timeout. Failing fast with an
+ * explanation is strictly better. (Promises that already settled - e.g.
+ * `Promise.resolve(x)` or an async IIFE with no real await - ARE recovered
+ * via their [[PromiseState]]/[[PromiseResult]] internal properties and never
+ * reach this error.)
+ */
+export class EvaluateExpressionPendingPromiseError extends Error {
+  constructor(public readonly expression: string) {
+    super(
+      'Expression returned a pending Promise while the debugger is paused - the event loop is stopped, so it can never settle'
+    );
+    this.name = 'EvaluateExpressionPendingPromiseError';
+  }
+}
+
+/** Options accepted by evaluateExpression()/evaluateExpressionDetailed(). */
+export interface EvaluateExpressionOptions {
+  /**
+   * Await a returned Promise and use its settled value (default: true).
+   * Pass false to inspect the Promise object itself.
+   */
+  awaitPromise?: boolean;
+  /**
+   * Also attempt an exact, machine-readable capture of the result (via CDP
+   * returnByValue on the result object - no re-execution, no display
+   * round-trip). Only meaningful through evaluateExpressionDetailed().
+   */
+  captureRaw?: boolean;
+}
+
+/** Result of evaluateExpressionDetailed(). */
+export interface EvaluateExpressionDetailedResult {
+  /** Human-facing formatted value (same shape evaluateExpression() returns). */
+  formatted: any;
+  /** Exact value, only meaningful when rawCaptured is true. */
+  rawValue?: unknown;
+  /**
+   * True when rawValue is an exact by-value capture of the result. False when
+   * the value is not serializable by value (DOM node, Map, Date, window, ...)
+   * - callers should fall back to reconstructing from `formatted`.
+   */
+  rawCaptured: boolean;
+}
+
 /** Truncate a long expression for inclusion in error messages/telemetry. */
 function truncateExpression(expression: string, maxLength: number = 200): string {
   return expression.length > maxLength ? `${expression.slice(0, maxLength)}...` : expression;
@@ -1033,11 +1081,53 @@ export class CDPManager {
     expression: string,
     callFrameId?: string,
     expandObjects: boolean = true,
-    maxDepth: number = 2
+    maxDepth: number = 2,
+    options?: EvaluateExpressionOptions
   ): Promise<any> {
+    const detailed = await this.evaluateExpressionDetailed(
+      expression,
+      callFrameId,
+      expandObjects,
+      maxDepth,
+      { ...options, captureRaw: false }
+    );
+    return detailed.formatted;
+  }
+
+  /**
+   * Like evaluateExpression(), but also attempts an exact by-value capture of
+   * the result when options.captureRaw is set (used for `saveAs` and the
+   * structured `_meta.inspect.value`, so captured data does not round-trip
+   * through display formatting).
+   *
+   * Promise handling (bug-015), all empirically verified against Chrome 150:
+   * - Running page, no callFrameId: `awaitPromise: true` is passed to
+   *   Runtime.evaluate, so async results resolve to their settled value and
+   *   rejections surface as exceptionDetails (-> ExceptionError). A promise
+   *   that never settles is bounded by the client-side timeout.
+   * - Paused (callFrameId given, OR a global evaluation while the debugger is
+   *   paused - Runtime.evaluate with awaitPromise HANGS in that state, and
+   *   Debugger.evaluateOnCallFrame silently ignores awaitPromise): we never
+   *   pass awaitPromise. Instead, a Promise result is resolved through its
+   *   [[PromiseState]]/[[PromiseResult]] internal properties, which works
+   *   without running the event loop: already-settled promises yield their
+   *   exact value (or ExceptionError if rejected); a pending promise fails
+   *   fast with EvaluateExpressionPendingPromiseError instead of burning the
+   *   timeout, because it can never settle while the event loop is stopped.
+   */
+  async evaluateExpressionDetailed(
+    expression: string,
+    callFrameId?: string,
+    expandObjects: boolean = true,
+    maxDepth: number = 2,
+    options?: EvaluateExpressionOptions
+  ): Promise<EvaluateExpressionDetailedResult> {
     if (!this.state.connected) {
       throw new Error('Not connected to debugger');
     }
+
+    const awaitPromise = options?.awaitPromise !== false;
+    const captureRaw = options?.captureRaw === true;
 
     const timeoutMs = this.evaluateExpressionTimeoutMs;
     // Leave CDP's own timeout slightly shorter than ours so a well-behaved
@@ -1053,42 +1143,165 @@ export class CDPManager {
       );
     });
 
-    let result: { result: any; exceptionDetails?: any };
-    try {
+    // The whole pipeline (evaluate + promise recovery + formatting + raw
+    // capture) runs inside the client-side timeout race: the follow-up CDP
+    // calls talk to the same possibly-wedged target as the evaluation itself.
+    const work = (async (): Promise<EvaluateExpressionDetailedResult> => {
+      let result: { result: any; exceptionDetails?: any };
       if (callFrameId) {
         const { Debugger } = this.client;
-        result = await Promise.race([
-          Debugger.evaluateOnCallFrame({ callFrameId, expression, timeout: cdpTimeoutMs }),
-          timeoutGuard,
-        ]);
+        // awaitPromise is deliberately NOT passed: V8 ignores it on
+        // evaluateOnCallFrame (verified), so it cannot be relied on.
+        result = await Debugger.evaluateOnCallFrame({ callFrameId, expression, timeout: cdpTimeoutMs });
       } else {
         const { Runtime } = this.client;
-        result = await Promise.race([
-          Runtime.evaluate({ expression, timeout: cdpTimeoutMs }),
-          timeoutGuard,
-        ]);
+        // awaitPromise while the debugger is paused hangs the CDP call
+        // (event loop stopped -> promise can never settle), so only pass it
+        // when the page is actually running.
+        const canAwaitInProtocol = awaitPromise && !this.state.paused;
+        result = await Runtime.evaluate({
+          expression,
+          timeout: cdpTimeoutMs,
+          ...(canAwaitInProtocol ? { awaitPromise: true } : {}),
+        });
       }
+
+      if (result.exceptionDetails) {
+        throw this.toEvaluateExpressionExceptionError(expression, result.exceptionDetails);
+      }
+
+      let remote = result.result;
+
+      // Paused-context promise recovery (see doc comment above).
+      if (awaitPromise && remote?.subtype === 'promise' && remote.objectId) {
+        remote = await this.resolveSettledPromiseWhilePaused(expression, remote);
+      }
+
+      const formatted = await this.formatValue(remote, expandObjects, maxDepth);
+
+      if (!captureRaw) {
+        return { formatted, rawCaptured: false };
+      }
+      const capture = await this.captureRawValue(remote);
+      return { formatted, ...capture };
+    })();
+
+    try {
+      return await Promise.race([work, timeoutGuard]);
     } finally {
       clearTimeout(timer!);
     }
+  }
 
-    if (result.exceptionDetails) {
-      const details = result.exceptionDetails;
-      const exceptionObject = details.exception;
-      const exceptionType = exceptionObject?.className || exceptionObject?.subtype || 'Error';
-      // `description` on an Error RemoteObject is "Message\n    at stack...".
-      const description: string | undefined = exceptionObject?.description;
-      const exceptionMessage = description?.split('\n')[0] || details.text || 'Unknown error';
-      const exceptionStack = description?.includes('\n') ? description : undefined;
+  /** Map CDP exceptionDetails to a typed error (thrown code or awaited promise rejection). */
+  private toEvaluateExpressionExceptionError(
+    expression: string,
+    details: any
+  ): EvaluateExpressionExceptionError {
+    const exceptionObject = details.exception;
+    const exceptionType = exceptionObject?.className || exceptionObject?.subtype || 'Error';
+    // `description` on an Error RemoteObject is "Message\n    at stack...".
+    // A promise rejected with a primitive has no description - the reason is
+    // carried as exception.value (details.text is just "Uncaught (in promise)").
+    const description: string | undefined = exceptionObject?.description;
+    const exceptionMessage =
+      description?.split('\n')[0] ||
+      (exceptionObject && exceptionObject.value !== undefined ? String(exceptionObject.value) : undefined) ||
+      details.text ||
+      'Unknown error';
+    const exceptionStack = description?.includes('\n') ? description : undefined;
+    return new EvaluateExpressionExceptionError(
+      truncateExpression(expression),
+      exceptionType,
+      exceptionMessage,
+      exceptionStack
+    );
+  }
+
+  /**
+   * Resolve a Promise RemoteObject without running the event loop, via its
+   * [[PromiseState]]/[[PromiseResult]] internal properties (readable even
+   * while the debugger is paused). Returns the settled value's RemoteObject;
+   * throws for rejected/pending promises.
+   */
+  private async resolveSettledPromiseWhilePaused(expression: string, promiseRemote: any): Promise<any> {
+    const { Runtime } = this.client;
+    const props = await Runtime.getProperties({ objectId: promiseRemote.objectId, ownProperties: true });
+    const internal: any[] = props.internalProperties || [];
+    const state = internal.find((p) => p.name === '[[PromiseState]]')?.value?.value;
+    const resultRemote = internal.find((p) => p.name === '[[PromiseResult]]')?.value;
+
+    if (state === 'fulfilled') {
+      return resultRemote ?? { type: 'undefined' };
+    }
+    if (state === 'rejected') {
+      const type = resultRemote?.className || resultRemote?.subtype || 'Error';
+      const description: string | undefined = resultRemote?.description;
+      const message =
+        description?.split('\n')[0] ||
+        (resultRemote && resultRemote.value !== undefined ? String(resultRemote.value) : 'Promise rejected');
       throw new EvaluateExpressionExceptionError(
         truncateExpression(expression),
-        exceptionType,
-        exceptionMessage,
-        exceptionStack
+        type,
+        message,
+        description?.includes('\n') ? description : undefined
       );
     }
+    // pending (or internal props unavailable): it cannot settle while paused.
+    throw new EvaluateExpressionPendingPromiseError(truncateExpression(expression));
+  }
 
-    return await this.formatValue(result.result, expandObjects, maxDepth);
+  /**
+   * Attempt an exact by-value capture of an evaluation result, WITHOUT
+   * re-executing the expression: primitives come straight off the
+   * RemoteObject; plain objects/arrays are serialized in place via
+   * Runtime.callFunctionOn(returnByValue). Values whose by-value form is
+   * lossy or impossible (DOM nodes, Date, Map/Set, functions, window - CDP
+   * serializes these to {} or errors) report rawCaptured: false so callers
+   * can fall back to the display-derived reconstruction.
+   */
+  private async captureRawValue(remote: any): Promise<{ rawValue?: unknown; rawCaptured: boolean }> {
+    if (!remote || remote.type === 'undefined') {
+      return { rawValue: undefined, rawCaptured: true };
+    }
+    if (remote.type === 'string' || remote.type === 'number' || remote.type === 'boolean') {
+      if ('value' in remote) {
+        return { rawValue: remote.value, rawCaptured: true };
+      }
+      // Unserializable numbers (NaN, Infinity, -0) arrive as
+      // unserializableValue with no `value` - let the caller fall back.
+      return { rawCaptured: false };
+    }
+    if (remote.type === 'object') {
+      if (remote.subtype === 'null') {
+        return { rawValue: null, rawCaptured: true };
+      }
+      // Only plain JSON-like shapes serialize faithfully by value. Anything
+      // with a specialized subtype/class (date, map, set, node, typedarray,
+      // error, ...) collapses to {} under CDP's by-value serialization, which
+      // is WORSE than the display-derived fallback.
+      const className = remote.className;
+      const jsonLike =
+        (remote.subtype === undefined || remote.subtype === 'array') &&
+        (className === undefined || className === 'Object' || className === 'Array');
+      if (jsonLike && remote.objectId) {
+        try {
+          const { Runtime } = this.client;
+          const cf = await Runtime.callFunctionOn({
+            objectId: remote.objectId,
+            functionDeclaration: 'function() { return this; }',
+            returnByValue: true,
+          });
+          if (!cf.exceptionDetails) {
+            return { rawValue: cf.result?.value, rawCaptured: true };
+          }
+        } catch {
+          // Non-serializable (e.g. window: "Object reference chain is too
+          // long") - fall through to the display-derived fallback.
+        }
+      }
+    }
+    return { rawCaptured: false };
   }
 
   /**

@@ -115,11 +115,56 @@ describe('deformatEvaluatedValue', () => {
 });
 
 describe('inspect({ action: "evaluateExpression" }) _meta', () => {
+  // The handler now calls evaluateExpressionDetailed (bug-015). These helpers
+  // simulate the rawCaptured: false path (display-derived fallback) unless a
+  // detailed result is provided explicitly.
   function makeInspectTool(evaluate: (...args: any[]) => Promise<any>) {
-    const cdpManager = { evaluateExpression: vi.fn(evaluate) } as any;
+    const cdpManager = {
+      evaluateExpressionDetailed: vi.fn(async (...args: any[]) => ({
+        formatted: await evaluate(...args),
+        rawCaptured: false,
+      })),
+    } as any;
     const sourceMapHandler = {} as any;
     return createInspectionTools(cdpManager, sourceMapHandler).inspect;
   }
+
+  function makeInspectToolDetailed(detailed: (...args: any[]) => Promise<any>) {
+    const cdpManager = { evaluateExpressionDetailed: vi.fn(detailed) } as any;
+    return createInspectionTools(cdpManager, {} as any).inspect;
+  }
+
+  it('prefers the exact by-value capture over the display reconstruction (bug-015)', async () => {
+    const tool = makeInspectToolDetailed(async () => ({
+      formatted: { token: '"t-1"', count: '3' },
+      rawValue: { token: 't-1', count: 3, quotedNumber: '42' },
+      rawCaptured: true,
+    }));
+    const res = await tool.handler({ action: 'evaluateExpression', expression: 'state' } as any);
+    // '42' stays a string - no deformat quoting heuristics applied to exact captures.
+    expect(res._meta.inspect.value).toEqual({ token: 't-1', count: 3, quotedNumber: '42' });
+    expect(res._meta.inspect.valueSource).toBe('exact');
+  });
+
+  it('requests promise awaiting and raw capture from the manager by default', async () => {
+    const detailed = vi.fn(async () => ({ formatted: '1', rawValue: 1, rawCaptured: true }));
+    const tool = makeInspectToolDetailed(detailed);
+    await tool.handler({ action: 'evaluateExpression', expression: '1' } as any);
+    expect(detailed).toHaveBeenCalledWith('1', undefined, true, 2, {
+      awaitPromise: true,
+      captureRaw: true,
+    });
+  });
+
+  it('passes awaitPromise: false through when the caller opts out', async () => {
+    const detailed = vi.fn(async () => ({ formatted: 'Promise', rawCaptured: false }));
+    const tool = makeInspectToolDetailed(detailed);
+    await tool.handler({ action: 'evaluateExpression', expression: 'p', awaitPromise: false } as any);
+    expect(detailed).toHaveBeenCalledWith('p', undefined, true, 2, {
+      awaitPromise: false,
+      captureRaw: true,
+    });
+  });
 
   it('publishes a machine-readable value alongside the text', async () => {
     const tool = makeInspectTool(async () => '"https://pair.example/abc"');

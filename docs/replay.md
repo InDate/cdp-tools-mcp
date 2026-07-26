@@ -518,8 +518,14 @@ Behaviour worth knowing:
   nothing capturable) **fails the step**. It is never a silent no-op, because the
   failure would otherwise surface far away as a confusing "no variable named ..."
   message.
-- Values that only render as a description (`[HTMLDivElement]`, `Array(3)`) come
-  back as strings - capture a specific field, not a whole DOM object.
+- Async expressions work: a Promise returned by `evaluateExpression` is awaited
+  by default, so an async IIFE (IndexedDB read, `crypto.subtle`, `fetch`)
+  captures its **settled value**, not the Promise object. A rejection fails the
+  step with the expression's own error.
+- JSON-serializable results are captured **by value** (exact - a string `"42"`
+  stays a string). Values that only render as a description (`[HTMLDivElement]`,
+  `Array(3)`) come back as strings - capture a specific field, not a whole DOM
+  object.
 - The store is shared by reference across the whole run, including nested
   `conditional` sequences and steps running on other connections, and it
   survives a mid-run pause into `step`/`finish`.

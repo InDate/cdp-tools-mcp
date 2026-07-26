@@ -409,3 +409,256 @@ describe('CDPManager.evaluateExpression() - bug-004 (hang on thrown RangeError)'
     expect(passedTimeout).toBeGreaterThan(0);
   });
 });
+
+describe('CDPManager.evaluateExpression() - bug-015 (promises not awaited)', () => {
+  // Empirically verified against Chrome 150 (see bug-015):
+  // - Runtime.evaluate({ awaitPromise: true }) resolves promises normally
+  //   while the page is running, but HANGS if the debugger is paused (the
+  //   event loop is stopped, so the promise can never settle).
+  // - Debugger.evaluateOnCallFrame IGNORES awaitPromise entirely and returns
+  //   the Promise RemoteObject immediately.
+  // - While paused, an already-settled promise's value is still recoverable
+  //   via the [[PromiseState]]/[[PromiseResult]] internal properties.
+  function withMockClient(
+    cdpManager: CDPManager,
+    mocks: {
+      evaluate?: (...args: any[]) => Promise<any>;
+      evaluateOnCallFrame?: (...args: any[]) => Promise<any>;
+      getProperties?: (...args: any[]) => Promise<any>;
+      callFunctionOn?: (...args: any[]) => Promise<any>;
+      paused?: boolean;
+    }
+  ) {
+    (cdpManager as any).client = {
+      Runtime: {
+        evaluate: mocks.evaluate,
+        getProperties: mocks.getProperties,
+        callFunctionOn: mocks.callFunctionOn,
+      },
+      Debugger: { evaluateOnCallFrame: mocks.evaluateOnCallFrame },
+    };
+    (cdpManager as any).state.connected = true;
+    (cdpManager as any).state.paused = mocks.paused ?? false;
+  }
+
+  const fulfilledPromiseRemote = {
+    type: 'object',
+    subtype: 'promise',
+    className: 'Promise',
+    description: 'Promise',
+    objectId: 'promise-1',
+  };
+
+  it('passes awaitPromise: true to Runtime.evaluate by default so async results resolve', async () => {
+    const cdpManager = new CDPManager();
+    const evaluate = vi.fn().mockResolvedValue({ result: { type: 'string', value: 'AWAITED_OK' } });
+    withMockClient(cdpManager, { evaluate });
+
+    const result = await cdpManager.evaluateExpression("(async () => 'AWAITED_OK')()");
+
+    expect(evaluate).toHaveBeenCalledWith(expect.objectContaining({ awaitPromise: true }));
+    expect(result).toBe('"AWAITED_OK"');
+  });
+
+  it('does NOT pass awaitPromise to Runtime.evaluate while the debugger is paused (it would hang until timeout)', async () => {
+    const cdpManager = new CDPManager();
+    const evaluate = vi.fn().mockResolvedValue({ result: fulfilledPromiseRemote });
+    const getProperties = vi.fn().mockResolvedValue({
+      result: [],
+      internalProperties: [
+        { name: '[[PromiseState]]', value: { type: 'string', value: 'fulfilled' } },
+        { name: '[[PromiseResult]]', value: { type: 'string', value: 'RECOVERED' } },
+      ],
+    });
+    withMockClient(cdpManager, { evaluate, getProperties, paused: true });
+
+    const result = await cdpManager.evaluateExpression('Promise.resolve("RECOVERED")');
+
+    expect(evaluate.mock.calls[0][0]).not.toHaveProperty('awaitPromise');
+    // ...but a promise that already settled is still recovered exactly,
+    // via its [[PromiseResult]] internal property.
+    expect(result).toBe('"RECOVERED"');
+  });
+
+  it('never passes awaitPromise to Debugger.evaluateOnCallFrame and recovers a settled promise via internal properties', async () => {
+    const cdpManager = new CDPManager();
+    const evaluateOnCallFrame = vi.fn().mockResolvedValue({ result: fulfilledPromiseRemote });
+    const getProperties = vi.fn().mockResolvedValue({
+      result: [],
+      internalProperties: [
+        { name: '[[PromiseState]]', value: { type: 'string', value: 'fulfilled' } },
+        { name: '[[PromiseResult]]', value: { type: 'number', value: 42 } },
+      ],
+    });
+    withMockClient(cdpManager, { evaluateOnCallFrame, getProperties, paused: true });
+
+    const result = await cdpManager.evaluateExpression('Promise.resolve(42)', 'frame-1');
+
+    expect(evaluateOnCallFrame.mock.calls[0][0]).not.toHaveProperty('awaitPromise');
+    expect(result).toBe('42');
+  });
+
+  it('fails fast with EvaluateExpressionPendingPromiseError when a promise cannot settle at a paused frame', async () => {
+    const cdpManager = new CDPManager();
+    const evaluateOnCallFrame = vi.fn().mockResolvedValue({ result: fulfilledPromiseRemote });
+    const getProperties = vi.fn().mockResolvedValue({
+      result: [],
+      internalProperties: [
+        { name: '[[PromiseState]]', value: { type: 'string', value: 'pending' } },
+        { name: '[[PromiseResult]]', value: { type: 'undefined' } },
+      ],
+    });
+    withMockClient(cdpManager, { evaluateOnCallFrame, getProperties, paused: true });
+
+    const started = Date.now();
+    await expect(
+      cdpManager.evaluateExpression('fetch("/never")', 'frame-1')
+    ).rejects.toMatchObject({ name: 'EvaluateExpressionPendingPromiseError' });
+    // Fail-fast, not a burn of the 10s client-side timeout.
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it('surfaces a promise already rejected at a paused frame as EvaluateExpressionExceptionError', async () => {
+    const cdpManager = new CDPManager();
+    const evaluateOnCallFrame = vi.fn().mockResolvedValue({ result: fulfilledPromiseRemote });
+    const getProperties = vi.fn().mockResolvedValue({
+      result: [],
+      internalProperties: [
+        { name: '[[PromiseState]]', value: { type: 'string', value: 'rejected' } },
+        {
+          name: '[[PromiseResult]]',
+          value: {
+            type: 'object',
+            subtype: 'error',
+            className: 'Error',
+            description: 'Error: PRE_PAUSE_REJ\n    at <anonymous>:1:1',
+          },
+        },
+      ],
+    });
+    withMockClient(cdpManager, { evaluateOnCallFrame, getProperties, paused: true });
+
+    await expect(
+      cdpManager.evaluateExpression('globalThis.__rejected', 'frame-1')
+    ).rejects.toMatchObject({
+      name: 'EvaluateExpressionExceptionError',
+      exceptionType: 'Error',
+      exceptionMessage: 'Error: PRE_PAUSE_REJ',
+    });
+  });
+
+  it('surfaces an awaited rejection with a primitive reason (no description on the exception)', async () => {
+    const cdpManager = new CDPManager();
+    // Chrome reports Promise.reject('plain-reason') as exceptionDetails with
+    // text "Uncaught (in promise)" and the primitive as exception.value.
+    const evaluate = vi.fn().mockResolvedValue({
+      result: { type: 'undefined' },
+      exceptionDetails: {
+        text: 'Uncaught (in promise)',
+        exception: { type: 'string', value: 'plain-reason' },
+      },
+    });
+    withMockClient(cdpManager, { evaluate });
+
+    await expect(cdpManager.evaluateExpression("Promise.reject('plain-reason')")).rejects.toMatchObject({
+      name: 'EvaluateExpressionExceptionError',
+      exceptionMessage: 'plain-reason',
+    });
+  });
+
+  it('returns the Promise object itself when awaitPromise: false is passed', async () => {
+    const cdpManager = new CDPManager();
+    const evaluate = vi.fn().mockResolvedValue({ result: fulfilledPromiseRemote });
+    const getProperties = vi.fn();
+    withMockClient(cdpManager, { evaluate, getProperties });
+
+    const result = await cdpManager.evaluateExpression('Promise.resolve(1)', undefined, false, 2, {
+      awaitPromise: false,
+    });
+
+    expect(evaluate.mock.calls[0][0]).not.toHaveProperty('awaitPromise');
+    expect(getProperties).not.toHaveBeenCalled();
+    expect(result).toBe('Promise');
+  });
+});
+
+describe('CDPManager.evaluateExpressionDetailed() - exact raw capture for saveAs (bug-015)', () => {
+  function withMockClient(cdpManager: CDPManager, mocks: any) {
+    (cdpManager as any).client = {
+      Runtime: {
+        evaluate: mocks.evaluate,
+        getProperties: mocks.getProperties,
+        callFunctionOn: mocks.callFunctionOn,
+      },
+      Debugger: { evaluateOnCallFrame: mocks.evaluateOnCallFrame },
+    };
+    (cdpManager as any).state.connected = true;
+    (cdpManager as any).state.paused = mocks.paused ?? false;
+  }
+
+  it('captures a plain object exactly via callFunctionOn returnByValue (no display round-trip)', async () => {
+    const cdpManager = new CDPManager();
+    const evaluate = vi.fn().mockResolvedValue({
+      result: { type: 'object', className: 'Object', description: 'Object', objectId: 'obj-1' },
+    });
+    const callFunctionOn = vi.fn().mockResolvedValue({
+      result: { type: 'object', value: { id: 7, name: 'kit', nested: { s: '42' } } },
+    });
+    // formatValue expansion path
+    const getProperties = vi.fn().mockResolvedValue({ result: [] });
+    withMockClient(cdpManager, { evaluate, getProperties, callFunctionOn });
+
+    const detailed = await cdpManager.evaluateExpressionDetailed('state', undefined, true, 2, {
+      captureRaw: true,
+    });
+
+    expect(callFunctionOn).toHaveBeenCalledWith(
+      expect.objectContaining({ objectId: 'obj-1', returnByValue: true })
+    );
+    expect(detailed.rawCaptured).toBe(true);
+    // The string "42" stays a string - no deformat quoting heuristics involved.
+    expect(detailed.rawValue).toEqual({ id: 7, name: 'kit', nested: { s: '42' } });
+  });
+
+  it('captures primitives exactly from the RemoteObject value', async () => {
+    const cdpManager = new CDPManager();
+    const evaluate = vi.fn().mockResolvedValue({ result: { type: 'string', value: 'x "quoted" y' } });
+    withMockClient(cdpManager, { evaluate });
+
+    const detailed = await cdpManager.evaluateExpressionDetailed('s', undefined, true, 2, {
+      captureRaw: true,
+    });
+    expect(detailed.rawCaptured).toBe(true);
+    expect(detailed.rawValue).toBe('x "quoted" y');
+  });
+
+  it('falls back (rawCaptured: false) when the value is not serializable by value', async () => {
+    const cdpManager = new CDPManager();
+    const evaluate = vi.fn().mockResolvedValue({
+      result: { type: 'object', className: 'Object', description: 'Window', objectId: 'win-1' },
+    });
+    const callFunctionOn = vi.fn().mockRejectedValue(new Error('Object reference chain is too long'));
+    const getProperties = vi.fn().mockResolvedValue({ result: [] });
+    withMockClient(cdpManager, { evaluate, getProperties, callFunctionOn });
+
+    const detailed = await cdpManager.evaluateExpressionDetailed('window', undefined, true, 2, {
+      captureRaw: true,
+    });
+    expect(detailed.rawCaptured).toBe(false);
+  });
+
+  it('does not attempt by-value capture for values that JSON-collapse to {} (Date, Map, DOM nodes)', async () => {
+    const cdpManager = new CDPManager();
+    const evaluate = vi.fn().mockResolvedValue({
+      result: { type: 'object', subtype: 'date', className: 'Date', description: 'Thu Jan 02 2026', objectId: 'date-1' },
+    });
+    const callFunctionOn = vi.fn();
+    withMockClient(cdpManager, { evaluate, callFunctionOn });
+
+    const detailed = await cdpManager.evaluateExpressionDetailed('new Date()', undefined, false, 2, {
+      captureRaw: true,
+    });
+    expect(callFunctionOn).not.toHaveBeenCalled();
+    expect(detailed.rawCaptured).toBe(false);
+  });
+});

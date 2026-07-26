@@ -699,8 +699,25 @@ Evaluation on connection "{{connectionReason}}" did not respond within {{timeout
 
 **Suggestions:**
 - The renderer/execution context may be wedged by the expression itself - try reloading the page or reconnecting
+- If the expression returned a Promise, it may simply never settle (promises are awaited by default) - check the async work completes, or pass `awaitPromise: false` to inspect the Promise object itself
 - Simplify the expression (e.g. avoid spreading very large arrays or deeply recursive calls) and retry
 - Use `getChromeStatus()` or `listConnections()` to check whether the connection is still healthy
+
+---
+
+## EVALUATE_PROMISE_PENDING_WHILE_PAUSED
+
+**Type:** error
+**Code:** EVALUATE_PROMISE_PENDING_WHILE_PAUSED
+
+Expression returned a pending Promise while the debugger is paused - the event loop is stopped, so the promise can never settle.
+
+**Expression:** `{{expression}}`
+
+**Suggestions:**
+- Resume execution first (`execution({ action: 'resume' })`), then evaluate the async expression against the running page
+- Promises that are already settled (e.g. an async result from before the pause) ARE resolved automatically - only genuinely pending work fails this way
+- Pass `awaitPromise: false` to inspect the pending Promise object itself instead of its value
 
 ---
 

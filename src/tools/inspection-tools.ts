@@ -3,7 +3,7 @@
  */
 
 import { z } from 'zod';
-import { CDPManager, EvaluateExpressionExceptionError, EvaluateExpressionTimeoutError } from '../cdp-manager.js';
+import { CDPManager, EvaluateExpressionExceptionError, EvaluateExpressionTimeoutError, EvaluateExpressionPendingPromiseError } from '../cdp-manager.js';
 import { SourceMapHandler } from '../sourcemap-handler.js';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
@@ -225,7 +225,8 @@ const inspectionToolSchema = z.object({
   maxTokens: z.number().optional().describe('Max tokens for getVariables response (default: 1000). Depth auto-reduced to fit, filter required if still exceeded'),
 
   // evaluateExpression parameters
-  expression: z.string().optional().describe('JavaScript expression (required for evaluateExpression action)'),
+  expression: z.string().optional().describe('JavaScript expression (required for evaluateExpression action). A returned Promise is awaited by default, so async IIFEs like (async () => await fetch(...))() resolve to their settled value'),
+  awaitPromise: z.boolean().optional().describe('Await a Promise returned by the expression and use its settled value (for evaluateExpression action, default: true). Pass false to inspect the Promise object itself. While paused at a breakpoint, only already-settled promises can be resolved (the event loop is stopped); a pending one fails fast'),
   saveAs: z.string().optional().describe('Sequence step only (evaluateExpression): captures the evaluated value into the run\'s variable store under this name, for later {{var:name}} / {{var:name.path}} use'),
 
   // searchCode parameters
@@ -391,7 +392,7 @@ export function createInspectionTools(
           }
 
           case 'evaluateExpression': {
-            const { expression, callFrameId, expandObjects = true, maxDepth = 2 } = args;
+            const { expression, callFrameId, expandObjects = true, maxDepth = 2, awaitPromise = true } = args;
 
             if (!expression) {
               return createErrorResponse('MISSING_PARAMETER', {
@@ -402,7 +403,11 @@ export function createInspectionTools(
             }
 
             try {
-              const result = await targetCdpManager.evaluateExpression(expression, callFrameId, expandObjects, maxDepth);
+              const detailed = await targetCdpManager.evaluateExpressionDetailed(
+                expression, callFrameId, expandObjects, maxDepth,
+                { awaitPromise, captureRaw: true }
+              );
+              const result = detailed.formatted;
 
               // Format result as TOON
               let formattedResult: string;
@@ -420,7 +425,12 @@ export function createInspectionTools(
               // Machine-readable twin of the text above: this is what a
               // sequence step's saveAs captures into the variable store
               // (replay-executor's capture table reads _meta.inspect.value).
-              const capturedValue = deformatEvaluatedValue(result);
+              // Prefer the exact by-value capture (bug-015); fall back to
+              // reconstructing from the display formatting only when the
+              // value is not serializable by value.
+              const capturedValue = detailed.rawCaptured
+                ? detailed.rawValue
+                : deformatEvaluatedValue(result);
               const inspectMeta: ToolResponseMeta = {
                 tool: 'inspect',
                 action: 'evaluateExpression',
@@ -429,6 +439,7 @@ export function createInspectionTools(
                   expression,
                   value: capturedValue,
                   valueType: capturedValue === null ? 'null' : typeof capturedValue,
+                  valueSource: detailed.rawCaptured ? 'exact' : 'display',
                   ...(callFrameId ? { callFrameId } : {}),
                 },
               };
@@ -451,6 +462,14 @@ export function createInspectionTools(
                   errorType: error.exceptionType,
                   errorMessage: error.exceptionMessage,
                   stack: error.exceptionStack || '(no stack available)',
+                });
+              }
+              // The expression returned a Promise that cannot settle while
+              // the debugger is paused (event loop stopped) - fail fast with
+              // an explanation instead of burning the full timeout.
+              if (error instanceof EvaluateExpressionPendingPromiseError) {
+                return createErrorResponse('EVALUATE_PROMISE_PENDING_WHILE_PAUSED', {
+                  expression: error.expression,
                 });
               }
               // The execution context never responded within the bounded
