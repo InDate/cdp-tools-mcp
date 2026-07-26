@@ -136,6 +136,8 @@ runs against (see Quick Start).
 **Connection**: `launchChrome`, `killChrome`, `resetChromeLauncher`, `getChromeStatus`, `connectDebugger`, `disconnectDebugger`, `getDebuggerStatus`, `listConnections`, `switchConnection`
 - These are individual tools, not actions
 - `launchChrome` also connects - don't follow it with `connectDebugger`
+- `launchChrome({ profile: 'device-a' })` uses a **named persistent profile**: a stable user-data-dir under `~/.cdp-tools/profiles` (override per project with `chrome.persistentProfileRoot`) that survives across runs, so logins, cookies and IndexedDB persist. Naming it is what makes it persistent - there is no separate flag. It does not pin a port. Only one live Chrome may hold a profile at a time. Unnamed launches stay throwaway and are deleted on exit
+- `launchChrome({ port, forceNewInstance: true })` honours that exact port and errors if it is already taken, rather than quietly moving to another one
 
 **Tab**: `tab` (actions: list, create, rename, switch, close)
 
@@ -168,11 +170,15 @@ runs against (see Quick Start).
 **Modal**: `detectModals`, `dismissModal`
 - Individual tools, not actions
 
-**Storage**: `storage` (actions: getCookies, setCookie, getLocalStorage, setLocalStorage, clear)
+**Storage**: `storage` (actions: getCookies, setCookie, getLocalStorage, setLocalStorage, removeLocalStorage, getSessionStorage, setSessionStorage, removeSessionStorage, idbListDatabases, idbListStores, idbGet, idbGetAll, idbPut, idbDelete, clear)
+- IndexedDB reads return typed descriptors for values JSON can't express - `{__type:'CryptoKey', algorithm, extractable, usages}` and analogues for Blob/ArrayBuffer/Map/Set/Date - so a non-extractable key is still observable. `idbPut` accepts JSON-expressible values only
+- A read never creates a database: `idbGet` on an unknown name errors rather than silently creating it
+- `clear` defaults to cookies + localStorage + sessionStorage. `indexedDB` is opt-in via `types` - dropping whole databases is far less recoverable
 
 **HTTP / assertions**: `request`, `assert`, `saveToDisk`
 - `request`: HTTP request as a sequence step. `destination: 'node'` sends it from the MCP server process (no browser, no CORS/cookies); `destination: 'browser'` runs `fetch()` in a connected tab (that page's cookies/session/origin). `saveAs` captures the response for later steps
-- `assert`: assert a condition as a sequence step, failing the sequence if false - use `{{var:name.path}}` templates against values captured by a prior `request({ saveAs })`
+- `assert`: assert a condition as a sequence step, failing the sequence if false - use `{{var:name.path}}` templates against values captured by a prior `saveAs`
+- **Capturing values with `saveAs`**: supported on `request` and on `inspect({ action: 'evaluateExpression' })`. They store different shapes - `request` stores the whole response object (so `{{var:login.body.token}}`), `inspect` stores the evaluated value itself (so `{{var:pairingUrl}}` is the string). A `saveAs` that cannot be honoured now fails the step rather than silently capturing nothing
 
 **Issues**: `issues` (actions: list, create, workOn, resolve, acknowledge, comment)
 - `create`/`comment`: track bugs and features as Markdown issues, optionally linked to a replay sequence
@@ -195,7 +201,7 @@ runs against (see Quick Start).
 
 **Debug logging**: `setDebugLogging`, `getDebugLoggingStatus`
 
-**Config**: `config` (actions: status, useLocal, useGlobal, reset, backup, cloneFromGlobal, show, listTools, reload, restart)
+**Config**: `config` (actions: status, useLocal, useGlobal, reset, backup, cloneFromGlobal, show, listTools, reload, restart, listProfiles, resetProfile)
 - `status`: Show where config is loaded from (local vs global)
 - `useLocal`: Switch to project-local config (.cdp-tools/config.json)
 - `useGlobal`: Switch to global config (~/.cdp-tools/config.json)
@@ -206,3 +212,5 @@ runs against (see Quick Start).
 - `listTools`: List all toggleable tools with status and dependency conflicts
 - `reload`: Re-read config.json now (also happens automatically on file edits, ~250ms debounce). Doesn't apply `tools.enabled`/`tools.disabled` - those need `restart`
 - `restart`: Restart cdp-tools itself via the mcp-supervisor (see "Restarting cdp-tools" above) - use when the server seems stuck/broken, or to apply `tools.enabled`/`tools.disabled` changes
+- `listProfiles`: List named persistent Chrome profiles and the root they live under
+- `resetProfile`: Wipe and recreate a named profile (`config({ action: 'resetProfile', profile: 'device-a' })`). Refused while a live Chrome holds that profile - nothing is deleted in that case

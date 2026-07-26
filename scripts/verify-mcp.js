@@ -7,8 +7,126 @@
  */
 
 import { spawn } from 'child_process';
+import { readFileSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 
 const TIMEOUT_MS = 10000;
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = join(__dirname, '..');
+
+/**
+ * Docs that claim to enumerate the tool surface. These ship to users - the
+ * Agent Skill's catalog is loaded by clients that support Agent Skills, and
+ * docs/instructions.md is the same material inline for clients that don't.
+ * A stale catalog is worse than no catalog: it sends an agent confidently
+ * after tools that do not exist.
+ */
+const TOOL_SURFACE_DOCS = [
+  'skills/cdp-tools/references/tool-categories.md',
+  'docs/instructions.md',
+];
+
+/**
+ * Tool names documented in a catalog file.
+ *
+ * Tools appear either as a bolded group with an action list -
+ * `**Storage**: \`storage\` (actions: ...)` - or as bare backticked names in a
+ * category bullet. Both forms are just inline code spans on a `**Category**:`
+ * line, so collect every code span on those lines and intersect with the live
+ * tool list rather than trying to parse prose. Anything that isn't a real tool
+ * name (an action, a param, a path) simply won't intersect.
+ */
+function documentedToolNames(markdown) {
+  const found = new Set();
+
+  for (const line of markdown.split('\n')) {
+    if (!/^\*\*[^*]+\*\*:/.test(line)) continue;
+    for (const match of line.matchAll(/`([^`]+)`/g)) {
+      const token = match[1].trim();
+      // Only bare identifiers are tool names; a code span containing a space,
+      // dot, brace or paren is a call example or a config key, not a name.
+      if (/^[A-Za-z][A-Za-z0-9]*$/.test(token)) found.add(token);
+    }
+  }
+
+  return found;
+}
+
+/**
+ * Fail the build when the shipped catalogs and the real tool surface disagree.
+ *
+ * This exists because the catalog silently rotted once already: it described a
+ * pre-grouping API (navigateTo, clickElement, takeScreenshot) long after the
+ * tools had been consolidated into grouped ones, and nothing caught it because
+ * a stale doc still builds and still passes tests.
+ */
+/**
+ * The skill's stamped version is what lets the server spot an installed copy
+ * left behind by an older release. If it drifts from package.json the stamp
+ * silently stops meaning anything, so treat a mismatch as a build failure.
+ */
+function verifySkillVersionStamp() {
+  try {
+    const pkgVersion = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf-8')).version;
+    const skill = readFileSync(join(REPO_ROOT, 'skills/cdp-tools/SKILL.md'), 'utf-8');
+    const stamped = skill.match(/^version:\s*(.+)$/m)?.[1].trim();
+
+    if (!stamped) {
+      console.error('✗ skills/cdp-tools/SKILL.md has no `version:` in its frontmatter');
+      return false;
+    }
+    if (stamped !== pkgVersion) {
+      console.error(`✗ SKILL.md is stamped ${stamped} but package.json is ${pkgVersion} - bump the skill stamp`);
+      return false;
+    }
+
+    console.log(`✓ SKILL.md version stamp matches package.json (${pkgVersion})`);
+    return true;
+  } catch (error) {
+    console.error(`✗ Cannot verify skill version stamp: ${error.message}`);
+    return false;
+  }
+}
+
+function verifyDocumentedToolSurface(liveToolNames) {
+  let ok = verifySkillVersionStamp();
+
+  for (const relPath of TOOL_SURFACE_DOCS) {
+    let markdown;
+    try {
+      markdown = readFileSync(join(REPO_ROOT, relPath), 'utf-8');
+    } catch (error) {
+      console.error(`✗ Cannot read tool-surface doc ${relPath}: ${error.message}`);
+      ok = false;
+      continue;
+    }
+
+    const live = new Set(liveToolNames);
+    const documented = documentedToolNames(markdown);
+
+    const undocumented = liveToolNames.filter((name) => !documented.has(name));
+    // The direction that actually rotted: names the doc still advertises after
+    // the tool was renamed or consolidated away. An agent reading these calls
+    // a tool that does not exist.
+    const phantom = [...documented].filter((name) => !live.has(name));
+
+    if (undocumented.length > 0) {
+      console.error(`✗ ${relPath} does not document ${undocumented.length} live tool(s): ${undocumented.join(', ')}`);
+      ok = false;
+    }
+    if (phantom.length > 0) {
+      console.error(`✗ ${relPath} documents ${phantom.length} tool(s) that no longer exist: ${phantom.join(', ')}`);
+      ok = false;
+    }
+    if (undocumented.length === 0 && phantom.length === 0) {
+      console.log(`✓ ${relPath} matches all ${liveToolNames.length} live tools`);
+    }
+  }
+
+  return ok;
+}
 
 /**
  * Estimate token count for a string using cl100k_base approximation
@@ -90,6 +208,15 @@ serverProcess.stdout.on('data', (data) => {
         }
 
         console.log('✓ All key tools registered');
+
+        // Shipped catalogs must match the real surface (see comment above).
+        if (!verifyDocumentedToolSurface(toolNames)) {
+          console.error('');
+          console.error('✗ Shipped tool documentation is out of sync with the registered tools.');
+          console.error('  Update the files listed above, then re-run. These ship to users.');
+          serverProcess.kill();
+          process.exit(1);
+        }
 
         // Token analysis
         const toolAnalysis = tools.map(analyzeToolTokens);
