@@ -44,29 +44,29 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 ## Key Practices
 
 **Breakpoints:**
-- Use conditional: `setBreakpoint` with `condition: "userId === '123'"`
-- Prefer `setLogpoint` for loops/high-frequency code
-- Clean up with `removeBreakpoint` or check `listBreakpoints`
+- Use conditional: `breakpoint({ action: 'set', condition: "userId === '123'" })`
+- Prefer `breakpoint({ action: 'setLogpoint' })` for loops/high-frequency code
+- Clean up with `breakpoint({ action: 'remove' })` or check `breakpoint({ action: 'list' })`
 
 **DOM/Event/XHR Breakpoints (Chrome only):**
-- `setDOMBreakpoint`: Pause when element changes
+- `breakpoint({ action: 'setDOMBreakpoint' })`: Pause when element changes
   - `subtree-modified`: Children added/removed
   - `attribute-modified`: Attributes changed (class, style, etc.)
   - `node-removed`: Element deleted from DOM
-- `setEventBreakpoint`: Pause when events fire (click, submit, input, keydown, etc.)
-- `setXHRBreakpoint`: Pause when XHR/Fetch URL contains pattern
+- `breakpoint({ action: 'setEventBreakpoint' })`: Pause when events fire (click, submit, input, keydown, etc.)
+- `breakpoint({ action: 'setXHRBreakpoint' })`: Pause when XHR/Fetch URL contains pattern
 - Example: `breakpoint({ action: 'setDOMBreakpoint', selector: '.todo-list', domBreakpointType: 'subtree-modified' })`
 - Note: DOM breakpoints use nodeIds which are invalidated on page reload
 
 **Code search:**
-- `searchCode`: Find patterns
-- `searchFunctions`: Locate definitions
+- `inspect({ action: 'searchCode' })`: Find patterns
+- `inspect({ action: 'searchFunctions' })`: Locate definitions
 - `getSourceCode`: View context
 
 **Modal handling:**
-- Use `handleModals: true` on `clickElement`, `typeText`, `hoverElement`
+- Use `handleModals: true` on `input({ action: 'click' | 'type' | 'hover' })`
 - Strategies: `auto` (smart), `accept`, `reject`, `close`, `remove`
-- Example: `clickElement({ selector: '.btn', handleModals: true, dismissStrategy: 'auto' })`
+- Example: `input({ action: 'click', selector: '.btn', handleModals: true, dismissStrategy: 'auto' })`
 - Limitation: English-only, no Shadow DOM/iframes
 
 **Multiple connections:**
@@ -76,25 +76,25 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 ## Common Patterns
 
 **Bug debugging:**
-1. `launchChrome` → `navigateTo`
-2. `searchCode`/`searchFunctions`
-3. `setBreakpoint`/`setLogpoint`
+1. `launchChrome` → `navigate({ action: 'goto' })`
+2. `inspect({ action: 'searchCode' | 'searchFunctions' })`
+3. `breakpoint({ action: 'set' | 'setLogpoint' })`
 4. Trigger bug
-5. `getCallStack` + `getVariables`
-6. `evaluateExpression`
+5. `inspect({ action: 'getCallStack' })` + `inspect({ action: 'getVariables' })`
+6. `inspect({ action: 'evaluateExpression' })`
 
 **Performance:**
-1. `enableNetworkMonitoring`
-2. `navigateTo`
-3. `searchNetworkRequests` (find slow)
-4. `getNetworkRequest` (timing)
-5. `setLogpoint` in slow paths
+1. `network({ action: 'enable' })`
+2. `navigate({ action: 'goto' })`
+3. `network({ action: 'search' })` (find slow)
+4. `network({ action: 'get' })` (timing)
+5. `breakpoint({ action: 'setLogpoint' })` in slow paths
 
 **Frontend state:**
-1. `querySelector` + `getElementProperties`
-2. `getLocalStorage` + `getCookies`
-3. `evaluateExpression`
-4. `getDOMSnapshot`
+1. `dom({ action: 'querySelector' })` + `dom({ action: 'getProperties' })`
+2. `storage({ action: 'getLocalStorage' })` + `storage({ action: 'getCookies' })`
+3. `inspect({ action: 'evaluateExpression' })`
+4. `dom({ action: 'snapshot' })`
 
 **UI verification:**
 1. `content({ action: 'verify' })` - Run all default checks
@@ -106,12 +106,13 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 
 - **After `launchChrome()`**: You are ALREADY connected. Do NOT call `connectDebugger()`. Use the `reference` parameter when launching, or rename later with `tab({ action: 'rename' })`
 - **Interactive elements cache**: Navigation (goto, reload, back, forward) automatically caches all interactive elements. Cache expires after 5 minutes. `findInteractive` shows a summary by default; use `search` or `types` parameters to filter elements
-- **Logpoint limits**: Default 20 executions. Use `resetLogpointCounter` or adjust `maxExecutions`
-- **Expression failures**: Wrapped in try-catch, shows `[Error: message]`. Search: `searchConsoleLogs({pattern: "Logpoint Error"})`
-- **CDP line mapping**: May map to nearest valid line. Use `validateLogpoint()` first
+- **Logpoint limits**: Default 20 executions. Use `breakpoint({ action: 'resetCounter' })` or adjust `maxExecutions`
+- **Expression failures**: Wrapped in try-catch, shows `[Error: message]`. Search: `console({ action: 'search', pattern: "Logpoint Error" })`
+- **CDP line mapping**: May map to nearest valid line. Use `breakpoint({ action: 'validate' })` first
 - **Source maps**: Auto-handled. Use `loadSourceMaps` for manual
 - **File paths**: Full URLs (`http://localhost:3000/app.js`) or `file://`
-- **Network monitoring**: Must enable with `enableNetworkMonitoring`
+- **Network monitoring**: Must enable with `network({ action: 'enable' })`
+- **Closing an issue**: `issues({ action: 'resolve' })` waits on a browser overlay only a human can click - don't call it unattended, use `issues({ action: 'comment' })` to record findings instead
 
 ## Recovering from a failed tool call
 
@@ -124,47 +125,76 @@ If cdp-tools itself seems stuck or broken (not the target app), restart it yours
 
 ## Tool Categories
 
-**Connection**: `launchChrome`, `killChrome`, `connectDebugger`, `disconnectDebugger`, `getChromeStatus`, `getDebuggerStatus`, `listConnections`, `switchConnection`
+Most tools are **grouped**: one tool name plus an `action` param, e.g.
+`navigate({ action: 'goto', url })`, not a separate `navigateTo` tool. The
+actions below are the complete enums accepted by each tool.
 
-**Breakpoint**: `setBreakpoint`, `removeBreakpoint`, `listBreakpoints`, `setLogpoint`, `validateLogpoint`, `resetLogpointCounter`, `setDOMBreakpoint`, `setEventBreakpoint`, `setXHRBreakpoint`
+Nearly every tool also takes `connectionReason` to pick which connection it
+runs against (see Quick Start).
 
-**Execution**: `pause`, `resume`, `stepOver`, `stepInto`, `stepOut`
+**Connection**: `launchChrome`, `killChrome`, `resetChromeLauncher`, `getChromeStatus`, `connectDebugger`, `disconnectDebugger`, `getDebuggerStatus`, `listConnections`, `switchConnection`
+- These are individual tools, not actions
+- `launchChrome` also connects - don't follow it with `connectDebugger`
 
-**Inspection**: `getCallStack`, `getVariables`, `evaluateExpression`
+**Tab**: `tab` (actions: list, create, rename, switch, close)
 
-**Source**: `loadSourceMaps`, `searchCode`, `searchFunctions`, `getSourceCode`
+**Breakpoint**: `breakpoint` (actions: set, remove, list, setLogpoint, validate, resetCounter, waitForScript, setDOMBreakpoint, setEventBreakpoint, setXHRBreakpoint, await)
+- `waitForScript`: block until a script URL loads, so you can breakpoint code that isn't parsed yet
+- `await`: wait for a breakpoint to be hit rather than polling
+- `setLogpoint`: non-pausing logging with `{expr}` interpolation, `maxExecutions` to cap noise
 
-**Console**: `listConsoleLogs`, `getConsoleLog`, `getRecentConsoleLogs`, `searchConsoleLogs`, `clearConsole`
+**Execution**: `execution` (actions: pause, resume, stepOver, stepInto, stepOut, acknowledge)
 
-**Network**: `enableNetworkMonitoring`, `disableNetworkMonitoring`, `listNetworkRequests`, `getNetworkRequest`, `searchNetworkRequests`, `setNetworkConditions`
+**Inspection**: `inspect` (actions: getCallStack, getVariables, evaluateExpression, searchCode, searchFunctions)
 
-**Page**: `navigateTo`, `reloadPage`, `goBack`, `goForward`, `getPageInfo`
+**Source**: `getSourceCode`, `loadSourceMaps`
+- Individual tools, not actions
 
-**DOM**: `querySelector`, `getElementProperties`, `getDOMSnapshot`
+**Console**: `console` (actions: list, get, recent, search, clear, setObjectDepth)
 
-**Content**: `extractText`, `findInteractive`, `verify`
+**Network**: `network` (actions: list, get, search, enable, disable, setConditions)
 
-**Screenshot**: `takeScreenshot`, `takeViewportScreenshot`, `takeElementScreenshot`
+**Page**: `navigate` (actions: goto, reload, back, forward, info)
 
-**Input**: `clickElement`, `typeText`, `pressKey`, `hoverElement`
+**DOM**: `dom` (actions: querySelector, getProperties, snapshot)
+
+**Content**: `content` (actions: extractText, findInteractive, verify, parse)
+
+**Screenshot**: `screenshot` (actions: fullPage, viewport, element, pdf)
+
+**Input**: `input` (actions: click, type, press, hover, focus, focusNext, focusPrevious, drag, scroll, mousemove, pinch)
 
 **Modal**: `detectModals`, `dismissModal`
+- Individual tools, not actions
 
-**Storage**: `getCookies`, `setCookie`, `getLocalStorage`, `setLocalStorage`, `clearStorage`
+**Storage**: `storage` (actions: getCookies, setCookie, getLocalStorage, setLocalStorage, clear)
+
+**HTTP / assertions**: `request`, `assert`, `saveToDisk`
+- `request`: HTTP request as a sequence step. `destination: 'node'` sends it from the MCP server process (no browser, no CORS/cookies); `destination: 'browser'` runs `fetch()` in a connected tab (that page's cookies/session/origin). `saveAs` captures the response for later steps
+- `assert`: assert a condition as a sequence step, failing the sequence if false - use `{{var:name.path}}` templates against values captured by a prior `request({ saveAs })`
+
+**Issues**: `issues` (actions: list, create, workOn, resolve, acknowledge, comment)
+- `create`/`comment`: track bugs and features as Markdown issues, optionally linked to a replay sequence
+- `workOn`: start on an issue, auto-replaying its linked sequence
+- `resolve` is **human-gated**: it opens a browser overlay and only a person clicking Fixed/Not Fixed can close the issue. Don't call it unattended - it will wait ~150s and then fail with `ISSUES_RESOLVE_TIMEOUT`. Record what you found with `comment` and ask the user to run `resolve` themselves
+- `acknowledge`: acknowledge pending bugs to unblock other tools
 
 **Server**: `server` (actions: start, stop, restart, list, logs, stopAll, setAutoRun, clearLogs, remove, monitorPort, unmonitorPort, listMonitored, acknowledgePort, acknowledgeStartup, extendStartup, cancelPendingRestart)
 - Use `global: true` to access servers started from a different working directory
 - `start({ watch: true, watchPaths?: [...] })`: cdp-tools watches the given paths (default: cwd) and auto-restarts the server on file changes, instead of relying on `--watch`/nodemon. Pause-aware: if a breakpoint debugger is paused on that server's inspector port, the restart queues instead of firing immediately - `cancelPendingRestart` discards a queued restart to keep debugging without it firing on resume
 
-**Replay**: `replay` (actions: repeat, history, create, list, get, delete, export, load, listSaved, deleteSaved, run, step, finish, insert, status, cancel, recordInteraction, stopInteraction)
-- `recordInteraction`: Start recording mouse, keyboard, and navigation events with visual overlay
-- `stopInteraction`: Stop recording and create sequence (uses connectionReason as default name)
-- `export`: Export sequence to file - supports format: sequence/playwright/puppeteer
-- `repeat`: Instantly re-execute commands by history index - `replay({ action: 'repeat', indices: [0, 1, 2] })`
-- Each tool response shows its history index in the "Repeat" hint for easy repetition
-- Use `global: true` with `export` action to save to ~/.cdp-tools/sequences/ instead of working directory
+**Replay**: `replay` (actions: history, create, list, get, delete, export, load, listSaved, deleteSaved, run, step, finish, insert, status, cancel, repeat, runFromLog, recordInteraction)
+- `recordInteraction`: record mouse, keyboard, and navigation events with a visual overlay
+- `export`: export a sequence to file - `format: sequence | playwright | puppeteer`
+- `repeat`: instantly re-execute commands by history index - `replay({ action: 'repeat', indices: [0, 1, 2] })`. Each tool response shows its history index in the "Repeat" hint
+- `run`: `startUrl` overrides the stored start URL for one run; `baseUrl` retargets every absolute URL at another deployment's origin
+- Use `global: true` with `export` to save to ~/.cdp-tools/sequences/ instead of the working directory
 
-**Config**: `config` (actions: status, useLocal, useGlobal, reset, backup, cloneFromGlobal, show)
+**Dashboard**: `dashboard` (actions: open, status, stop)
+
+**Debug logging**: `setDebugLogging`, `getDebugLoggingStatus`
+
+**Config**: `config` (actions: status, useLocal, useGlobal, reset, backup, cloneFromGlobal, show, listTools, reload, restart)
 - `status`: Show where config is loaded from (local vs global)
 - `useLocal`: Switch to project-local config (.cdp-tools/config.json)
 - `useGlobal`: Switch to global config (~/.cdp-tools/config.json)
@@ -172,3 +202,6 @@ If cdp-tools itself seems stuck or broken (not the target app), restart it yours
 - `backup`: Create timestamped backup
 - `cloneFromGlobal`: Copy global config to local project
 - `show`: Display current configuration
+- `listTools`: List all toggleable tools with status and dependency conflicts
+- `reload`: Re-read config.json now (also happens automatically on file edits, ~250ms debounce). Doesn't apply `tools.enabled`/`tools.disabled` - those need `restart`
+- `restart`: Restart cdp-tools itself via the mcp-supervisor (see "Restarting cdp-tools" above) - use when the server seems stuck/broken, or to apply `tools.enabled`/`tools.disabled` changes

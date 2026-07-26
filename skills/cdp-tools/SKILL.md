@@ -50,29 +50,29 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 ## Key Practices
 
 **Breakpoints:**
-- Use conditional: `setBreakpoint` with `condition: "userId === '123'"`
-- Prefer `setLogpoint` for loops/high-frequency code
-- Clean up with `removeBreakpoint` or check `listBreakpoints`
+- Use conditional: `breakpoint({ action: 'set', condition: "userId === '123'" })`
+- Prefer `breakpoint({ action: 'setLogpoint' })` for loops/high-frequency code
+- Clean up with `breakpoint({ action: 'remove' })` or check `breakpoint({ action: 'list' })`
 
 **DOM/Event/XHR Breakpoints (Chrome only):**
-- `setDOMBreakpoint`: Pause when element changes
+- `breakpoint({ action: 'setDOMBreakpoint' })`: Pause when element changes
   - `subtree-modified`: Children added/removed
   - `attribute-modified`: Attributes changed (class, style, etc.)
   - `node-removed`: Element deleted from DOM
-- `setEventBreakpoint`: Pause when events fire (click, submit, input, keydown, etc.)
-- `setXHRBreakpoint`: Pause when XHR/Fetch URL contains pattern
+- `breakpoint({ action: 'setEventBreakpoint' })`: Pause when events fire (click, submit, input, keydown, etc.)
+- `breakpoint({ action: 'setXHRBreakpoint' })`: Pause when XHR/Fetch URL contains pattern
 - Example: `breakpoint({ action: 'setDOMBreakpoint', selector: '.todo-list', domBreakpointType: 'subtree-modified' })`
 - Note: DOM breakpoints use nodeIds which are invalidated on page reload
 
 **Code search:**
-- `searchCode`: Find patterns
-- `searchFunctions`: Locate definitions
+- `inspect({ action: 'searchCode' })`: Find patterns
+- `inspect({ action: 'searchFunctions' })`: Locate definitions
 - `getSourceCode`: View context
 
 **Modal handling:**
-- Use `handleModals: true` on `clickElement`, `typeText`, `hoverElement`
+- Use `handleModals: true` on `input({ action: 'click' | 'type' | 'hover' })`
 - Strategies: `auto` (smart), `accept`, `reject`, `close`, `remove`
-- Example: `clickElement({ selector: '.btn', handleModals: true, dismissStrategy: 'auto' })`
+- Example: `input({ action: 'click', selector: '.btn', handleModals: true, dismissStrategy: 'auto' })`
 - Limitation: English-only, no Shadow DOM/iframes
 
 **Multiple connections:**
@@ -82,25 +82,25 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 ## Common Patterns
 
 **Bug debugging:**
-1. `launchChrome` → `navigateTo`
-2. `searchCode`/`searchFunctions`
-3. `setBreakpoint`/`setLogpoint`
+1. `launchChrome` → `navigate({ action: 'goto' })`
+2. `inspect({ action: 'searchCode' | 'searchFunctions' })`
+3. `breakpoint({ action: 'set' | 'setLogpoint' })`
 4. Trigger bug
-5. `getCallStack` + `getVariables`
-6. `evaluateExpression`
+5. `inspect({ action: 'getCallStack' })` + `inspect({ action: 'getVariables' })`
+6. `inspect({ action: 'evaluateExpression' })`
 
 **Performance:**
-1. `enableNetworkMonitoring`
-2. `navigateTo`
-3. `searchNetworkRequests` (find slow)
-4. `getNetworkRequest` (timing)
-5. `setLogpoint` in slow paths
+1. `network({ action: 'enable' })`
+2. `navigate({ action: 'goto' })`
+3. `network({ action: 'search' })` (find slow)
+4. `network({ action: 'get' })` (timing)
+5. `breakpoint({ action: 'setLogpoint' })` in slow paths
 
 **Frontend state:**
-1. `querySelector` + `getElementProperties`
-2. `getLocalStorage` + `getCookies`
-3. `evaluateExpression`
-4. `getDOMSnapshot`
+1. `dom({ action: 'querySelector' })` + `dom({ action: 'getProperties' })`
+2. `storage({ action: 'getLocalStorage' })` + `storage({ action: 'getCookies' })`
+3. `inspect({ action: 'evaluateExpression' })`
+4. `dom({ action: 'snapshot' })`
 
 **UI verification:**
 1. `content({ action: 'verify' })` - Run all default checks
@@ -112,12 +112,13 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 
 - **After `launchChrome()`**: You are ALREADY connected. Do NOT call `connectDebugger()`. Use the `reference` parameter when launching, or rename later with `tab({ action: 'rename' })`
 - **Interactive elements cache**: Navigation (goto, reload, back, forward) automatically caches all interactive elements. Cache expires after 5 minutes. `findInteractive` shows a summary by default; use `search` or `types` parameters to filter elements
-- **Logpoint limits**: Default 20 executions. Use `resetLogpointCounter` or adjust `maxExecutions`
-- **Expression failures**: Wrapped in try-catch, shows `[Error: message]`. Search: `searchConsoleLogs({pattern: "Logpoint Error"})`
-- **CDP line mapping**: May map to nearest valid line. Use `validateLogpoint()` first
+- **Logpoint limits**: Default 20 executions. Use `breakpoint({ action: 'resetCounter' })` or adjust `maxExecutions`
+- **Expression failures**: Wrapped in try-catch, shows `[Error: message]`. Search: `console({ action: 'search', pattern: "Logpoint Error" })`
+- **CDP line mapping**: May map to nearest valid line. Use `breakpoint({ action: 'validate' })` first
 - **Source maps**: Auto-handled. Use `loadSourceMaps` for manual
 - **File paths**: Full URLs (`http://localhost:3000/app.js`) or `file://`
-- **Network monitoring**: Must enable with `enableNetworkMonitoring`
+- **Network monitoring**: Must enable with `network({ action: 'enable' })`
+- **Closing an issue**: `issues({ action: 'resolve' })` waits on a browser overlay only a human can click - don't call it unattended, use `issues({ action: 'comment' })` to record findings instead
 
 ## Recovering from a failed tool call
 
@@ -153,6 +154,6 @@ Either way, a restart kills any Chrome instances this session launched (relaunch
 
 ## Tool Categories
 
-The full list of tools grouped by category (connection, breakpoint, execution, inspection, source, console, network, page, DOM, content, screenshot, input, modal, storage, server, replay, config) is not needed for most tasks. Load it only when you need to look up a specific tool name or action:
+The full list of tools grouped by category (connection, tab, breakpoint, execution, inspection, source, console, network, page, DOM, content, screenshot, input, modal, storage, HTTP/assertions, issues, server, replay, dashboard, config) is not needed for most tasks. Load it only when you need to look up a specific tool name or action:
 
 [references/tool-categories.md](references/tool-categories.md)
