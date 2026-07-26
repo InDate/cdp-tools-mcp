@@ -992,10 +992,16 @@ async function performRun(
 
   // Handle abort - return early (cleanup already handled by abort signal listener)
   if (abortSignal?.aborted) {
+    // results holds every step ATTEMPTED - failures and the abort marker
+    // included - so its length is not a count of completed work. A run that
+    // aborted while a step was failing reported that step as completed.
+    const succeeded = execResult.results.filter(r => r.success).length;
+    const failed = execResult.results.filter(r => !r.success).length;
     const abortedResponse = createSuccessResponse('REPLAY_ABORTED', {
       name: sequence.name,
-      completedSteps: execResult.results.length,
+      completedSteps: succeeded,
       totalSteps: sequence.commands.length,
+      failedSteps: failed > 0 ? failed : null,
       message: 'Replay aborted by user'
     });
     abortedResponse._meta = {

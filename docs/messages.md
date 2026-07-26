@@ -1738,7 +1738,8 @@ Error: {{error}}
 
 **Replay aborted:** {{name}}
 
-Completed {{completedSteps}}/{{totalSteps}} steps before abort.
+Completed {{completedSteps}}/{{totalSteps}} steps before abort.{{#failedSteps}}
+{{failedSteps}} step(s) failed before the abort - see the step results.{{/failedSteps}}
 
 ---
 
