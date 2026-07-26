@@ -36,7 +36,7 @@ import {
 import { checkUrlPort } from '../utils/port-check.js';
 const issuesSchema = z.object({
   action: z.enum(['list', 'create', 'workOn', 'resolve', 'acknowledge', 'comment'])
-    .describe('Issue action: list (list all issues), create (create new issue), workOn (start working on issue), resolve (HUMAN ONLY - opens an interactive browser verification flow and waits for a person to click Fixed/Not Fixed; a human must physically confirm the fix before the issue is marked fixed/implemented; agents calling this get an immediate ISSUES_RESOLVE_REQUIRES_HUMAN error and should use `comment` instead to record findings), acknowledge (acknowledge pending bugs), comment (append a comment to an issue)'),
+    .describe('Issue action: list (list all issues), create (create new issue), workOn (start working on issue), resolve (opens an interactive browser verification flow and waits for a PERSON to click Fixed/Not Fixed - a human must physically confirm before the issue is marked fixed/implemented, so an agent cannot close an issue this way and should use `comment` to record findings instead), acknowledge (acknowledge pending bugs), comment (append a comment to an issue)'),
   id: z.number().optional()
     .describe('Issue ID (for workOn, resolve, comment actions)'),
   type: z.enum(['bug', 'feature']).optional()
@@ -215,13 +215,7 @@ function formatCommentTimeline(issue: TrackedIssue): string {
 export function createIssuesTools(
   executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>,
   getSequencePath?: (name: string) => Promise<string | null>,
-  getPageForConnection?: (connectionReason: string) => Promise<any>,
-  // Returns true when this MCP server's own connected client has been
-  // identified as an autonomous agent (no human present to answer the
-  // interactive verification overlay). See session-detector.ts:isAgentSession
-  // for how this is determined and why. Optional so tests/other embedders
-  // that don't wire it up keep today's behavior (never blocked).
-  isAgentCaller?: () => boolean
+  getPageForConnection?: (connectionReason: string) => Promise<any>
 ) {
   return {
     issues: createTool(
@@ -526,18 +520,14 @@ export function createIssuesTools(
               });
             }
 
-            // resolve is human-only: closing an issue is a human judgement call
-            // (a person verifies the fix, then closes it). Agents - including an
-            // agent verifying its own work - must never be able to do this. If
-            // this server's own connected client has been classified as an
-            // autonomous agent (see session-detector.ts:isAgentSession), fail
-            // immediately and do not touch issue state or open a browser at all.
-            if (isAgentCaller?.()) {
-              return createErrorResponse('ISSUES_RESOLVE_REQUIRES_HUMAN', {
-                id: args.id,
-              });
-            }
-
+            // resolve is human-gated by construction: the only thing that can
+            // settle showTestReadyOverlay/showVerificationOverlay is a real
+            // click in the browser, so an agent calling this cannot close an
+            // issue - it can only wait. That wait is what the bounded timeout
+            // below exists to cap. We deliberately do NOT try to detect an
+            // agent caller up front: the overlay already enforces the policy,
+            // and every available signal for "who is calling" is a heuristic
+            // that risks refusing a genuine human.
             if (!getPageForConnection) {
               return createErrorResponse('ISSUES_NO_PAGE_ACCESS', {
                 message: 'Cannot access browser page for verification',

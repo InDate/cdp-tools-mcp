@@ -2064,23 +2064,6 @@ Issue #{{id}} not found
 
 ---
 
-## ISSUES_RESOLVE_REQUIRES_HUMAN
-
-**Type:** error
-**Code:** ISSUES_RESOLVE_REQUIRES_HUMAN
-
-resolve requires human verification and cannot be called by an agent.
-
-Ask the user to verify and close issue #{{id}}. Use action 'comment' to record findings.
-
-**Suggestions:**
-- Use `issues({ action: 'comment', id: {{id}}, text: '...' })` to record what you found or fixed
-- Ask the user (a human) to run `issues({ action: 'resolve', id: {{id}} })` themselves to verify and close it
-
-**Note:** No state was changed - the issue is exactly as it was before this call. Closing an issue is a human judgement call, including for issues covering your own work.
-
----
-
 ## ISSUES_RESOLVE_TIMEOUT
 
 **Type:** error
@@ -2090,6 +2073,7 @@ Timed out after {{timeoutSeconds}}s waiting for a human to respond to the verifi
 
 **Suggestions:**
 - Nobody answered the "ready to begin?" / "is this fixed?" prompt in the browser tab - make sure a person is available to click through it
+- If you are an agent: only a human clicking the overlay can close an issue, so do not retry `resolve` unattended - record what you found with `comment` and ask the user to run `resolve` themselves
 - Use `issues({ action: 'comment', id: {{id}}, text: '...' })` in the meantime to record findings without blocking
 - Run `issues({ action: 'resolve', id: {{id}} })` again once a human is ready to verify
 

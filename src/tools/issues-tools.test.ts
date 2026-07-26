@@ -1,8 +1,8 @@
 /**
- * Unit tests for bug-003's fix: issues({action:'resolve'}) must never let an
- * autonomous agent (no human present) fall into the interactive
- * verification flow, and even a genuine human-attended flow must be bounded
- * so a person walking away can't leak a raw Puppeteer protocol timeout.
+ * Unit tests for bug-003's fix: issues({action:'resolve'}) waits on an
+ * interactive overlay that only a human click can settle, so the wait must be
+ * bounded - otherwise an agent calling it (or a person walking away) hangs
+ * until Puppeteer's raw protocol timeout leaks through.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -40,56 +40,31 @@ afterEach(async () => {
 });
 
 function buildTools(opts: {
-  isAgentCaller?: () => boolean;
   executeToolCall?: (toolName: string, params: Record<string, any>) => Promise<any>;
 } = {}) {
   const executeToolCall = opts.executeToolCall ?? vi.fn().mockResolvedValue({ content: [{ type: 'text', text: '' }] });
   const getPageForConnection = vi.fn().mockResolvedValue({ evaluate: vi.fn() });
-  const tools = createIssuesTools(executeToolCall, undefined, getPageForConnection, opts.isAgentCaller);
+  const tools = createIssuesTools(executeToolCall, undefined, getPageForConnection);
   return { tools, executeToolCall, getPageForConnection };
 }
 
-describe('issues resolve - agent refusal (bug-003)', () => {
-  it('fails immediately with ISSUES_RESOLVE_REQUIRES_HUMAN when called by an agent, without touching the browser or issue state', async () => {
-    const issue = await addIssue({ type: 'bug', title: 'Something broke', sequenceFile: 'x.json' });
-    const { tools, executeToolCall, getPageForConnection } = buildTools({ isAgentCaller: () => true });
-
-    const result = await tools.issues.handler({ action: 'resolve', id: issue.id } as any, undefined);
-
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('resolve requires human verification');
-    expect(result.content[0].text).toContain("cannot be called by an agent");
-
-    // Genuine no-op: no browser touched, no overlay shown, no state change.
-    expect(getPageForConnection).not.toHaveBeenCalled();
-    expect(executeToolCall).not.toHaveBeenCalled();
-    expect(showTestReadyOverlay).not.toHaveBeenCalled();
-    expect(showVerificationOverlay).not.toHaveBeenCalled();
-
-    const reloaded = await getIssue(issue.id);
-    expect(reloaded!.status).toBe(issue.status); // unchanged
-    expect(reloaded!.resolvedAt).toBeUndefined();
-  });
-
-  it('proceeds into the interactive flow when the caller is not classified as an agent', async () => {
+describe('issues resolve - human gate (bug-003)', () => {
+  // There is no caller-identity check: resolve is human-gated purely by the
+  // overlay, whose promise only settles on a real click in the browser. What
+  // an agent gets is therefore not a refusal but a bounded wait (below).
+  it('always routes through the overlay, and cannot reach a resolution without one settling', async () => {
     const issue = await addIssue({ type: 'bug', title: 'Something broke', sequenceFile: 'x.json' });
     showTestReadyOverlay.mockResolvedValue('cancel');
-    const { tools } = buildTools({ isAgentCaller: () => false });
+    const { tools } = buildTools();
 
     const result = await tools.issues.handler({ action: 'resolve', id: issue.id } as any, undefined);
 
     expect(showTestReadyOverlay).toHaveBeenCalledTimes(1);
     expect(result.content[0].text).toContain('cancelled');
-  });
 
-  it('proceeds into the interactive flow when no isAgentCaller callback is wired up at all', async () => {
-    const issue = await addIssue({ type: 'bug', title: 'Something broke', sequenceFile: 'x.json' });
-    showTestReadyOverlay.mockResolvedValue('cancel');
-    const { tools } = buildTools(); // isAgentCaller omitted entirely
-
-    await tools.issues.handler({ action: 'resolve', id: issue.id } as any, undefined);
-
-    expect(showTestReadyOverlay).toHaveBeenCalledTimes(1);
+    const reloaded = await getIssue(issue.id);
+    expect(reloaded!.status).toBe(issue.status); // unchanged
+    expect(reloaded!.resolvedAt).toBeUndefined();
   });
 });
 
@@ -102,7 +77,7 @@ describe('issues resolve - bounded human-verification timeout (bug-003 follow-on
     showTestReadyOverlay.mockReturnValue(new Promise(() => {}));
 
     const executeToolCall = vi.fn().mockResolvedValue({ content: [{ type: 'text', text: '' }] });
-    const { tools } = buildTools({ isAgentCaller: () => false, executeToolCall });
+    const { tools } = buildTools({ executeToolCall });
 
     const resultPromise = tools.issues.handler({ action: 'resolve', id: issue.id } as any, undefined);
     await vi.advanceTimersByTimeAsync(DEFAULT_RESOLVE_VERIFICATION_TIMEOUT_MS + 1000);
