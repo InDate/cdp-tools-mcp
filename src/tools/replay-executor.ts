@@ -42,7 +42,9 @@ export interface ExecutionContext {
   /** Call stack of sequence names for circular reference detection */
   conditionalCallStack?: string[];
   /** Per-run variable store for {{var:name.path}} interpolation. Populated by
-   *  request({ saveAs }) steps, consumed by later steps' param interpolation. */
+   *  { saveAs } steps (see CAPTURE_SOURCES), consumed by later steps' param
+   *  interpolation. Shared BY REFERENCE with per-step ctx clones and nested
+   *  sequences, so a capture anywhere is visible everywhere in the run. */
   variableStore?: Record<string, any>;
   /** {{timestamp}} value for this run, computed once and cached (not per-step). */
   runTimestamp?: number;
@@ -95,8 +97,86 @@ export interface ConnectionAnalysis {
 // Constants
 // =============================================================================
 
+/**
+ * Which tools a sequence step's `saveAs` can capture from, and what a capture
+ * actually stores. Each entry pulls the value out of the tool's structured
+ * `_meta` - never out of its display text - and returns `undefined` when this
+ * particular call produced nothing capturable (wrong action, older response).
+ *
+ * `request` stores the whole response object, so later steps address into it
+ * ({{var:login.body.token}}). `inspect` stores the evaluated value itself, so
+ * a captured string is usable as {{var:pairingUrl}} directly.
+ *
+ * Adding `dom`/`content` later is a matter of adding an entry here plus the
+ * matching `_meta` on that tool.
+ */
+const CAPTURE_SOURCES: Record<string, (meta: any) => { found: boolean; value?: unknown }> = {
+  request: (meta) => meta?.request
+    ? { found: true, value: meta.request }
+    : { found: false },
+  inspect: (meta) => meta?.inspect
+    ? { found: true, value: meta.inspect.value }
+    : { found: false },
+};
+
+/** Human-readable list of what supports saveAs, for error messages. */
+const CAPTURE_CAPABLE_TOOLS = Object.keys(CAPTURE_SOURCES).join(', ');
+
+/**
+ * Resolve what a step's `saveAs` should write to the variable store.
+ * A `saveAs` that cannot be honoured is an error, not a silent no-op: the
+ * later {{var:...}} step would otherwise fail somewhere far away with a
+ * confusing "no variable named" message.
+ */
+export function captureVariable(
+  tool: string,
+  params: Record<string, any>,
+  result: any
+): { ok: true; value: unknown } | { ok: false; error: string } {
+  const source = CAPTURE_SOURCES[tool];
+  if (!source) {
+    return {
+      ok: false,
+      error: `saveAs is not supported on "${tool}" steps (supported: ${CAPTURE_CAPABLE_TOOLS})`,
+    };
+  }
+  const captured = source(result?._meta);
+  if (!captured.found) {
+    const action = params.action ? ` (action: ${params.action})` : '';
+    return {
+      ok: false,
+      error: `saveAs: "${tool}"${action} returned no capturable result` +
+        (tool === 'inspect' ? ' - only inspect({ action: "evaluateExpression" }) can be captured' : ''),
+    };
+  }
+  return { ok: true, value: captured.value };
+}
+
+/**
+ * Tools that can only run against a *browser*. Used to decide whether a sequence
+ * needs Chrome auto-launched (analyzeSequenceConnections / sequenceNeedsConnection
+ * and the auto-launch paths in replay-tools).
+ *
+ * Deliberately excludes tools that are equally valid against a Node target
+ * (`inspect`, `execution`, `breakpoint`, `getSourceCode`, `request`) - listing
+ * those here would make a Node-only sequence spuriously launch Chrome.
+ */
 export const TOOLS_NEEDING_CONNECTION = [
   'navigate', 'content', 'input', 'console', 'network', 'dom', 'screenshot', 'storage'
+];
+
+/**
+ * Tools whose params accept a `connectionReason` and should therefore have the
+ * run-level connection injected when the step doesn't name one itself. Superset of
+ * TOOLS_NEEDING_CONNECTION: it adds the target-agnostic (Chrome *or* Node) debugging
+ * tools, which need to be pinned to the run's target but must NOT drag a browser
+ * launch in with them.
+ *
+ * `request` is handled separately - only `destination: 'browser'` takes a connection.
+ */
+export const TOOLS_ACCEPTING_CONNECTION = [
+  ...TOOLS_NEEDING_CONNECTION,
+  'inspect', 'execution', 'breakpoint', 'getSourceCode', 'detectModals', 'dismissModal'
 ];
 
 // =============================================================================
@@ -1255,6 +1335,13 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
   // later step/finish call), not recomputed per-step - cache once on ctx.
   const runTimestamp = ctx.runTimestamp ?? (ctx.runTimestamp = Date.now());
 
+  // Seed the captured-variable store ONCE, on the caller's own ctx, and use
+  // this single object everywhere below (interpolation, per-step ctx clones,
+  // captures). Creating it lazily at a capture site would attach it to
+  // whichever ctx happened to be in hand - for a nested sequence that is the
+  // child's clone, so the parent would silently never see the capture.
+  const variableStore: Record<string, any> = (ctx.variableStore ??= {});
+
   // Track breakpoints set during this sequence run (url:line format)
   const expectedBreakpoints: Set<string> = new Set();
 
@@ -1349,7 +1436,7 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
       // Resolve {{var:name.path}} / {{timestamp}} tokens against the run's
       // variable store. Throws InterpolationError on an unresolvable token -
       // caught by this step's try/catch below, same as any other step failure.
-      params = interpolateParams(params, ctx.variableStore ?? {}, runTimestamp);
+      params = interpolateParams(params, variableStore, runTimestamp);
 
       // Apply variable substitutions
       if (variables && cmd.tool === 'input' && params.action === 'type' && params.text) {
@@ -1360,17 +1447,34 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
         }
       }
 
-      // Inject connectionReason for tools that need it
-      if (connectionReason && TOOLS_NEEDING_CONNECTION.includes(cmd.tool) && !cmd.params.connectionReason) {
+      // Inject the run-level connectionReason for tools that accept one, unless the
+      // step names its own (per-step connection wins - multi-device sequences).
+      if (connectionReason && TOOLS_ACCEPTING_CONNECTION.includes(cmd.tool) && !params.connectionReason) {
         params.connectionReason = connectionReason;
       }
 
       // request({ destination: 'browser' }) needs a connectionReason too, but request
-      // is deliberately NOT in TOOLS_NEEDING_CONNECTION (destination:'node' sequences
-      // must not force a Chrome auto-launch)
+      // is deliberately in neither list (destination:'node' sequences must not force a
+      // Chrome auto-launch, and destination:'node' takes no connection at all)
       if (cmd.tool === 'request' && params.destination === 'browser' && !params.connectionReason && connectionReason) {
         params.connectionReason = connectionReason;
       }
+
+      // The connection this step actually runs against: its own if it named one,
+      // otherwise the run-level connection. Everything wrapped around the step -
+      // pre/post-click state, navigation + typed-text validation, pause detection,
+      // failure diagnostics - must observe THIS connection, not the run-level one.
+      // Helpers keep reading ctx.connectionReason; we just hand them a ctx whose
+      // connection is the step's (bug-009).
+      const stepConnection: string | undefined = params.connectionReason || connectionReason;
+      const stepCtx: ExecutionContext = stepConnection === connectionReason
+        ? ctx
+        : {
+            ...ctx,
+            connectionReason: stepConnection as string,
+            // share the run's variable store with the clone, don't fork it
+            variableStore,
+          };
 
       // Override launchChrome reference if custom connectionReason provided
       if (cmd.tool === 'launchChrome' && overrideConnectionReason) {
@@ -1378,12 +1482,12 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
       }
 
       // Handle stale callFrameId for getVariables
-      if (cmd.tool === 'inspect' && params.action === 'getVariables' && params.callFrameId && connectionReason) {
+      if (cmd.tool === 'inspect' && params.action === 'getVariables' && params.callFrameId && stepConnection) {
         debugLog(logPrefix, `Refreshing stale callFrameId`);
         try {
           const callStackResult = await executeToolCall('inspect', {
             action: 'getCallStack',
-            connectionReason
+            connectionReason: stepConnection
           });
           const callStackText = callStackResult?.content?.[0]?.text || '';
           const callFrameIdMatch = callStackText.match(/"callFrameId":\s*"([^"]+)"/);
@@ -1449,7 +1553,7 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
         const condResult = await executeConditionalFlow(
           params.if,
           params.then,
-          ctx,
+          stepCtx,
           commandRecorder
         );
 
@@ -1478,15 +1582,15 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
       // Capture pre-click state for validation
       let preClickState: PreClickState | null = null;
       const clickConfig = configManager.getClickValidationConfig();
-      if (cmd.tool === 'input' && params.action === 'click' && connectionReason && clickConfig.enabled) {
-        preClickState = await capturePreClickState(ctx);
+      if (cmd.tool === 'input' && params.action === 'click' && stepConnection && clickConfig.enabled) {
+        preClickState = await capturePreClickState(stepCtx);
       }
 
       // Execute with retry
       const execResult = await executeCommandWithRetry(executeToolCall, cmd.tool, params, logPrefix);
 
       if (!execResult.success) {
-        const diagnostics = await gatherDiagnostics(ctx);
+        const diagnostics = await gatherDiagnostics(stepCtx);
         results.push({
           step: i + 1,
           tool: cmd.tool,
@@ -1532,18 +1636,18 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
       }
 
       // Post-step validation (before marking as success)
-      if (cmd.tool === 'navigate' && connectionReason) {
+      if (cmd.tool === 'navigate' && stepConnection) {
         // Validate navigation succeeded
         const expectedUrl = params.action === 'goto' ? params.url : undefined;
-        const navValidation = await validateNavigation(ctx, expectedUrl);
+        const navValidation = await validateNavigation(stepCtx, expectedUrl);
         if (!navValidation.success) {
           throw new Error(navValidation.error || 'Navigation failed');
         }
       }
 
       // Click validation (after successful execution)
-      if (cmd.tool === 'input' && params.action === 'click' && connectionReason && preClickState && clickConfig.enabled) {
-        const clickValidation = await validateClickAction(ctx, preClickState, execResult.result, clickConfig);
+      if (cmd.tool === 'input' && params.action === 'click' && stepConnection && preClickState && clickConfig.enabled) {
+        const clickValidation = await validateClickAction(stepCtx, preClickState, execResult.result, clickConfig);
 
         // Log info messages (console activity)
         for (const infoMsg of clickValidation.info) {
@@ -1583,6 +1687,20 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
         }
       }
 
+      // Capture a { saveAs } step's result into the run's variable store.
+      // Before the step is marked successful: a saveAs that cannot be honoured
+      // is a step failure (throw -> the catch below records it and stops the
+      // run), not a silent no-op that would surface later as a confusing
+      // "no variable named ..." interpolation error.
+      if (params.saveAs) {
+        const captured = captureVariable(cmd.tool, params, execResult.result);
+        if (!captured.ok) {
+          throw new Error(captured.error);
+        }
+        variableStore[params.saveAs] = captured.value;
+        debugLog(logPrefix, `Captured variable "${params.saveAs}" from step ${i + 1} (${cmd.tool})`);
+      }
+
       // Record command if enabled (preserve delay and comment)
       if (record) {
         commandRecorder.recordCommand(cmd.tool, params, {
@@ -1594,15 +1712,9 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
       results.push({ step: i + 1, tool: cmd.tool, success: true });
       debugLog(logPrefix, `Step ${i + 1} completed successfully`);
 
-      // Capture request({ saveAs }) result into the run's variable store
-      if (cmd.tool === 'request' && params.saveAs && execResult.result?._meta?.request) {
-        (ctx.variableStore ??= {})[params.saveAs] = execResult.result._meta.request;
-        debugLog(logPrefix, `Captured variable "${params.saveAs}" from step ${i + 1}`);
-      }
-
-      // Check if we hit a breakpoint after this step
-      if (connectionReason) {
-        const breakpointInfo = await checkIfPaused(ctx);
+      // Check if we hit a breakpoint after this step (on the step's own connection)
+      if (stepConnection) {
+        const breakpointInfo = await checkIfPaused(stepCtx);
         if (breakpointInfo) {
           const breakpointKey = `${breakpointInfo.url}:${breakpointInfo.lineNumber}`;
           const isExpected = expectedBreakpoints.has(breakpointKey);
@@ -1624,18 +1736,23 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
       }
 
       // Post-step async operations (after marking success)
-      if (cmd.tool === 'input' && params.action === 'type' && params.selector && connectionReason) {
-        await validateTypedText(ctx, params.selector, params.text || '', params.append === true);
+      if (cmd.tool === 'input' && params.action === 'type' && params.selector && stepConnection) {
+        await validateTypedText(stepCtx, params.selector, params.text || '', params.append === true);
       }
 
-      // Pre-fetch next element after navigation/click
+      // Pre-fetch next element after navigation/click. The wait happens where the
+      // NEXT step will run, so it follows that step's connection, not this one's.
       const isNavigationAction = cmd.tool === 'navigate' ||
         (cmd.tool === 'input' && params.action === 'click');
 
-      if (isNavigationAction && connectionReason && i + 1 < commands.length) {
+      if (isNavigationAction && i + 1 < commands.length) {
         const nextCmd = commands[i + 1];
-        if (nextCmd.tool === 'input' && nextCmd.params.selector) {
-          await waitForElement(ctx, nextCmd.params.selector);
+        const nextConnection: string | undefined = nextCmd.params.connectionReason || connectionReason;
+        if (nextCmd.tool === 'input' && nextCmd.params.selector && nextConnection) {
+          const nextCtx: ExecutionContext = nextConnection === connectionReason
+            ? ctx
+            : { ...ctx, connectionReason: nextConnection, variableStore };
+          await waitForElement(nextCtx, nextCmd.params.selector);
         }
       }
 

@@ -21,7 +21,7 @@ import {
 import { z } from 'zod';
 import { CDPManager } from './cdp-manager.js';
 import { SourceMapHandler } from './sourcemap-handler.js';
-import { ChromeLauncher } from './chrome-launcher.js';
+import { ChromeLauncher, InvalidProfileNameError, ProfileInUseError, ProfileLockedError, normalizeProfileName, resolveLaunchPort, decideProfileReuse } from './chrome-launcher.js';
 import { PuppeteerManager } from './puppeteer-manager.js';
 import { ConsoleMonitor } from './console-monitor.js';
 import { NetworkMonitor } from './network-monitor.js';
@@ -56,7 +56,7 @@ import { createIssuesTools } from './tools/issues-tools.js';
 import { createDashboardTools, setDashboardInstance, getDashboardInstance, setSessionInfo, getDuplicateSessionInfo } from './tools/dashboard-tools.js';
 import { initializeDashboard, shutdownDashboard, type DashboardInstance, type ConnectionInfo as DashboardConnectionInfo } from './dashboard/index.js';
 import { Orchestrator } from './log-processor/orchestrator.js';
-import { mkdirSync, existsSync } from 'fs';
+import { mkdirSync, existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import { ServerManager, detectAutoRestartCommand } from './server-manager.js';
 import { configManager } from './config.js';
@@ -75,6 +75,19 @@ import { createSessionDetector, type SessionInfo, type SessionDetector } from '.
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+/**
+ * This package's version, read from package.json rather than duplicated here
+ * so it cannot drift. Used to report the server version and to detect an
+ * installed skill left behind by an older release (see getSkillInstallState).
+ */
+const SERVER_VERSION: string = (() => {
+  try {
+    return JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8')).version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+})();
 
 /**
  * Find an available port starting from the given port
@@ -136,8 +149,51 @@ function findSkillInstallCandidates(): string[] {
   ];
 }
 
-function isSkillInstalled(): boolean {
-  return findSkillInstallCandidates().some((dir) => existsSync(join(dir, 'SKILL.md')));
+/** Version stamped into a SKILL.md frontmatter, if it has one. */
+function readSkillVersion(skillFile: string): string | null {
+  try {
+    const head = readFileSync(skillFile, 'utf-8').slice(0, 2000);
+    return head.match(/^version:\s*(.+)$/m)?.[1].trim() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+type SkillInstallState =
+  | { status: 'absent' }
+  | { status: 'current' }
+  | { status: 'stale'; path: string; installedVersion: string | null };
+
+/**
+ * Whether an installed copy of the skill exists and whether it matches this
+ * package.
+ *
+ * Presence alone is not enough. The documented install is a symlink into the
+ * package, which tracks upgrades for free - but nothing stops a client or user
+ * from *copying* the directory instead, and a copy is frozen forever: the file
+ * exists, so a presence-only check suppresses the nudge permanently and the
+ * user silently runs an old skill against a newer tool surface. That is not
+ * hypothetical - this package shipped a catalog describing a pre-grouping API
+ * long after those tools were consolidated away. Comparing the stamped version
+ * catches the copy case without needing any install machinery of our own.
+ */
+function getSkillInstallState(): SkillInstallState {
+  let stale: { path: string; installedVersion: string | null } | null = null;
+
+  for (const dir of findSkillInstallCandidates()) {
+    const skillFile = join(dir, 'SKILL.md');
+    if (!existsSync(skillFile)) continue;
+
+    const installedVersion = readSkillVersion(skillFile);
+    // A symlink into this package reads back our own file, so this matches and
+    // we stop. Any installed copy that predates the version stamp reports null,
+    // which is itself evidence of staleness.
+    if (installedVersion === SERVER_VERSION) return { status: 'current' };
+
+    stale ??= { path: skillFile, installedVersion };
+  }
+
+  return stale ? { status: 'stale', ...stale } : { status: 'absent' };
 }
 
 /**
@@ -149,22 +205,27 @@ function isSkillInstalled(): boolean {
  * catalog. The full reference is instead shipped as a progressive-disclosure
  * Agent Skill (skills/cdp-tools/) that skills-aware clients load on demand.
  *
- * If that skill isn't installed anywhere a client would scan for it, append
- * a one-time nudge asking the model to offer setting it up - but only ask,
- * never symlink it in unprompted. Once installed, isSkillInstalled() is
- * true on future connections and this stops appearing.
+ * If that skill isn't installed anywhere a client would scan for it - or an
+ * installed copy is stamped with an older version of this package - append a
+ * nudge asking the model to offer setting it up, but only ask, never symlink
+ * it in unprompted. Once a matching version is installed this stops appearing.
  */
 async function loadInstructions(): Promise<string | undefined> {
   try {
     const instructionsPath = join(__dirname, '..', 'docs', 'mcp-instructions.md');
     const instructions = await readFile(instructionsPath, 'utf-8');
 
-    if (isSkillInstalled()) {
+    const skillState = getSkillInstallState();
+    if (skillState.status === 'current') {
       return instructions;
     }
 
     const skillSourcePath = join(__dirname, '..', 'skills', 'cdp-tools');
-    const nudge = `\n\n---\n\n**Setup nudge (one-time):** No cdp-tools Agent Skill was found in this project or your home directory (checked \`.claude/skills/\`, \`.agents/skills/\`). Ask the user if they'd like it installed - if they agree, run:\n\n\`\`\`bash\nmkdir -p .claude/skills\nln -s "${skillSourcePath}" .claude/skills/cdp-tools\n\`\`\`\n\nDo not create the symlink without asking first. This message stops appearing once the skill is installed anywhere it would be scanned.\n`;
+    const install = `\`\`\`bash\nmkdir -p .claude/skills\nrm -rf .claude/skills/cdp-tools\nln -s "${skillSourcePath}" .claude/skills/cdp-tools\n\`\`\``;
+
+    const nudge = skillState.status === 'absent'
+      ? `\n\n---\n\n**Setup nudge (one-time):** No cdp-tools Agent Skill was found in this project or your home directory (checked \`.claude/skills/\`, \`.agents/skills/\`). Ask the user if they'd like it installed - if they agree, run:\n\n${install}\n\nDo not create the symlink without asking first. This message stops appearing once the skill is installed anywhere it would be scanned.\n`
+      : `\n\n---\n\n**Stale skill:** The cdp-tools Agent Skill at \`${skillState.path}\` is from version ${skillState.installedVersion ?? 'an unstamped release'}, but this server is ${SERVER_VERSION}. It was copied rather than symlinked, so it no longer tracks upgrades and may describe tools or actions that have since changed. Ask the user whether to replace it with a symlink that stays current:\n\n${install}\n\nDo not delete or replace their file without asking first - and note the skill is read by the client at session start, so it only takes effect in a new session.\n`;
 
     return instructions + nudge;
   } catch (error) {
@@ -175,7 +236,12 @@ async function loadInstructions(): Promise<string | undefined> {
 
 // Initialize global managers
 const sourceMapHandler = new SourceMapHandler();
-const chromeLauncher = new ChromeLauncher();
+const chromeLauncher = new ChromeLauncher({
+  // Resolved lazily so a live config reload of chrome.persistentProfileRoot
+  // (global ~/.cdp-tools/profiles by default, or a project-local override)
+  // is picked up without restarting the server.
+  persistentProfileRoot: () => configManager.getPersistentProfileRoot(),
+});
 const connectionManager = new ConnectionManager();
 const logpointTracker = new LogpointExecutionTracker();
 const clickableCache = new ClickableCache();
@@ -236,7 +302,7 @@ async function createMCPServer(): Promise<Server> {
   return new Server(
     {
       name: 'cdp-tools-debugger',
-      version: '0.1.0',
+      version: SERVER_VERSION,
     },
     {
       capabilities: {
@@ -316,12 +382,13 @@ const connectionTools = {
     z.object({
       url: z.string().optional().describe('URL to open (default: blank page)'),
       autoConnect: z.boolean().optional().default(true).describe('Automatically connect debugger after launch'),
-      port: z.number().optional().describe('The debugging port (optional, defaults to this session\'s reserved port). Use this to launch multiple Chrome instances on different ports.'),
-      forceNewInstance: z.boolean().optional().describe('Always spawn a fresh Chrome process on a new port instead of reusing/tabbing into an existing instance'),
+      port: z.number().optional().describe('The debugging port (optional, defaults to this session\'s reserved port). Use this to launch multiple Chrome instances on different ports. Always honoured when given - with forceNewInstance the call errors if that exact port is already taken instead of moving to another port.'),
+      forceNewInstance: z.boolean().optional().describe('Always spawn a fresh Chrome process instead of reusing/tabbing into an existing instance. Without `port`, a free port is chosen automatically; with `port`, that port is used and the call errors if it is already in use. Errors if `reference` is already bound to a live connection.'),
       headless: z.boolean().optional().default(false).describe('Launch in headless mode (no visible window, prevents focus stealing). Default: false'),
       reference: z.string().optional().describe('Connection reference name (3 descriptive words). If not provided, defaults to "unnamed-connection-default". Use this to identify the connection when calling other tools.'),
       width: z.number().optional().describe('Viewport width in pixels (optional). If set, the browser viewport will be resized after launch.'),
       height: z.number().optional().describe('Viewport height in pixels (optional). If set, the browser viewport will be resized after launch.'),
+      profile: z.string().optional().describe('Named persistent Chrome profile, e.g. "device-a". Naming a profile makes it persistent: it maps to a stable user-data-dir under ~/.cdp-tools/profiles (override per project with chrome.persistentProfileRoot) and is never deleted, so cookies, localStorage and IndexedDB - including non-extractable CryptoKeys - survive across runs. Created on first use. Does NOT pin a port; port selection is unchanged. Wipe it with config({action:"resetProfile", profile:"device-a"}). Only one live Chrome may hold a given profile at a time.'),
       chromeArgs: z.array(z.string()).optional().describe('Extra Chrome command-line flags to pass through at launch, e.g. ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"]. Merged after the managed defaults. The CDP_TOOLS_EXTRA_CHROME_ARGS env var (space-separated) is also always merged. Only applies when this call actually launches Chrome (ignored when an existing instance on the port is reused).'),
     }).strict(),
     async (args) => {
@@ -331,24 +398,124 @@ const connectionTools = {
         requireValidReference(userReference); // Throws InvalidReferenceError if invalid
       }
 
-      // Use reserved port unless explicitly specified
-      let port = args.port || configManager.getCurrentPort();
-      if (args.forceNewInstance) {
-        // Ignore any reserved/requested port - always find a genuinely free one
-        // so this launch can't tab into an already-running instance
-        port = await findAvailablePort(configManager.getChromeConfig().startingDebugPort);
+      // Validate the profile name before anything else - an invalid name must
+      // not reach the filesystem, and naming a profile implies persistence
+      // (there is no separate persist flag).
+      let profileName: string | undefined;
+      if (args.profile !== undefined) {
+        try {
+          profileName = normalizeProfileName(args.profile);
+        } catch (error) {
+          if (error instanceof InvalidProfileNameError) {
+            return createErrorResponse('CHROME_PROFILE_INVALID_NAME', { profile: args.profile });
+          }
+          throw error;
+        }
+        // NOTE: the "profile already held" check deliberately happens further
+        // down, once we know this call would actually have to spawn a second
+        // Chrome. Checking here broke the standard idempotent call pattern
+        // `launchChrome({ profile, reference })`: re-calling it to make sure
+        // the browser is up always errored instead of reusing the very
+        // connection that holds the profile.
       }
+
+      /**
+       * Profile gate for every point where we may hand back an existing Chrome
+       * or spawn a new one. `existingPort` is the instance we would reuse
+       * (omit when this call would spawn). Returns an error response, or null
+       * to carry on. The decision itself is decideProfileReuse() in
+       * chrome-launcher.ts so its ordering is unit-testable.
+       */
+      const profileGate = async (existingPort?: number) => {
+        if (!profileName) {
+          return null;
+        }
+        const decision = decideProfileReuse({
+          wantedProfileDir: chromeLauncher.getPersistentProfilePath(profileName),
+          existing: existingPort !== undefined
+            ? { port: existingPort, profileDir: chromeLauncher.getProfileDir(existingPort) }
+            : undefined,
+          holderPort: chromeLauncher.findPortForProfile(profileName),
+        });
+
+        if (decision.decision === 'in-use') {
+          await debugLog('index', `launchChrome: profile "${profileName}" already held by Chrome on port ${decision.port}`);
+          return createErrorResponse('CHROME_PROFILE_IN_USE', {
+            profile: profileName,
+            port: decision.port.toString(),
+          });
+        }
+        if (decision.decision === 'mismatch') {
+          await debugLog('index', `launchChrome: port ${decision.port} already runs profile ${decision.actualProfile ?? 'unknown'}, not "${profileName}"`);
+          return createErrorResponse('CHROME_PROFILE_PORT_MISMATCH', {
+            profile: profileName,
+            port: decision.port.toString(),
+            actualProfile: decision.actualProfile ?? 'unknown (Chrome not launched by cdp-tools)',
+          });
+        }
+        return null;
+      };
+
+      // Is the port occupied by anything other than our own reservation?
+      // Our port reserver holds a listening socket on the reserved port and
+      // releases it as part of launching, so it must not count as "occupied".
+      const isPortHeldByOther = async (candidate: number): Promise<boolean> => {
+        if (portReserver.isReserved() && portReserver.getPort() === candidate) {
+          return false;
+        }
+        return new Promise<boolean>((resolve) => {
+          const probe = createServer();
+          probe.once('error', () => resolve(true));
+          probe.once('listening', () => probe.close(() => resolve(false)));
+          // Bind IPv4 localhost to match Chrome's binding behaviour
+          probe.listen(candidate, '127.0.0.1');
+        });
+      };
+
+      // Use reserved port unless explicitly specified. The decision itself lives
+      // in resolveLaunchPort() (chrome-launcher.ts) so it can be unit tested.
+      const decision = await resolveLaunchPort({
+        explicitPort: args.port,
+        forceNewInstance: args.forceNewInstance,
+        reservedPort: configManager.getCurrentPort(),
+        isPortOccupied: async (candidate) =>
+          connectionManager.hasBrowser('localhost', candidate) ||
+          chromeLauncher.isRunning(candidate) ||
+          await isPortHeldByOther(candidate),
+        findFreePort: () => findAvailablePort(configManager.getChromeConfig().startingDebugPort),
+      });
+      if (decision.decision === 'forced-port-in-use') {
+        await debugLog('index', `launchChrome: forceNewInstance requested port ${decision.port} but it is already in use`);
+        return createErrorResponse('CHROME_FORCED_PORT_IN_USE', { port: decision.port.toString() });
+      }
+      const port = decision.port;
       await debugLog('index', `launchChrome called: port=${port}, requested=${args.port}, reserved=${configManager.getCurrentPort()}, forceNewInstance=${args.forceNewInstance}, url=${args.url}, autoConnect=${args.autoConnect}, reference=${args.reference}`);
       const url = args.url;
       const autoConnect = args.autoConnect ?? true;
 
       // Check if a connection with this reference already exists - reuse it instead of creating a new tab
       // Use validated lookup to auto-cleanup dead connections (e.g., if Chrome was killed externally)
-      // Skipped entirely when forceNewInstance is set - that always wants a fresh process
-      if (userReference && !args.forceNewInstance) {
+      // Under forceNewInstance we still run this lookup, but a live match is an
+      // error rather than a reuse: a fresh process bound to an already-bound
+      // reference would leave two Chromes answering to the same name (bug-005).
+      if (userReference) {
         const existingConnection = await connectionManager.findConnectionByReferenceValidated(userReference);
         if (existingConnection) {
           const sanitizedRef = validateReference(userReference).sanitized!;
+
+          if (args.forceNewInstance) {
+            await debugLog('index', `launchChrome: forceNewInstance with reference "${sanitizedRef}" already bound to a live connection - refusing to double-bind`);
+            return createErrorResponse('CHROME_REFERENCE_ALREADY_BOUND', { reference: sanitizedRef });
+          }
+
+          // Reuse is only correct when that connection is running the profile
+          // the caller asked for - otherwise we would hand back a different
+          // browser identity under the same reference.
+          const profileBlocked = await profileGate(existingConnection.port);
+          if (profileBlocked) {
+            return profileBlocked;
+          }
+
           await debugLog('index', `Connection with reference "${sanitizedRef}" already exists, reusing`);
 
           // Set as active connection
@@ -380,13 +547,24 @@ const connectionTools = {
         await debugLog('index', `browserAlreadyExists: ${browserAlreadyExists} (hasBrowser: ${connectionManager.hasBrowser('localhost', port)}, isRunning: ${chromeLauncher.isRunning(port)})`);
         let isNewBrowser = false;
 
+        // Reusing the Chrome already on this port would silently hand back a
+        // different profile than the caller asked for, so only allow it when
+        // that instance is genuinely running the requested profile. When there
+        // is nothing on the port we would spawn, so a profile held by another
+        // live instance is the real conflict (a second Chrome on one
+        // user-data-dir is handed off to the first process and ours dies).
+        const profileBlocked = await profileGate(browserAlreadyExists ? port : undefined);
+        if (profileBlocked) {
+          return profileBlocked;
+        }
+
         if (!browserAlreadyExists) {
           await debugLog('index', `Launching new Chrome instance on port ${port}...`);
           // Launch new Chrome instance (will release port reservation)
           // Don't pass URL to launch if auto-connect is enabled - let Puppeteer handle navigation
           // This prevents race condition where Chrome starts loading before monitors are set up
           const launchUrl = autoConnect ? undefined : url;
-          const result = await chromeLauncher.launch(port, launchUrl, portReserver, args.headless, args.chromeArgs ?? []);
+          const result = await chromeLauncher.launch(port, launchUrl, portReserver, args.headless, args.chromeArgs ?? [], profileName);
           await debugLog('index', `Chrome launched successfully: ${JSON.stringify(result)}`);
           isNewBrowser = true;
         }
@@ -590,6 +768,21 @@ const connectionTools = {
           return createSuccessResponse('CHROME_LAUNCH_NO_CONNECT', { port: port.toString() }, { port, isNewBrowser });
         }
       } catch (error) {
+        // Lost a race for the profile between the pre-check above and the
+        // launcher's own guard - report it as the profile conflict it is.
+        if (error instanceof ProfileInUseError) {
+          return createErrorResponse('CHROME_PROFILE_IN_USE', {
+            profile: error.profile,
+            port: error.port.toString(),
+          });
+        }
+        // Held by a Chrome from ANOTHER process (the persistent profile root is
+        // global) - we know the PID but not its debug port, so CHROME_PROFILE_IN_USE
+        // (which talks in ports) does not fit. Reported with the launcher's own
+        // explanation until a dedicated template exists.
+        if (error instanceof ProfileLockedError) {
+          return createErrorResponse('CHROME_SPAWN_FAILED', { error: error.message });
+        }
         return createErrorResponse('CHROME_SPAWN_FAILED', { error: `${error}` });
       }
     }
@@ -1221,11 +1414,15 @@ const allTools = {
   }, async (connectionReason: string) => {
     const resolved = await resolveConnectionFromReason(connectionReason);
     return resolved?.connection.port ?? null;
-  }) : {}),
+    // Lazy: allTools is defined below this object literal, so the set of valid
+    // tool names can only be read at call time (bug-010). The explicit return
+    // type is required - without it, allTools appears in its own initializer
+    // and TypeScript cannot infer it (TS7022).
+  }, (): string[] => Object.keys(allTools)) : {}),
   // Server management tools
   ...(configManager.isToolEnabled('server') ? createServerTools(serverManager) : {}),
   // Config management tools (always enabled - not toggleable)
-  ...createConfigTools(),
+  ...createConfigTools(chromeLauncher),
   // Plugin management tools (always enabled - not toggleable)
   ...createPluginTools(() => orchestratorInstance),
   // Issues tracking tools

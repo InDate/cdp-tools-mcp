@@ -91,7 +91,7 @@ function evaluate(left: unknown, operator: AssertArgs['operator'], right: unknow
 export function createAssertTools() {
   return {
     assert: createTool(
-      'Assert a condition as a sequence step. Fails the sequence (isError, executor stops) if the condition is false - use with {{var:name.path}} templates to check values captured by a prior request({saveAs}) step.',
+      'Assert a condition as a sequence step. Fails the sequence (isError, executor stops) if the condition is false - use with {{var:name.path}} templates to check values captured by a prior request({saveAs}) or inspect({action:"evaluateExpression", saveAs}) step.',
       assertSchema,
       async (args: AssertArgs) => {
         const { left, operator, right, message } = args;

@@ -7,6 +7,49 @@ import { CDPManager, EvaluateExpressionExceptionError, EvaluateExpressionTimeout
 import { SourceMapHandler } from '../sourcemap-handler.js';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
+import type { ToolResponseMeta } from '../tool-response.js';
+
+/**
+ * Reverse CDPManager.formatValue()'s display shaping so a machine-readable
+ * value can be published on _meta (and captured by a sequence's saveAs).
+ *
+ * formatValue() renders primitives as display text - a string comes back
+ * wrapped in quotes, a number/boolean comes back as its String() form,
+ * undefined/null as the words. Objects and arrays come back as real
+ * objects/arrays whose leaves are those display strings.
+ *
+ * Best effort by design: values formatValue() collapsed to a description
+ * (a DOM node -> "[HTMLDivElement]", a depth-limited object -> its class
+ * name) cannot be recovered and are left as the string they arrived as.
+ */
+export function deformatEvaluatedValue(formatted: any): unknown {
+  if (Array.isArray(formatted)) {
+    return formatted.map(deformatEvaluatedValue);
+  }
+  if (formatted !== null && typeof formatted === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(formatted)) {
+      out[key] = deformatEvaluatedValue(val);
+    }
+    return out;
+  }
+  if (typeof formatted !== 'string') {
+    return formatted;
+  }
+  if (formatted === 'undefined') return undefined;
+  if (formatted === 'null') return null;
+  if (formatted === 'true') return true;
+  if (formatted === 'false') return false;
+  // A quoted string is unambiguous: formatValue only quotes real strings, so
+  // '"42"' was the string "42" while '42' was the number 42.
+  const quoted = formatted.match(/^"([\s\S]*)"$/);
+  if (quoted) return quoted[1];
+  if (/^-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/.test(formatted)) {
+    const asNumber = Number(formatted);
+    if (!Number.isNaN(asNumber)) return asNumber;
+  }
+  return formatted;
+}
 
 /**
  * Format variables data as TOON (Token-Oriented Object Notation)
@@ -183,6 +226,7 @@ const inspectionToolSchema = z.object({
 
   // evaluateExpression parameters
   expression: z.string().optional().describe('JavaScript expression (required for evaluateExpression action)'),
+  saveAs: z.string().optional().describe('Sequence step only (evaluateExpression): captures the evaluated value into the run\'s variable store under this name, for later {{var:name}} / {{var:name.path}} use'),
 
   // searchCode parameters
   pattern: z.string().optional().describe('Regex pattern (required for searchCode action)'),
@@ -373,11 +417,30 @@ export function createInspectionTools(
                 formattedResult = `\`\`\`\n${formatToonValue(result)}\n\`\`\``;
               }
 
-              return createSuccessResponse('EVALUATE_EXPRESSION_SUCCESS', {
-                expression,
-                context: callFrameId ? `Call frame ${callFrameId}` : 'Global context',
-                result: formattedResult
-              });
+              // Machine-readable twin of the text above: this is what a
+              // sequence step's saveAs captures into the variable store
+              // (replay-executor's capture table reads _meta.inspect.value).
+              const capturedValue = deformatEvaluatedValue(result);
+              const inspectMeta: ToolResponseMeta = {
+                tool: 'inspect',
+                action: 'evaluateExpression',
+                timestamp: Date.now(),
+                inspect: {
+                  expression,
+                  value: capturedValue,
+                  valueType: capturedValue === null ? 'null' : typeof capturedValue,
+                  ...(callFrameId ? { callFrameId } : {}),
+                },
+              };
+
+              return {
+                ...createSuccessResponse('EVALUATE_EXPRESSION_SUCCESS', {
+                  expression,
+                  context: callFrameId ? `Call frame ${callFrameId}` : 'Global context',
+                  result: formattedResult
+                }),
+                _meta: inspectMeta,
+              };
             } catch (error) {
               // The evaluated expression itself threw (CDP exceptionDetails,
               // e.g. a stack-exhaustion RangeError) - report it as an

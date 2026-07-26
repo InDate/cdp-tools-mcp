@@ -198,7 +198,19 @@ export class CommandRecorder {
   async createSequence(
     name: string,
     commandIndices: number[],
-    options?: { description?: string; expectedOutcome?: string; startUrl?: string }
+    options?: {
+      description?: string;
+      expectedOutcome?: string;
+      startUrl?: string;
+      /**
+       * Called with the fully built candidate BEFORE it replaces any same-named
+       * sequence in memory. Return false to reject: nothing is removed and nothing
+       * is stored, so a rejected create leaves the existing sequence intact.
+       * (Validating after the fact deleted the good copy and then rejected the bad
+       * one, leaving the user with neither.)
+       */
+      validate?: (candidate: CommandSequence) => boolean;
+    }
   ): Promise<CommandSequence | null> {
     // Validate all indices exist and get commands
     const commands: RecordedCommand[] = [];
@@ -238,6 +250,12 @@ export class CommandRecorder {
       commands,
       createdAt: Date.now(),
     };
+
+    // Validate before anything destructive happens (see options.validate).
+    if (options?.validate && !options.validate(sequence)) {
+      await debugLog('command-recorder', `Rejected sequence "${name}" (validation failed) - existing sequence left intact`);
+      return null;
+    }
 
     // Dedupe by name so re-creating a sequence replaces the old in-memory copy
     // rather than leaving a stale one that loadSequence({name}) would resolve (#75).

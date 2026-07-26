@@ -4,7 +4,7 @@
  */
 
 import * as fs from 'fs';
-import { dirname, join } from 'path';
+import { dirname, isAbsolute, join, resolve } from 'path';
 import { homedir } from 'os';
 import { getConfigSavePath, getOutputPath, setWorkingDirOverride } from './helpers/paths.js';
 import {
@@ -100,6 +100,16 @@ export interface ChromeConfig {
   inactivityTimeoutMinutes: number;
   /** Polling interval in minutes for inactivity checks (default: 2) */
   inactivityPollingMinutes: number;
+  /**
+   * Where named persistent Chrome profiles (`launchChrome({ profile })`) live.
+   *
+   * Empty string (the default) means the global root `~/.cdp-tools/profiles`,
+   * so a profile named "work-google" is shared by every project on this
+   * machine. Set it in a project-local config (see `config({action:'useLocal'})`)
+   * to give that project its own profile store. Relative paths resolve against
+   * the process working directory; a leading `~/` is expanded.
+   */
+  persistentProfileRoot: string;
 }
 
 /**
@@ -231,6 +241,7 @@ const DEFAULT_CONFIG: CdpToolsConfig = {
     startingDebugPort: 9222,
     inactivityTimeoutMinutes: 5,
     inactivityPollingMinutes: 2,
+    persistentProfileRoot: '',  // '' = global ~/.cdp-tools/profiles
   },
   portMonitoring: {
     portMonitoringFreqMs: {
@@ -614,6 +625,7 @@ export class ConfigManager {
         startingDebugPort: loaded.chrome?.startingDebugPort ?? defaults.chrome.startingDebugPort,
         inactivityTimeoutMinutes: loaded.chrome?.inactivityTimeoutMinutes ?? defaults.chrome.inactivityTimeoutMinutes,
         inactivityPollingMinutes: loaded.chrome?.inactivityPollingMinutes ?? defaults.chrome.inactivityPollingMinutes,
+        persistentProfileRoot: loaded.chrome?.persistentProfileRoot ?? defaults.chrome.persistentProfileRoot,
       },
       portMonitoring: {
         portMonitoringFreqMs: {
@@ -720,6 +732,29 @@ export class ConfigManager {
    */
   getChromeConfig(): ChromeConfig {
     return this.getConfig().chrome;
+  }
+
+  /**
+   * Absolute directory that named persistent Chrome profiles live in
+   * (`launchChrome({ profile })`, `config({action:'resetProfile'})`).
+   *
+   * Defaults to the global `~/.cdp-tools/profiles` so a named profile is shared
+   * across projects. `chrome.persistentProfileRoot` in a project-local config
+   * overrides it; relative values resolve against the working directory and a
+   * leading `~/` is expanded.
+   */
+  getPersistentProfileRoot(): string {
+    const configured = (this.getChromeConfig().persistentProfileRoot || '').trim();
+    if (!configured) {
+      return join(homedir(), '.cdp-tools', 'profiles');
+    }
+    if (configured === '~') {
+      return homedir();
+    }
+    if (configured.startsWith('~/')) {
+      return join(homedir(), configured.slice(2));
+    }
+    return isAbsolute(configured) ? configured : resolve(process.cwd(), configured);
   }
 
   /**

@@ -71,7 +71,7 @@ function resolveToken(token: string, store: Record<string, any>, runTimestamp: n
   }
   const varName = parts[0];
   if (!(varName in store)) {
-    throw new InterpolationError(token, `no variable named "${varName}" in the run's captured store (use a prior request({ saveAs: "${varName}" }) step)`);
+    throw new InterpolationError(token, `no variable named "${varName}" in the run's captured store (capture it first with a prior request({ saveAs: "${varName}" }) or inspect({ action: "evaluateExpression", saveAs: "${varName}" }) step)`);
   }
 
   let current: any = store[varName];

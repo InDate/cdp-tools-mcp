@@ -8,22 +8,32 @@ import { createTool } from '../validation-helpers.js';
 import { configManager } from '../config.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import { requestSelfRestart } from '../self-restart.js';
+import { InvalidProfileNameError, ProfileInUseError } from '../chrome-launcher.js';
 
 const configSchema = z.object({
-  action: z.enum(['status', 'useLocal', 'useGlobal', 'reset', 'backup', 'cloneFromGlobal', 'show', 'listTools', 'reload', 'restart'])
-    .describe('Config action: status (show config location info), useLocal (switch to project config), useGlobal (switch to global config), reset (reset to defaults), backup (backup current config), cloneFromGlobal (copy global to local), show (display current config), listTools (list all toggleable tools with status and dependencies), reload (re-read config.json from disk now - also happens automatically on file edits), restart (restart cdp-tools itself if stuck or broken)'),
+  action: z.enum(['status', 'useLocal', 'useGlobal', 'reset', 'backup', 'cloneFromGlobal', 'show', 'listTools', 'reload', 'restart', 'listProfiles', 'resetProfile'])
+    .describe('Config action: status (show config location info), useLocal (switch to project config), useGlobal (switch to global config), reset (reset to defaults), backup (backup current config), cloneFromGlobal (copy global to local), show (display current config), listTools (list all toggleable tools with status and dependencies), reload (re-read config.json from disk now - also happens automatically on file edits), restart (restart cdp-tools itself if stuck or broken), listProfiles (list named persistent Chrome profiles), resetProfile (wipe and recreate the named persistent Chrome profile given in `profile`)'),
   seedFromGlobal: z.boolean().optional()
     .describe('For useLocal action: if true (default), seeds new local config from global if it exists'),
   path: z.string().optional()
     .describe('useLocal: explicit project dir to use as "local" (overrides server cwd)'),
+  profile: z.string().optional()
+    .describe('resetProfile: name of the persistent Chrome profile (as passed to launchChrome({ profile })) to wipe and recreate empty. Refused while a Chrome launched by cdp-tools still holds that profile - kill it first.'),
 }).strict();
 
 type ConfigArgs = z.infer<typeof configSchema>;
 
-export function createConfigTools() {
+/** Subset of ChromeLauncher the config tool needs for profile management. */
+export interface ProfileStore {
+  getPersistentProfileRoot(): string;
+  listPersistentProfiles(): Promise<string[]>;
+  resetPersistentProfile(profile: string): Promise<{ profile: string; path: string; existed: boolean }>;
+}
+
+export function createConfigTools(profileStore?: ProfileStore) {
   return {
     config: createTool(
-      'Manage cdp-tools configuration. Actions: status (show where config is loaded from), useLocal (switch to project-local config), useGlobal (switch to global ~/.cdp-tools config), reset (reset to defaults), backup (create timestamped backup), cloneFromGlobal (copy global config to local), show (display current settings), listTools (list all toggleable tools with their status and dependencies), reload (re-read config.json now; edits also hot-reload automatically within ~250ms), restart (restart cdp-tools itself if stuck or broken)',
+      'Manage cdp-tools configuration. Actions: status (show where config is loaded from), useLocal (switch to project-local config), useGlobal (switch to global ~/.cdp-tools config), reset (reset to defaults), backup (create timestamped backup), cloneFromGlobal (copy global config to local), show (display current settings), listTools (list all toggleable tools with their status and dependencies), reload (re-read config.json now; edits also hot-reload automatically within ~250ms), restart (restart cdp-tools itself if stuck or broken), listProfiles (list named persistent Chrome profiles and where they live), resetProfile (wipe and recreate a named persistent Chrome profile, clearing its cookies/localStorage/IndexedDB)',
       configSchema,
       async (args: ConfigArgs) => {
         switch (args.action) {
@@ -115,6 +125,49 @@ export function createConfigTools() {
             return createSuccessResponse('CONFIG_RESTART_REQUESTED', {
               pid: String(result.pid),
             });
+          }
+
+          case 'listProfiles': {
+            if (!profileStore) {
+              return createErrorResponse('CONFIG_PROFILES_UNAVAILABLE', {});
+            }
+            const profiles = await profileStore.listPersistentProfiles();
+            return createSuccessResponse('CONFIG_PROFILE_LIST', {
+              root: profileStore.getPersistentProfileRoot(),
+              count: profiles.length.toString(),
+              profiles: profiles.length ? profiles.join(', ') : '(none yet)',
+            });
+          }
+
+          case 'resetProfile': {
+            if (!profileStore) {
+              return createErrorResponse('CONFIG_PROFILES_UNAVAILABLE', {});
+            }
+            if (!args.profile) {
+              return createErrorResponse('CONFIG_PROFILE_NAME_REQUIRED', {});
+            }
+            try {
+              const result = await profileStore.resetPersistentProfile(args.profile);
+              return createSuccessResponse('CONFIG_PROFILE_RESET_SUCCESS', {
+                profile: result.profile,
+                path: result.path,
+                existed: result.existed,
+              });
+            } catch (error) {
+              if (error instanceof InvalidProfileNameError) {
+                return createErrorResponse('CHROME_PROFILE_INVALID_NAME', { profile: args.profile });
+              }
+              if (error instanceof ProfileInUseError) {
+                return createErrorResponse('CONFIG_PROFILE_RESET_IN_USE', {
+                  profile: error.profile,
+                  port: error.port.toString(),
+                });
+              }
+              return createErrorResponse('CONFIG_PROFILE_RESET_FAILED', {
+                profile: args.profile,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
           }
 
           case 'listTools': {

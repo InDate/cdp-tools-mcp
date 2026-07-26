@@ -8,6 +8,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as net from 'net';
 import * as fs from 'fs';
+import { randomBytes } from 'crypto';
 import { getErrorMessage } from './messages.js';
 import type { PortReserver } from './port-reserver.js';
 import { debugLog } from './debug-logger.js';
@@ -25,13 +26,245 @@ export interface ChromeCloseEvent {
 
 export type ChromeExitCallback = (event: ChromeCloseEvent) => void | Promise<void>;
 
+/**
+ * Prefix used for all launcher-created temporary Chrome profile directories.
+ * The startup sweep only ever considers directories with this prefix.
+ */
+export const EPHEMERAL_PROFILE_PREFIX = 'chrome-debug-profile-';
+
+/**
+ * A Chrome user-data-dir tracked by the launcher.
+ *
+ * `ephemeral` records a throwaway profile we created and are therefore allowed
+ * to delete when the instance goes away. Named/persistent profiles (see issue
+ * 13) will be registered with `ephemeral: false` and must never be deleted by
+ * the launcher, neither on kill nor by the startup sweep.
+ */
+export interface ChromeProfileRecord {
+  dir: string;
+  ephemeral: boolean;
+}
+
+/**
+ * Legal characters for a named persistent profile (issue 13).
+ *
+ * Deliberately strict: the name becomes a directory under the profile root, so
+ * anything that could escape it (`/`, `..`, leading dot) or confuse the startup
+ * sweep is rejected rather than sanitised - silently renaming a profile would
+ * hand the caller a different identity than they asked for.
+ */
+export const PROFILE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/** Thrown when a profile name is not a safe single directory segment. */
+export class InvalidProfileNameError extends Error {
+  constructor(public readonly profile: string) {
+    super(
+      `Invalid profile name "${profile}". Use 1-64 characters: letters, digits, dot, dash or underscore, starting with a letter or digit.`
+    );
+    this.name = 'InvalidProfileNameError';
+  }
+}
+
+/** Thrown when an operation would disturb a profile a live Chrome is holding. */
+export class ProfileInUseError extends Error {
+  constructor(public readonly profile: string, public readonly port: number) {
+    super(`Profile "${profile}" is in use by the Chrome running on port ${port}.`);
+    this.name = 'ProfileInUseError';
+  }
+}
+
+/**
+ * Thrown when a profile is held by a Chrome this process did not launch -
+ * typically another cdp-tools session on the same machine, because the default
+ * persistent profile root (`~/.cdp-tools/profiles`) is global.
+ *
+ * Detected from the profile's Chrome `SingletonLock`, so we know the holding
+ * PID but not which debug port it listens on.
+ *
+ * LIMITATION: the check is POSIX-only. `SingletonLock` is a symlink on
+ * macOS/Linux; on Windows Chrome uses a plain lock file we cannot read a PID
+ * from, so this error is never raised there and the cross-session races it
+ * guards against remain possible.
+ */
+export class ProfileLockedError extends Error {
+  constructor(public readonly profile: string, public readonly pid: number, public readonly dir: string) {
+    super(
+      `Profile "${profile}" is locked by a Chrome started by another process (PID ${pid}, ${dir}). ` +
+      `Only one live Chrome may hold a profile; quit that browser (or use a different profile name) and retry.`
+    );
+    this.name = 'ProfileLockedError';
+  }
+}
+
+/**
+ * Validate a persistent profile name, returning it trimmed.
+ * @throws InvalidProfileNameError
+ */
+export function normalizeProfileName(name: string): string {
+  const trimmed = (name ?? '').trim();
+  if (!PROFILE_NAME_PATTERN.test(trimmed) || trimmed.startsWith(EPHEMERAL_PROFILE_PREFIX)) {
+    throw new InvalidProfileNameError(name);
+  }
+  return trimmed;
+}
+
+/** Outcome of resolveLaunchPort(). */
+export type LaunchPortDecision =
+  | { decision: 'use'; port: number }
+  /** forceNewInstance asked for a specific port that is already taken. */
+  | { decision: 'forced-port-in-use'; port: number };
+
+export interface LaunchPortRequest {
+  /** `port` as passed to launchChrome, if the caller gave one. */
+  explicitPort?: number;
+  forceNewInstance?: boolean;
+  /** This session's reserved port - the default when no port is given. */
+  reservedPort: number;
+  /** Is `port` held by anything other than our own reservation? */
+  isPortOccupied: (port: number) => Promise<boolean>;
+  /** Pick a genuinely free port (only consulted for a portless forceNewInstance). */
+  findFreePort: () => Promise<number>;
+}
+
+/**
+ * Decide which port a launchChrome call should use (bug-005).
+ *
+ * Extracted from the MCP handler so the decision is testable without a browser
+ * or an MCP server: src/index.ts calls main() on import, so anything left
+ * inline there can only be "tested" by grepping the source.
+ *
+ * Rules:
+ *  - An explicit `port` is always honoured, never silently relocated.
+ *  - `forceNewInstance` must produce a fresh process, so an explicit port that
+ *    is already occupied is an error rather than a hand-off to whatever is
+ *    listening; occupancy is only consulted in that case.
+ *  - `forceNewInstance` without a port picks a known-free port instead of the
+ *    reserved one, which an existing instance may already be using.
+ */
+export async function resolveLaunchPort(req: LaunchPortRequest): Promise<LaunchPortDecision> {
+  const { explicitPort, forceNewInstance, reservedPort } = req;
+
+  if (!forceNewInstance) {
+    return { decision: 'use', port: explicitPort ?? reservedPort };
+  }
+
+  if (explicitPort !== undefined) {
+    if (await req.isPortOccupied(explicitPort)) {
+      return { decision: 'forced-port-in-use', port: explicitPort };
+    }
+    return { decision: 'use', port: explicitPort };
+  }
+
+  return { decision: 'use', port: await req.findFreePort() };
+}
+
+/** Outcome of decideProfileReuse(). */
+export type ProfileReuseDecision =
+  /** Nothing in the way: reuse the existing instance, or spawn if there is none. */
+  | { decision: 'ok' }
+  /** The requested profile is held by a different live Chrome on `port`. */
+  | { decision: 'in-use'; port: number }
+  /** The instance we would reuse is running a different profile. */
+  | { decision: 'mismatch'; port: number; actualProfile?: string };
+
+export interface ProfileReuseRequest {
+  /** Directory of the requested named profile; undefined when none was asked for. */
+  wantedProfileDir?: string;
+  /**
+   * The live Chrome this call would otherwise reuse (matched by reference or by
+   * target port), and the profile dir we have tracked for it (undefined when it
+   * was not launched by us, so we cannot know).
+   */
+  existing?: { port: number; profileDir?: string };
+  /** Port of the live Chrome currently holding the requested profile, if any. */
+  holderPort?: number;
+}
+
+/**
+ * Decide whether a launchChrome call may reuse an existing Chrome, given the
+ * named profile it asked for (issue 13 / bug: profile pre-check ordering).
+ *
+ * The ordering this encodes is the whole point: a live instance already running
+ * the requested profile is REUSED, exactly as it would be without a profile, so
+ * the idempotent `launchChrome({ profile, reference })` "make sure it's up"
+ * pattern keeps working. "Profile in use" is only an error when the call would
+ * have to put a SECOND Chrome on a profile another instance holds.
+ */
+export function decideProfileReuse(req: ProfileReuseRequest): ProfileReuseDecision {
+  const { wantedProfileDir, existing, holderPort } = req;
+
+  if (!wantedProfileDir) {
+    return { decision: 'ok' };
+  }
+
+  if (!existing) {
+    // We would spawn - a holder elsewhere means a second Chrome on one profile.
+    return holderPort !== undefined ? { decision: 'in-use', port: holderPort } : { decision: 'ok' };
+  }
+
+  if (existing.profileDir === wantedProfileDir) {
+    return { decision: 'ok' }; // same profile, same browser - plain reuse
+  }
+
+  if (holderPort !== undefined && holderPort !== existing.port) {
+    // Reuse is out (wrong profile) and spawning is out (someone holds it).
+    return { decision: 'in-use', port: holderPort };
+  }
+
+  return { decision: 'mismatch', port: existing.port, actualProfile: existing.profileDir };
+}
+
+export interface ChromeLauncherOptions {
+  /** Directory the temporary profiles live in. Defaults to os.tmpdir(). */
+  profileRoot?: string;
+  /**
+   * Directory named persistent profiles (issue 13) live in. Defaults to
+   * `~/.cdp-tools/profiles`. A function is resolved on every use so a live
+   * config reload (`chrome.persistentProfileRoot`) takes effect immediately.
+   */
+  persistentProfileRoot?: string | (() => string);
+  /** Sweep stale ephemeral profiles on construction. Defaults to true. */
+  sweepStaleProfilesOnStartup?: boolean;
+  /**
+   * A stale profile dir must be at least this old (mtime) before the startup
+   * sweep will remove it. Guards against deleting a profile belonging to a
+   * Chrome that another MCP instance is launching right now. Defaults to 1h.
+   */
+  staleProfileMaxAgeMs?: number;
+}
+
 export class ChromeLauncher {
   private chromeProcesses: Map<number, ChildProcess> = new Map();
   private launchLocks: Map<number, Promise<{ port: number; pid: number }>> = new Map();
+  /** profile name -> in-flight launch for that profile (see launch()) */
+  private profileLaunchLocks: Map<string, Promise<{ port: number; pid: number }>> = new Map();
   private lastCloseEvents: ChromeCloseEvent[] = [];
   private maxCloseEvents: number = 10; // Keep last 10 close events
   private pendingCloseReason: Map<number, ChromeCloseReason> = new Map(); // Track reason before kill
   private onExitCallback: ChromeExitCallback | null = null;
+  /** port -> profile dir currently in use by the Chrome on that port */
+  private profileDirs: Map<number, ChromeProfileRecord> = new Map();
+  private profileRoot: string;
+  private persistentProfileRootOption: string | (() => string);
+  private staleProfileMaxAgeMs: number;
+  /** Resolves once the startup sweep (if any) has finished. Exposed for tests. */
+  readonly startupSweep: Promise<string[]>;
+
+  constructor(options: ChromeLauncherOptions = {}) {
+    this.profileRoot = options.profileRoot ?? os.tmpdir();
+    this.persistentProfileRootOption =
+      options.persistentProfileRoot ?? path.join(os.homedir(), '.cdp-tools', 'profiles');
+    this.staleProfileMaxAgeMs = options.staleProfileMaxAgeMs ?? 60 * 60 * 1000;
+
+    // Sweep profiles left behind by crashed/killed sessions. Fire-and-forget:
+    // a failure here must never prevent the launcher from being usable.
+    this.startupSweep = options.sweepStaleProfilesOnStartup === false
+      ? Promise.resolve([])
+      : this.sweepStaleProfiles().catch((error) => {
+          debugLog('ChromeLauncher', `Startup profile sweep failed: ${error}`).catch(() => {});
+          return [] as string[];
+        });
+  }
 
   /**
    * Set a callback to be invoked when any Chrome process exits.
@@ -65,13 +298,21 @@ export class ChromeLauncher {
    * This is required because command-line flags alone don't reliably disable
    * the "Change your password" leak detection popup
    */
-  private createChromePreferences(userDataDir: string): void {
+  private createChromePreferences(userDataDir: string, overwrite: boolean = true): void {
     const defaultDir = path.join(userDataDir, 'Default');
     const prefsPath = path.join(defaultDir, 'Preferences');
 
     // Create Default directory if it doesn't exist
     if (!fs.existsSync(defaultDir)) {
       fs.mkdirSync(defaultDir, { recursive: true });
+    }
+
+    // Persistent/named profiles (issue 13) only get the seed once. Rewriting
+    // Preferences on every launch would throw away everything the profile has
+    // accumulated - which is the entire point of a persistent profile.
+    if (!overwrite && fs.existsSync(prefsPath)) {
+      debugLog('ChromeLauncher', `Keeping existing Chrome preferences at ${prefsPath}`);
+      return;
     }
 
     // Chrome preferences to disable password-related popups
@@ -198,7 +439,47 @@ export class ChromeLauncher {
    * Uses atomic release-and-launch to prevent race conditions
    * Waits for Chrome to actually bind to the port before resolving
    */
-  async launch(port: number = 9222, url?: string, portReserver?: PortReserver, headless: boolean = false, extraArgs: string[] = []): Promise<{ port: number; pid: number }> {
+  async launch(port: number = 9222, url?: string, portReserver?: PortReserver, headless: boolean = false, extraArgs: string[] = [], profileName?: string): Promise<{ port: number; pid: number }> {
+    if (profileName === undefined) {
+      return this.launchOnPort(port, url, portReserver, headless, extraArgs, profileName);
+    }
+
+    // Named profiles are serialised by NAME as well as by port (bug-006 follow-up).
+    // The per-port lock does not help here: two launches for the same profile on
+    // different ports both pass the "is this profile held?" guard while the first
+    // Chrome is still spawning (findPortForProfile requires isRunning(), which is
+    // false during that window). Chrome then hands the second process off to the
+    // first singleton and it exits, surfacing as a generic spawn failure.
+    const name = normalizeProfileName(profileName);
+    for (let i = 0; i < 50; i++) {
+      const inFlight = this.profileLaunchLocks.get(name);
+      if (!inFlight) break;
+      await debugLog('ChromeLauncher', `Another launch is in progress for profile "${name}", waiting...`);
+      // Its failure is its caller's problem, not ours - we just need it settled.
+      const result = await inFlight.then(r => r, () => undefined);
+      if (result && result.port === port && this.isRunning(port)) {
+        // Same port, same profile: this is the per-port hand-off case, so give
+        // both callers the one launch instead of "already running on port X".
+        return result;
+      }
+    }
+
+    const launchPromise = this.launchOnPort(port, url, portReserver, headless, extraArgs, name);
+    this.profileLaunchLocks.set(name, launchPromise);
+    try {
+      return await launchPromise;
+    } finally {
+      if (this.profileLaunchLocks.get(name) === launchPromise) {
+        this.profileLaunchLocks.delete(name);
+      }
+    }
+  }
+
+  /**
+   * Port-scoped half of launch(): the per-port lock, the "already running" and
+   * profile-ownership guards, and the spawn itself.
+   */
+  private async launchOnPort(port: number, url?: string, portReserver?: PortReserver, headless: boolean = false, extraArgs: string[] = [], profileName?: string): Promise<{ port: number; pid: number }> {
     await debugLog('ChromeLauncher', `launch() called with port ${port}, portReserver=${!!portReserver}, isReserved=${portReserver?.isReserved()}`);
 
     // CRITICAL: Check if another launch is in progress for this port
@@ -216,7 +497,26 @@ export class ChromeLauncher {
 
     // Create a promise for this launch and store it in the lock map
     // This prevents concurrent launches on the same port
-    const launchPromise = this.performLaunch(port, url, portReserver, headless, extraArgs);
+    // A named profile can only be held by one live Chrome - a second launch on
+    // the same user-data-dir is handed off to the first process and ours exits.
+    if (profileName !== undefined) {
+      const name = normalizeProfileName(profileName);
+      const holder = this.findPortForProfile(name);
+      if (holder !== undefined) {
+        throw new ProfileInUseError(name, holder);
+      }
+      // ...and the same profile may be held by a Chrome belonging to ANOTHER
+      // cdp-tools session (the persistent profile root is global by default),
+      // which our own maps know nothing about. Without this the launch "works",
+      // Chrome hands off to the existing singleton, and the caller gets an
+      // unexplained spawn failure. POSIX-only - see ProfileLockedError.
+      const lockPid = await this.findProfileLockHolder(name);
+      if (lockPid !== undefined) {
+        throw new ProfileLockedError(name, lockPid, this.getPersistentProfilePath(name));
+      }
+    }
+
+    const launchPromise = this.performLaunch(port, url, portReserver, headless, extraArgs, profileName);
     this.launchLocks.set(port, launchPromise);
 
     try {
@@ -232,7 +532,7 @@ export class ChromeLauncher {
    * Internal method that performs the actual Chrome launch
    * Separated from launch() to allow mutex/locking logic
    */
-  private async performLaunch(port: number, url?: string, portReserver?: PortReserver, headless: boolean = false, extraArgs: string[] = []): Promise<{ port: number; pid: number }> {
+  private async performLaunch(port: number, url?: string, portReserver?: PortReserver, headless: boolean = false, extraArgs: string[] = [], profileName?: string): Promise<{ port: number; pid: number }> {
     await debugLog('ChromeLauncher', `performLaunch() starting for port ${port}`);
 
     // Check if port is in use by something OTHER than our port reserver
@@ -258,11 +558,23 @@ export class ChromeLauncher {
     }
 
     const chromePath = this.getChromePath();
-    const userDataDir = path.join(os.tmpdir(), `chrome-debug-profile-${Date.now()}`);
+    // Unique by construction: the port can only be held by one live Chrome at a
+    // time, and the random suffix covers same-millisecond relaunches on the same
+    // port. Using Date.now() alone let two concurrent launches on *different*
+    // ports share a profile (launchLocks only serialises per-port) - bug-006.
+    const profile = this.createProfileRecord(port, profileName);
+    const userDataDir = profile.dir;
+    this.profileDirs.set(port, profile);
+    await debugLog('ChromeLauncher', `Using ${profile.ephemeral ? 'ephemeral' : 'persistent'} profile ${userDataDir} for port ${port}`);
+
+    if (!profile.ephemeral) {
+      // First use of a named profile: the directory does not exist yet.
+      await fs.promises.mkdir(userDataDir, { recursive: true });
+    }
 
     // Create Chrome preferences file to disable password manager popups
     // This is more reliable than command-line flags alone
-    this.createChromePreferences(userDataDir);
+    this.createChromePreferences(userDataDir, profile.ephemeral);
 
     const args = [
       `--remote-debugging-port=${port}`,
@@ -353,6 +665,10 @@ export class ChromeLauncher {
 
         const closeEvent = this.recordCloseEvent(port, pid || -1, reason, code, signal);
 
+        // Remove the throwaway profile now that its Chrome is gone. Covers
+        // external closes and crashes as well as killInstance() - bug-007.
+        this.removeProfileDir(port, profile).catch(() => {});
+
         // Invoke the exit callback if set (for port re-reservation)
         if (this.onExitCallback) {
           debugLog('ChromeLauncher', `Invoking onExit callback for port ${port}`);
@@ -404,6 +720,7 @@ export class ChromeLauncher {
         // Remove from tracking map since we're about to throw
         // (exit handler will also remove it when process dies, but this is defensive)
         this.chromeProcesses.delete(port);
+        await this.removeProfileDir(port, profile);
         throw waitError;
       }
 
@@ -518,14 +835,25 @@ export class ChromeLauncher {
    * Kill a specific Chrome instance by port
    */
   private async killInstance(port: number): Promise<void> {
+    // Snapshot the profile we are killing *now*: a relaunch on this port can
+    // land between profileDirs.set() and chromeProcesses.set() in
+    // performLaunch(), and deleting whatever profile happens to be tracked by
+    // the time we get around to it would wipe the new launch's fresh dir.
+    // Passing the snapshot as `expected` makes every deletion below a no-op
+    // once someone else owns the port.
+    const profile = this.profileDirs.get(port);
     const chromeProcess = this.chromeProcesses.get(port);
     if (!chromeProcess || chromeProcess.killed) {
+      // Nothing to kill, but a profile may still be tracked (e.g. the process
+      // was reaped externally) - make sure it does not leak.
+      if (profile) await this.removeProfileDir(port, profile);
       return;
     }
 
     const pid = chromeProcess.pid;
     if (!pid) {
       this.chromeProcesses.delete(port);
+      if (profile) await this.removeProfileDir(port, profile);
       return;
     }
 
@@ -569,17 +897,286 @@ export class ChromeLauncher {
     });
 
     this.chromeProcesses.delete(port);
+
+    // Chrome is gone (or was force-killed) - drop its throwaway profile,
+    // unless a relaunch has already claimed this port (see snapshot above).
+    if (profile) await this.removeProfileDir(port, profile);
+
     await debugLog('ChromeLauncher', `Chrome cleanup complete for port ${port}`);
+  }
+
+  /**
+   * Build the profile record for a launch on `port`.
+   *
+   * The name embeds the port (only one live Chrome can hold a debug port, so
+   * this alone separates concurrent launches) plus a timestamp and 4 random
+   * bytes (so sequential relaunches on the same port within one millisecond
+   * still differ). Naming on Date.now() alone let same-millisecond launches on
+   * different ports share a profile - bug-006.
+   *
+   * With `profileName` (issue 13) the record is a stable directory under the
+   * persistent profile root and is marked `ephemeral: false`, which every
+   * cleanup path skips. The port is deliberately NOT part of a named profile's
+   * directory: the profile is the identity, the port is just where this run of
+   * it happens to listen.
+   */
+  private createProfileRecord(port: number, profileName?: string): ChromeProfileRecord {
+    if (profileName !== undefined) {
+      return { dir: this.getPersistentProfilePath(profileName), ephemeral: false };
+    }
+    const name = `${EPHEMERAL_PROFILE_PREFIX}p${port}-${Date.now()}-${randomBytes(4).toString('hex')}`;
+    return { dir: path.join(this.profileRoot, name), ephemeral: true };
+  }
+
+  /**
+   * Directory named persistent profiles live under (see
+   * `chrome.persistentProfileRoot`; defaults to `~/.cdp-tools/profiles`).
+   */
+  getPersistentProfileRoot(): string {
+    return typeof this.persistentProfileRootOption === 'function'
+      ? this.persistentProfileRootOption()
+      : this.persistentProfileRootOption;
+  }
+
+  /**
+   * Absolute path of a named persistent profile. Does not create it.
+   * @throws InvalidProfileNameError
+   */
+  getPersistentProfilePath(profileName: string): string {
+    return path.join(this.getPersistentProfileRoot(), normalizeProfileName(profileName));
+  }
+
+  /**
+   * Port of the live Chrome currently holding a named profile, if any.
+   * @throws InvalidProfileNameError
+   */
+  findPortForProfile(profileName: string): number | undefined {
+    const dir = this.getPersistentProfilePath(profileName);
+    for (const [port, record] of this.profileDirs.entries()) {
+      if (record.dir === dir && this.isRunning(port)) {
+        return port;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * PID of a live Chrome holding a named persistent profile, if the profile's
+   * SingletonLock says so. Unlike findPortForProfile() this sees Chromes we did
+   * NOT launch (other cdp-tools sessions sharing the global profile root, or a
+   * Chrome started by hand on the same user-data-dir).
+   *
+   * LIMITATION: POSIX-only. It reads the SingletonLock symlink target, which
+   * Windows Chrome does not create - there it always reports "not locked", so
+   * callers must treat a negative result as "no evidence of a holder" rather
+   * than proof the profile is free.
+   *
+   * @throws InvalidProfileNameError
+   */
+  async findProfileLockHolder(profileName: string): Promise<number | undefined> {
+    const dir = this.getPersistentProfilePath(profileName);
+    return this.readProfileLockPid(dir);
+  }
+
+  /**
+   * Names of persistent profiles that exist on disk.
+   */
+  async listPersistentProfiles(): Promise<string[]> {
+    try {
+      const entries = await fs.promises.readdir(this.getPersistentProfileRoot(), { withFileTypes: true });
+      return entries.filter(e => e.isDirectory()).map(e => e.name).sort();
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Wipe a named persistent profile and recreate it empty, so the next launch
+   * starts from a clean browser (no cookies, no IndexedDB, no enrolment).
+   *
+   * Refuses while a Chrome we launched still holds the profile: deleting a
+   * live user-data-dir corrupts the running browser and the deletion would be
+   * partly undone as Chrome flushes state back out on exit. Kill that instance
+   * (`killChrome({ port })`) first.
+   *
+   * Also refuses when the profile's Chrome SingletonLock names a live PID we
+   * did not launch. The default profile root is global (`~/.cdp-tools/profiles`),
+   * so another cdp-tools session may be running this exact profile; without the
+   * lock check this call would rm -rf a live browser's user-data-dir and destroy
+   * the very identity persistent profiles exist to preserve. That check is
+   * POSIX-only (see ProfileLockedError) - on Windows this remains unguarded.
+   *
+   * @throws InvalidProfileNameError | ProfileInUseError | ProfileLockedError
+   */
+  async resetPersistentProfile(profileName: string): Promise<{ profile: string; path: string; existed: boolean }> {
+    const name = normalizeProfileName(profileName);
+    const holder = this.findPortForProfile(name);
+    if (holder !== undefined) {
+      throw new ProfileInUseError(name, holder);
+    }
+    const lockPid = await this.findProfileLockHolder(name);
+    if (lockPid !== undefined) {
+      throw new ProfileLockedError(name, lockPid, this.getPersistentProfilePath(name));
+    }
+
+    const dir = this.getPersistentProfilePath(name);
+    const existed = fs.existsSync(dir);
+
+    await fs.promises.rm(dir, { recursive: true, force: true });
+    await fs.promises.mkdir(dir, { recursive: true });
+    await debugLog('ChromeLauncher', `Reset persistent profile "${name}" at ${dir} (existed: ${existed})`);
+
+    return { profile: name, path: dir, existed };
+  }
+
+  /**
+   * Profile directory currently tracked for a port (if any).
+   */
+  getProfileDir(port: number): string | undefined {
+    return this.profileDirs.get(port)?.dir;
+  }
+
+  /**
+   * All tracked profiles, keyed by port. Persistent profiles are included but
+   * are never deleted by the launcher.
+   */
+  getProfiles(): Map<number, ChromeProfileRecord> {
+    return new Map(this.profileDirs);
+  }
+
+  /**
+   * Stop tracking a port's profile and, if it is ephemeral, delete it from disk.
+   *
+   * `expected` guards against a late exit event from a previous Chrome deleting
+   * the freshly created profile of a relaunch on the same port: if the tracked
+   * record is no longer the one we started with, nothing is touched.
+   */
+  private async removeProfileDir(port: number, expected?: ChromeProfileRecord): Promise<void> {
+    const record = this.profileDirs.get(port);
+    if (!record) {
+      return;
+    }
+    if (expected && record !== expected) {
+      // A newer launch owns this port now - leave its profile alone.
+      return;
+    }
+
+    this.profileDirs.delete(port);
+
+    if (!record.ephemeral) {
+      // Persistent/named profile (issue 13) - tracking only, never delete.
+      await debugLog('ChromeLauncher', `Keeping persistent profile ${record.dir} for port ${port}`);
+      return;
+    }
+
+    try {
+      await fs.promises.rm(record.dir, { recursive: true, force: true });
+      await debugLog('ChromeLauncher', `Removed ephemeral profile ${record.dir} for port ${port}`);
+    } catch (error) {
+      await debugLog('ChromeLauncher', `Failed to remove profile ${record.dir}: ${error}`);
+    }
+  }
+
+  /**
+   * Delete ephemeral profile directories left behind by previous sessions
+   * (crashes, SIGKILL, machine restart). Returns the directories removed.
+   *
+   * Conservative on purpose - a directory is skipped when:
+   *  - it is younger than staleProfileMaxAgeMs (another MCP instance may be
+   *    launching Chrome into it right now), or
+   *  - its Chrome SingletonLock names a PID that is still alive, or
+   *  - it is currently tracked by this launcher.
+   */
+  async sweepStaleProfiles(): Promise<string[]> {
+    const removed: string[] = [];
+
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(this.profileRoot, { withFileTypes: true });
+    } catch (error) {
+      await debugLog('ChromeLauncher', `Profile sweep could not read ${this.profileRoot}: ${error}`);
+      return removed;
+    }
+
+    const inUse = new Set(Array.from(this.profileDirs.values()).map(r => r.dir));
+    const now = Date.now();
+
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !entry.name.startsWith(EPHEMERAL_PROFILE_PREFIX)) {
+        continue;
+      }
+
+      const dir = path.join(this.profileRoot, entry.name);
+      if (inUse.has(dir)) {
+        continue;
+      }
+
+      try {
+        const stats = await fs.promises.stat(dir);
+        if (now - stats.mtimeMs < this.staleProfileMaxAgeMs) {
+          continue; // Too fresh - may belong to a launch in progress elsewhere
+        }
+      } catch {
+        continue; // Vanished or unreadable - leave it alone
+      }
+
+      if (await this.isProfileLocked(dir)) {
+        await debugLog('ChromeLauncher', `Profile sweep skipping ${dir} - still locked by a live Chrome`);
+        continue;
+      }
+
+      try {
+        await fs.promises.rm(dir, { recursive: true, force: true });
+        removed.push(dir);
+      } catch (error) {
+        await debugLog('ChromeLauncher', `Profile sweep failed to remove ${dir}: ${error}`);
+      }
+    }
+
+    if (removed.length) {
+      await debugLog('ChromeLauncher', `Profile sweep removed ${removed.length} stale profile(s)`);
+    }
+    return removed;
+  }
+
+  /**
+   * Is a profile directory still held by a running Chrome?
+   * Chrome writes a SingletonLock symlink whose target is "<hostname>-<pid>".
+   * Unreadable/absent lock means "not locked" (Windows uses a plain lockfile).
+   */
+  private async isProfileLocked(dir: string): Promise<boolean> {
+    return (await this.readProfileLockPid(dir)) !== undefined;
+  }
+
+  /**
+   * PID named by a profile directory's Chrome SingletonLock, if that process is
+   * still alive. POSIX-only: on Windows the lock is a plain file with no
+   * readable PID, so this always returns undefined ("no evidence of a holder").
+   */
+  private async readProfileLockPid(dir: string): Promise<number | undefined> {
+    try {
+      const target = await fs.promises.readlink(path.join(dir, 'SingletonLock'));
+      const pid = Number(target.split('-').pop());
+      return Number.isInteger(pid) && pid > 0 && this.isProcessAlive(pid) ? pid : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /**
    * Reset the launcher state (useful if Chrome was closed externally)
    */
   reset(port?: number): void {
+    // Note: profile dirs are only untracked here, never deleted - reset() is a
+    // "forget my state" escape hatch and the Chrome holding the profile may
+    // still be alive. Anything orphaned this way is picked up by the startup
+    // sweep on the next run.
     if (port !== undefined) {
       this.chromeProcesses.delete(port);
+      this.profileDirs.delete(port);
     } else {
       this.chromeProcesses.clear();
+      this.profileDirs.clear();
     }
   }
 

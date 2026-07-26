@@ -34,6 +34,132 @@ import {
   type LoadSequenceResult,
 } from './replay-executor.js';
 
+// =============================================================================
+// Step tool-name validation (bug-010)
+// =============================================================================
+
+/**
+ * Step "tools" that the replay executor handles itself instead of dispatching
+ * through the MCP tool map (see replay-executor.ts). These are always valid
+ * step names even though they are not registered tools.
+ */
+const VIRTUAL_STEP_TOOLS = new Set(['conditional']);
+
+/** Levenshtein distance, used only to suggest a likely intended tool name. */
+function editDistance(a: string, b: string): number {
+  const prev = new Array(b.length + 1);
+  for (let j = 0; j <= b.length; j++) prev[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    let diag = prev[0];
+    prev[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const tmp = prev[j];
+      prev[j] = Math.min(
+        prev[j] + 1,
+        prev[j - 1] + 1,
+        diag + (a[i - 1] === b[j - 1] ? 0 : 1)
+      );
+      diag = tmp;
+    }
+  }
+  return prev[b.length];
+}
+
+function suggestToolName(name: string, knownToolNames: string[]): string | undefined {
+  const lower = name.toLowerCase();
+  let best: { name: string; distance: number } | undefined;
+  for (const known of knownToolNames) {
+    const distance = editDistance(lower, known.toLowerCase());
+    if (distance <= 3 && (!best || distance < best.distance)) {
+      best = { name: known, distance };
+    }
+  }
+  return best?.name;
+}
+
+export interface UnknownStepTool {
+  /** 1-based step number, matching the numbering used in run results */
+  step: number;
+  tool: string;
+  suggestion?: string;
+}
+
+/**
+ * Find sequence steps whose `tool` is not a registered tool name.
+ *
+ * Only NAMES are validated - step params are deliberately not checked against
+ * the tools' zod schemas, because params legitimately contain interpolation
+ * tokens ({{var:...}}, {{timestamp}}) that are only substituted at run time,
+ * so a number-typed field can validly hold a string token at rest.
+ */
+export function findUnknownStepTools(
+  commands: Array<{ tool?: unknown }>,
+  knownToolNames: string[]
+): UnknownStepTool[] {
+  const known = new Set(knownToolNames);
+  const unknown: UnknownStepTool[] = [];
+
+  commands.forEach((cmd, i) => {
+    const name = typeof cmd?.tool === 'string' ? cmd.tool : String(cmd?.tool);
+    if (known.has(name) || VIRTUAL_STEP_TOOLS.has(name)) return;
+    unknown.push({ step: i + 1, tool: name, suggestion: suggestToolName(name, knownToolNames) });
+  });
+
+  return unknown;
+}
+
+/**
+ * Build the error response for a sequence containing unknown tool names.
+ * Uses a plain response rather than a message template because there is no
+ * template for this case yet (see report for the suggested SEQUENCE_UNKNOWN_TOOL entry).
+ */
+function unknownStepToolsError(
+  action: string,
+  sequenceName: string,
+  unknown: UnknownStepTool[],
+  knownToolNames: string[]
+) {
+  const plural = unknown.length === 1 ? '' : 's';
+  const lines: string[] = [
+    `Error: Sequence "${sequenceName}" references ${unknown.length} unknown tool name${plural}`,
+    `The "${action}" action was rejected before any step ran, so no browser state was changed.`,
+    '',
+  ];
+
+  for (const u of unknown) {
+    lines.push(
+      `- Step ${u.step}: \`${u.tool}\` is not a known tool${u.suggestion ? ` - did you mean \`${u.suggestion}\`?` : ''}`
+    );
+  }
+
+  lines.push('');
+  lines.push('**Fix:** correct the `tool` field on the listed step(s).');
+  lines.push(`**Known tools:** ${knownToolNames.slice().sort().join(', ')}`);
+
+  return { content: [{ type: 'text', text: lines.join('\n') }], isError: true };
+}
+
+/**
+ * Validate every step's tool name in a sequence. Returns an error response when
+ * any name is unknown, or null when the sequence is fine (including when no
+ * tool-name provider was supplied, which keeps validation opt-in).
+ */
+function validateSequenceToolNames(
+  sequence: CommandSequence,
+  action: string,
+  getKnownToolNames?: () => string[]
+) {
+  if (!getKnownToolNames) return null;
+
+  const knownToolNames = getKnownToolNames();
+  if (!knownToolNames || knownToolNames.length === 0) return null;
+
+  const unknown = findUnknownStepTools(sequence.commands ?? [], knownToolNames);
+  if (unknown.length === 0) return null;
+
+  return unknownStepToolsError(action, sequence.name, unknown, knownToolNames);
+}
+
 /**
  * Handle loadSequence error result - creates proper error response with template variables
  */
@@ -131,7 +257,7 @@ const replaySchema = z.object({
   issueTitle: z.string().optional(),
   showReplayOverlay: z.boolean().optional(),
   showAll: z.boolean().optional().describe('Show all sequences including completed/fixed issues'),
-  killChromeOnFinish: z.boolean().optional().describe('run: kill Chrome after finishing (skipped on pause/abort)'),
+  killChromeOnFinish: z.boolean().optional().describe("run: kill the Chrome behind this run's own connection after finishing (skipped on pause/abort). Browsers a step connects to via its own connectionReason are left running - they may be instances you launched yourself."),
 }).strict();
 
 // =============================================================================
@@ -326,7 +452,7 @@ async function handleRunFromLog(
   return { content: [{ type: 'text', text: response }] };
 }
 
-async function handleCreate(args: ReplayArgs, recorder: CommandRecorder) {
+async function handleCreate(args: ReplayArgs, recorder: CommandRecorder, getKnownToolNames?: () => string[]) {
   if (!args.name) {
     return createErrorResponse('MISSING_PARAMETER', {
       action: 'create',
@@ -343,11 +469,22 @@ async function handleCreate(args: ReplayArgs, recorder: CommandRecorder) {
     });
   }
 
+  // Reject unknown tool names up front rather than failing mid-run (bug-010).
+  // The check runs inside createSequence, on the candidate, BEFORE it replaces any
+  // same-named sequence in memory - otherwise a bad create would delete the user's
+  // good sequence and then reject the new one, leaving them with neither.
+  let invalid: ReturnType<typeof validateSequenceToolNames> = null;
   const sequence = await recorder.createSequence(args.name, args.indices, {
     description: args.description,
     expectedOutcome: args.expectedOutcome,
     startUrl: args.startUrl,
+    validate: (candidate) => {
+      invalid = validateSequenceToolNames(candidate, 'create', getKnownToolNames);
+      return invalid === null;
+    },
   });
+
+  if (invalid) return invalid;
 
   if (!sequence) {
     return createErrorResponse('INVALID_INDICES', {
@@ -489,7 +626,7 @@ async function handleExport(args: ReplayArgs, recorder: CommandRecorder) {
   });
 }
 
-async function handleLoad(args: ReplayArgs, recorder: CommandRecorder) {
+async function handleLoad(args: ReplayArgs, recorder: CommandRecorder, getKnownToolNames?: () => string[]) {
   if (!args.filename) {
     return createErrorResponse('MISSING_PARAMETER', {
       action: 'load',
@@ -504,6 +641,14 @@ async function handleLoad(args: ReplayArgs, recorder: CommandRecorder) {
       filename: args.filename,
       error: 'File may not exist or be invalid.'
     });
+  }
+
+  // Reject unknown tool names up front rather than failing mid-run (bug-010).
+  // The sequence is dropped from memory again so it can't be run by id.
+  const invalid = validateSequenceToolNames(sequence, 'load', getKnownToolNames);
+  if (invalid) {
+    recorder.deleteSequence(sequence.id);
+    return invalid;
   }
 
   // If intoHistory is true, load commands into history without executing
@@ -798,7 +943,17 @@ async function handleRun(
     }
   }
 
-  // Kill the Chrome instance for this connection if requested
+  // Kill the Chrome used by this run's own connection, if requested.
+  //
+  // Deliberately run-level ONLY. A multi-device sequence can touch several browsers
+  // (steps may carry their own connectionReason), but a per-step connection is
+  // usually one the run did NOT launch: a long-lived instance the user started by
+  // hand and expects to keep. Nothing here tracks which connections the run itself
+  // caused to be launched - `didAutoLaunch` covers the run-level connection only,
+  // and a `launchChrome` step silently reuses an existing connection with the same
+  // reference (CHROME_CONNECTION_REUSED), so its presence in the sequence proves
+  // nothing about ownership. Rather than guess, we under-kill: a leaked browser is
+  // visible and closable, a killed one takes state the user cannot get back.
   if (args.killChromeOnFinish && connectionReason && getConnectionPort) {
     const port = await getConnectionPort(connectionReason);
     if (port !== null) {
@@ -807,8 +962,8 @@ async function handleRun(
         port,
       }).catch((error: any) => ({ isError: true, error }));
       response += killResult?.isError
-        ? `\n\n**Chrome kill failed** (port ${port}, killChromeOnFinish)`
-        : `\n\n**Chrome killed** (port ${port}, killChromeOnFinish)`;
+        ? `\n\n**Chrome kill failed** (${connectionReason}, port ${port}, killChromeOnFinish)`
+        : `\n\n**Chrome killed** (${connectionReason}, port ${port}, killChromeOnFinish)`;
     }
   }
 
@@ -1510,7 +1665,14 @@ export function createReplayTools(
   commandRecorder: CommandRecorder,
   executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>,
   getPageForConnection?: (connectionReason: string) => Promise<any>,
-  getConnectionPort?: (connectionReason: string) => Promise<number | null>
+  getConnectionPort?: (connectionReason: string) => Promise<number | null>,
+  /**
+   * Lazy provider for the set of registered tool names, used to reject sequence
+   * steps naming a nonexistent tool at create/load time (bug-010). Lazy because
+   * the tool map is built after this factory runs. When omitted, tool names are
+   * not validated (previous behaviour).
+   */
+  getKnownToolNames?: () => string[]
 ) {
   return {
     replay: createTool(
@@ -1521,7 +1683,7 @@ export function createReplayTools(
           case 'history':
             return handleHistory(args, commandRecorder);
           case 'create':
-            return handleCreate(args, commandRecorder);
+            return handleCreate(args, commandRecorder, getKnownToolNames);
           case 'list':
             return handleList(commandRecorder);
           case 'get':
@@ -1531,7 +1693,7 @@ export function createReplayTools(
           case 'export':
             return handleExport(args, commandRecorder);
           case 'load':
-            return handleLoad(args, commandRecorder);
+            return handleLoad(args, commandRecorder, getKnownToolNames);
           case 'listSaved':
             return handleListSaved(args, commandRecorder);
           case 'deleteSaved':

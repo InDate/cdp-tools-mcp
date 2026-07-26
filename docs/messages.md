@@ -44,6 +44,81 @@ Chrome is already running. You can either:
 
 ---
 
+## CHROME_FORCED_PORT_IN_USE
+
+**Type:** error
+**Code:** PORT_IN_USE
+
+Cannot launch a new Chrome instance on port {{port}}: that port is already in use. `forceNewInstance` guarantees a fresh process, so the requested port is never silently swapped for another one.
+
+**Suggestions:**
+- Use `killChrome({ port: {{port}} })` to free the port, then retry
+- Drop `forceNewInstance` to reuse/tab into the Chrome already on port {{port}}
+- Omit `port` to let `forceNewInstance` pick a free port automatically
+- Pick a different explicit `port` if you are pinning one instance per port
+
+---
+
+## CHROME_REFERENCE_ALREADY_BOUND
+
+**Type:** error
+**Code:** REFERENCE_IN_USE
+
+Reference "{{reference}}" is already bound to a live connection, so `forceNewInstance` would leave two Chrome instances answering to the same name.
+
+**Suggestions:**
+- Choose a different 3-word reference for the new instance
+- Drop `forceNewInstance` to reuse the existing "{{reference}}" connection
+- Use `killChrome()` or `disconnectDebugger({ reference: "{{reference}}" })` first to release the name
+
+---
+
+## CHROME_PROFILE_INVALID_NAME
+
+**Type:** error
+**Summary:** Invalid profile name
+
+"{{profile}}" is not a valid persistent profile name.
+
+A profile name becomes a directory, so it must be 1-64 characters of letters, digits, dot, dash or underscore, starting with a letter or digit. No slashes, no leading dot or dash, and it may not start with "chrome-debug-profile-".
+
+**Suggestions:**
+- Try a simple name like `device-a`, `owner-console` or `work_google`
+- List existing profiles with `config({ action: 'listProfiles' })`
+
+---
+
+## CHROME_PROFILE_IN_USE
+
+**Type:** error
+**Summary:** Profile already in use
+
+Profile "{{profile}}" is already held by the Chrome running on port {{port}}.
+
+Only one live Chrome can use a profile at a time - a second launch on the same user-data-dir is handed off to the first process and immediately exits.
+
+**Suggestions:**
+- Use the existing instance on port {{port}} (`connectionReason` of that connection)
+- Or free the profile first: `killChrome({ port: {{port}}, reason: 'switching profile' })`
+- Or launch a different profile, e.g. `launchChrome({ profile: '{{profile}}-2' })`
+
+---
+
+## CHROME_PROFILE_PORT_MISMATCH
+
+**Type:** error
+**Summary:** Port already runs a different profile
+
+Chrome is already running on port {{port}} with profile `{{actualProfile}}`, not "{{profile}}".
+
+Reusing it would give you a different browser identity than you asked for.
+
+**Suggestions:**
+- Launch on another port: `launchChrome({ profile: '{{profile}}', forceNewInstance: true })`
+- Or kill the instance first: `killChrome({ port: {{port}}, reason: 'switching profile' })`
+
+---
+
 ## CHROME_LAUNCH_SUCCESS
 
 **Type:** success
@@ -1192,6 +1267,53 @@ localStorage item set: `{{key}}` = "{{value}}"
 
 ---
 
+## SESSION_STORAGE_SET_SUCCESS
+
+**Type:** success
+
+sessionStorage item set: `{{key}}` = "{{value}}"
+
+---
+
+## STORAGE_KEY_REMOVED
+
+**Type:** success
+
+{{storageType}} key removed: `{{key}}`{{existedNote}}
+
+---
+
+## IDB_PUT_SUCCESS
+
+**Type:** success
+
+IndexedDB record written to `{{db}}` / `{{store}}` (key: {{key}})
+
+---
+
+## IDB_DELETE_SUCCESS
+
+**Type:** success
+
+IndexedDB record deleted from `{{db}}` / `{{store}}` (key: {{key}}){{existedNote}}
+
+---
+
+## INDEXEDDB_ERROR
+
+**Type:** error
+**Code:** INDEXEDDB_ERROR
+
+IndexedDB operation failed ({{action}}): {{error}}
+
+**Suggestions:**
+- Use `storage({ action: "idbListDatabases" })` to confirm the database name
+- Use `storage({ action: "idbListStores", db: "..." })` to confirm the object store name
+- Object stores with a `keyPath` take their key from inside `record`; do not pass `key`
+- IndexedDB is origin-scoped, so navigate to the right origin before reading
+
+---
+
 ## STORAGE_CLEARED
 
 **Type:** success
@@ -1582,6 +1704,15 @@ Error: {{error}}
 ---
 
 ## Replay Messages
+
+## INVALID_INDICES
+
+**Type:** error
+**Code:** INVALID_INDICES
+
+{{message}}
+
+---
 
 ## REPLAY_ABORTED
 
@@ -2803,6 +2934,78 @@ If the server died, use `server({ action: 'restart', serverId: '{{serverId}}' })
 ---
 
 ## Config Messages
+
+## CONFIG_PROFILE_LIST
+
+**Type:** list
+**Summary:** Persistent Chrome profiles
+
+Root: {{root}}
+Profiles ({{count}}): {{profiles}}
+
+**Note:** Use `launchChrome({ profile: "<name>" })` to launch one, or `config({ action: "resetProfile", profile: "<name>" })` to wipe it.
+
+---
+
+## CONFIG_PROFILE_NAME_REQUIRED
+
+**Type:** error
+**Summary:** Profile name required
+
+`resetProfile` needs the `profile` parameter.
+
+**Example:**
+```
+config({ action: "resetProfile", profile: "device-a" })
+```
+
+---
+
+## CONFIG_PROFILE_RESET_SUCCESS
+
+**Type:** success
+**Summary:** Profile reset
+
+Profile "{{profile}}" is now empty.{{#existed}}
+
+Its previous contents (cookies, localStorage, IndexedDB, saved sessions) were deleted.{{/existed}}
+
+Location: {{path}}
+
+---
+
+## CONFIG_PROFILE_RESET_IN_USE
+
+**Type:** error
+**Summary:** Profile is in use
+
+Cannot reset profile "{{profile}}" - the Chrome on port {{port}} is still using it.
+
+Wiping a user-data-dir under a running Chrome corrupts it, and the deletion is partly undone when Chrome flushes state on exit.
+
+**Suggestions:**
+- Stop it first: `killChrome({ port: {{port}}, reason: "resetting profile {{profile}}" })`
+- Then retry: `config({ action: "resetProfile", profile: "{{profile}}" })`
+
+---
+
+## CONFIG_PROFILE_RESET_FAILED
+
+**Type:** error
+**Summary:** Profile reset failed
+
+Could not reset profile "{{profile}}": {{error}}
+
+---
+
+## CONFIG_PROFILES_UNAVAILABLE
+
+**Type:** error
+**Summary:** Profile management unavailable
+
+Persistent Chrome profiles are not available - the config tool was created without a Chrome launcher.
+
+---
 
 ## CONFIG_STATUS
 

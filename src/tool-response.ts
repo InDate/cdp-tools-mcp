@@ -107,6 +107,23 @@ export interface RequestToolMeta {
 }
 
 /**
+ * Inspect tool metadata (evaluateExpression result, capturable via saveAs).
+ *
+ * `value` is a best-effort de-formatted view of the evaluated result: the
+ * CDP layer returns values already shaped for display (strings arrive quoted,
+ * numbers/booleans arrive as strings), so this reverses that so a captured
+ * variable holds the real type rather than its display text.
+ */
+export interface InspectToolMeta {
+  expression: string;
+  value: unknown;
+  /** typeof `value` ('undefined' when the expression evaluated to undefined) */
+  valueType: string;
+  /** Set when the expression was evaluated against a paused call frame */
+  callFrameId?: string;
+}
+
+/**
  * Assert tool metadata
  */
 export interface AssertToolMeta {
@@ -145,6 +162,7 @@ export interface ToolResponseMeta {
   console?: ConsoleToolMeta;
   network?: NetworkToolMeta;
   request?: RequestToolMeta;
+  inspect?: InspectToolMeta;
   assert?: AssertToolMeta;
   replay?: ReplayRunMeta;
 }
