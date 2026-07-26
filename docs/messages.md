@@ -3299,6 +3299,65 @@ Request to {{url}} failed ({{destination}}): {{error}}
 
 ---
 
+## WAIT_CONDITION_MET
+
+**Type:** success
+**Summary:** Wait complete ({{elapsedMs}}ms, {{polls}} checks)
+
+Condition met after {{elapsedMs}}ms ({{polls}} checks): waited for {{condition}}
+
+---
+
+## WAIT_SLEEP_COMPLETE
+
+**Type:** success
+**Summary:** Slept {{ms}}ms
+
+Slept {{ms}}ms. Fixed sleeps are a last resort - prefer `wait({ selector })` or `wait({ expression })`, which return as soon as the condition holds and fail loudly when it never does.
+
+---
+
+## WAIT_TIMEOUT
+
+**Type:** error
+**Code:** WAIT_TIMEOUT
+
+Timed out after {{timeoutMs}}ms ({{polls}} checks) waiting for {{condition}}{{lastError}}
+
+**Suggestions:**
+- The condition never became true - check it is the right selector/expression for the page you are on
+- If the page is still loading or async work is slow, raise `timeoutMs`
+- Use `content({ action: 'findInteractive' })` or `screenshot` to see the current page state
+
+---
+
+## WAIT_INVALID_ARGS
+
+**Type:** error
+**Code:** WAIT_INVALID_ARGS
+
+{{message}}
+
+**Suggestions:**
+- `wait({ selector })` - element appears, `wait({ selectorGone })` - element disappears
+- `wait({ expression })` - synchronous JS predicate polls truthy
+- `wait({ ms })` - fixed sleep (last resort)
+
+---
+
+## WAIT_DEBUGGER_PAUSED
+
+**Type:** error
+**Code:** WAIT_DEBUGGER_PAUSED
+
+Cannot wait for {{condition}}: the debugger on "{{connectionReason}}" is paused at a breakpoint. The page's event loop is stopped, so nothing can change and the wait would only burn its timeout.
+
+**Suggestions:**
+- Resume execution first: `execution({ action: 'resume' })`
+- Or inspect the paused state instead of waiting: `inspect({ action: 'getCallStack' })`
+
+---
+
 ## CONFIG_USE_LOCAL_FAILED
 
 **Type:** error

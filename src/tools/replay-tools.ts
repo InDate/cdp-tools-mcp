@@ -29,7 +29,7 @@ import {
   showKeyPress,
   removeReplayCursor,
   autoLaunchChrome,
-  TOOLS_NEEDING_CONNECTION,
+  commandNeedsBrowserConnection,
   type ExecutionContext,
   type LoadSequenceResult,
 } from './replay-executor.js';
@@ -306,7 +306,7 @@ async function handleRepeat(
   }
 
   // Determine if we need a connection
-  const needsConnection = commands.some(cmd => TOOLS_NEEDING_CONNECTION.includes(cmd.tool));
+  const needsConnection = commands.some(cmd => commandNeedsBrowserConnection(cmd));
   let connectionReason = args.connectionReason;
 
   // Try to extract connection from commands if not provided
@@ -334,7 +334,7 @@ async function handleRepeat(
     try {
       // Add connectionReason to params if needed
       const params = { ...cmd.params };
-      if (connectionReason && TOOLS_NEEDING_CONNECTION.includes(cmd.tool)) {
+      if (connectionReason && commandNeedsBrowserConnection(cmd)) {
         params.connectionReason = connectionReason;
       }
 
@@ -395,7 +395,7 @@ async function handleRunFromLog(
   const commands = lineResults as Array<{ line: number; tool: string; params: Record<string, any> }>;
 
   // Determine if we need a connection
-  const needsConnection = commands.some(cmd => TOOLS_NEEDING_CONNECTION.includes(cmd.tool));
+  const needsConnection = commands.some(cmd => commandNeedsBrowserConnection(cmd));
   let connectionReason = args.connectionReason;
 
   // Try to extract connection from commands if not provided
@@ -421,7 +421,7 @@ async function handleRunFromLog(
   for (const cmd of commands) {
     try {
       const params = { ...cmd.params };
-      if (connectionReason && TOOLS_NEEDING_CONNECTION.includes(cmd.tool)) {
+      if (connectionReason && commandNeedsBrowserConnection(cmd)) {
         params.connectionReason = connectionReason;
       }
 

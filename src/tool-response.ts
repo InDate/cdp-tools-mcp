@@ -140,6 +140,21 @@ export interface AssertToolMeta {
 }
 
 /**
+ * Wait tool metadata
+ */
+export interface WaitToolMeta {
+  /** Which form ran */
+  form: 'selector' | 'selectorGone' | 'expression' | 'ms';
+  /** The selector/expression waited on (or "Nms" for the sleep form) */
+  condition: string;
+  /** True when the condition was met (always true for the sleep form) */
+  satisfied: boolean;
+  elapsedMs: number;
+  /** Number of MCP-side evaluations performed (0 for the sleep form) */
+  polls: number;
+}
+
+/**
  * Replay run metadata - structured completion signal, since a "run" can
  * finish with failed steps or pause (stepTo/breakpoint/click-validation)
  * while still returning a non-isError response (a caller has to read this
@@ -170,6 +185,7 @@ export interface ToolResponseMeta {
   request?: RequestToolMeta;
   inspect?: InspectToolMeta;
   assert?: AssertToolMeta;
+  wait?: WaitToolMeta;
   replay?: ReplayRunMeta;
 }
 

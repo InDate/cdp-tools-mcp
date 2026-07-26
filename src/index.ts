@@ -47,6 +47,7 @@ import { createTabTools } from './tools/tab-tools.js';
 import { createDownloadTools } from './tools/download-tools.js';
 import { createRequestTools } from './tools/request-tools.js';
 import { createAssertTools } from './tools/assert-tools.js';
+import { createWaitTools } from './tools/wait-tools.js';
 import { createModalTools } from './tools/modal-tools.js';
 import { createReplayTools } from './tools/replay-tools.js';
 import { createServerTools } from './tools/server-tools.js';
@@ -1406,6 +1407,8 @@ const allTools = {
   ...(configManager.isToolEnabled('request') ? createRequestTools(resolveConnectionFromReason) : {}),
   // Assert tool (inline assertions as sequence steps)
   ...(configManager.isToolEnabled('assert') ? createAssertTools() : {}),
+  // Wait tool (wait primitive for sequences - MCP-side condition polling / sleep)
+  ...(configManager.isToolEnabled('wait') ? createWaitTools(resolveConnectionFromReason) : {}),
   // Replay tools
   ...(configManager.isToolEnabled('replay') ? createReplayTools(commandRecorder, executeToolCall, async (connectionReason: string) => {
     const resolved = await resolveConnectionFromReason(connectionReason);

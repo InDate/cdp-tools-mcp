@@ -33,8 +33,11 @@ export interface SelectorError {
 
 /**
  * Parse extended selector syntax and extract components
+ * (exported for the wait tool, which needs the raw base-selector + text-match
+ * pieces to build a self-contained polling predicate instead of marking
+ * elements with data attributes that would not survive a navigation)
  */
-function parseExtendedSelector(selector: string): {
+export function parseExtendedSelector(selector: string): {
   baseSelector: string;
   textMatch: { type: 'has-text' | 'text' | 'text-is'; value: string } | null;
 } | { error: string } {

@@ -116,6 +116,34 @@ be honoured fails the step rather than silently capturing nothing.
 Values that only render as a description (`[HTMLDivElement]`, `Array(3)`) come
 back as strings - capture a specific field rather than a whole DOM object.
 
+## Waiting for async work
+
+Recording by hand hides races: driving tools interactively puts seconds
+between calls, so async work always looks settled. Replayed back-to-back, a
+step after a navigation or an async kick-off reads state that isn't there
+yet. `wait` is the sequence step for that:
+
+```
+{ tool: 'wait', params: { selector: 'button:has-text("Join")' } }   // appears
+{ tool: 'wait', params: { selectorGone: '.spinner' } }              // disappears
+{ tool: 'wait', params: { expression: 'window.__probe !== "PENDING"' } }
+{ tool: 'wait', params: { ms: 500 } }                               // last resort
+```
+
+Exactly one form per step. Condition forms poll a **synchronous** check from
+the MCP side (default: every 100ms, up to `timeoutMs` 15000), so they survive
+a navigation mid-wait and don't depend on in-page timers or promises. On
+timeout the step fails and stops the run - a `wait` never hangs. For async
+in-page work, kick it off in one step, store the result in a global, then
+`wait({ expression: 'window.__result !== undefined' })` and read it with
+`inspect` + `saveAs`.
+
+Historical note: sequences in the wild use a marker-div + hover-on-
+`:has-text()` idiom (an `input({ action: 'hover' })` on an element that only
+exists once async work settles). That was never stylistic - hover's short
+implicit element-wait was the *only* step that waited at all before `wait`
+existed. Don't copy the pattern into new sequences; use `wait` and `assert`.
+
 ## Multi-device / multi-browser sequences
 
 Any step may carry its own `connectionReason`, and it is honoured for

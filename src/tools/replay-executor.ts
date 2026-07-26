@@ -176,8 +176,26 @@ export const TOOLS_NEEDING_CONNECTION = [
  */
 export const TOOLS_ACCEPTING_CONNECTION = [
   ...TOOLS_NEEDING_CONNECTION,
-  'inspect', 'execution', 'breakpoint', 'getSourceCode', 'detectModals', 'dismissModal'
+  'inspect', 'execution', 'breakpoint', 'getSourceCode', 'detectModals', 'dismissModal',
+  'wait'
 ];
+
+/**
+ * Whether a single step requires a *browser* connection (drives Chrome
+ * auto-launch). Param-aware variant of `TOOLS_NEEDING_CONNECTION.includes(tool)`:
+ * `wait` is browser-bound only in its selector/selectorGone forms.
+ * - `wait({ ms })` is a plain sleep and must not drag a Chrome launch in.
+ * - `wait({ expression })` is target-agnostic (valid against Node too), so it
+ *   behaves like `inspect`: the run connection is injected, but it never
+ *   forces a browser launch on its own.
+ */
+export function commandNeedsBrowserConnection(cmd: { tool: string; params?: Record<string, any> }): boolean {
+  if (cmd.tool === 'wait') {
+    const p = cmd.params || {};
+    return p.selector !== undefined || p.selectorGone !== undefined;
+  }
+  return TOOLS_NEEDING_CONNECTION.includes(cmd.tool);
+}
 
 // =============================================================================
 // Conditional Evaluation
@@ -590,7 +608,7 @@ export function analyzeSequenceConnections(commands: RecordedCommand[]): Connect
     if (commands[i].tool === 'launchChrome' && launchChromeIndex === -1) {
       launchChromeIndex = i;
     }
-    if (TOOLS_NEEDING_CONNECTION.includes(commands[i].tool) && firstConnectionToolIndex === -1) {
+    if (commandNeedsBrowserConnection(commands[i]) && firstConnectionToolIndex === -1) {
       firstConnectionToolIndex = i;
     }
   }
@@ -622,7 +640,7 @@ export function extractConnectionFromSequence(
  */
 export function sequenceNeedsConnection(commands: RecordedCommand[]): boolean {
   return commands.some(cmd =>
-    TOOLS_NEEDING_CONNECTION.includes(cmd.tool) && !cmd.params.connectionReason
+    commandNeedsBrowserConnection(cmd) && !cmd.params.connectionReason
   );
 }
 

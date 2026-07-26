@@ -686,6 +686,38 @@ Beyond click validation, each step gets some automatic help:
 - **Recorded delays:** delays captured during interaction recording are replayed
   (capped by `replay.maxDelayMs`, default 1000ms).
 
+These are best-effort niceties with short, fixed budgets. When a step
+genuinely depends on async work settling - a page load after `location.href`,
+a spinner clearing, an async probe writing a global - add an explicit `wait`
+step instead of relying on them.
+
+## Explicit Waits (`wait` steps)
+
+`wait` is a first-class sequence step for "the previous step kicked off async
+work". Exactly one of four mutually exclusive forms:
+
+```javascript
+{ tool: 'wait', params: { selector: 'button:has-text("Join")' } }  // element appears
+{ tool: 'wait', params: { selectorGone: '.spinner' } }             // element disappears
+{ tool: 'wait', params: { expression: 'window.__probe !== "PENDING"' } }
+{ tool: 'wait', params: { ms: 500 } }                              // fixed sleep, last resort
+```
+
+- The condition forms are polled **from the MCP side** as a synchronous check
+  (default `pollIntervalMs` 100, `timeoutMs` 15000). Because nothing waits
+  inside the page, a wait survives a navigation that happens mid-wait (each
+  poll simply runs in whatever document exists at that moment) and never
+  depends on in-page timers or promises resolving.
+- `expression` must be synchronous - don't `await` in it. Kick async work off
+  in a prior step, have it write a global, and wait on the global.
+- On timeout the step returns an error (`WAIT_TIMEOUT`, including the last
+  evaluation error if the predicate was throwing), which stops the sequence
+  like any other failed step. A `wait` never hangs a run.
+- The run-level `connectionReason` is injected like any other step, and a
+  per-step `connectionReason` is honoured (multi-device sequences).
+- `wait({ ms })` needs no browser at all and never triggers a Chrome
+  auto-launch; `wait({ expression })` also works against a Node.js target.
+
 ## Click Validation
 
 Click steps validate their effects. When validation fails, the sequence pauses
