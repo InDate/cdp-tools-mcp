@@ -308,7 +308,16 @@ export class DOMChangeMonitor {
    */
   async stopObserving(
     connectionRef: string,
-    options: { settleTimeout?: number; quietPeriod?: number } = {}
+    options: {
+      settleTimeout?: number;
+      quietPeriod?: number;
+      /** Optional cancellation (#110): aborting ends the settle WAIT early
+       *  (reported as settled: false) - results observed so far are still
+       *  collected and the observer is still cleaned up. It never throws:
+       *  the action's dispatches already happened, so callers report what
+       *  was seen and stop promptly. */
+      signal?: AbortSignal;
+    } = {}
   ): Promise<DOMChanges | null> {
     const session = this.sessions.get(connectionRef);
     if (!session) {
@@ -321,7 +330,7 @@ export class DOMChangeMonitor {
 
     try {
       // Wait for mutations to settle
-      const settleResult = await this.waitForSettle(page, settleTimeout, quietPeriod);
+      const settleResult = await this.waitForSettle(page, settleTimeout, quietPeriod, options.signal);
 
       // Collect results
       const rawResults = await page.evaluate(() => {
@@ -388,12 +397,18 @@ export class DOMChangeMonitor {
   private async waitForSettle(
     page: any,
     timeout: number,
-    quietPeriod: number
+    quietPeriod: number,
+    signal?: AbortSignal
   ): Promise<{ settled: boolean; waitTime: number }> {
     const startTime = Date.now();
     const checkInterval = 50; // Check every 50ms
 
     while (Date.now() - startTime < timeout) {
+      // Cancelled: stop waiting for quiet - report unsettled with whatever
+      // was observed so far.
+      if (signal?.aborted) {
+        return { settled: false, waitTime: Date.now() - startTime };
+      }
       const timeSinceLastMutation = await page.evaluate(() => {
         // @ts-ignore
         if (window.__cdpChangeObserver) {

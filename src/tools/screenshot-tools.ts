@@ -16,6 +16,7 @@ import { spawn } from 'child_process';
 import { resolveSelector, isExtendedSelector, cleanupResolvedSelector } from '../utils/selector-resolver.js';
 import { randomBytes } from 'crypto';
 import { getOutputPath, getTempPath } from '../helpers/paths.js';
+import { throwIfAborted } from '../utils/abort.js';
 
 // WeasyPrint availability cache
 let weasyPrintCache: { available: boolean; version?: string; error?: string; checkedAt: number } | null = null;
@@ -460,8 +461,17 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
     screenshot: createTool(
       'Visual verification only. Use extractText for content. Actions: fullPage (full page screenshot), viewport (viewport screenshot), element (element screenshot), pdf (print to PDF with Chrome or WeasyPrint engines)',
       screenshotSchema,
-      async (args) => {
+      // abortSignal (#110): ENTRY CHECKPOINT ONLY - enough to not START a
+      // capture (or, for `pdf`, a multi-second WeasyPrint/Chrome print) after
+      // the user has cancelled. Once started there is nothing to cancel: the
+      // capture is one CDP call and the PDF engines are a spawned process /
+      // Page.printToPDF with their own timeouts, neither of which takes a
+      // signal. Adding one is a bigger change than a checkpoint, so it is
+      // deliberately not done here.
+      async (args, abortSignal?: AbortSignal) => {
         const { action } = args;
+
+        throwIfAborted(abortSignal);
 
         // Resolve connection from reason
         const resolved = await resolveConnectionFromReason(args.connectionReason);

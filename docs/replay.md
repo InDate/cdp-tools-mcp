@@ -378,16 +378,30 @@ Lifetime and limits:
   supervisor's hot-restart on rebuild, which also kills any in-flight run),
   `status`/`cancel` with that id return `REPLAY_RUN_NOT_FOUND`.
 - `cancel` with a `runId` aborts the run's controller. The run's signal is
-  forwarded to every step's tool handler; steps whose handler honours it are
-  **interrupted promptly** - today that is `wait` (all forms: `selector`,
-  `selectorGone`, `expression`, `ms`), by far the longest-lived kind of step.
-  Steps whose handler ignores the signal (`input`, `navigate`, `request`, ...)
-  finish their in-flight tool call first, so cancel takes effect **at the next
-  step boundary** for them, and work already dispatched to the browser may
-  still take effect (extending prompt interruption to more tools is tracked
-  in #110). Cancellation also reaches nested sequences (`conditional` flows,
-  nested `replay run` steps) - they share the parent run's signal. Status
-  shows `cancelling` until the run actually stops.
+  forwarded to every step's tool handler; cancellation also reaches nested
+  sequences (`conditional` flows, nested `replay run` steps) - they share the
+  parent run's signal. Status shows `cancelling` until the run actually stops.
+  What a cancel does to the step that is currently in flight depends on the
+  tool, and the three levels are genuinely different (see the table below).
+
+**Which tools honour cancellation** (canonical list - `#110`):
+
+| Tool | On cancel | What that means |
+| --- | --- | --- |
+| `wait` (all forms: `selector`, `selectorGone`, `expression`, `ms`) | **cancelled** | Polling/sleep stops mid-step. Nothing was in flight to abandon. |
+| `request` (`destination: 'node'`) | **cancelled** | The external signal is composed into the fetch's controller, so the **socket is closed** - the server sees the request aborted. Its own `timeoutMs` is still reported as a timeout, separately. |
+| `navigate` (`goto`, `reload`, `back`, `forward`) | **stops waiting** | Deliberate owner decision: `Page.stopLoading` is *not* called, because a half-loaded page that later steps act on is worse than a loaded one. The page finishes loading in the background; the step stops waiting for it. |
+| `inspect` (`evaluateExpression`) | **stops waiting** | CDP cannot recall a `Runtime.evaluate`; the expression keeps running in the target. Other `inspect` actions read captured state and only get the entry checkpoint. |
+| `content` (`parse`) | **stops waiting** | The plugin's `waitFor` predicate (default up to 8s) is abandoned. Extraction itself is one `page.evaluate`. |
+| `input` (every action) | **checkpoint only** | Input events cannot be recalled: once `Input.dispatchMouseEvent` is on the wire, Chrome **will** process it. Cancellation prevents events that had *not* gone out yet - checkpoints sit after connection/selector resolution, immediately before each dispatch, and between events in multi-dispatch paths (Tab loops, drag stepping, clear-and-retype, pinch). A cancelled drag still releases the mouse button. **Nothing already dispatched is undone.** |
+| `breakpoint({ action: 'await' })` | **checkpoint + fails the step** | Cancelling the wait removes a breakpoint the step created and fails the step. (Before #110 it reported `success: true` - a cancelled step recorded as passed.) |
+| `request` (`destination: 'browser'`) | **checkpoint only** | The `fetch` runs inside the page and is unreachable from the server; it runs to its own timeout. |
+| `screenshot`, `content` (other actions), `inspect` (other actions) | **checkpoint only** | Enough not to *start* a capture/read after the cancel; the capture itself is a single call with nothing to cancel. |
+| `dom`, `network`, everything else | **next step boundary** | No real wait or loop to interrupt (`network` reads an in-memory buffer). The in-flight call finishes and the run stops before the next step. |
+
+  Two caveats that apply to every row: work already dispatched to the browser
+  may still take effect, and a "stops waiting" step leaves work running in the
+  target that no one is watching any more.
 - A nested run started by a sequence step (a `conditional` flow, or a
   `replay run` step - which is forced to `wait: true`) is part of its parent
   run, never a separate top-level run.

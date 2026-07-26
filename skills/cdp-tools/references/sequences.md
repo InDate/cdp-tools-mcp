@@ -90,11 +90,26 @@ replay({ action: 'status', runId: 'run-3-...' })   // progress; full result once
 replay({ action: 'cancel', runId: 'run-3-...' })   // stop it
 ```
 
-`cancel` interrupts a `wait` step promptly (any form - the run's abort signal
-reaches the wait handler mid-poll, including inside nested `conditional`
-sequences). Other steps' handlers don't observe the signal yet, so those stop
-at the next step boundary, and work already dispatched to the browser may
-still take effect.
+`cancel` reaches the step that is in flight (including inside nested
+`conditional` sequences), but what it can do there differs by tool - three
+levels, and the difference matters:
+
+- **Genuinely cancelled:** `wait` (all forms, mid-poll) and `request` with
+  `destination: 'node'` (the socket is closed - the server sees it aborted).
+- **Stops waiting, work continues:** `navigate` (deliberately no
+  `Page.stopLoading` - a half-loaded page is worse than a loaded one),
+  `inspect({ action: 'evaluateExpression' })`, `content({ action: 'parse' })`.
+- **Checkpoint only:** `input` - an input event on the wire cannot be
+  recalled, so cancelling stops events that had not gone out yet and undoes
+  nothing already dispatched (a cancelled drag does still release the button).
+  Same for `request` with `destination: 'browser'`, `screenshot`, and the
+  non-waiting `content`/`inspect` actions.
+
+`breakpoint({ action: 'await' })` is cancellable and now **fails** the step
+(it used to report success). `dom`, `network` and everything else have no real
+wait to interrupt, so they stop at the next step boundary. In every case, work
+already dispatched to the browser may still take effect. Full table:
+`docs/replay.md`.
 
 Several runs can execute concurrently - even of the same sequence - and the
 run id is what tells them apart. Settled runs and their results are kept in

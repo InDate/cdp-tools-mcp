@@ -8,6 +8,7 @@ import { SourceMapHandler } from '../sourcemap-handler.js';
 import { createTool } from '../validation-helpers.js';
 import type { LogpointExecutionTracker } from '../logpoint-execution-tracker.js';
 import { createSuccessResponse, createErrorResponse, getErrorMessage } from '../messages.js';
+import { abortErrorFor, isAbortError, throwIfAborted } from '../utils/abort.js';
 
 /**
  * Helper to resolve TypeScript source maps for breakpoint locations.
@@ -1201,6 +1202,11 @@ export function createBreakpointTools(
               return createErrorResponse('DEBUGGER_NOT_CONNECTED');
             }
 
+            // Already cancelled: never start waiting. (An already-aborted
+            // signal fires no 'abort' event, so the listener below would
+            // never resolve and this would block until pause/timeout.)
+            throwIfAborted(abortSignal);
+
             // Track if we created a breakpoint (for cleanup on abort/timeout)
             let createdBreakpoint: { breakpointId: string; url: string; line: number; column?: number } | null = null;
 
@@ -1209,12 +1215,13 @@ export function createBreakpointTools(
             // IMPORTANT: Start listening for pause BEFORE setting breakpoint
             // This prevents race condition where breakpoint triggers immediately
             // and pause event fires before we've registered the resolver
+            let onAbort: (() => void) | undefined;
             const waitPromise = new Promise<{ type: 'paused' | 'aborted' | 'timeout' }>((resolve) => {
-              // Set up abort handler
+              // Set up abort handler (detached in the finally below - the
+              // signal may be a long-lived run signal that outlives this step)
               if (abortSignal) {
-                abortSignal.addEventListener('abort', () => {
-                  resolve({ type: 'aborted' });
-                }, { once: true });
+                onAbort = () => resolve({ type: 'aborted' });
+                abortSignal.addEventListener('abort', onAbort, { once: true });
               }
 
               // Wait for pause - registered before breakpoint is set
@@ -1223,131 +1230,150 @@ export function createBreakpointTools(
                 .catch(() => resolve({ type: 'timeout' }));
             });
 
-            // If url and lineNumber provided, set a breakpoint (after listener is registered)
-            if (args.url && args.lineNumber !== undefined) {
-              // Resolve source maps for TypeScript files
-              const resolved = await resolveBreakpointLocation(
-                args.url, args.lineNumber, args.columnNumber,
-                targetCdpManager, sourceMapHandler
-              );
+            // Everything below runs inside a try/finally so the abort listener
+            // is detached on EVERY exit (including the early return when
+            // setBreakpoint fails): abortSignal is typically the replay run's
+            // long-lived signal, and a leaked listener per step accumulates
+            // for the whole run.
+            try {
+              // If url and lineNumber provided, set a breakpoint (after listener is registered)
+              if (args.url && args.lineNumber !== undefined) {
+                // Resolve source maps for TypeScript files
+                const resolved = await resolveBreakpointLocation(
+                  args.url, args.lineNumber, args.columnNumber,
+                  targetCdpManager, sourceMapHandler
+                );
+
+                try {
+                  const breakpoint = await targetCdpManager.setBreakpoint(resolved.url, resolved.line, resolved.column, args.condition);
+                  const resolvedLine = breakpoint.location.lineNumber + 1;
+                  const resolvedColumn = breakpoint.location.columnNumber !== undefined
+                    ? breakpoint.location.columnNumber + 1
+                    : undefined;
+                  createdBreakpoint = {
+                    breakpointId: breakpoint.breakpointId,
+                    url: resolved.url,
+                    line: resolvedLine,
+                    column: resolvedColumn
+                  };
+                } catch (error: any) {
+                  if (isAbortError(error)) throw error;
+                  return {
+                    content: [{
+                      type: 'text',
+                      text: `## Failed to Set Await Breakpoint\n\n**Error:** ${error.message}\n\n**Location:** \`${resolved.url}:${resolved.line}\``,
+                    }],
+                    isError: true,
+                  };
+                }
+              }
 
               try {
-                const breakpoint = await targetCdpManager.setBreakpoint(resolved.url, resolved.line, resolved.column, args.condition);
-                const resolvedLine = breakpoint.location.lineNumber + 1;
-                const resolvedColumn = breakpoint.location.columnNumber !== undefined
-                  ? breakpoint.location.columnNumber + 1
-                  : undefined;
-                createdBreakpoint = {
-                  breakpointId: breakpoint.breakpointId,
-                  url: resolved.url,
-                  line: resolvedLine,
-                  column: resolvedColumn
-                };
-              } catch (error: any) {
-                return {
-                  content: [{
-                    type: 'text',
-                    text: `## Failed to Set Await Breakpoint\n\n**Error:** ${error.message}\n\n**Location:** \`${resolved.url}:${resolved.line}\``,
-                  }],
-                  isError: true,
-                };
-              }
-            }
+                const result = await waitPromise;
 
-            try {
-              const result = await waitPromise;
+                if (result.type === 'aborted') {
+                  // Clean up breakpoint on abort (only if we created one) BEFORE
+                  // throwing: a one-shot await breakpoint left behind would pause
+                  // the target the next time that line runs, long after the user
+                  // cancelled.
+                  if (createdBreakpoint) {
+                    try {
+                      await targetCdpManager.removeBreakpoint(createdBreakpoint.breakpointId);
+                    } catch {
+                      // Ignore cleanup errors
+                    }
+                  }
 
-              if (result.type === 'aborted') {
-                // Clean up breakpoint on abort (only if we created one)
+                  // THROW, don't return (#110): this used to resolve a
+                  // success-SHAPED response (no isError), so a cancelled
+                  // `breakpoint.await` step was recorded `success: true` - a
+                  // cancelled step reported as passed. Throwing abort-shaped is
+                  // the same contract every other cancellable handler uses, and
+                  // the replay executor classifies it as
+                  // "Replay aborted by user".
+                  throw abortErrorFor(abortSignal!);
+                }
+
+                if (result.type === 'timeout') {
+                  let timeoutMsg = `## Breakpoint Await Timeout\n\n`;
+                  timeoutMsg += `No breakpoint was hit within ${timeout / 1000} seconds.\n\n`;
+                  if (createdBreakpoint) {
+                    timeoutMsg += `**Note:** The breakpoint at \`${createdBreakpoint.url}:${createdBreakpoint.line}\` is still active.\n`;
+                    timeoutMsg += `Use \`breakpoint({ action: 'remove', breakpointId: '${createdBreakpoint.breakpointId}' })\` to remove it.`;
+                  }
+
+                  return {
+                    content: [{
+                      type: 'text',
+                      text: timeoutMsg,
+                    }],
+                    isError: true,
+                  };
+                }
+
+                // Paused - get call stack info
+                const pauseInfo = targetCdpManager.getPausedInfo();
+
+                // If we created a breakpoint, remove it so it doesn't hit again on resume
                 if (createdBreakpoint) {
                   try {
                     await targetCdpManager.removeBreakpoint(createdBreakpoint.breakpointId);
                   } catch {
-                    // Ignore cleanup errors
+                    // Ignore removal errors
                   }
                 }
 
-                let abortMsg = `## Breakpoint Await Aborted\n\n`;
-                if (createdBreakpoint) {
-                  abortMsg += `**Breakpoint removed:** \`${createdBreakpoint.breakpointId}\`\n`;
-                  abortMsg += `**Location:** \`${createdBreakpoint.url}:${createdBreakpoint.line}\`\n\n`;
+                let markdown = `## Breakpoint Hit!\n\n`;
+
+                if (pauseInfo.paused && pauseInfo.callStack && pauseInfo.callStack.length > 0) {
+                  const topFrame = pauseInfo.callStack[0];
+                  const hitUrl = targetCdpManager.getScriptUrl(topFrame.location.scriptId) || 'unknown';
+                  const hitLine = topFrame.location.lineNumber + 1;
+                  const hitColumn = topFrame.location.columnNumber !== undefined ? topFrame.location.columnNumber + 1 : undefined;
+
+                  markdown += `**Location:** \`${hitUrl}:${hitLine}${hitColumn ? `:${hitColumn}` : ''}\`\n`;
+                  if (createdBreakpoint) {
+                    markdown += `**Created breakpoint removed** (one-shot)\n\n`;
+                  }
+                  markdown += `**Paused at:** \`${topFrame.functionName || '(anonymous)'}\`\n`;
+                  markdown += `**Call Frame ID:** \`${topFrame.callFrameId}\`\n\n`;
+                  markdown += `**Next steps:**\n`;
+                  markdown += `- \`inspect({ action: 'getVariables', callFrameId: '${topFrame.callFrameId}' })\` - View variables\n`;
+                  markdown += `- \`inspect({ action: 'evaluateExpression', expression: '...' })\` - Evaluate code\n`;
+                  markdown += `- \`execution({ action: 'stepOver' })\` - Step to next line\n`;
+                  markdown += `- \`execution({ action: 'resume' })\` - Continue execution\n`;
+                } else {
+                  markdown += `Execution paused but no call stack available.\n`;
                 }
-                abortMsg += `User aborted the wait.`;
 
                 return {
                   content: [{
                     type: 'text',
-                    text: abortMsg,
+                    text: markdown,
                   }],
                 };
-              }
-
-              if (result.type === 'timeout') {
-                let timeoutMsg = `## Breakpoint Await Timeout\n\n`;
-                timeoutMsg += `No breakpoint was hit within ${timeout / 1000} seconds.\n\n`;
-                if (createdBreakpoint) {
-                  timeoutMsg += `**Note:** The breakpoint at \`${createdBreakpoint.url}:${createdBreakpoint.line}\` is still active.\n`;
-                  timeoutMsg += `Use \`breakpoint({ action: 'remove', breakpointId: '${createdBreakpoint.breakpointId}' })\` to remove it.`;
-                }
-
+              } catch (error: any) {
+                // The universal trap: this broad catch would otherwise swallow
+                // the abort thrown just above and report it as an await
+                // *failure*. A cancellation is not a failure of this tool.
+                if (isAbortError(error)) throw error;
                 return {
                   content: [{
                     type: 'text',
-                    text: timeoutMsg,
+                    text: `## Await Breakpoint Error\n\n**Error:** ${error.message}`,
                   }],
                   isError: true,
                 };
               }
-
-              // Paused - get call stack info
-              const pauseInfo = targetCdpManager.getPausedInfo();
-
-              // If we created a breakpoint, remove it so it doesn't hit again on resume
-              if (createdBreakpoint) {
-                try {
-                  await targetCdpManager.removeBreakpoint(createdBreakpoint.breakpointId);
-                } catch {
-                  // Ignore removal errors
-                }
+            } finally {
+              // Detach the abort listener. The waitForPause resolver it raced
+              // stays registered inside cdp-manager until its own timeout
+              // fires; that is harmless (resolving an already-settled promise
+              // is a no-op and its rejection is caught) but it does mean the
+              // 'await' step's timer outlives the cancel.
+              if (abortSignal && onAbort) {
+                abortSignal.removeEventListener('abort', onAbort);
               }
-
-              let markdown = `## Breakpoint Hit!\n\n`;
-
-              if (pauseInfo.paused && pauseInfo.callStack && pauseInfo.callStack.length > 0) {
-                const topFrame = pauseInfo.callStack[0];
-                const hitUrl = targetCdpManager.getScriptUrl(topFrame.location.scriptId) || 'unknown';
-                const hitLine = topFrame.location.lineNumber + 1;
-                const hitColumn = topFrame.location.columnNumber !== undefined ? topFrame.location.columnNumber + 1 : undefined;
-
-                markdown += `**Location:** \`${hitUrl}:${hitLine}${hitColumn ? `:${hitColumn}` : ''}\`\n`;
-                if (createdBreakpoint) {
-                  markdown += `**Created breakpoint removed** (one-shot)\n\n`;
-                }
-                markdown += `**Paused at:** \`${topFrame.functionName || '(anonymous)'}\`\n`;
-                markdown += `**Call Frame ID:** \`${topFrame.callFrameId}\`\n\n`;
-                markdown += `**Next steps:**\n`;
-                markdown += `- \`inspect({ action: 'getVariables', callFrameId: '${topFrame.callFrameId}' })\` - View variables\n`;
-                markdown += `- \`inspect({ action: 'evaluateExpression', expression: '...' })\` - Evaluate code\n`;
-                markdown += `- \`execution({ action: 'stepOver' })\` - Step to next line\n`;
-                markdown += `- \`execution({ action: 'resume' })\` - Continue execution\n`;
-              } else {
-                markdown += `Execution paused but no call stack available.\n`;
-              }
-
-              return {
-                content: [{
-                  type: 'text',
-                  text: markdown,
-                }],
-              };
-            } catch (error: any) {
-              return {
-                content: [{
-                  type: 'text',
-                  text: `## Await Breakpoint Error\n\n**Error:** ${error.message}`,
-                }],
-                isError: true,
-              };
             }
           }
 

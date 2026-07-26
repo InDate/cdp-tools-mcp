@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { createTool } from '../validation-helpers.js';
 import { createErrorResponse, getFormattedResponse } from '../messages.js';
 import type { ToolResponseMeta } from '../tool-response.js';
+import { abortErrorFor, isAbortError, linkSignals, throwIfAborted } from '../utils/abort.js';
 
 const MAX_RESPONSE_BODY_CHARS = 100_000;
 
@@ -37,9 +38,17 @@ export function createRequestTools(resolveConnectionFromReason: (connectionReaso
     request: createTool(
       'Make an HTTP request as a sequence step. destination "node" sends it from the MCP server process directly (no browser, no CORS/cookies). destination "browser" runs fetch() inside a connected tab (uses that page\'s cookies/session/origin).',
       requestSchema,
-      async (args: RequestArgs) => {
+      // abortSignal (#110): for destination "node" this is GENUINE
+      // cancellation - the external signal is composed into the fetch's
+      // controller, so aborting closes the socket, not just the await. For
+      // destination "browser" the fetch runs inside the page and is
+      // unreachable from out here: checkpoints only, the in-page fetch runs
+      // to its own timeout.
+      async (args: RequestArgs, abortSignal?: AbortSignal) => {
         const timeoutMs = args.timeoutMs ?? 30000;
         const startedAt = Date.now();
+
+        throwIfAborted(abortSignal);
 
         if (args.destination === 'browser') {
           if (!args.connectionReason) {
@@ -59,6 +68,9 @@ export function createRequestTools(resolveConnectionFromReason: (connectionReaso
 
           try {
             const page = resolved.puppeteerManager.getPage();
+            // Last exit before the fetch is handed to the page - once
+            // page.evaluate is in flight, cancellation cannot reach it.
+            throwIfAborted(abortSignal);
             const result: RawResponse = await page.evaluate(
               async (url: string, method: string, headers: Record<string, string> | undefined, body: string | undefined, timeout: number) => {
                 const controller = new AbortController();
@@ -77,6 +89,9 @@ export function createRequestTools(resolveConnectionFromReason: (connectionReaso
             );
             return formatRequestResult(args, result, Date.now() - startedAt, 'browser');
           } catch (error: any) {
+            // A cancellation (checkpoint above, or the page torn down under
+            // us) is not a request failure - rethrow for classification.
+            if (isAbortError(error)) throw error;
             return createErrorResponse('REQUEST_FAILED', {
               url: args.url,
               destination: 'browser',
@@ -86,14 +101,21 @@ export function createRequestTools(resolveConnectionFromReason: (connectionReaso
         }
 
         // destination === 'node'
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        // Two controllers with different meanings: timeoutController fires on
+        // this request's own timeoutMs; the external abortSignal is the
+        // caller's cancel (e.g. `replay cancel`). Both are composed into the
+        // signal handed to fetch, so EITHER genuinely closes the socket - and
+        // the catch below tells them apart by which one fired, never by
+        // parsing the error.
+        const timeoutController = new AbortController();
+        const timer = setTimeout(() => timeoutController.abort(), timeoutMs);
+        const linked = linkSignals(abortSignal, timeoutController.signal);
         try {
           const res = await fetch(args.url, {
             method: args.method,
             headers: args.headers,
             body: args.body,
-            signal: controller.signal,
+            signal: linked.signal,
           });
           const text = await res.text();
           const responseHeaders: Record<string, string> = {};
@@ -105,13 +127,29 @@ export function createRequestTools(resolveConnectionFromReason: (connectionReaso
             'node'
           );
         } catch (error: any) {
+          // isAbortError covers the DOMException fetch throws (name
+          // 'AbortError'); TimeoutError is what some runtimes raise instead.
+          if (isAbortError(error) || error?.name === 'TimeoutError') {
+            // External cancel wins: the user aborted, the socket is closed -
+            // throw abort-shaped so the executor reports a cancel, not a
+            // request failure (and never "Timed out", which would be a lie).
+            if (abortSignal?.aborted) throw abortErrorFor(abortSignal);
+            if (timeoutController.signal.aborted) {
+              return createErrorResponse('REQUEST_FAILED', {
+                url: args.url,
+                destination: 'node',
+                error: `Timed out after ${timeoutMs}ms`
+              });
+            }
+          }
           return createErrorResponse('REQUEST_FAILED', {
             url: args.url,
             destination: 'node',
-            error: error.name === 'AbortError' ? `Timed out after ${timeoutMs}ms` : (error.message || String(error))
+            error: error.message || String(error)
           });
         } finally {
           clearTimeout(timer);
+          linked.dispose();
         }
       }
     ),

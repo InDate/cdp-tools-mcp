@@ -17,6 +17,7 @@ import type { ClickableCache, ClickableElement } from '../clickable-cache.js';
 import { collectInteractiveElements } from '../element-collector.js';
 import type { ToolResponseMeta, NavigateActionMeta } from '../tool-response.js';
 import type { ExecuteToolCall } from '../types.js';
+import { raceAbort, throwIfAborted } from '../utils/abort.js';
 
 // =============================================================================
 // Types
@@ -167,8 +168,15 @@ export function createPageTools(
     navigate: createTool(
       'Navigate and control browser pages. Actions: goto (navigate to URL), reload (reload page), back (navigate back), forward (navigate forward), info (get page information)',
       navigateSchema,
-      async (args) => {
+      // abortSignal (#110): a cancelled navigation STOPS WAITING only (D4).
+      // We deliberately do NOT call Page.stopLoading - a half-loaded page
+      // that later steps act on is worse than a fully loaded one - so on
+      // abort the handler throws promptly while the page keeps loading in
+      // the background.
+      async (args, abortSignal?: AbortSignal) => {
         const { action, connectionReason } = args;
+
+        throwIfAborted(abortSignal);
 
         // Validate required parameters for each action
         if (action === 'goto' && !args.url) {
@@ -213,13 +221,19 @@ export function createPageTools(
 
         const page = targetPuppeteerManager.getPage();
 
+        // Resolving the connection can itself launch Chrome (seconds) - don't
+        // start navigating if the user cancelled while that happened.
+        throwIfAborted(abortSignal);
+
         // Handle each action
         switch (action) {
           case 'goto': {
             const result = await executeWithPauseDetection(
               targetCdpManager,
               async () => {
-                await page.goto(args.url!, { waitUntil: args.waitUntil ?? 'load' });
+                // raceAbort = stop waiting on cancel; the navigation itself
+                // continues in the browser (no Page.stopLoading - see above).
+                await raceAbort(page.goto(args.url!, { waitUntil: args.waitUntil ?? 'load' }), abortSignal);
 
                 // Auto-restart monitoring after navigation
                 restartMonitoring(page, targetConsoleMonitor, targetNetworkMonitor);
@@ -248,10 +262,11 @@ export function createPageTools(
                 }
 
                 // Reload with specified waitUntil condition and timeout
-                await page.reload({
+                // (raceAbort: cancel stops waiting; the reload continues)
+                await raceAbort(page.reload({
                   waitUntil: args.waitUntil ?? 'load',
                   timeout: args.timeout ?? 30000
-                });
+                }), abortSignal);
 
                 // Auto-restart monitoring after reload
                 restartMonitoring(page, targetConsoleMonitor, targetNetworkMonitor);
@@ -273,7 +288,7 @@ export function createPageTools(
             const result = await executeWithPauseDetection(
               targetCdpManager,
               async () => {
-                await page.goBack({ waitUntil: 'load' });
+                await raceAbort(page.goBack({ waitUntil: 'load' }), abortSignal);
 
                 // Auto-restart monitoring after navigation
                 restartMonitoring(page, targetConsoleMonitor, targetNetworkMonitor);
@@ -295,7 +310,7 @@ export function createPageTools(
             const result = await executeWithPauseDetection(
               targetCdpManager,
               async () => {
-                await page.goForward({ waitUntil: 'load' });
+                await raceAbort(page.goForward({ waitUntil: 'load' }), abortSignal);
 
                 // Auto-restart monitoring after navigation
                 restartMonitoring(page, targetConsoleMonitor, targetNetworkMonitor);

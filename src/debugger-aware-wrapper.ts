@@ -4,6 +4,7 @@
  */
 
 import type { CDPManager } from './cdp-manager.js';
+import { isAbortError } from './utils/abort.js';
 
 export interface ActionResult<T = any> {
   success: boolean;
@@ -88,6 +89,13 @@ export async function executeWithPauseDetection<T = any>(
       };
     }
   } catch (error: any) {
+    // A cancellation is not an action failure - swallowing it here would
+    // convert the user's cancel into an "ELEMENT_NOT_FOUND"-style error result
+    // and let the caller carry on (#110). Rethrow; the tool handler/executor
+    // classifies it.
+    if (isAbortError(error)) {
+      throw error;
+    }
     // Action failed - report the actual error
     // Note: Even if we're paused, the action still failed with an error
     const isPaused = cdpManager.isPaused();

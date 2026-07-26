@@ -8,3 +8,6 @@ build/
 dev-notes/*
 .cdp-tools/*
 .claude/commands/commit.md
+
+# Coverage reports (vitest --coverage)
+coverage/

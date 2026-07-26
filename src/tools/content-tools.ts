@@ -17,6 +17,7 @@ import { getOutputPath } from '../helpers/paths.js';
 import { listParsers, loadParser } from '../helpers/parser-plugins.js';
 import { collectInteractiveElements } from '../element-collector.js';
 import { UIVerifier, type UICheckType, type UIIssue } from '../ui-verifier.js';
+import { isAbortError, raceAbort, throwIfAborted } from '../utils/abort.js';
 
 // All element types for findInteractive
 const elementTypes = ['link', 'button', 'text', 'email', 'password', 'number', 'tel', 'url', 'search', 'textarea', 'select', 'checkbox', 'radio', 'file', 'date', 'other'] as const;
@@ -77,8 +78,15 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
     content: createTool(
       'Primary tool for page content. Prefer over screenshots. Actions: extractText (extract webpage text with outline/full/section modes), findInteractive (find all interactive elements like links, buttons, inputs with summary or filtered view), verify (run CDP-based UI verification for dead buttons, viewport issues, touch targets, overflow clipping), parse (run a page-parser plugin from .cdp-tools/parsers/ against the current page — omit name to list available plugins)',
       contentSchema,
-      async (args) => {
+      // abortSignal (#110): INTERRUPTIBLE AT A CHECKPOINT. The only real wait
+      // here is `parse`'s plugin `waitFor` predicate (up to waitMs, default
+      // 8s) - a cancel stops waiting for it. Extraction itself is a single
+      // page.evaluate with nothing to cancel, so the other actions only get
+      // the entry checkpoint.
+      async (args, abortSignal?: AbortSignal) => {
         const { action } = args;
+
+        throwIfAborted(abortSignal);
 
         // Resolve connection from reason
         const resolved = await resolveConnectionFromReason(args.connectionReason);
@@ -351,13 +359,24 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
                 const waitMs = args.waitMs ?? 8000;
                 if (plugin.waitFor && waitMs > 0) {
                   try {
-                    await page.waitForFunction(plugin.waitFor as any, { timeout: waitMs });
-                  } catch {
+                    // raceAbort: a cancel stops waiting for the predicate. The
+                    // in-page polling Puppeteer installed keeps running until
+                    // its own timeout - we just stop caring.
+                    await raceAbort(
+                      page.waitForFunction(plugin.waitFor as any, { timeout: waitMs }),
+                      abortSignal
+                    );
+                  } catch (err) {
+                    // The universal trap: this catch exists to proceed when the
+                    // predicate never became true, but it must not swallow a
+                    // cancel and then go on to extract anyway.
+                    if (isAbortError(err)) throw err;
                     // Proceed even if the predicate never became true (extract may
                     // still return a useful "not found" result).
                   }
                 }
                 // plugin.extract runs in the page; Puppeteer serializes it.
+                throwIfAborted(abortSignal);
                 return await page.evaluate(plugin.extract as any);
               },
               'parse'

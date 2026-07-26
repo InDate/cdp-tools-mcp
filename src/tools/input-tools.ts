@@ -16,6 +16,7 @@ import { dismissModalByStrategy, selectDismissalStrategy } from '../utils/modal-
 import { resolveSelector, isExtendedSelector, cleanupResolvedSelector } from '../utils/selector-resolver.js';
 import { domChangeMonitor, formatDOMChanges, DOMChanges } from '../dom-change-monitor.js';
 import type { ToolResponseMeta, ClickActionMeta } from '../tool-response.js';
+import { abortErrorFor, abortableSleep, isAbortError, throwIfAborted } from '../utils/abort.js';
 
 // Coordinate schema for mouse actions
 const coordinateSchema = z.object({
@@ -76,7 +77,11 @@ async function withReplayBypass<T>(page: any, action: () => Promise<T>): Promise
   try {
     return await action();
   } finally {
-    await page.evaluate(() => { (globalThis as any).__cdpReplayClickInProgress = false; });
+    // Best-effort: never let a failure clearing the flag mask the action's
+    // own outcome (in particular an AbortError thrown mid-action).
+    try {
+      await page.evaluate(() => { (globalThis as any).__cdpReplayClickInProgress = false; });
+    } catch { /* page may have navigated/closed */ }
   }
 }
 
@@ -90,8 +95,18 @@ export function createInputTools(
     input: createTool(
       'Perform browser input actions. Actions: click (click element), type (type text into element), press (press keyboard key), hover (hover over element), focus (focus element by selector), focusNext (Tab to next focusable element), focusPrevious (Shift+Tab to previous focusable element), drag (drag from one point to another), scroll (scroll wheel at position), mousemove (move mouse to position), pinch (pinch zoom gesture)',
       inputToolSchema,
-      async (args) => {
+      // abortSignal (#110): input events cannot be recalled once dispatched -
+      // Input.dispatchMouseEvent on the wire WILL be processed by Chrome. What
+      // cancellation buys here is *not dispatching* events that have not gone
+      // out yet: checkpoints sit after connection/selector resolution and
+      // immediately before every dispatch, and multi-dispatch paths (Tab
+      // loops, drag stepping, clear-and-retype) abort between events. On
+      // abort the handler THROWS an abort-shaped error; already-issued
+      // dispatches are NOT undone.
+      async (args, abortSignal?: AbortSignal) => {
         const { action, connectionReason } = args;
+
+        throwIfAborted(abortSignal);
 
         // Resolve connection from reason
         const resolved = await resolveConnectionFromReason(connectionReason);
@@ -121,12 +136,29 @@ export function createInputTools(
           await domChangeMonitor.startObserving(connectionReason, page);
         }
 
+        // Abort checkpoint used at every point where nothing (further) has
+        // been dispatched yet: tears down the DOM-change observer
+        // (best-effort, no settle wait) so a cancelled action does not leave
+        // a MutationObserver running in the page, then throws abort-shaped.
+        const checkAborted = async (): Promise<void> => {
+          if (!abortSignal?.aborted) return;
+          if (shouldDetectChanges && domChangeMonitor.isObserving(connectionReason)) {
+            try {
+              await domChangeMonitor.stopObserving(connectionReason, { settleTimeout: 0 });
+            } catch { /* cleanup is best-effort */ }
+          }
+          throw abortErrorFor(abortSignal);
+        };
+
+        await checkAborted();
+
         switch (action) {
           case 'click': {
             const { selector: rawSelector, clickCount = 1, handleModals = false, dismissStrategy = 'auto', x, y } = args;
 
             // Coordinate-based click (for canvas/3D apps)
             if (typeof x === 'number' && typeof y === 'number') {
+              await checkAborted(); // last exit before the click goes on the wire
               await withReplayBypass(page, () => page.mouse.click(x, y, { clickCount }));
               return {
                 content: [{
@@ -165,6 +197,7 @@ export function createInputTools(
               selector = resolved.selector;
               selectorWarning = resolved.warning;
             }
+            await checkAborted(); // after selector resolution, before any dispatch
 
             const result = await executeWithPauseDetection(
               targetCdpManager,
@@ -182,7 +215,11 @@ export function createInputTools(
 
                 if (blockingCheck.blocked && blockingCheck.blockingModal) {
                   if (handleModals) {
-                    // Auto-dismiss modal
+                    // Auto-dismiss modal. Dismissal DISPATCHES too (an Escape
+                    // key or a click on the dismiss control), so it needs its
+                    // own pre-dispatch checkpoint - not just the one before the
+                    // real action below.
+                    await checkAborted();
                     const dismissResult = await dismissModalHelper(
                       page,
                       blockingCheck.blockingModal.selector,
@@ -246,6 +283,7 @@ export function createInputTools(
                 }, selector);
 
                 // Perform the click - use wrapper to bypass replay blocker overlay
+                await checkAborted(); // last exit before the click goes on the wire
                 await withReplayBypass(page, () => page.click(selector, { clickCount }));
 
                 // Check if breakpoint was hit during click - if so, skip post-click evaluation
@@ -368,7 +406,7 @@ export function createInputTools(
             let changesText = '';
             let changes: DOMChanges | null = null;
             if (shouldDetectChanges) {
-              changes = await domChangeMonitor.stopObserving(connectionReason, { settleTimeout });
+              changes = await domChangeMonitor.stopObserving(connectionReason, { settleTimeout, signal: abortSignal });
               changesText = formatDOMChanges(changes);
             }
 
@@ -507,6 +545,7 @@ export function createInputTools(
               selector = resolved.selector;
               selectorWarning = resolved.warning;
             }
+            await checkAborted(); // after selector resolution, before any dispatch
 
             const result = await executeWithPauseDetection(
               targetCdpManager,
@@ -522,7 +561,11 @@ export function createInputTools(
 
                 if (blockingCheck.blocked && blockingCheck.blockingModal) {
                   if (handleModals) {
-                    // Auto-dismiss modal
+                    // Auto-dismiss modal. Dismissal DISPATCHES too (an Escape
+                    // key or a click on the dismiss control), so it needs its
+                    // own pre-dispatch checkpoint - not just the one before the
+                    // real action below.
+                    await checkAborted();
                     const dismissResult = await dismissModalHelper(
                       page,
                       blockingCheck.blockingModal.selector,
@@ -556,11 +599,15 @@ export function createInputTools(
                 }
 
                 // Clear existing text first (unless append mode)
+                await checkAborted(); // last exit before keystrokes go on the wire
                 if (!append) {
                   await withReplayBypass(page, async () => {
                     await page.click(selector, { clickCount: 3 });
                     await page.keyboard.press('Backspace');
                   });
+                  // Abortable between clear and retype: the clear that went
+                  // out stays out, but the new text is not dispatched.
+                  await checkAborted();
                 }
                 // Type new text - use wrapper to bypass replay blocker overlay
                 await withReplayBypass(page, () => page.type(selector, text, { delay }));
@@ -594,7 +641,7 @@ export function createInputTools(
             // Collect DOM changes
             let changesText = '';
             if (shouldDetectChanges) {
-              const changes = await domChangeMonitor.stopObserving(connectionReason, { settleTimeout });
+              const changes = await domChangeMonitor.stopObserving(connectionReason, { settleTimeout, signal: abortSignal });
               changesText = formatDOMChanges(changes);
             }
 
@@ -656,6 +703,7 @@ export function createInputTools(
             }
 
             // Use wrapper to bypass replay blocker overlay for key press
+            await checkAborted(); // last exit before the key press goes on the wire
             await withReplayBypass(page, () =>
               executeWithPauseDetection(
                 targetCdpManager,
@@ -698,6 +746,7 @@ export function createInputTools(
               selector = resolved.selector;
               selectorWarning = resolved.warning;
             }
+            await checkAborted(); // after selector resolution, before any dispatch
 
             const result = await executeWithPauseDetection(
               targetCdpManager,
@@ -713,7 +762,11 @@ export function createInputTools(
 
                 if (blockingCheck.blocked && blockingCheck.blockingModal) {
                   if (handleModals) {
-                    // Auto-dismiss modal
+                    // Auto-dismiss modal. Dismissal DISPATCHES too (an Escape
+                    // key or a click on the dismiss control), so it needs its
+                    // own pre-dispatch checkpoint - not just the one before the
+                    // real action below.
+                    await checkAborted();
                     const dismissResult = await dismissModalHelper(
                       page,
                       blockingCheck.blockingModal.selector,
@@ -746,6 +799,7 @@ export function createInputTools(
                   }
                 }
 
+                await checkAborted(); // last exit before the hover goes on the wire
                 await withReplayBypass(page, () => page.hover(selector));
                 return { selector };
               },
@@ -767,7 +821,7 @@ export function createInputTools(
             // Collect DOM changes
             let changesText = '';
             if (shouldDetectChanges) {
-              const changes = await domChangeMonitor.stopObserving(connectionReason, { settleTimeout });
+              const changes = await domChangeMonitor.stopObserving(connectionReason, { settleTimeout, signal: abortSignal });
               changesText = formatDOMChanges(changes);
             }
 
@@ -853,6 +907,7 @@ export function createInputTools(
                 }
 
                 // Focus the element
+                await checkAborted(); // last exit before the focus is dispatched
                 await withReplayBypass(page, () => page.focus(selector));
 
                 // Get focused element info
@@ -889,10 +944,13 @@ export function createInputTools(
                 // Press Tab count times - use wrapper to bypass replay blocker overlay
                 await withReplayBypass(page, async () => {
                   for (let i = 0; i < count; i++) {
+                    // Abortable between Tabs: dispatched presses stay
+                    // dispatched, but no further ones go out.
+                    throwIfAborted(abortSignal);
                     await page.keyboard.press('Tab');
                     // Small delay between tabs for stability
                     if (i < count - 1) {
-                      await new Promise(resolve => setTimeout(resolve, 50));
+                      await abortableSleep(50, abortSignal);
                     }
                   }
                 });
@@ -923,12 +981,16 @@ export function createInputTools(
                 // Press Shift+Tab count times - use wrapper to bypass replay blocker overlay
                 await withReplayBypass(page, async () => {
                   for (let i = 0; i < count; i++) {
+                    // Abortable between Tabs (not mid-chord: Shift down/Tab/
+                    // Shift up always complete together so no modifier is
+                    // left held down).
+                    throwIfAborted(abortSignal);
                     await page.keyboard.down('Shift');
                     await page.keyboard.press('Tab');
                     await page.keyboard.up('Shift');
                     // Small delay between tabs for stability
                     if (i < count - 1) {
-                      await new Promise(resolve => setTimeout(resolve, 50));
+                      await abortableSleep(50, abortSignal);
                     }
                   }
                 });
@@ -972,6 +1034,9 @@ export function createInputTools(
                 return await withReplayBypass(page, async () => {
                   const mouse = page.mouse;
 
+                  // Abortable before anything is dispatched.
+                  throwIfAborted(abortSignal);
+
                   // Move to start position
                   await mouse.move(from.x, from.y);
 
@@ -982,12 +1047,23 @@ export function createInputTools(
                   const deltaX = (to.x - from.x) / steps;
                   const deltaY = (to.y - from.y) / steps;
 
-                  for (let i = 1; i <= steps; i++) {
-                    const currentX = from.x + deltaX * i;
-                    const currentY = from.y + deltaY * i;
-                    await mouse.move(currentX, currentY);
-                    // Small delay for smoother drag
-                    await new Promise(resolve => setTimeout(resolve, 10));
+                  try {
+                    for (let i = 1; i <= steps; i++) {
+                      // Abortable between steps: movement already dispatched
+                      // stays dispatched, the rest of the drag does not go out.
+                      throwIfAborted(abortSignal);
+                      const currentX = from.x + deltaX * i;
+                      const currentY = from.y + deltaY * i;
+                      await mouse.move(currentX, currentY);
+                      // Small delay for smoother drag
+                      await abortableSleep(10, abortSignal);
+                    }
+                  } catch (err) {
+                    // A cancel mid-drag must not leave the button held down.
+                    if (isAbortError(err)) {
+                      try { await mouse.up(); } catch { /* best-effort */ }
+                    }
+                    throw err;
                   }
 
                   // Release mouse button
@@ -1043,6 +1119,9 @@ export function createInputTools(
                 // Use wrapper to bypass replay blocker overlay for scroll operation
                 return await withReplayBypass(page, async () => {
                   const mouse = page.mouse;
+
+                  // Abortable before anything is dispatched.
+                  throwIfAborted(abortSignal);
 
                   // If coordinates provided, move to that position first
                   if (x !== undefined && y !== undefined) {
@@ -1118,6 +1197,7 @@ export function createInputTools(
               targetCdpManager,
               async () => {
                 // Use wrapper to bypass replay blocker overlay for mousemove
+                throwIfAborted(abortSignal); // last exit before dispatch
                 await withReplayBypass(page, () => page.mouse.move(x, y));
 
                 // Get element at the mouse position
@@ -1195,6 +1275,9 @@ export function createInputTools(
                 try {
                   // Use wrapper to bypass replay blocker overlay for pinch gesture
                   return await withReplayBypass(page, async () => {
+                    // Last exit before the gesture goes on the wire (once
+                    // dispatched, the whole synthesized pinch runs in Chrome).
+                    throwIfAborted(abortSignal);
                     await client.send('Input.synthesizePinchGesture', {
                       x: centerX,
                       y: centerY,

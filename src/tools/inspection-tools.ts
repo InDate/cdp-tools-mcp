@@ -8,6 +8,7 @@ import { SourceMapHandler } from '../sourcemap-handler.js';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
 import type { ToolResponseMeta } from '../tool-response.js';
+import { isAbortError, raceAbort, throwIfAborted } from '../utils/abort.js';
 
 /**
  * Reverse CDPManager.formatValue()'s display shaping so a machine-readable
@@ -255,8 +256,17 @@ export function createInspectionTools(
     inspect: createTool(
       'Inspect and debug code. Actions: getCallStack (get call stack when paused), getVariables (get variables in call frame), evaluateExpression (evaluate JavaScript), searchCode (search code by pattern), searchFunctions (find function definitions)',
       inspectionToolSchema,
-      async (args) => {
+      // abortSignal (#110): INTERRUPTIBLE AT A CHECKPOINT, not genuinely
+      // cancellable. `evaluateExpression` is the only action with a real wait
+      // (the bounded round-trip to the execution context, up to its own
+      // timeout), and CDP gives us no way to recall a Runtime.evaluate - so a
+      // cancel stops WAITING for it while the expression keeps running in the
+      // target. The other actions read already-captured state and only get the
+      // entry checkpoint.
+      async (args, abortSignal?: AbortSignal) => {
         const { action, connectionReason } = args;
+
+        throwIfAborted(abortSignal);
 
         // Resolve connection if connectionReason is provided
         let targetCdpManager = cdpManager;
@@ -403,9 +413,15 @@ export function createInspectionTools(
             }
 
             try {
-              const detailed = await targetCdpManager.evaluateExpressionDetailed(
-                expression, callFrameId, expandObjects, maxDepth,
-                { awaitPromise, captureRaw: true }
+              throwIfAborted(abortSignal);
+              // raceAbort = stop waiting on cancel; the evaluation itself
+              // continues in the target (no way to recall it).
+              const detailed = await raceAbort(
+                targetCdpManager.evaluateExpressionDetailed(
+                  expression, callFrameId, expandObjects, maxDepth,
+                  { awaitPromise, captureRaw: true }
+                ),
+                abortSignal
               );
               const result = detailed.formatted;
 
@@ -453,6 +469,10 @@ export function createInspectionTools(
                 _meta: inspectMeta,
               };
             } catch (error) {
+              // The universal trap: this broad catch ends in a catch-all
+              // EVALUATE_EXPRESSION_FAILED, which would turn the user's cancel
+              // into a bogus evaluation failure. Rethrow aborts first.
+              if (isAbortError(error)) throw error;
               // The evaluated expression itself threw (CDP exceptionDetails,
               // e.g. a stack-exhaustion RangeError) - report it as an
               // ordinary outcome, not a tool malfunction.

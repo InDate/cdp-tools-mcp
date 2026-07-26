@@ -122,6 +122,39 @@ export function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> 
 }
 
 /**
+ * Await `promise` unless `signal` aborts first, in which case REJECT with an
+ * abort-shaped error and stop waiting. The underlying work is NOT cancelled -
+ * this is "stop waiting", for operations with no cancellation API (a page
+ * navigation already handed to the browser). On abort the orphaned promise
+ * gets a no-op catch so its eventual rejection never surfaces as unhandled.
+ * The listener is detached on every path.
+ */
+export function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) {
+    promise.catch(() => {});
+    return Promise.reject(abortErrorFor(signal));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      promise.catch(() => {});
+      reject(abortErrorFor(signal));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (err) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(err);
+      }
+    );
+  });
+}
+
+/**
  * Non-throwing sleep variant preserving the replay executor's shape: resolves
  * `true` if the signal aborted before the delay elapsed, `false` otherwise.
  * Unlike the bespoke helper it replaces, cleanup leaves no extra timer alive.
