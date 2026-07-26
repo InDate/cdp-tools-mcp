@@ -159,3 +159,12 @@ Either way, a restart kills any Chrome instances this session launched (relaunch
 The full list of tools grouped by category (connection, tab, breakpoint, execution, inspection, source, console, network, page, DOM, content, screenshot, input, modal, storage, HTTP/assertions, issues, server, replay, dashboard, config) is not needed for most tasks. Load it only when you need to look up a specific tool name or action:
 
 [references/tool-categories.md](references/tool-categories.md)
+
+## Replay Sequences
+
+Recording or replaying a sequence - to build a repro, a regression test, or a
+multi-device flow - has its own workflow: capturing values mid-run with
+`saveAs`, per-step `connectionReason`, conditionals, and verifying an issue's
+fix. Load it when the task involves sequences:
+
+[references/sequences.md](references/sequences.md)
