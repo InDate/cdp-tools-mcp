@@ -1929,14 +1929,6 @@ Command recording started. All tool calls will be recorded until you stop.
 
 ---
 
-## RECORDING_STOPPED
-
-**Type:** success
-
-Recording stopped with {{commandCount}} commands. Use `export` to save to disk.
-
----
-
 ## SEQUENCE_EXPORTED
 
 **Type:** success
@@ -2107,6 +2099,9 @@ Format: {{format}}
 {{name}} ({{sequenceId}})
 {{duration}}s, {{commandCount}} commands, {{startUrl}}
 clicks:{{clicks}}, drags:{{drags}}, scrolls:{{scrolls}}, keys:{{keyPresses}}{{#navigations}}, nav:{{navigations}}{{/navigations}}{{#comments}}, comments:{{comments}}{{/comments}}
+{{#coordinateClicks}}
+⚠️ {{coverageNote}}
+{{/coordinateClicks}}
 {{#timeline}}
 Timeline: {{timeline}}
 {{/timeline}}

@@ -1486,6 +1486,14 @@ async function handleRecordInteraction(
     keyPresses: summary.keyPresses,
     navigations: summary.navigations > 0 ? summary.navigations : null,
     comments: summary.comments > 0 ? summary.comments : null,
+    // Selector coverage. Only surfaced when some click fell back to raw
+    // coordinates, because that is the only case the user can act on - a
+    // fully selector-based recording needs no warning, and a warning that
+    // fires every time stops being read.
+    coordinateClicks: summary.coordinatesOnly > 0 ? summary.coordinatesOnly : null,
+    coverageNote: summary.coordinatesOnly > 0
+      ? `${summary.selectorsAvailable}/${summary.clicks} clicks captured a selector; ${summary.coordinatesOnly} fell back to coordinates${summary.canvasInteractions > 0 ? ` (${summary.canvasInteractions} on canvas, where that is expected)` : ''}. Coordinate clicks break on re-render or layout change.`
+      : null,
     timeline: timeline || null,
     bugCount: bugComments.length > 0 ? bugComments.length : null,
     featureCount: featureComments.length > 0 ? featureComments.length : null,

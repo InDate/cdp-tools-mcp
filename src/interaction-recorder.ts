@@ -130,6 +130,22 @@ export interface StoredRecording {
     keyPresses: number;
     navigations: number;
     comments: number;
+    /**
+     * Selector coverage for the clicks in this recording.
+     *
+     * Counting events tells you how much was recorded; coverage tells you
+     * whether it will still work tomorrow. A click captured as a selector
+     * survives a re-render and a layout change; one captured as bare
+     * coordinates does not, and fails in the least obvious way - it clicks
+     * whatever now occupies that position. `coordinatesOnly` is therefore the
+     * single best predictor of a brittle sequence, and it is worth seeing at
+     * record time rather than discovering on the replay that matters.
+     */
+    selectorsAvailable: number;
+    coordinatesOnly: number;
+    canvasInteractions: number;
+    interactiveElements: number;
+    typedCharacters: number;
   };
 }
 
@@ -1259,13 +1275,18 @@ export async function startRecording(
 // Helper Functions
 // =============================================================================
 
-function calculateSummary(events: InputEvent[]): StoredRecording['summary'] {
+export function calculateSummary(events: InputEvent[]): StoredRecording['summary'] {
   let clicks = 0;
   let drags = 0;
   let scrolls = 0;
   let keyPresses = 0;
   let navigations = 0;
   let comments = 0;
+  let selectorsAvailable = 0;
+  let coordinatesOnly = 0;
+  let canvasInteractions = 0;
+  let interactiveElements = 0;
+  let typedCharacters = 0;
 
   let inDrag = false;
   let lastMouseDown: MouseEvent | null = null;
@@ -1276,7 +1297,12 @@ function calculateSummary(events: InputEvent[]): StoredRecording['summary'] {
     } else if (isNavigationEvent(event)) {
       navigations++;
     } else if (isKeyboardEvent(event)) {
-      if (event.type === 'keydown') keyPresses++;
+      if (event.type === 'keydown') {
+        keyPresses++;
+        // Single-character keys are typed text; the rest are navigation and
+        // modifier presses (Tab, Enter, Shift, arrows).
+        if (event.key.length === 1) typedCharacters++;
+      }
     } else if (isMouseEvent(event)) {
       if (event.type === 'mousedown') {
         inDrag = true;
@@ -1289,13 +1315,31 @@ function calculateSummary(events: InputEvent[]): StoredRecording['summary'] {
         inDrag = false;
       } else if (event.type === 'click') {
         clicks++;
+        // Coverage is only meaningful for clicks - a keypress goes to whatever
+        // has focus, so it has no selector to fall back from.
+        if (event.elementInfo?.isCanvas) {
+          // A canvas click has no meaningful element to target, so it is
+          // coordinates by necessity rather than by failure to find a
+          // selector. Counted in both, since it is still coordinate-fragile.
+          canvasInteractions++;
+          coordinatesOnly++;
+        } else if (event.elementInfo?.selector) {
+          selectorsAvailable++;
+          if (event.elementInfo.isInteractive) interactiveElements++;
+        } else {
+          coordinatesOnly++;
+        }
       } else if (event.type === 'wheel') {
         scrolls++;
       }
     }
   }
 
-  return { clicks, drags, scrolls, keyPresses, navigations, comments };
+  return {
+    clicks, drags, scrolls, keyPresses, navigations, comments,
+    selectorsAvailable, coordinatesOnly, canvasInteractions,
+    interactiveElements, typedCharacters,
+  };
 }
 
 // =============================================================================

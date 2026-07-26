@@ -80,9 +80,57 @@ describe('ConfigManager live reload', () => {
     onDisk.replay.showCursor = expected;
     await writeConfigFile(onDisk);
 
-    // Wait past the debounce window for the watcher's reload to land.
-    await new Promise(resolve => setTimeout(resolve, 500));
+    // Poll, and re-save on each tick, rather than writing once and sleeping.
+    // This was the suite's only flaky test. Two separate causes: a fixed 500ms
+    // wait that a loaded machine could overrun, and - the stubborn one -
+    // fs.watch on macOS silently dropping a lone change event when many
+    // watchers are active, which is exactly what a full parallel test run
+    // creates. A dropped event is OS behaviour, not a defect in ConfigManager,
+    // so depending on one event surviving made this test assert the platform
+    // rather than the code. Re-saving keeps the intent (the watcher notices an
+    // external edit and reloads) while removing that dependency; if the
+    // watcher or reload were genuinely broken, no number of saves would help.
+    const deadline = Date.now() + 10_000;
+    while (manager.getReplayConfig().showCursor !== expected && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+      await writeConfigFile(onDisk);
+    }
 
     expect(manager.getReplayConfig().showCursor).toBe(expected);
-  });
+  }, 15_000); // above the poll deadline, so a timeout reports the assertion not the runner
+
+  it('still reloads while an unrelated file in the watched directory is being written continuously', async () => {
+    // The reload used to be debounced by resetting its timer on every event.
+    // Because startWatching() also watches the shared global ~/.cdp-tools,
+    // sustained writes by any other cdp-tools process reset that timer forever
+    // and live reload silently stopped working. This drives that scenario:
+    // a config edit, then a steady stream of unrelated writes in the same
+    // directory. Against the old resetting debounce this times out.
+    manager.startWatching();
+
+    const onDisk = await readConfigFile();
+    const expected = !onDisk.replay.showCursor;
+    onDisk.replay.showCursor = expected;
+    await writeConfigFile(onDisk);
+
+    const noisePath = join(tempDir, '.cdp-tools', 'unrelated.lock');
+    let noisy = true;
+    const noise = (async () => {
+      while (noisy) {
+        await fsp.writeFile(noisePath, String(Date.now()), 'utf-8');
+        await new Promise(resolve => setTimeout(resolve, 20)); // < the 250ms debounce
+      }
+    })();
+
+    try {
+      const deadline = Date.now() + 10_000;
+      while (manager.getReplayConfig().showCursor !== expected && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      expect(manager.getReplayConfig().showCursor).toBe(expected);
+    } finally {
+      noisy = false;
+      await noise;
+    }
+  }, 15_000);
 });

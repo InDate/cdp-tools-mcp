@@ -606,8 +606,25 @@ export class ConfigManager {
     }
   }
 
+  /**
+   * Coalesce a burst of filesystem events into one reload, firing a fixed
+   * window after the FIRST event rather than the last.
+   *
+   * This used to clear and re-arm the timer on every event, which is the
+   * textbook debounce - and the wrong shape here. startWatching() watches the
+   * global ~/.cdp-tools directory as well as the project one, and that
+   * directory is shared by every cdp-tools process on the machine (dashboard
+   * locks, downloads, sequences). Under sustained unrelated writes there, the
+   * timer was reset before it could ever fire, so an edit to config.json was
+   * postponed indefinitely - live reload silently stopped working, and stayed
+   * broken for as long as the other process kept writing.
+   *
+   * Firing from the first event bounds the latency at RELOAD_DEBOUNCE_MS no
+   * matter how busy the directory is, while still collapsing the rapid
+   * write/rename pairs an atomic save produces.
+   */
   private scheduleReload(): void {
-    if (this.reloadTimer) clearTimeout(this.reloadTimer);
+    if (this.reloadTimer) return;
     this.reloadTimer = setTimeout(() => {
       this.reloadTimer = null;
       void this.reload();
