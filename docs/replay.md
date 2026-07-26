@@ -111,10 +111,15 @@ usual recording summary:
 - `events` - the raw captured input events as JSON (this is the only place they
   are ever available; they are not stored with the sequence)
 - `commands` - the converted command list as JSON
+- `review` - a human-readable walkthrough of the captured events: one numbered
+  entry per interaction with its coordinates, the element and selector found for
+  it, plus navigations, pastes and the comments the person left while recording
 - `playwright` / `puppeteer` - generated test code for the fresh recording
 
 Use `outputFormat: 'events'` when a recording produced surprising commands and
-you need to see what the recorder actually captured.
+you need to see what the recorder actually captured; `review` is the same
+information in a form you can read, and is the better choice when you want to
+decide whether a step should use a selector or coordinates.
 
 ### Recording Against an Issue
 
@@ -179,11 +184,11 @@ replay({ action: 'get', name: 'my-signup-test', outputFormat: 'commands' })
 ```
 
 `outputFormat` on `get` accepts `commands`, `playwright` and `puppeteer`.
-`events` is not valid here and returns an error explaining why: a stored
-sequence holds converted *commands*, never the raw input events. The raw events
-exist only during a recording - see
-[Recording Options](#recording-options) for `outputFormat: 'events'` on
-`recordInteraction`.
+`events` and `review` are not valid here and each returns an error explaining
+why: a stored sequence holds converted *commands*, never the raw input events,
+and both of those formats render events. The raw events exist only during a
+recording - see [Recording Options](#recording-options) for
+`outputFormat: 'events'` and `outputFormat: 'review'` on `recordInteraction`.
 
 ## Visual Replay Cursor
 

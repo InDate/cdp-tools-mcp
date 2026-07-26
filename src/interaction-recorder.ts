@@ -1299,7 +1299,7 @@ function calculateSummary(events: InputEvent[]): StoredRecording['summary'] {
 }
 
 // =============================================================================
-// Event Processing (from mouse-recorder.ts)
+// Event Processing
 // =============================================================================
 
 export function simplifyEvents(

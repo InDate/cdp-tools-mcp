@@ -127,8 +127,11 @@ describe('replay schema no longer accepts dead parameters', () => {
   });
 
   it('rejects outputFormat values with no implementation', async () => {
-    expect((await parse({ outputFormat: 'review' })).success).toBe(false);
     expect((await parse({ outputFormat: 'csv' })).success).toBe(false);
+  });
+
+  it("accepts outputFormat 'review' now that recordInteraction implements it", async () => {
+    expect((await parse({ outputFormat: 'review' })).success).toBe(true);
   });
 });
 
@@ -181,8 +184,15 @@ describe('outputFormat produces distinguishable output for every surviving value
     expect(pw).not.toBe(pp);
   });
 
+  it('review is rejected with its own explicit error - it renders raw events too', async () => {
+    const text = await get('review');
+    expect(text).toContain('review');
+    expect(text).toContain('recordInteraction');
+    expect(text).not.toContain('**Commands**');
+  });
+
   it('every surviving outputFormat value yields a unique response', async () => {
-    const outputs = await Promise.all([undefined, 'events', 'commands', 'playwright', 'puppeteer'].map(f => get(f)));
+    const outputs = await Promise.all([undefined, 'events', 'commands', 'review', 'playwright', 'puppeteer'].map(f => get(f)));
     expect(new Set(outputs).size).toBe(outputs.length);
   });
 });
@@ -203,6 +213,51 @@ describe('recordInteraction honours outputFormat (bug B, raw-event side)', () =>
     expect(text).toContain('Commands (JSON)');
     const json = JSON.parse(text.slice(text.indexOf('['), text.lastIndexOf(']') + 1));
     expect(json[0]).toMatchObject({ tool: 'input', params: { action: 'click', selector: '#go' } });
+  });
+
+  it("outputFormat 'review' appends a human-readable walkthrough, not JSON", async () => {
+    const { result } = await record({ outputFormat: 'review' });
+    const text = result.content[0].text as string;
+    expect(text).toContain('Event Review');
+    // Markdown walkthrough, not a JSON dump of either events or commands.
+    expect(text).toContain('### 1. CLICK at (10, 20)');
+    expect(text).toContain('Selector: `#go`');
+    expect(text).not.toContain('Raw recorded events');
+    expect(text).not.toContain('Commands (JSON)');
+    expect(text).not.toContain('"timestamp"');
+    // mousemove noise is dropped from the review
+    expect(text).not.toContain('MOUSEMOVE');
+  });
+
+  it("outputFormat 'review' renders the wider event variants instead of dropping them", async () => {
+    startRecordingMock.mockResolvedValue({
+      success: true,
+      recording: {
+        events: [
+          { type: 'navigation', timestamp: 1000, url: 'http://localhost:3000/next', previousUrl: 'http://localhost:3000/' },
+          { type: 'click', timestamp: 1100, x: 10, y: 20, elementInfo: { tag: 'button', selector: '#go', isInteractive: true } },
+          { type: 'paste', timestamp: 1200, text: 'pasted-value', targetInfo: { tag: 'input', id: 'email', isInput: true } },
+          { type: 'comment', timestamp: 1300, text: 'this is where it goes wrong', category: 'narrative' },
+        ],
+        startUrl: 'http://localhost:3000/',
+        duration: 2000,
+        summary: { clicks: 1, drags: 0, scrolls: 0, keyPresses: 0, navigations: 1, comments: 1 },
+      },
+    });
+
+    const { result } = await record({ outputFormat: 'review' });
+    const text = result.content[0].text as string;
+    const review = text.slice(text.indexOf('**Event Review'));
+
+    expect(review).toContain('NAVIGATION to http://localhost:3000/next');
+    expect(review).toContain('From: http://localhost:3000/');
+    expect(review).toContain('PASTE');
+    expect(review).toContain('"pasted-value"');
+    expect(review).toContain('Target: `input#email`');
+    expect(review).toContain('COMMENT');
+    expect(review).toContain('this is where it goes wrong');
+    // All four events are numbered - nothing fell through silently.
+    expect(review).toContain('### 4.');
   });
 
   it('appends nothing when outputFormat is omitted', async () => {

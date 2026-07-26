@@ -27,8 +27,10 @@ Tune how events become commands with `simplifyEvents` (default true),
 canvas/3D) and `preferSelectors` (false - selector clicks even for canvas;
 wins if both preference flags are set). Add `outputFormat: 'events'` or
 `'commands'` to get the raw captured events / converted commands as JSON
-alongside the summary - raw events are only available here, they are not stored
-with the sequence.
+alongside the summary, or `'review'` for a readable walkthrough of the captured
+events (coordinates, element and selector per interaction, plus navigations,
+pastes and comments). All three are only available here - raw events are not
+stored with the sequence.
 
 **Build one from calls you already made** - `create`
 
@@ -50,7 +52,9 @@ replay({ action: 'repeat', indices: [12] })
 
 - `list` / `get` / `delete` - sequences in memory. `get` takes
   `outputFormat: 'commands' | 'playwright' | 'puppeteer'` to return the raw
-  command JSON or generated test code instead of the detail view
+  command JSON or generated test code instead of the detail view (`'events'`
+  and `'review'` are recordInteraction-only - a stored sequence has no raw
+  events, and `get` says so rather than ignoring them)
 - `load` / `listSaved` / `deleteSaved` - sequences on disk
 - `export` - write to a file as `sequence`, `playwright`, or `puppeteer`
 - `global: true` on `export` saves to `~/.cdp-tools/sequences/` instead of the

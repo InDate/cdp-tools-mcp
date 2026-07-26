@@ -188,6 +188,7 @@ import {
   formatStepResults,
   formatInsertPrompt,
   formatInsertResult,
+  formatEventsForReview,
 } from './replay-formatters.js';
 
 import { readHistoryLines, getHistoryFilePath } from '../debug-logger.js';
@@ -248,8 +249,8 @@ const replaySchema = z.object({
   showOverlay: z.boolean().optional(),
   simplifyEvents: z.boolean().optional().describe('recordInteraction: collapse noisy raw events (default:true)'),
   includeHovers: z.boolean().optional().describe('recordInteraction: keep mousemove steps (default:false)'),
-  outputFormat: z.enum(['events', 'commands', 'puppeteer', 'playwright']).optional()
-    .describe('get: commands|playwright|puppeteer. recordInteraction: events|commands (JSON dump appended to the summary)'),
+  outputFormat: z.enum(['events', 'commands', 'review', 'puppeteer', 'playwright']).optional()
+    .describe('get: commands|playwright|puppeteer. recordInteraction: events|commands|review (JSON dump, or a human-readable event walkthrough, appended to the summary)'),
   preferCoordinates: z.boolean().optional().describe('recordInteraction: emit x,y clicks instead of selectors (default:false)'),
   preferSelectors: z.boolean().optional().describe('recordInteraction: emit selector clicks even for canvas; wins over preferCoordinates (default:false)'),
   issueId: z.number().optional(),
@@ -517,6 +518,16 @@ async function handleGet(args: ReplayArgs, recorder: CommandRecorder) {
       parameter: 'outputFormat',
       value: 'events',
       message: 'A stored sequence holds commands, not raw input events. Use outputFormat: "commands" here, or outputFormat: "events" on action "recordInteraction" to dump the raw events of a live recording.'
+    });
+  }
+
+  // 'review' renders raw input events too, so it has the same problem as
+  // 'events' - say so instead of silently returning the detail view.
+  if (args.outputFormat === 'review') {
+    return createErrorResponse('INVALID_PARAMETER', {
+      parameter: 'outputFormat',
+      value: 'review',
+      message: 'The review walkthrough renders raw input events, and a stored sequence holds commands, not events. Use outputFormat: "commands" here, or outputFormat: "review" on action "recordInteraction" to review the events of a live recording.'
     });
   }
 
@@ -1490,6 +1501,8 @@ async function handleRecordInteraction(
     response.content[0].text += `\n\n**Raw recorded events (${recording.events.length})**\n\n\`\`\`json\n${JSON.stringify(recording.events, null, 2)}\n\`\`\``;
   } else if (args.outputFormat === 'commands') {
     response.content[0].text += `\n\n**Commands (JSON)**\n\n\`\`\`json\n${JSON.stringify(commands, null, 2)}\n\`\`\``;
+  } else if (args.outputFormat === 'review') {
+    response.content[0].text += `\n\n**Event Review (${recording.events.length} raw events)**\n\n${formatEventsForReview(recording.events)}`;
   } else if (args.outputFormat === 'playwright') {
     response.content[0].text += `\n\n**Playwright Code**\n\n\`\`\`typescript\n${generatePlaywrightCode(commands, recording.startUrl)}\n\`\`\``;
   } else if (args.outputFormat === 'puppeteer') {
@@ -1717,7 +1730,7 @@ export function createReplayTools(
 ) {
   return {
     replay: createTool(
-      'Record and replay command sequences for testing and automation. Actions: repeat (immediately re-execute commands by history index - use this to repeat recent actions), history (view command history), recordInteraction (record real mouse/keyboard/navigation via a browser overlay - BLOCKS until the person finishes, so do not call it unattended; tune the capture with simplifyEvents/includeHovers/preferCoordinates/preferSelectors, and add outputFormat: events|commands|playwright|puppeteer to dump the recording), create (create sequence from history indices), list (list in-memory sequences), get (get sequence details; outputFormat: commands|playwright|puppeteer returns the raw command JSON or generated test code), delete (delete from memory), export (write a sequence to disk as sequence/playwright/puppeteer), load (load sequence from disk), listSaved (list saved files), deleteSaved (delete saved file), run (load and execute a sequence), runFromLog (execute commands from log lines), step (execute next N commands in a paused sequence), finish (complete remaining commands), insert (insert recorded commands into a sequence), status (show active sequence status), cancel (abort the active sequence)',
+      'Record and replay command sequences for testing and automation. Actions: repeat (immediately re-execute commands by history index - use this to repeat recent actions), history (view command history), recordInteraction (record real mouse/keyboard/navigation via a browser overlay - BLOCKS until the person finishes, so do not call it unattended; tune the capture with simplifyEvents/includeHovers/preferCoordinates/preferSelectors, and add outputFormat: events|commands|review|playwright|puppeteer to dump the recording - review is a human-readable walkthrough of the captured events), create (create sequence from history indices), list (list in-memory sequences), get (get sequence details; outputFormat: commands|playwright|puppeteer returns the raw command JSON or generated test code), delete (delete from memory), export (write a sequence to disk as sequence/playwright/puppeteer), load (load sequence from disk), listSaved (list saved files), deleteSaved (delete saved file), run (load and execute a sequence), runFromLog (execute commands from log lines), step (execute next N commands in a paused sequence), finish (complete remaining commands), insert (insert recorded commands into a sequence), status (show active sequence status), cancel (abort the active sequence)',
       replaySchema,
       async (args, abortSignal) => {
         switch (args.action) {

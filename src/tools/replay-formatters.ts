@@ -4,6 +4,14 @@
 
 import type { RecordedCommand, CommandSequence, ActiveSequenceState } from '../command-recorder.js';
 import type { StepResult, DebugState, BreakpointHitInfo, ClickValidationFailure } from './replay-executor.js';
+import type { InputEvent } from '../interaction-recorder.js';
+import {
+  isMouseEvent,
+  isKeyboardEvent,
+  isNavigationEvent,
+  isCommentEvent,
+  isPasteEvent,
+} from '../interaction-recorder.js';
 import { getFormattedResponse } from '../messages.js';
 
 // =============================================================================
@@ -697,6 +705,158 @@ export function formatStepResults(
   }
 
   return response;
+}
+
+// =============================================================================
+// Recorded Event Formatting
+// =============================================================================
+
+/** HH:MM:SS of an event timestamp, used as the per-event time marker. */
+function eventTime(timestamp: number): string {
+  return new Date(timestamp).toISOString().split('T')[1].split('.')[0];
+}
+
+/** `tag#id` / `tag` description of a keyboard or paste target. */
+function describeTarget(targetInfo?: { tag: string; id?: string; isInput?: boolean; selector?: string }): string[] {
+  if (!targetInfo) return [];
+  const lines = [`Target: \`${targetInfo.tag}${targetInfo.id ? '#' + targetInfo.id : ''}\``];
+  if (targetInfo.selector) {
+    lines.push(`Selector: \`${targetInfo.selector}\` ✓`);
+  }
+  if (targetInfo.isInput) {
+    lines.push(`Type: **Input field**`);
+  }
+  return lines;
+}
+
+/**
+ * Format recorded input events for human review.
+ *
+ * This is the `outputFormat: 'review'` implementation - a readable walk of what
+ * the recorder actually captured, showing both the coordinates and the selector
+ * it found for each interaction so a human can judge which one a command should
+ * use. Noise (mousemove, keyup) is dropped; every other event variant -
+ * including navigation, paste and comment events - gets its own entry.
+ */
+export function formatEventsForReview(events: InputEvent[]): string {
+  const lines: string[] = [];
+  let eventNum = 0;
+
+  for (const event of events) {
+    // Comments the person typed during the recording - the most valuable
+    // context in a review dump, so they are never dropped.
+    if (isCommentEvent(event)) {
+      eventNum++;
+      const category = event.category || 'narrative';
+      const label = category === 'bug' ? 'COMMENT (BUG)'
+        : category === 'feature' ? 'COMMENT (FEATURE)'
+        : 'COMMENT';
+      lines.push(`### ${eventNum}. ${label}`);
+      lines.push(`Time: ${eventTime(event.timestamp)}`);
+      lines.push(`Note: "${event.text}"`);
+      if (event.attachedToEventIndex !== undefined) {
+        lines.push(`Attached to event index: ${event.attachedToEventIndex}`);
+      }
+      lines.push('');
+      continue;
+    }
+
+    // Page navigations / reloads that happened mid-recording.
+    if (isNavigationEvent(event)) {
+      eventNum++;
+      lines.push(`### ${eventNum}. ${event.type.toUpperCase()} to ${event.url}`);
+      lines.push(`Time: ${eventTime(event.timestamp)}`);
+      if (event.previousUrl) {
+        lines.push(`From: ${event.previousUrl}`);
+      }
+      lines.push('');
+      continue;
+    }
+
+    // Pasted text - the text matters more than the keystrokes that triggered it.
+    if (isPasteEvent(event)) {
+      eventNum++;
+      const text = event.text.length > 60 ? event.text.substring(0, 57) + '...' : event.text;
+      lines.push(`### ${eventNum}. PASTE`);
+      lines.push(`Time: ${eventTime(event.timestamp)}`);
+      lines.push(`Text: "${text}" (${event.text.length} chars)`);
+      lines.push(...describeTarget(event.targetInfo));
+      lines.push('');
+      continue;
+    }
+
+    if (isKeyboardEvent(event)) {
+      // Skip keyup for review
+      if (event.type === 'keyup') continue;
+
+      eventNum++;
+
+      let keyDisplay = event.key;
+      if (event.modifiers) {
+        const mods: string[] = [];
+        if (event.modifiers.ctrl) mods.push('Ctrl');
+        if (event.modifiers.alt) mods.push('Alt');
+        if (event.modifiers.shift) mods.push('Shift');
+        if (event.modifiers.meta) mods.push('Cmd');
+        if (mods.length > 0) keyDisplay = mods.join('+') + '+' + keyDisplay;
+      }
+
+      lines.push(`### ${eventNum}. KEY \`${keyDisplay}\``);
+      lines.push(`Time: ${eventTime(event.timestamp)}`);
+      lines.push(...describeTarget(event.targetInfo));
+      lines.push('');
+      continue;
+    }
+
+    if (!isMouseEvent(event)) continue;
+
+    // Skip pure mousemove events for review (too noisy)
+    if (event.type === 'mousemove') continue;
+
+    eventNum++;
+    const coords = `(${event.x}, ${event.y})`;
+    const el = event.elementInfo;
+
+    lines.push(`### ${eventNum}. ${event.type.toUpperCase()} at ${coords}`);
+    lines.push(`Time: ${eventTime(event.timestamp)}`);
+
+    if (el) {
+      lines.push(`Element: \`${el.tag}${el.id ? '#' + el.id : ''}${el.className ? '.' + el.className.split(' ')[0] : ''}\``);
+
+      if (el.selector) {
+        lines.push(`Selector: \`${el.selector}\` ✓`);
+      } else {
+        lines.push(`Selector: *(none available)*`);
+      }
+
+      if (el.isCanvas) {
+        lines.push(`Type: **Canvas/3D** - use coordinates`);
+      } else if (el.isInteractive) {
+        lines.push(`Type: **Interactive** - selector recommended`);
+      }
+
+      if (el.text) {
+        lines.push(`Text: "${el.text.substring(0, 40)}${el.text.length > 40 ? '...' : ''}"`);
+      }
+
+      if (el.boundingBox) {
+        const bb = el.boundingBox;
+        lines.push(`Bounds: ${bb.width}x${bb.height} at (${bb.x}, ${bb.y})`);
+      }
+    }
+
+    if (event.type === 'wheel') {
+      lines.push(`Scroll: deltaX=${event.deltaX || 0}, deltaY=${event.deltaY || 0}`);
+    }
+
+    lines.push('');
+  }
+
+  if (eventNum === 0) {
+    return '_No reviewable events were captured._';
+  }
+
+  return lines.join('\n');
 }
 
 // =============================================================================
