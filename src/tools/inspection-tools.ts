@@ -480,12 +480,12 @@ export function createInspectionTools(
               });
             }
 
-            if (!cdpManager.isConnected()) {
+            if (!targetCdpManager.isConnected()) {
               return createErrorResponse('DEBUGGER_NOT_CONNECTED');
             }
 
             try {
-              const allScripts = cdpManager.getAllScripts();
+              const allScripts = targetCdpManager.getAllScripts();
               let scriptsToSearch = allScripts;
 
               // Filter by URL if provided
@@ -503,7 +503,7 @@ export function createInspectionTools(
               for (const script of scriptsToSearch) {
                 if (allResults.length >= limit) break;
 
-                const matches = await cdpManager.searchInScript(
+                const matches = await targetCdpManager.searchInScript(
                   script.scriptId,
                   pattern,
                   caseSensitive,
@@ -576,12 +576,12 @@ export function createInspectionTools(
               });
             }
 
-            if (!cdpManager.isConnected()) {
+            if (!targetCdpManager.isConnected()) {
               return createErrorResponse('DEBUGGER_NOT_CONNECTED');
             }
 
             try {
-              const allScripts = cdpManager.getAllScripts();
+              const allScripts = targetCdpManager.getAllScripts();
               let scriptsToSearch = allScripts;
 
               // Filter by URL if provided
@@ -605,7 +605,7 @@ export function createInspectionTools(
               for (const script of scriptsToSearch) {
                 if (allResults.length >= limit) break;
 
-                const matches = await cdpManager.searchInScript(
+                const matches = await targetCdpManager.searchInScript(
                   script.scriptId,
                   pattern,
                   caseSensitive,

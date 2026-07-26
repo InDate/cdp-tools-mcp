@@ -22,6 +22,14 @@ Pass `issueId` to name and link the recording to an issue (`bug-7-repro`).
 Because it waits on a human, don't call it unattended - the same rule as
 `issues({ action: 'resolve' })`.
 
+Tune how events become commands with `simplifyEvents` (default true),
+`includeHovers` (false), `preferCoordinates` (false - `x,y` clicks for
+canvas/3D) and `preferSelectors` (false - selector clicks even for canvas;
+wins if both preference flags are set). Add `outputFormat: 'events'` or
+`'commands'` to get the raw captured events / converted commands as JSON
+alongside the summary - raw events are only available here, they are not stored
+with the sequence.
+
 **Build one from calls you already made** - `create`
 
 ```
@@ -40,7 +48,9 @@ replay({ action: 'repeat', indices: [12] })
 
 ## Managing them
 
-- `list` / `get` / `delete` - sequences in memory
+- `list` / `get` / `delete` - sequences in memory. `get` takes
+  `outputFormat: 'commands' | 'playwright' | 'puppeteer'` to return the raw
+  command JSON or generated test code instead of the detail view
 - `load` / `listSaved` / `deleteSaved` - sequences on disk
 - `export` - write to a file as `sequence`, `playwright`, or `puppeteer`
 - `global: true` on `export` saves to `~/.cdp-tools/sequences/` instead of the

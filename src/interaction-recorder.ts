@@ -1385,7 +1385,13 @@ export function simplifyEvents(
 export interface CommandConversionOptions {
   simplify?: boolean;
   includeHovers?: boolean;
+  /** Emit coordinate clicks (x/y) even when a selector was captured. */
   preferCoordinates?: boolean;
+  /**
+   * Emit selector clicks whenever a selector was captured - including canvas
+   * elements, which default to coordinates. Takes precedence over
+   * preferCoordinates when both are set.
+   */
   preferSelectors?: boolean;
   includeDelays?: boolean;
   startTime?: number;
@@ -1600,9 +1606,11 @@ export function eventsToCommands(
       const selector = elementInfo?.selector;
       const isCanvas = elementInfo?.isCanvas;
 
-      // Use selector when available, unless preferCoordinates is set or element is canvas
-      // Selector-based clicks are more reliable as they survive layout changes
-      const useSelector = selector && !preferCoordinates && !isCanvas;
+      // Use selector when available, unless preferCoordinates is set or element is canvas.
+      // Selector-based clicks are more reliable as they survive layout changes.
+      // preferSelectors forces the selector whenever one exists (canvas included)
+      // and wins over preferCoordinates when both flags are set.
+      const useSelector = selector && (preferSelectors || (!preferCoordinates && !isCanvas));
 
       if (useSelector) {
         addCommand({ tool: 'input', params: { action: 'click', selector } }, event.timestamp);

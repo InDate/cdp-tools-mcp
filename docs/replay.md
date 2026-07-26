@@ -80,6 +80,42 @@ The sequence is named, in order of preference:
 If a sequence with that name already exists you get a conflict response. Re-run
 with a different `name`, or with `overwrite: true`.
 
+### Recording Options
+
+The conversion from raw input events to sequence commands is tunable. All four
+flags default to today's behaviour, so omitting them changes nothing:
+
+| Option | Default | Effect |
+|---|---|---|
+| `simplifyEvents` | `true` | Collapse noisy raw events (mousemove runs, key repeats) before conversion. `false` keeps them all. |
+| `includeHovers` | `false` | Emit `input({ action: 'mousemove' })` steps for hovers. Needs `simplifyEvents: false` to keep more than the settled positions. |
+| `preferCoordinates` | `false` | Emit `x,y` clicks even where a selector was captured. Use for canvas/3D/drag-heavy UIs. |
+| `preferSelectors` | `false` | Emit selector clicks wherever a selector exists - *including* canvas elements, which otherwise fall back to coordinates. |
+
+If both `preferCoordinates` and `preferSelectors` are `true`, **`preferSelectors`
+wins** - the more portable of the two is chosen.
+
+```javascript
+replay({
+  action: 'recordInteraction',
+  connectionReason: 'canvas-bug',
+  preferCoordinates: true,   // a WebGL canvas has no useful selectors
+  includeHovers: true,       // the bug is a hover artefact
+  simplifyEvents: false
+})
+```
+
+`recordInteraction` also accepts `outputFormat`, which appends a dump to the
+usual recording summary:
+
+- `events` - the raw captured input events as JSON (this is the only place they
+  are ever available; they are not stored with the sequence)
+- `commands` - the converted command list as JSON
+- `playwright` / `puppeteer` - generated test code for the fresh recording
+
+Use `outputFormat: 'events'` when a recording produced surprising commands and
+you need to see what the recorder actually captured.
+
 ### Recording Against an Issue
 
 ```javascript
@@ -137,7 +173,17 @@ replay({ action: 'get', name: 'my-signup-test', outputFormat: 'playwright' })
 
 // Preview as Puppeteer code
 replay({ action: 'get', name: 'my-signup-test', outputFormat: 'puppeteer' })
+
+// The raw command list as JSON (what actually gets executed)
+replay({ action: 'get', name: 'my-signup-test', outputFormat: 'commands' })
 ```
+
+`outputFormat` on `get` accepts `commands`, `playwright` and `puppeteer`.
+`events` is not valid here and returns an error explaining why: a stored
+sequence holds converted *commands*, never the raw input events. The raw events
+exist only during a recording - see
+[Recording Options](#recording-options) for `outputFormat: 'events'` on
+`recordInteraction`.
 
 ## Visual Replay Cursor
 

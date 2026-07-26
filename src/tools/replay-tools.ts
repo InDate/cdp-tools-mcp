@@ -246,12 +246,12 @@ const replaySchema = z.object({
   overwrite: z.boolean().optional(),
   newName: z.string().optional(),
   showOverlay: z.boolean().optional(),
-  simplifyEvents: z.boolean().optional(),
-  includeHovers: z.boolean().optional(),
-  outputFormat: z.enum(['events', 'commands', 'puppeteer', 'playwright', 'review', 'csv']).optional(),
-  preferCoordinates: z.boolean().optional().describe('Use x,y clicks'),
-  preferSelectors: z.boolean().optional().describe('Use CSS selectors'),
-  recordingId: z.number().optional(),
+  simplifyEvents: z.boolean().optional().describe('recordInteraction: collapse noisy raw events (default:true)'),
+  includeHovers: z.boolean().optional().describe('recordInteraction: keep mousemove steps (default:false)'),
+  outputFormat: z.enum(['events', 'commands', 'puppeteer', 'playwright']).optional()
+    .describe('get: commands|playwright|puppeteer. recordInteraction: events|commands (JSON dump appended to the summary)'),
+  preferCoordinates: z.boolean().optional().describe('recordInteraction: emit x,y clicks instead of selectors (default:false)'),
+  preferSelectors: z.boolean().optional().describe('recordInteraction: emit selector clicks even for canvas; wins over preferCoordinates (default:false)'),
   issueId: z.number().optional(),
   issueType: z.enum(['bug', 'feature']).optional(),
   issueTitle: z.string().optional(),
@@ -508,6 +508,25 @@ async function handleGet(args: ReplayArgs, recorder: CommandRecorder) {
   }
 
   const sequence = loadResult.sequence;
+
+  // Raw input events are only ever held in memory during recordInteraction -
+  // a stored sequence keeps the converted commands, not the events. Say so
+  // instead of silently returning the detail view.
+  if (args.outputFormat === 'events') {
+    return createErrorResponse('INVALID_PARAMETER', {
+      parameter: 'outputFormat',
+      value: 'events',
+      message: 'A stored sequence holds commands, not raw input events. Use outputFormat: "commands" here, or outputFormat: "events" on action "recordInteraction" to dump the raw events of a live recording.'
+    });
+  }
+
+  if (args.outputFormat === 'commands') {
+    let output = `**${sequence.name} - Commands (JSON)**\n\n`;
+    output += '```json\n';
+    output += JSON.stringify(sequence.commands, null, 2);
+    output += '\n```';
+    return { content: [{ type: 'text', text: output }] };
+  }
 
   // Check if output format is specified for code export
   if (args.outputFormat === 'playwright') {
@@ -1338,11 +1357,15 @@ async function handleRecordInteraction(
   const summary = recording.summary;
 
   const replayConfig = configManager.getReplayConfig();
+  // Recording options come from args; the defaults are the values that used to
+  // be hardcoded here, so omitting them keeps the previous behaviour.
+  // preferSelectors wins over preferCoordinates when both are set.
   const commands = eventsToCommands(recording.events, {
-    simplify: true,
+    simplify: args.simplifyEvents ?? true,
     includeDelays: true,
-    preferCoordinates: false,
-    preferSelectors: false,
+    includeHovers: args.includeHovers ?? false,
+    preferCoordinates: args.preferCoordinates ?? false,
+    preferSelectors: args.preferSelectors ?? false,
     maxDelayMs: replayConfig.maxDelayMs,
   });
 
@@ -1440,7 +1463,7 @@ async function handleRecordInteraction(
     );
   }
 
-  return createSuccessResponse('RECORDING_STOPPED', {
+  const response = createSuccessResponse('RECORDING_STOPPED', {
     name: sequence?.name || sequenceData.name,
     sequenceId: sequence?.id || sequenceData.id,
     duration: (recording.duration / 1000).toFixed(1),
@@ -1460,6 +1483,20 @@ async function handleRecordInteraction(
       ? createdIssues.map(i => `#${i.id} (${i.type})`).join(', ')
       : null,
   });
+
+  // outputFormat dumps the underlying data alongside the summary. The raw
+  // events only exist here - a saved sequence keeps commands, not events.
+  if (args.outputFormat === 'events') {
+    response.content[0].text += `\n\n**Raw recorded events (${recording.events.length})**\n\n\`\`\`json\n${JSON.stringify(recording.events, null, 2)}\n\`\`\``;
+  } else if (args.outputFormat === 'commands') {
+    response.content[0].text += `\n\n**Commands (JSON)**\n\n\`\`\`json\n${JSON.stringify(commands, null, 2)}\n\`\`\``;
+  } else if (args.outputFormat === 'playwright') {
+    response.content[0].text += `\n\n**Playwright Code**\n\n\`\`\`typescript\n${generatePlaywrightCode(commands, recording.startUrl)}\n\`\`\``;
+  } else if (args.outputFormat === 'puppeteer') {
+    response.content[0].text += `\n\n**Puppeteer Code**\n\n\`\`\`javascript\n${generatePuppeteerCode(commands, recording.startUrl)}\n\`\`\``;
+  }
+
+  return response;
 }
 
 
@@ -1680,7 +1717,7 @@ export function createReplayTools(
 ) {
   return {
     replay: createTool(
-      'Record and replay command sequences for testing and automation. Actions: repeat (immediately re-execute commands by history index - use this to repeat recent actions), history (view command history), recordInteraction (record real mouse/keyboard/navigation via a browser overlay - BLOCKS until the person finishes, so do not call it unattended), create (create sequence from history indices), list (list in-memory sequences), get (get sequence details), delete (delete from memory), export (write a sequence to disk as sequence/playwright/puppeteer), load (load sequence from disk), listSaved (list saved files), deleteSaved (delete saved file), run (load and execute a sequence), runFromLog (execute commands from log lines), step (execute next N commands in a paused sequence), finish (complete remaining commands), insert (insert recorded commands into a sequence), status (show active sequence status), cancel (abort the active sequence)',
+      'Record and replay command sequences for testing and automation. Actions: repeat (immediately re-execute commands by history index - use this to repeat recent actions), history (view command history), recordInteraction (record real mouse/keyboard/navigation via a browser overlay - BLOCKS until the person finishes, so do not call it unattended; tune the capture with simplifyEvents/includeHovers/preferCoordinates/preferSelectors, and add outputFormat: events|commands|playwright|puppeteer to dump the recording), create (create sequence from history indices), list (list in-memory sequences), get (get sequence details; outputFormat: commands|playwright|puppeteer returns the raw command JSON or generated test code), delete (delete from memory), export (write a sequence to disk as sequence/playwright/puppeteer), load (load sequence from disk), listSaved (list saved files), deleteSaved (delete saved file), run (load and execute a sequence), runFromLog (execute commands from log lines), step (execute next N commands in a paused sequence), finish (complete remaining commands), insert (insert recorded commands into a sequence), status (show active sequence status), cancel (abort the active sequence)',
       replaySchema,
       async (args, abortSignal) => {
         switch (args.action) {

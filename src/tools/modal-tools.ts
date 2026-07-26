@@ -154,7 +154,15 @@ async function dismissModalImpl(
   } = args;
 
   try {
-    const { page, cdpManager } = await resolveConnectionFromReason(connectionReason);
+    // resolveConnectionFromReason yields { connection, cdpManager,
+    // puppeteerManager, ... } - there is no `page` on it, so the page has to
+    // come from the puppeteerManager (same as detectModals does).
+    const resolved = await resolveConnectionFromReason(connectionReason);
+    if (!resolved || !resolved.puppeteerManager) {
+      return formatToolError('connection_not_found', 'No Chrome browser available. Use `launchChrome` first to start a browser.');
+    }
+    const page = resolved.puppeteerManager.getPage();
+    const cdpManager = resolved.cdpManager;
 
     // First, detect modals to find the target
     const detectResult = await executeWithPauseDetection(

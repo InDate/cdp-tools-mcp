@@ -223,25 +223,36 @@ export function createNetworkTools(
             return createSuccessResponse('NETWORK_REQUEST_DETAIL', metadata, data);
           }
 
-          case 'enable': {
-            if (!puppeteerManager.isConnected()) {
-              return createErrorResponse('PUPPETEER_NOT_CONNECTED');
-            }
-
-            const page = puppeteerManager.getPage();
-            networkMonitor.startMonitoring(page);
-
-            return createSuccessResponse('NETWORK_MONITORING_ENABLED');
-          }
-
+          case 'enable':
           case 'disable': {
-            if (!puppeteerManager.isConnected()) {
+            // connectionReason is part of this tool's schema, so it has to
+            // steer which connection gets (un)monitored - not just the
+            // default/active one the proxy managers point at.
+            let targetPuppeteerManager = puppeteerManager;
+            let targetNetworkMonitor = networkMonitor;
+            if (connectionReason) {
+              const resolved = await resolveConnectionFromReason(connectionReason);
+              if (!resolved) {
+                return createErrorResponse('CONNECTION_NOT_FOUND', {
+                  message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
+                });
+              }
+              targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
+              targetNetworkMonitor = resolved.networkMonitor || networkMonitor;
+            }
+
+            if (!targetPuppeteerManager.isConnected()) {
               return createErrorResponse('PUPPETEER_NOT_CONNECTED');
             }
 
-            const page = puppeteerManager.getPage();
-            networkMonitor.stopMonitoring(page);
+            const page = targetPuppeteerManager.getPage();
 
+            if (action === 'enable') {
+              targetNetworkMonitor.startMonitoring(page);
+              return createSuccessResponse('NETWORK_MONITORING_ENABLED');
+            }
+
+            targetNetworkMonitor.stopMonitoring(page);
             return createSuccessResponse('NETWORK_MONITORING_DISABLED');
           }
 

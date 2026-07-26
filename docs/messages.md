@@ -2488,6 +2488,17 @@ Missing required parameter: {{missing}}
 
 ---
 
+## INVALID_PARAMETER
+
+**Type:** error
+**Code:** INVALID_PARAMETER
+
+{{message}}
+
+{{#parameter}}**Parameter:** {{parameter}}{{#value}} = `{{value}}`{{/value}}{{/parameter}}
+
+---
+
 ## Server Messages
 
 ## SERVER_START_SUCCESS
