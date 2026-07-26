@@ -11,6 +11,7 @@ import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import { showReplayOverlay } from '../interaction-recorder.js';
 import { getIssue } from '../issue-tracker.js';
 import { deriveConnectionReference } from '../reference-validator.js';
+import { runRegistry, type RunRecord } from './replay-run-registry.js';
 
 import {
   loadSequence,
@@ -230,6 +231,8 @@ const replaySchema = z.object({
   indices: z.array(z.number()).optional().describe('Command indices'),
   lines: z.array(z.number()).optional().describe('Log line numbers'),
   sequenceId: z.string().optional(),
+  runId: z.string().optional().describe('status/cancel: address a specific background run by the id that run returned'),
+  wait: z.boolean().optional().describe('run: block until the run completes and return the full result (pre-0.7 behaviour). Default false: return a runId immediately and execute in the background'),
   global: z.boolean().optional().describe('Use ~/.cdp-tools/'),
   format: z.enum(['sequence', 'playwright', 'puppeteer']).optional(),
   filename: z.string().optional(),
@@ -739,6 +742,20 @@ async function handleDeleteSaved(args: ReplayArgs, recorder: CommandRecorder) {
   });
 }
 
+type RunOutcome = 'completed' | 'failed' | 'paused' | 'cancelled';
+
+interface PerformRunDeps {
+  args: ReplayArgs;
+  recorder: CommandRecorder;
+  executeToolCall: (toolName: string, params: Record<string, any>) => Promise<any>;
+  getPageForConnection: (connectionReason: string) => Promise<any>;
+  getConnectionPort?: (connectionReason: string) => Promise<number | null>;
+  sequence: CommandSequence;
+  analysis: ReturnType<typeof analyzeSequenceConnections>;
+  connectionReason: string | undefined;
+  needsConnection: boolean;
+}
+
 async function handleRun(
   args: ReplayArgs,
   recorder: CommandRecorder,
@@ -779,6 +796,89 @@ async function handleRun(
     return { content: [{ type: 'text', text: formatVariablePrompt(sequence.name, idParam, extractedVariables, connectionReason) }] };
   }
 
+  // Validate startFrom before any side effects, so both modes reject immediately
+  if (args.startFrom && args.startFrom > sequence.commands.length) {
+    return createErrorResponse('INVALID_START_FROM', {
+      message: `startFrom (${args.startFrom}) exceeds sequence length (${sequence.commands.length})`
+    });
+  }
+
+  const deps: PerformRunDeps = {
+    args, recorder, executeToolCall, getPageForConnection, getConnectionPort,
+    sequence, analysis, connectionReason, needsConnection,
+  };
+
+  // wait: true - pre-0.7 blocking behaviour, driven by the MCP request signal.
+  // Also what nested `replay run` STEPS use (the executor injects wait: true),
+  // so a run started from inside a sequence never registers as its own
+  // top-level run and its caller keeps the result.
+  if (args.wait === true) {
+    const { response } = await performRun(deps, abortSignal);
+    return response;
+  }
+
+  // Background (default): register a run and return a handle immediately.
+  const runId = runRegistry.newRunId();
+  const controller = new AbortController();
+  const record: RunRecord = {
+    runId,
+    sequenceId: sequence.id,
+    sequenceName: sequence.name,
+    connectionReason,
+    status: 'running',
+    startedAt: Date.now(),
+    totalSteps: commands.length,
+    currentStep: 0,
+    results: [],
+    controller,
+  };
+  runRegistry.register(record);
+
+  performRun(deps, controller.signal, runId, (ev) => {
+    record.currentStep = ev.step;
+    record.currentTool = ev.tool;
+  }).then(({ response, outcome, results }) => {
+    record.finalResponse = response;
+    if (results) record.results = results;
+    record.endedAt = Date.now();
+    record.status = outcome;
+  }).catch((error: any) => {
+    record.error = error?.message || String(error);
+    record.endedAt = Date.now();
+    record.status = 'failed';
+  });
+
+  const started = createSuccessResponse('REPLAY_RUN_STARTED', {
+    runId,
+    name: sequence.name,
+    totalSteps: commands.length,
+    connectionReason: connectionReason || 'none',
+  });
+  started._meta = {
+    tool: 'replay', action: 'run', timestamp: Date.now(),
+    replay: { runId, background: true, totalSteps: commands.length },
+  };
+  return started;
+}
+
+/**
+ * Execute a run to completion: connection setup, cursor/overlay, step
+ * execution, post-run cleanup (cursor/overlay/tab, debug state,
+ * killChromeOnFinish). Everything after the fast validation in handleRun.
+ *
+ * Used by both modes: awaited directly for wait: true, spawned in the
+ * background otherwise. The returned outcome is authoritative for the run
+ * record's terminal status - never derived by parsing the response.
+ */
+async function performRun(
+  deps: PerformRunDeps,
+  abortSignal?: AbortSignal,
+  runId?: string,
+  onProgress?: (ev: { step: number; totalSteps: number; tool: string }) => void
+): Promise<{ response: any; outcome: RunOutcome; results?: any[] }> {
+  const { args, recorder, executeToolCall, getPageForConnection, getConnectionPort,
+    sequence, analysis, connectionReason, needsConnection } = deps;
+
   // Build execution context
   const ctx: ExecutionContext = {
     executeToolCall,
@@ -793,10 +893,13 @@ async function handleRun(
   if (needsConnection && !analysis.hasLaunchBeforeConnection) {
     const connResult = await ensureConnection(ctx, needsConnection, analysis.hasLaunchBeforeConnection);
     if (!connResult.success) {
-      return createErrorResponse('LAUNCH_FAILED', {
-        message: connResult.error,
-        suggestion: 'Launch Chrome manually first'
-      });
+      return {
+        outcome: 'failed',
+        response: createErrorResponse('LAUNCH_FAILED', {
+          message: connResult.error,
+          suggestion: 'Launch Chrome manually first'
+        })
+      };
     }
     didAutoLaunch = connResult.didAutoLaunch;
   }
@@ -808,10 +911,13 @@ async function handleRun(
     if (didAutoLaunch && connectionReason) {
       await executeToolCall('tab', { action: 'close', reference: connectionReason }).catch(() => {});
     }
-    return createErrorResponse('NAVIGATION_FAILED', {
-      message: navResult.error,
-      startUrl: sequence.startUrl
-    });
+    return {
+      outcome: 'failed',
+      response: createErrorResponse('NAVIGATION_FAILED', {
+        message: navResult.error,
+        startUrl: sequence.startUrl
+      })
+    };
   }
 
   // Inject cursor if enabled in config
@@ -859,16 +965,9 @@ async function handleRun(
     }
   };
 
-  // Calculate start step (convert 1-indexed to 0-indexed)
+  // Calculate start step (convert 1-indexed to 0-indexed).
+  // startFrom itself was validated in handleRun, before any side effects.
   const startStep = args.startFrom ? Math.max(0, args.startFrom - 1) : 0;
-
-  // Validate startFrom
-  if (args.startFrom && args.startFrom > sequence.commands.length) {
-    await cleanup();
-    return createErrorResponse('INVALID_START_FROM', {
-      message: `startFrom (${args.startFrom}) exceeds sequence length (${sequence.commands.length})`
-    });
-  }
 
   // Register cleanup handler on abort signal BEFORE execution starts
   // This ensures cleanup runs even if the tool call is interrupted mid-execution
@@ -887,7 +986,8 @@ async function handleRun(
     totalTimeout: args.totalTimeout,
     stepTo: args.stepTo,
     overrideConnectionReason: args.connectionReason,
-    abortSignal
+    abortSignal,
+    onProgress
   });
 
   // Handle abort - return early (cleanup already handled by abort signal listener)
@@ -902,12 +1002,12 @@ async function handleRun(
       tool: 'replay', action: 'run', timestamp: Date.now(),
       replay: { success: false, totalSteps: sequence.commands.length, failedSteps: execResult.results.filter(r => !r.success).length, paused: true }
     };
-    return abortedResponse;
+    return { response: abortedResponse, outcome: 'cancelled', results: execResult.results };
   }
 
   // Handle breakpoint hit
   if (execResult.breakpointHit && connectionReason) {
-    return { content: [{ type: 'text', text: formatBreakpointHit(
+    return { outcome: 'paused', results: execResult.results, response: { content: [{ type: 'text', text: formatBreakpointHit(
       sequence.name,
       execResult.results,
       execResult.totalCommands,
@@ -919,7 +1019,7 @@ async function handleRun(
         tool: 'replay', action: 'run', timestamp: Date.now(),
         replay: { success: false, totalSteps: sequence.commands.length, failedSteps: execResult.results.filter(r => !r.success).length, paused: true }
       }
-    };
+    } };
   }
 
   // Handle click validation failure (pause for inspection/retry)
@@ -933,10 +1033,11 @@ async function handleRun(
       pausedAt: Date.now(),
       historyIndexAtPause: recorder.getHistory().length,
       connectionReason,
+      runId,
     };
     recorder.setActiveSequence(activeState);
 
-    return { content: [{ type: 'text', text: formatClickValidationFailure(
+    return { outcome: 'paused', results: execResult.results, response: { content: [{ type: 'text', text: formatClickValidationFailure(
       sequence,
       execResult.results,
       execResult.pausedAtStep!,
@@ -948,18 +1049,18 @@ async function handleRun(
         tool: 'replay', action: 'run', timestamp: Date.now(),
         replay: { success: false, totalSteps: sequence.commands.length, failedSteps: execResult.results.filter(r => !r.success).length, paused: true }
       }
-    };
+    } };
   }
 
   // Handle paused state (stepTo)
   if (execResult.pausedAtStep && execResult.activeSequenceState) {
-    recorder.setActiveSequence(execResult.activeSequenceState);
-    return { content: [{ type: 'text', text: formatPausedResponse(sequence, execResult.results, execResult.pausedAtStep, execResult.durationMs) }],
+    recorder.setActiveSequence({ ...execResult.activeSequenceState, runId });
+    return { outcome: 'paused', results: execResult.results, response: { content: [{ type: 'text', text: formatPausedResponse(sequence, execResult.results, execResult.pausedAtStep, execResult.durationMs) }],
       _meta: {
         tool: 'replay', action: 'run', timestamp: Date.now(),
         replay: { success: false, totalSteps: sequence.commands.length, failedSteps: execResult.results.filter(r => !r.success).length, paused: true }
       }
-    };
+    } };
   }
 
   // Clean up cursor and overlay
@@ -1001,33 +1102,163 @@ async function handleRun(
     }
   }
 
-  return { content: [{ type: 'text', text: response }],
-    _meta: {
-      tool: 'replay', action: 'run', timestamp: Date.now(),
-      replay: { success: failed === 0, totalSteps: execResult.totalCommands, failedSteps: failed, paused: false }
+  return {
+    outcome: failed === 0 ? 'completed' : 'failed',
+    results: execResult.results,
+    response: { content: [{ type: 'text', text: response }],
+      _meta: {
+        tool: 'replay', action: 'run', timestamp: Date.now(),
+        replay: { success: failed === 0, totalSteps: execResult.totalCommands, failedSteps: failed, paused: false }
+      }
     }
   };
 }
 
-async function handleStatus(recorder: CommandRecorder) {
-  const activeSeq = recorder.getActiveSequence();
-  if (!activeSeq) {
-    return { content: [{ type: 'text', text: '**No active sequence.** Use `replay({ action: \'run\', name: \'...\', stepTo: N })` to start a step-through session.' }] };
-  }
-
-  const commandsSincePause = recorder.getCommandsSincePause();
-  return { content: [{ type: 'text', text: formatActiveStatus(activeSeq, commandsSincePause) }] };
+/** One line per known run, newest first, for the no-runId status overview. */
+function formatRunsOverview(records: RunRecord[]): string {
+  const lines = records.map(r => {
+    const progress = r.status === 'running' || r.status === 'cancelling'
+      ? ` - step ${r.currentStep}/${r.totalSteps}${r.currentTool ? ` (${r.currentTool})` : ''}`
+      : ` - ${r.results.filter(s => s.success).length}/${r.totalSteps} steps ok`;
+    return `- \`${r.runId}\` ${r.sequenceName}: **${r.status}**${progress}`;
+  });
+  return `**Runs** (details: \`replay({ action: 'status', runId: '...' })\`)\n${lines.join('\n')}`;
 }
 
-async function handleCancel(recorder: CommandRecorder) {
-  const activeSeq = recorder.getActiveSequence();
-  if (!activeSeq) {
-    return { content: [{ type: 'text', text: '**No active sequence to cancel.**' }] };
+/** Full status for one run. For a settled run this includes the final result. */
+function formatRunRecord(record: RunRecord): any {
+  const elapsed = ((record.endedAt ?? Date.now()) - record.startedAt) / 1000;
+  let text = `**Run \`${record.runId}\`** - ${record.sequenceName}: **${record.status}** (${elapsed.toFixed(1)}s)`;
+
+  if (record.status === 'running' || record.status === 'cancelling') {
+    text += record.currentStep > 0
+      ? `\n\nExecuting step ${record.currentStep}/${record.totalSteps}${record.currentTool ? ` (${record.currentTool})` : ''}.`
+      : `\n\nSetting up (connection/navigation), no step started yet.`;
+    text += `\n\nPoll again with \`replay({ action: 'status', runId: '${record.runId}' })\``;
+    if (record.status === 'running') {
+      text += ` or stop it with \`replay({ action: 'cancel', runId: '${record.runId}' })\`.`;
+    } else {
+      text += `. Cancel was requested; the run stops at the next step boundary.`;
+    }
+  } else if (record.finalResponse?.content?.[0]?.text) {
+    text += `\n\n${record.finalResponse.content[0].text}`;
+    if (record.status === 'paused') {
+      text += `\n\nDrive the paused session with \`replay({ action: 'step' })\` / \`finish\`, or drop it with \`replay({ action: 'cancel', runId: '${record.runId}' })\`.`;
+    }
+  } else if (record.error) {
+    text += `\n\nRun failed before producing a result: ${record.error}`;
   }
 
-  const name = activeSeq.sequenceName;
-  recorder.setActiveSequence(null);
-  return { content: [{ type: 'text', text: `**Cancelled:** ${name}` }] };
+  return {
+    content: [{ type: 'text', text }],
+    _meta: {
+      tool: 'replay', action: 'status', timestamp: Date.now(),
+      replay: {
+        runId: record.runId,
+        runStatus: record.status,
+        currentStep: record.currentStep,
+        totalSteps: record.totalSteps,
+        ...(record.finalResponse?._meta?.replay ?? {}),
+      },
+    },
+  };
+}
+
+async function handleStatus(args: ReplayArgs, recorder: CommandRecorder) {
+  if (args.runId) {
+    const record = runRegistry.get(args.runId);
+    if (!record) {
+      return createErrorResponse('REPLAY_RUN_NOT_FOUND', { runId: args.runId });
+    }
+    return formatRunRecord(record);
+  }
+
+  const activeSeq = recorder.getActiveSequence();
+  const runs = runRegistry.list();
+
+  let text: string;
+  if (activeSeq) {
+    text = formatActiveStatus(activeSeq, recorder.getCommandsSincePause());
+  } else {
+    text = '**No active sequence.** Use `replay({ action: \'run\', name: \'...\', stepTo: N })` to start a step-through session.';
+  }
+  if (runs.length > 0) {
+    text += `\n\n${formatRunsOverview(runs)}`;
+  }
+  return { content: [{ type: 'text', text }] };
+}
+
+/** Cancel one specific registered run, whatever state it is in. */
+function cancelRunRecord(record: RunRecord, recorder: CommandRecorder) {
+  if (record.status === 'running' || record.status === 'cancelling') {
+    record.status = 'cancelling';
+    record.controller.abort();
+    return createSuccessResponse('REPLAY_RUN_CANCELLING', {
+      runId: record.runId,
+      name: record.sequenceName,
+    });
+  }
+
+  if (record.status === 'paused') {
+    const activeSeq = recorder.getActiveSequence();
+    if (activeSeq?.runId === record.runId) {
+      recorder.setActiveSequence(null);
+    }
+    record.status = 'cancelled';
+    record.endedAt = record.endedAt ?? Date.now();
+    return createSuccessResponse('REPLAY_RUN_CANCELLED', {
+      runId: record.runId,
+      name: record.sequenceName,
+    });
+  }
+
+  return createSuccessResponse('REPLAY_RUN_ALREADY_FINISHED', {
+    runId: record.runId,
+    name: record.sequenceName,
+    status: record.status,
+  });
+}
+
+async function handleCancel(args: ReplayArgs, recorder: CommandRecorder) {
+  // Explicit runId wins: cancel exactly that run.
+  if (args.runId) {
+    const record = runRegistry.get(args.runId);
+    if (!record) {
+      return createErrorResponse('REPLAY_RUN_NOT_FOUND', { runId: args.runId });
+    }
+    return cancelRunRecord(record, recorder);
+  }
+
+  // No runId: a paused step-through session takes precedence (pre-0.7
+  // behaviour - `cancel` always meant "drop the paused session").
+  const activeSeq = recorder.getActiveSequence();
+  if (activeSeq) {
+    if (activeSeq.runId) {
+      const record = runRegistry.get(activeSeq.runId);
+      if (record && record.status === 'paused') {
+        record.status = 'cancelled';
+        record.endedAt = record.endedAt ?? Date.now();
+      }
+    }
+    const name = activeSeq.sequenceName;
+    recorder.setActiveSequence(null);
+    return { content: [{ type: 'text', text: `**Cancelled:** ${name}` }] };
+  }
+
+  // No paused session: fall through to background runs. Unambiguous only if
+  // exactly one is still executing.
+  const active = runRegistry.active();
+  if (active.length === 1) {
+    return cancelRunRecord(active[0], recorder);
+  }
+  if (active.length > 1) {
+    return createErrorResponse('REPLAY_RUN_AMBIGUOUS', {
+      count: active.length,
+      runList: active.map(r => `\`${r.runId}\` (${r.sequenceName}, step ${r.currentStep}/${r.totalSteps})`).join(', '),
+    });
+  }
+
+  return { content: [{ type: 'text', text: '**No active sequence to cancel.**' }] };
 }
 
 async function handleStep(
@@ -1738,7 +1969,7 @@ export function createReplayTools(
 ) {
   return {
     replay: createTool(
-      'Record and replay command sequences for testing and automation. Actions: repeat (immediately re-execute commands by history index - use this to repeat recent actions), history (view command history), recordInteraction (record real mouse/keyboard/navigation via a browser overlay - BLOCKS until the person finishes, so do not call it unattended; tune the capture with simplifyEvents/includeHovers/preferCoordinates/preferSelectors, and add outputFormat: events|commands|review|playwright|puppeteer to dump the recording - review is a human-readable walkthrough of the captured events), create (create sequence from history indices), list (list in-memory sequences), get (get sequence details; outputFormat: commands|playwright|puppeteer returns the raw command JSON or generated test code), delete (delete from memory), export (write a sequence to disk as sequence/playwright/puppeteer), load (load sequence from disk), listSaved (list saved files), deleteSaved (delete saved file), run (load and execute a sequence), runFromLog (execute commands from log lines), step (execute next N commands in a paused sequence), finish (complete remaining commands), insert (insert recorded commands into a sequence), status (show active sequence status), cancel (abort the active sequence)',
+      'Record and replay command sequences for testing and automation. Actions: repeat (immediately re-execute commands by history index - use this to repeat recent actions), history (view command history), recordInteraction (record real mouse/keyboard/navigation via a browser overlay - BLOCKS until the person finishes, so do not call it unattended; tune the capture with simplifyEvents/includeHovers/preferCoordinates/preferSelectors, and add outputFormat: events|commands|review|playwright|puppeteer to dump the recording - review is a human-readable walkthrough of the captured events), create (create sequence from history indices), list (list in-memory sequences), get (get sequence details; outputFormat: commands|playwright|puppeteer returns the raw command JSON or generated test code), delete (delete from memory), export (write a sequence to disk as sequence/playwright/puppeteer), load (load sequence from disk), listSaved (list saved files), deleteSaved (delete saved file), run (start executing a sequence in the background - returns a runId immediately; poll progress/results with status, stop it with cancel; wait: true blocks until completion and returns the full result), runFromLog (execute commands from log lines), step (execute next N commands in a paused sequence), finish (complete remaining commands), insert (insert recorded commands into a sequence), status (with runId: one run\'s progress or final result; without: paused session + recent runs), cancel (with runId: stop that run; without: drop the paused session, or the only executing run)',
       replaySchema,
       async (args, abortSignal) => {
         switch (args.action) {
@@ -1763,7 +1994,7 @@ export function createReplayTools(
           case 'run':
             return handleRun(args, commandRecorder, executeToolCall, getPageForConnection!, abortSignal, getConnectionPort);
           case 'status':
-            return handleStatus(commandRecorder);
+            return handleStatus(args, commandRecorder);
           case 'step':
             return handleStep(args, commandRecorder, executeToolCall);
           case 'finish':
@@ -1771,7 +2002,7 @@ export function createReplayTools(
           case 'insert':
             return handleInsert(args, commandRecorder);
           case 'cancel':
-            return handleCancel(commandRecorder);
+            return handleCancel(args, commandRecorder);
           case 'repeat':
             return handleRepeat(args, commandRecorder, executeToolCall);
           case 'runFromLog':

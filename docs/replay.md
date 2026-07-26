@@ -344,6 +344,53 @@ Or by name, which also finds it on disk:
 replay({ action: 'run', name: 'login-flow', connectionReason: 'test-session' })
 ```
 
+### Background by Default (breaking change in 0.7)
+
+**`run` no longer blocks.** It validates the request (sequence exists, tool
+names known, `startFrom` in range, variables supplied), registers a run, and
+returns immediately with a run id:
+
+```javascript
+replay({ action: 'run', name: 'login-flow' })
+// -> Run started in the background ... Run id: `run-3-mdkq1x2`
+
+replay({ action: 'status', runId: 'run-3-mdkq1x2' })   // progress while running,
+                                                       // the full result once settled
+replay({ action: 'cancel', runId: 'run-3-mdkq1x2' })   // stop it
+```
+
+While a run executes, `status` with its `runId` reports the current step and
+tool; once the run settles it returns exactly what the old blocking `run`
+would have returned (step results, debug state, `killChromeOnFinish` outcome).
+Post-run cleanup - cursor/overlay removal, debug state, `killChromeOnFinish` -
+happens in the background before the run's status turns terminal, exactly once.
+
+Run states: `running` → (`cancelling` →) one of `completed`, `failed`,
+`cancelled`, or `paused` (stepTo / breakpoint / click-validation - drive it
+with `step`/`finish` as before).
+
+Lifetime and limits:
+
+- Several runs can execute concurrently, including two runs of the same
+  sequence - the run id is what tells them apart.
+- Settled runs and their results are kept **in memory for 30 minutes** (at
+  most 50 records). After that, or after a server restart (including the
+  supervisor's hot-restart on rebuild, which also kills any in-flight run),
+  `status`/`cancel` with that id return `REPLAY_RUN_NOT_FOUND`.
+- `cancel` with a `runId` aborts the run's controller. Today that takes
+  effect **at the next step boundary**: a tool call already in flight is not
+  interrupted and its side effects may still land (per-step cancellation is
+  tracked in #110). Status shows `cancelling` until the boundary is reached.
+- A nested run started by a sequence step (a `conditional` flow, or a
+  `replay run` step - which is forced to `wait: true`) is part of its parent
+  run, never a separate top-level run.
+
+**Migration:** pass `wait: true` to keep the pre-0.7 blocking behaviour:
+
+```javascript
+replay({ action: 'run', name: 'login-flow', wait: true })  // blocks, returns full result
+```
+
 ### Auto-Launch Chrome
 
 If the sequence starts with `launchChrome`, no `connectionReason` is needed -
@@ -425,6 +472,11 @@ replay({ action: 'step', stepCount: 2 })                  // run the next 2 step
 replay({ action: 'finish' })                              // run the rest
 replay({ action: 'cancel' })                              // drop the paused session
 ```
+
+A bare `cancel` prefers the paused session; with background runs in flight,
+address the one you mean with `runId` (a bare `cancel` also works when exactly
+one run is executing and nothing is paused). `status` without `runId` shows
+the paused session plus all recent runs.
 
 While paused you can run tools by hand and then splice them into the sequence:
 

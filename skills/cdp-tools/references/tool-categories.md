@@ -75,7 +75,7 @@ runs against (see the skill's Quick Start).
 - `recordInteraction`: record mouse, keyboard, and navigation events with a visual overlay
 - `export`: export a sequence to file - `format: sequence | playwright | puppeteer`
 - `repeat`: instantly re-execute commands by history index - `replay({ action: 'repeat', indices: [0, 1, 2] })`. Each tool response shows its history index in the "Repeat" hint
-- `run`: `startUrl` overrides the stored start URL for one run; `baseUrl` retargets every absolute URL at another deployment's origin
+- `run`: does not block - returns a `runId` immediately and executes in the background; poll `status({ runId })` for progress and the final result (kept 30 min in memory), `cancel({ runId })` stops it at the next step boundary. `wait: true` blocks for the full result (pre-0.7 behaviour). `startUrl` overrides the stored start URL for one run; `baseUrl` retargets every absolute URL at another deployment's origin
 - Use `global: true` with `export` to save to ~/.cdp-tools/sequences/ instead of the working directory
 
 **Dashboard**: `dashboard` (actions: open, status, stop)

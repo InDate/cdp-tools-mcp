@@ -51,6 +51,11 @@ export interface ActiveSequenceState {
   /** {{timestamp}} value for this run, fixed at first resolution so it stays
    *  stable across every step of the same run (including step/finish calls). */
   runTimestamp?: number;
+  /** The background run this paused session belongs to, when the pause came
+   *  from a registered `run` (stepTo / click validation). Lets `cancel` by
+   *  runId clear the right paused session, and `cancel` of the session mark
+   *  the owning run record cancelled. */
+  runId?: string;
 }
 
 export class CommandRecorder {

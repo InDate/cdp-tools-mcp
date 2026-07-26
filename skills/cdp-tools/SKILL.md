@@ -80,6 +80,23 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 - `listConnections` → `switchConnection`
 - Each connection = separate tab/process
 
+**Re-running work you already did:**
+- Every tool response carries its own history index in the footer:
+  `**Repeat:** replay({ action: 'repeat', indices: [58] })`. That is not only
+  for failures - it is on every call, all the time. (The `replay` tool's own
+  responses are the exception: replay calls are not recorded into history)
+- `indices` takes a **list**, so a whole stretch of work replays in one call:
+  `replay({ action: 'repeat', indices: [58, 59, 60, 61] })` re-runs those four
+  steps in order
+- Reach for this whenever you are about to redo something you already did -
+  a browser relaunch, re-logging in, retyping a form, getting back to the
+  screen where a bug appears. Re-issuing the calls by hand is slower, and
+  retyped arguments drift from what actually ran
+- `replay({ action: 'history' })` lists the indices when they have scrolled
+  out of view
+- If the stretch is worth keeping, turn it into a sequence:
+  `replay({ action: 'create', name: '...', indices: [58, 59, 60, 61] })`
+
 ## Common Patterns
 
 **Bug debugging:**
@@ -141,6 +158,8 @@ Once a call passes validation, cdp-tools records it (even if a guard then blocks
 **Repeat:** `replay({ action: 'repeat', indices: [N] })`
 ```
 Acknowledge whatever blocked it (e.g. `server({ action: 'acknowledgePort' })`, `server({ action: 'acknowledgeStartup' })`), then use that `replay` hint to resume the exact same call - do not reconstruct the arguments by hand, and do not try to reuse a `continuationToken` for this case (that mechanism is for fixing bad input, not for retrying a call that was already valid).
+
+Note this is only one use of `repeat`. The footer hint is on every response, not just blocked ones, and `indices` takes a list - see "Re-running work you already did" above.
 
 ## Restarting cdp-tools
 

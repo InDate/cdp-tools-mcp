@@ -42,11 +42,23 @@ Every tool response footer shows its history index (`**Repeat:**` hint).
 `replay({ action: 'history' })` lists them. This is usually faster than
 recording when you've just done the steps yourself.
 
-**Re-run single calls without making a sequence** - `repeat`
+**Re-run calls you already made, without building a sequence** - `repeat`
 
 ```
-replay({ action: 'repeat', indices: [12] })
+replay({ action: 'repeat', indices: [12] })                // one call
+replay({ action: 'repeat', indices: [58, 59, 60, 61] })    // a whole stretch, in order
 ```
+
+`indices` takes a list, so this replays a run of work in one call - and that is
+usually the point. Whenever you are about to redo something you already did
+(relaunch the browser, log in again, retype a form, get back to the screen
+where the bug shows), repeat those indices instead of re-issuing the calls by
+hand: it is faster, and retyped arguments drift from what actually ran.
+
+Every tool response carries its own index in the footer, so the numbers are
+already in front of you. `replay({ action: 'history' })` lists them when they
+have scrolled away. If the stretch turns out to be worth keeping, hand the same
+indices to `create`.
 
 ## Managing them
 
@@ -70,6 +82,23 @@ steps already changed state.
 replay({ action: 'run', sequenceId: 'seq-login', connectionReason: 'my-app' })
 ```
 
+**`run` does not block** (changed in 0.7): it returns a run id immediately and
+executes in the background.
+
+```
+replay({ action: 'status', runId: 'run-3-...' })   // progress; full result once settled
+replay({ action: 'cancel', runId: 'run-3-...' })   // stop it (takes effect at the
+                                                   // next step boundary)
+```
+
+Several runs can execute concurrently - even of the same sequence - and the
+run id is what tells them apart. Settled runs and their results are kept in
+memory for 30 minutes (max 50); after that, or after a server restart (which
+kills in-flight runs), the id returns `REPLAY_RUN_NOT_FOUND`. Nested sequences
+(`conditional` flows, `replay run` steps) are part of their parent run, never
+separate runs. Pass `wait: true` to block until completion and get the full
+result in one call (the pre-0.7 behaviour).
+
 Useful `run` parameters:
 
 - `startUrl` - override the stored start URL for this run only (e.g. a
@@ -88,7 +117,10 @@ Useful `run` parameters:
   so a sequence can read from a long-lived instance you launched yourself
   without it being killed underneath you
 
-Step through interactively with `step`, `finish`, `insert`, `status`, `cancel`.
+Step through interactively with `step`, `finish`, `insert`, `status`, `cancel`
+(`run` with `stepTo: N` pauses after step N; the run's status becomes `paused`
+and you drive it from there). A bare `cancel` prefers the paused session;
+use `runId` to address a specific background run.
 
 ## Two different "variables" - don't confuse them
 

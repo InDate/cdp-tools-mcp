@@ -1771,6 +1771,9 @@ async function runCliSequence(argv: string[]): Promise<void> {
 
     const runResult = await executeToolCall('replay', {
       action: 'run',
+      // Blocking: the CLI's exit code comes from the run result, and the
+      // process exits right after - a background run would die mid-flight.
+      wait: true,
       name: sequenceName,
       connectionReason,
       killChromeOnFinish: !keepChrome,

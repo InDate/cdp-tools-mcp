@@ -57,6 +57,8 @@ const text = (res: any) => res.content[0].text as string;
 const run = (replay: any, extra: Record<string, any> = {}) =>
   replay.handler({
     action: 'run',
+    // These tests assert on the run's final text, so they use the blocking mode.
+    wait: true,
     sequenceId: 'seq-kill',
     connectionReason: 'run-device',
     killChromeOnFinish: true,

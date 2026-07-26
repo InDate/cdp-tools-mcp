@@ -423,6 +423,9 @@ export function createIssuesTools(
 
               await executeToolCall('replay', {
                 action: 'run',
+                // Blocking: workOn's response reports the replay's outcome, so
+                // the run must complete (or fail) before we return.
+                wait: true,
                 name: sequenceName,
                 connectionReason: connectionRef,
                 showReplayOverlay: true,
@@ -688,6 +691,8 @@ export function createIssuesTools(
 
               replayResult = await executeToolCall('replay', {
                 action: 'run',
+                // Blocking: the failure check below parses the run's result.
+                wait: true,
                 name: sequenceName,
                 connectionReason: connectionRef,
                 showReplayOverlay: true,

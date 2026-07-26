@@ -161,10 +161,19 @@ export interface WaitToolMeta {
  * to tell those apart from a clean run instead of text-scraping the reply).
  */
 export interface ReplayRunMeta {
-  success: boolean;
+  /** Not set on a background-start response (runId + background instead). */
+  success?: boolean;
   totalSteps: number;
-  failedSteps: number;
-  paused: boolean;
+  failedSteps?: number;
+  paused?: boolean;
+  /** Id of the registered background run (background start / status replies). */
+  runId?: string;
+  /** True on the immediate response of a background `run` start. */
+  background?: boolean;
+  /** Registry status of the run (status action replies). */
+  runStatus?: string;
+  /** 1-based step currently executing (status action replies). */
+  currentStep?: number;
 }
 
 /**

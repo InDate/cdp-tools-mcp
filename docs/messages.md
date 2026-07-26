@@ -1742,6 +1742,85 @@ Completed {{completedSteps}}/{{totalSteps}} steps before abort.
 
 ---
 
+## REPLAY_RUN_STARTED
+
+**Type:** success
+**Summary:** Run started: {{name}}
+
+**Run started in the background:** {{name}} ({{totalSteps}} steps, connection: {{connectionReason}})
+
+Run id: `{{runId}}`
+
+- Progress / results: `replay({ action: 'status', runId: '{{runId}}' })`
+- Stop it: `replay({ action: 'cancel', runId: '{{runId}}' })`
+
+Results are kept in memory for 30 minutes after the run settles. Pass `wait: true` to `run` to block until completion instead.
+
+---
+
+## REPLAY_RUN_NOT_FOUND
+
+**Type:** error
+**Code:** REPLAY_RUN_NOT_FOUND
+
+**ERROR:** No run with id `{{runId}}`
+
+Runs are held in memory only: results expire 30 minutes after a run settles, and a server restart (including the hot-restart on rebuild) kills in-flight runs and forgets every id.
+
+**Suggestions:**
+- `replay({ action: 'status' })` lists the runs this server still knows about
+- Start the sequence again with `replay({ action: 'run', ... })`
+
+---
+
+## REPLAY_RUN_CANCELLING
+
+**Type:** success
+**Summary:** Cancelling run {{runId}}
+
+**Cancel requested:** {{name}} (`{{runId}}`)
+
+The run stops at the next step boundary - a tool call already in flight cannot be interrupted and may still take effect. Check `replay({ action: 'status', runId: '{{runId}}' })` until the status is `cancelled`.
+
+---
+
+## REPLAY_RUN_CANCELLED
+
+**Type:** success
+**Summary:** Run cancelled
+
+**Cancelled:** {{name}} (`{{runId}}`)
+
+The paused session for this run was dropped.
+
+---
+
+## REPLAY_RUN_ALREADY_FINISHED
+
+**Type:** info
+**Summary:** Run already {{status}}
+
+**Nothing to cancel:** {{name}} (`{{runId}}`) is already {{status}}.
+
+Its result is still available via `replay({ action: 'status', runId: '{{runId}}' })`.
+
+---
+
+## REPLAY_RUN_AMBIGUOUS
+
+**Type:** error
+**Code:** REPLAY_RUN_AMBIGUOUS
+
+**ERROR:** {{count}} runs are executing - specify which one to cancel
+
+Runs: {{runList}}
+
+**Suggestions:**
+- `replay({ action: 'cancel', runId: '...' })` targets one run
+- `replay({ action: 'status' })` shows all runs
+
+---
+
 ## REPLAY_HISTORY
 
 **Type:** success

@@ -1339,6 +1339,12 @@ export interface ExecuteStepsOptions {
   totalTimeout?: number;
   overrideConnectionReason?: string;
   abortSignal?: AbortSignal;
+  /**
+   * Called as each TOP-LEVEL step starts executing, so a background run can
+   * report live progress. Deliberately not propagated into nested sequences
+   * (conditional flows): substeps report through their parent step only.
+   */
+  onProgress?: (ev: { step: number; totalSteps: number; tool: string }) => void;
 }
 
 /**
@@ -1355,7 +1361,8 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
     stepTimeout = 30000,
     totalTimeout = 300000,
     overrideConnectionReason,
-    abortSignal
+    abortSignal,
+    onProgress
   } = options;
 
   const { executeToolCall, commandRecorder, connectionReason, logPrefix = 'executor' } = ctx;
@@ -1460,6 +1467,8 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
       if (wasAborted) continue;
     }
 
+    onProgress?.({ step: i + 1, totalSteps: commands.length, tool: cmd.tool });
+
     try {
       // Log comment if present
       if (cmd.comment) {
@@ -1482,6 +1491,16 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
           params.text = variables[varName];
           debugLog(logPrefix, `Substituted ${varName}: "${params.text}"`);
         }
+      }
+
+      // A nested `replay run` STEP must block: `run` is background-by-default
+      // for direct callers, but a sequence step that starts another sequence
+      // needs its result (the parent's success depends on it). Without this a
+      // nested run would register as its own top-level run and the step would
+      // "succeed" instantly, fire-and-forget. An explicit wait:false on the
+      // step is honoured for callers who genuinely want that.
+      if (cmd.tool === 'replay' && params.action === 'run' && params.wait === undefined) {
+        params.wait = true;
       }
 
       // Inject the run-level connectionReason for tools that accept one, unless the
