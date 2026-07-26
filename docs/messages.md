@@ -1796,6 +1796,17 @@ Sequence: {{sequenceName}}
 
 ---
 
+## REPLAY_STEP_TIMEOUT
+
+**Type:** error
+**Summary:** Step timed out
+
+Step {{step}} ({{tool}}) timed out after {{timeoutMs}}ms ({{limitSource}} limit)
+
+**Note:** The underlying tool call cannot be cancelled and may still complete in the background; the run stops at this step.
+
+---
+
 ## REPLAY_PAUSED
 
 **Type:** info

@@ -77,7 +77,11 @@ Useful `run` parameters:
 - `baseUrl` - retarget every absolute URL at another origin, keeping paths and
   queries. Point a staging-recorded sequence at local
 - `startFrom` - begin at step N (1-indexed)
-- `stepTimeout` / `totalTimeout`
+- `stepTimeout` / `totalTimeout` - each step is bounded by
+  `min(stepTimeout, remaining totalTimeout)` (defaults 30s / 5min); a step that
+  exceeds it fails the run at that step. `wait` steps are exempt from
+  `stepTimeout` (they have their own `timeoutMs`) but still capped by
+  `totalTimeout`
 - `variables` - substitute recorded typed text (see below)
 - `killChromeOnFinish` - tears down the **run-level** browser only. Browsers a
   step reached via its own `connectionReason` are deliberately left running,

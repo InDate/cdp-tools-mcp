@@ -9,6 +9,7 @@ import { checkUrlPort } from '../utils/port-check.js';
 import { configManager, ClickValidationConfig } from '../config.js';
 import type { ClickActionMeta, ConsoleToolMeta, NetworkToolMeta } from '../tool-response.js';
 import { interpolateParams } from './interpolation.js';
+import { getMessage } from '../messages.js';
 
 // Re-export replay cursor functions
 export { injectReplayCursor, showClickEffect, showKeyPress, removeReplayCursor } from '../replay-cursor.js';
@@ -1368,7 +1369,11 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
     await resumeIfPaused(ctx);
   }
 
-  // Timeout helper
+  // Timeout helper. On timeout the losing tool call CANNOT be cancelled
+  // (executeToolCall's handlers take no AbortSignal), so it may still settle in
+  // the background - swallow its eventual rejection so it can't surface as an
+  // unhandled rejection after the run has already reported the timeout. The run
+  // stops at the timed-out step, so no later step races against the orphan.
   const executeWithTimeout = async <T>(
     promise: Promise<T>,
     timeoutMs: number,
@@ -1376,7 +1381,10 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
   ): Promise<T> => {
     let timeoutId: NodeJS.Timeout;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      timeoutId = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+      timeoutId = setTimeout(() => {
+        promise.catch(() => {});
+        reject(new Error(timeoutMessage));
+      }, timeoutMs);
     });
     try {
       return await Promise.race([promise, timeoutPromise]);
@@ -1430,9 +1438,6 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
       });
       break;
     }
-
-    const remainingTotal = totalTimeout - elapsed;
-    const effectiveStepTimeout = Math.min(stepTimeout, remainingTotal);
 
     // Wait for delay if specified (for recorded interactions)
     if (cmd.delay && cmd.delay > 0) {
@@ -1604,8 +1609,36 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
         preClickState = await capturePreClickState(stepCtx);
       }
 
-      // Execute with retry
-      const execResult = await executeCommandWithRetry(executeToolCall, cmd.tool, params, logPrefix);
+      // Execute with retry, raced against the per-step timeout so a hung tool
+      // call fails its own step instead of hanging the whole run.
+      //
+      // The bound is min(stepTimeout, remaining totalTimeout), computed fresh
+      // here (after any cmd.delay) so the delay doesn't inflate the budget.
+      //
+      // `wait` steps are exempt from stepTimeout: wait carries its own
+      // documented timeoutMs bound (default 15000) and fails itself on expiry;
+      // racing stepTimeout against it would silently override that parameter
+      // for waits longer than 30s. They are still capped by remaining
+      // totalTimeout as a backstop.
+      //
+      // Breakpoint pauses are NOT affected: input tools detect a pause and
+      // return immediately (pausedAtBreakpoint / pausedDuringClick), so a
+      // legitimate pause never blocks inside the tool call - it is handled by
+      // checkIfPaused after the step. replay({action:'step'}) pauses between
+      // steps, outside this race.
+      const remainingTotal = Math.max(1, totalTimeout - (Date.now() - startTime));
+      const boundedByTotal = cmd.tool === 'wait' || remainingTotal < stepTimeout;
+      const stepBound = cmd.tool === 'wait' ? remainingTotal : Math.min(stepTimeout, remainingTotal);
+      const execResult = await executeWithTimeout(
+        executeCommandWithRetry(executeToolCall, cmd.tool, params, logPrefix),
+        stepBound,
+        getMessage('REPLAY_STEP_TIMEOUT', {
+          step: i + 1,
+          tool: cmd.tool,
+          timeoutMs: stepBound,
+          limitSource: boundedByTotal ? 'remaining totalTimeout' : 'stepTimeout',
+        })
+      );
 
       if (!execResult.success) {
         const diagnostics = await gatherDiagnostics(stepCtx);

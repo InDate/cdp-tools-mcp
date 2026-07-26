@@ -388,6 +388,21 @@ replay({
 })
 ```
 
+Each step's tool call is bounded by `min(stepTimeout, remaining totalTimeout)`.
+A step that exceeds its bound fails the run at that step, like any other step
+failure - the error names the step, the tool, and the limit that fired. The
+underlying tool call cannot be cancelled and may still complete in the
+background, but the run stops immediately.
+
+Exceptions:
+
+- `wait` steps are exempt from `stepTimeout` - a wait carries its own
+  `timeoutMs` bound (default 15000) and fails itself on expiry. It is still
+  capped by the remaining `totalTimeout`.
+- Breakpoint pauses are unaffected: a step that hits a breakpoint returns
+  immediately with pause info, so an intentional pause never trips the
+  step timeout.
+
 ### Start From a Specific Step
 
 ```javascript

@@ -237,7 +237,7 @@ const replaySchema = z.object({
   connectionReason: z.string().optional(),
   record: z.boolean().optional(),
   variables: z.record(z.string()).optional(),
-  stepTimeout: z.number().optional().describe('Per-step ms'),
+  stepTimeout: z.number().optional().describe('Per-step ms (default 30000). A step exceeding min(stepTimeout, remaining totalTimeout) fails the run at that step. wait steps are exempt (own timeoutMs) but still capped by totalTimeout'),
   totalTimeout: z.number().optional().describe('Total ms'),
   startFrom: z.number().optional().describe('Start step (1-indexed)'),
   stepTo: z.number().optional().describe('Pause after step'),
