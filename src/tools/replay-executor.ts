@@ -51,6 +51,14 @@ export interface ExecutionContext {
   variableStore?: Record<string, any>;
   /** {{timestamp}} value for this run, computed once and cached (not per-step). */
   runTimestamp?: number;
+  /**
+   * Maps a per-step `connectionReason` as RECORDED onto a reference that exists
+   * in THIS session (`{ 'duo-member-two': 'my-second-browser' }`). Connection
+   * references are per-session, so a multi-connection sequence recorded elsewhere
+   * needs its references rebound before it can run here. Both sides are expected
+   * pre-sanitized (see sanitizeConnectionMap). Inherited by nested sequences.
+   */
+  connectionMap?: Record<string, string>;
 }
 
 export interface StepResult {
@@ -198,6 +206,24 @@ export function commandNeedsBrowserConnection(cmd: { tool: string; params?: Reco
     return p.selector !== undefined || p.selectorGone !== undefined;
   }
   return TOOLS_NEEDING_CONNECTION.includes(cmd.tool);
+}
+
+/**
+ * Whether a bare step will have the run-level connection injected into it -
+ * i.e. whether leaving it bare is AMBIGUOUS about which browser it belongs to.
+ *
+ * Deliberately wider than `commandNeedsBrowserConnection`, which answers a
+ * different question (does this drag a Chrome launch in?). `inspect`,
+ * `execution`, `storage` and friends take an optional connectionReason, so a
+ * recording made without one captures nothing about which browser it ran
+ * against - and on replay it silently lands wherever the run-level connection
+ * points. Measuring ambiguity with the narrower predicate missed exactly those
+ * tools, which are the ones people actually leave bare.
+ */
+export function commandTakesInjectedConnection(cmd: { tool: string; params?: Record<string, any> }): boolean {
+  // wait({ ms }) is a plain sleep - no connection is injected, nothing ambiguous.
+  if (cmd.tool === 'wait') return (cmd.params || {}).ms === undefined;
+  return TOOLS_ACCEPTING_CONNECTION.includes(cmd.tool);
 }
 
 // =============================================================================
@@ -659,6 +685,95 @@ export function extractConnectionFromSequence(
   return undefined;
 }
 
+export interface RecordedConnectionAnalysis {
+  /** Distinct per-step connection references, in first-seen order. */
+  references: string[];
+  /** The one reference every connection-bearing step shares, if there is one. */
+  uniform?: string;
+  /**
+   * True when some steps name a connection and other BROWSER steps don't - the
+   * recording was driven partly through the active connection, so we cannot tell
+   * which browser the bare steps belonged to. Such a sequence is not hoisted
+   * (that could pin every step to the one named reference) and `create` says so.
+   */
+  mixed: boolean;
+  /** More than one distinct per-step reference: a genuinely multi-connection sequence. */
+  multiConnection: boolean;
+}
+
+/**
+ * What connections a recorded/stored sequence's steps name.
+ */
+export function analyzeRecordedStepConnections(commands: RecordedCommand[]): RecordedConnectionAnalysis {
+  const references: string[] = [];
+  let bareBrowserSteps = 0;
+
+  for (const cmd of commands) {
+    const raw = cmd.params?.connectionReason;
+    if (typeof raw === 'string' && raw.trim()) {
+      const ref = sanitizeReference(raw);
+      if (!references.includes(ref)) references.push(ref);
+    } else if (commandTakesInjectedConnection(cmd)) {
+      bareBrowserSteps++;
+    }
+  }
+
+  return {
+    references,
+    ...(references.length === 1 ? { uniform: references[0] } : {}),
+    mixed: references.length > 0 && bareBrowserSteps > 0,
+    multiConnection: references.length > 1,
+  };
+}
+
+/**
+ * Hoist a uniform per-step connection back off the steps so the sequence stays
+ * portable: `replay({ action: 'run', connectionReason: 'other' })` can then
+ * retarget the whole thing. Steps keep their own connection only where the
+ * sequence genuinely spans connections (or where it is ambiguous - see
+ * `mixed`), which is the case a run-level connection cannot express.
+ *
+ * Returns a new command array; the input is never mutated.
+ */
+export function normalizeStepConnections(commands: RecordedCommand[]): {
+  commands: RecordedCommand[];
+  /** The reference that was hoisted off every step, if any. */
+  hoisted?: string;
+  analysis: RecordedConnectionAnalysis;
+} {
+  const analysis = analyzeRecordedStepConnections(commands);
+
+  if (analysis.uniform === undefined || analysis.mixed) {
+    return { commands, analysis };
+  }
+
+  const hoisted = analysis.uniform;
+  const stripped = commands.map(cmd => {
+    if (cmd.params?.connectionReason === undefined) return cmd;
+    const { connectionReason, ...rest } = cmd.params;
+    return { ...cmd, params: rest };
+  });
+
+  return { commands: stripped, hoisted, analysis };
+}
+
+/**
+ * Normalize a recorded-reference -> session-reference map (both sides sanitized,
+ * so `{ 'Duo Member Two': 'My Second Browser' }` works the same as the
+ * hyphenated form). Returns undefined for an empty/absent map.
+ */
+export function sanitizeConnectionMap(
+  map?: Record<string, string>
+): Record<string, string> | undefined {
+  if (!map) return undefined;
+  const out: Record<string, string> = {};
+  for (const [from, to] of Object.entries(map)) {
+    if (typeof to !== 'string' || !to.trim()) continue;
+    out[sanitizeReference(from)] = sanitizeReference(to);
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 /**
  * Check if sequence needs a connection
  */
@@ -671,6 +786,58 @@ export function sequenceNeedsConnection(commands: RecordedCommand[]): boolean {
 // =============================================================================
 // Connection Management
 // =============================================================================
+
+/**
+ * The connection references live in this session, as `listConnections` reports
+ * them. Returns null when that cannot be determined (probe failed, or a stubbed
+ * executeToolCall returned nothing parseable) - callers must treat null as
+ * "unknown" and NOT as "empty", or every per-step connection would be rejected.
+ */
+async function probeLiveConnectionReferences(
+  executeToolCall: ExecuteToolCall
+): Promise<Set<string> | null> {
+  try {
+    const result = await executeToolCall('listConnections', {});
+    const text = result?.content?.[0]?.text || '';
+    const refs = new Set<string>();
+    for (const m of text.matchAll(/"reference":\s*"([^"]+)"/g)) {
+      refs.add(sanitizeReference(m[1]));
+    }
+    return refs.size > 0 ? refs : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve a step's RECORDED connectionReason onto this session, and refuse to
+ * proceed if it doesn't exist here (bug-018).
+ *
+ * Falling back to the run-level connection with a warning is exactly the failure
+ * this exists to prevent: a sequence whose purpose is proving something crosses
+ * a browser boundary would run entirely in one browser and still pass.
+ */
+export function formatMissingStepConnection(opts: {
+  step: number;
+  tool: string;
+  recorded: string;
+  resolved: string;
+  mapped: boolean;
+  runConnection?: string;
+  live: string[];
+}): string {
+  const { step, tool, recorded, resolved, mapped, runConnection, live } = opts;
+  const via = mapped ? ` (mapped from recorded "${recorded}")` : '';
+  return [
+    `Step ${step} (${tool}) needs connection "${resolved}"${via}, which does not exist in this session.`,
+    `Active connections: ${live.length ? live.join(', ') : 'none'}.`,
+    `This sequence spans more than one connection, so the step is NOT run against` +
+      ` the run-level connection${runConnection ? ` "${runConnection}"` : ''} - that would replay a` +
+      ` multi-browser sequence in a single browser and report success.`,
+    `Either create it (launchChrome({ reference: "${resolved}" })) or rebind it:` +
+      ` replay({ action: 'run', ..., connections: { "${recorded}": "<a reference from this session>" } }).`,
+  ].join(' ');
+}
 
 /**
  * Check if debugger is paused and return breakpoint info if so
@@ -1382,11 +1549,36 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
     onProgress
   } = options;
 
-  const { executeToolCall, commandRecorder, connectionReason, logPrefix = 'executor' } = ctx;
+  const { executeToolCall, commandRecorder, connectionReason, connectionMap, logPrefix = 'executor' } = ctx;
   const commands = sequence.commands;
   const targetEnd = endStep ?? commands.length;
   const results: StepResult[] = [];
   const startTime = Date.now();
+
+  // A sequence whose steps name more than one connection can only be replayed
+  // faithfully against those connections. `overrideConnectionReason` (the
+  // run-level connectionReason) must therefore NOT be stamped onto its
+  // launchChrome steps - that would point every launch at one reference and
+  // collapse the very interleaving the sequence exists to reproduce (bug-018).
+  const recordedConnections = analyzeRecordedStepConnections(commands);
+
+  /** Recorded reference -> this session's reference. */
+  const mapConnection = (ref: string): string =>
+    connectionMap?.[sanitizeReference(ref)] ?? sanitizeReference(ref);
+
+  // Live-connection references, probed lazily and re-probed on a miss (a step
+  // earlier in the sequence may have launched the browser a later step needs).
+  let liveConnections: Set<string> | null = null;
+  const stepConnectionExists = async (ref: string): Promise<{ known: boolean; live: string[] }> => {
+    if (!liveConnections?.has(ref)) {
+      liveConnections = await probeLiveConnectionReferences(executeToolCall);
+    }
+    // null = could not determine. Treat as "unknown", never as "absent": the
+    // tool call itself still fails loudly (CONNECTION_NOT_FOUND) if the
+    // reference really is missing, and it never silently falls back.
+    if (liveConnections === null) return { known: true, live: [] };
+    return { known: liveConnections.has(ref), live: [...liveConnections] };
+  };
 
   // {{timestamp}} must be stable across every step of a run (including a
   // later step/finish call), not recomputed per-step - cache once on ctx.
@@ -1504,6 +1696,51 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
         params.wait = true;
       }
 
+      // A per-step connectionReason is a reference from the RECORDING session, so
+      // rebind it onto this one before anything uses it, then require that it
+      // actually exists here. There is deliberately no fallback to the run-level
+      // connection: that is precisely how a two-browser sequence used to replay
+      // green in one browser (bug-018).
+      if (typeof params.connectionReason === 'string' && params.connectionReason.trim()) {
+        const recorded = sanitizeReference(params.connectionReason);
+        const resolved = mapConnection(recorded);
+        params.connectionReason = resolved;
+
+        if (resolved !== connectionReason && recordedConnections.multiConnection) {
+          const { known, live } = await stepConnectionExists(resolved);
+          if (!known) {
+            results.push({
+              step: i + 1,
+              tool: cmd.tool,
+              success: false,
+              error: formatMissingStepConnection({
+                step: i + 1,
+                tool: cmd.tool,
+                recorded,
+                resolved,
+                mapped: resolved !== recorded,
+                runConnection: connectionReason,
+                live,
+              }),
+            });
+            break;
+          }
+        }
+      }
+
+      // launchChrome/connectDebugger steps CREATE the reference, so a mapping has
+      // to rename the launch too or the sequence would open the recorded name and
+      // then drive a differently-named one.
+      let launchRenamedByMap = false;
+      if ((cmd.tool === 'launchChrome' || cmd.tool === 'connectDebugger') &&
+          typeof params.reference === 'string' && connectionMap) {
+        const mappedRef = connectionMap[sanitizeReference(params.reference)];
+        if (mappedRef) {
+          params.reference = mappedRef;
+          launchRenamedByMap = true;
+        }
+      }
+
       // Inject the run-level connectionReason for tools that accept one, unless the
       // step names its own (per-step connection wins - multi-device sequences).
       if (connectionReason && TOOLS_ACCEPTING_CONNECTION.includes(cmd.tool) && !params.connectionReason) {
@@ -1533,9 +1770,20 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
             variableStore,
           };
 
-      // Override launchChrome reference if custom connectionReason provided
+      // Override launchChrome reference if custom connectionReason provided.
+      // Skipped for multi-connection sequences: stamping one reference onto every
+      // launch would collapse them into a single browser (see recordedConnections).
+      // An explicit `connections` entry for this launch is the more specific
+      // instruction and must win - otherwise the map renames the launch and this
+      // silently renames it back, with the two writers disagreeing and no signal.
       if (cmd.tool === 'launchChrome' && overrideConnectionReason) {
-        params.reference = overrideConnectionReason;
+        if (recordedConnections.multiConnection) {
+          debugLog(logPrefix, `Not overriding launchChrome reference "${params.reference}" with "${overrideConnectionReason}": sequence spans ${recordedConnections.references.length} connections`);
+        } else if (launchRenamedByMap) {
+          debugLog(logPrefix, `Not overriding launchChrome reference "${params.reference}" with "${overrideConnectionReason}": connections mapping already rebound this launch`);
+        } else {
+          params.reference = overrideConnectionReason;
+        }
       }
 
       // Handle stale callFrameId for getVariables
@@ -1851,7 +2099,12 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
 
       if (isNavigationAction && i + 1 < commands.length) {
         const nextCmd = commands[i + 1];
-        const nextConnection: string | undefined = nextCmd.params.connectionReason || connectionReason;
+        // Rebind the same way the step itself will be, or this pre-emptive wait
+        // polls a recorded reference that may not exist in this session - which
+        // costs the step its whole settle budget before being swallowed.
+        const nextConnection: string | undefined = nextCmd.params.connectionReason
+          ? mapConnection(nextCmd.params.connectionReason)
+          : connectionReason;
         if (nextCmd.tool === 'input' && nextCmd.params.selector && nextConnection) {
           const nextCtx: ExecutionContext = nextConnection === connectionReason
             ? ctx
@@ -1919,6 +2172,8 @@ export async function executeSequenceWithPause(
         historyIndexAtPause: commandRecorder.getCurrentHistoryIndex(),
         capturedVariables: ctx.variableStore,
         runTimestamp: ctx.runTimestamp,
+        // step/finish must resolve per-step connections the way this run did
+        ...(ctx.connectionMap && { connectionMap: ctx.connectionMap }),
       };
 
       result.pausedAtStep = lastResult.step;

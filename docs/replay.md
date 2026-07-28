@@ -668,9 +668,121 @@ Details:
 - Only the browser-only tools (the first group above) make a sequence
   "need a connection" and trigger Chrome auto-launch. A Node-only debugging
   sequence won't spuriously launch Chrome.
-- `connectionReason` is stripped from commands recorded into history, so
-  history-built sequences are portable; per-step connections are something you
-  add deliberately when hand-authoring or editing a sequence.
+### Recording a multi-connection sequence
+
+Recording **preserves** `connectionReason` (it used to be stripped, which meant
+a recorded two-browser sequence silently replayed in one). Pass it explicitly on
+**every** call while you drive the browsers, including the one that is already
+active, then `create` decides what to do with it:
+
+| Recording | `create` result |
+|---|---|
+| All steps on one connection | Hoisted off the steps, so the sequence stays portable and `run({ connectionReason })` still retargets it |
+| Genuinely spans connections | Kept per step |
+| **Mixed** — some steps named, others driven implicitly | Kept as-is, with a warning |
+
+The mixed case can't be resolved automatically: nothing knows which browser the
+bare steps belonged to, so hoisting could pin them to the wrong one. `create`
+says so in its output; re-record naming every step rather than shipping it.
+
+"Bare" means any step that would have the run-level connection injected — which
+includes the tools whose `connectionReason` is *optional* (`inspect`,
+`execution`, `storage`, `network`, `breakpoint`, `request`, `getSourceCode`),
+not just the browser-only ones. Those are the ones people actually leave off.
+`wait({ ms })` is a plain sleep and doesn't count; every other `wait` form does.
+
+A sequence can be both multi-connection **and** mixed, and that combination is
+the dangerous one: the bare steps land in a different browser depending on the
+run-level `connectionReason`, and the run reports success either way. `create`
+warns about both.
+
+### Inserting into an existing sequence
+
+`insert` splices history commands (which now carry their connection) into a
+sequence whose own steps had theirs hoisted off. To compare like with like it
+first re-stamps the hoisted connection — recorded on the sequence as
+`recordedConnection` — onto its bare steps, then re-normalizes the merged array:
+
+| Inserted steps came from | Result |
+|---|---|
+| The same browser as the sequence | Hoisted again — still portable |
+| A different browser | Every step made explicit, so the sequence is a real multi-connection one and the run-time existence check applies |
+
+Without that re-stamp the merge always looked "mixed" (one named reference plus
+the sequence's own bare steps), the hoist was skipped, and an ordinary
+same-browser insert silently left the sequence half-pinned to this session — so
+a later `run({ connectionReason })` split it across two browsers and passed.
+
+### Rebinding references at run time
+
+Recorded references are per-session, so a sequence recorded elsewhere needs its
+names mapped onto this session's:
+
+```javascript
+replay({
+  action: 'run',
+  sequenceId: 'duo-stock-propagation',
+  connections: { 'duo-member-two': 'my-second-browser' },
+})
+```
+
+Recorded name on the left, a reference from this session on the right. Both
+sides are sanitized, so spaced forms work. A key matching nothing in the
+sequence is rejected before anything runs, listing the references the sequence
+actually uses — a typo fails loudly instead of being ignored.
+
+Mapping also renames the `reference` on `launchChrome` / `connectDebugger`
+steps; otherwise a mapped sequence would launch the recorded name and then drive
+a different one. Where a mapping renames a launch, it wins over the run-level
+`connectionReason`, which would otherwise rename it straight back.
+
+**Two recorded references cannot be mapped onto one browser.** That would run
+the whole multi-browser sequence in a single browser and report success — the
+original bug, re-entered through the API that exists to prevent it — so it is
+rejected before anything runs.
+
+The run-level connection is mapped too when it was *derived* from the sequence
+(e.g. from a `launchChrome` step) rather than passed explicitly; otherwise it
+would point at a reference that doesn't exist here and the `startUrl` navigation
+and cursor injection would silently no-op.
+
+`issues({ action: 'workOn' | 'resolve' })` accepts `connections` as well, so a
+multi-browser repro sequence attached to an issue can be replayed in a fresh
+session.
+
+### repeat / runFromLog
+
+History retains the connection each command was recorded with, so both replay
+each command against its own connection by default. An explicit
+`connectionReason`:
+
+- **retargets** a batch that used a single connection (what the parameter has
+  always meant), and
+- is **refused** for a batch spanning several connections, since no single value
+  is honest there.
+
+It is deliberately not silently ignored — for a while it was, which broke a
+documented parameter with no signal at all.
+
+### Exported test code
+
+`outputFormat: 'playwright' | 'puppeteer'` gives each recorded connection its own
+page (`page`, `pageDuoMemberTwo`, …), with a header naming the browsers. A
+single-connection sequence generates exactly what it always did. Emitting every
+step against one `page` would relocate the same silent collapse into the
+exported test.
+
+### Two deliberate non-behaviours
+
+- **A run-level `connectionReason` does not override a step's own.** The step
+  wins.
+- **A per-step reference that doesn't exist fails the step.** It never falls
+  back to the run-level connection.
+
+The second is the whole point. Falling back is what let a two-browser sequence
+replay in one browser and report success — the "member" steps ran in the owner's
+browser, the owner saw their own optimistic update, and a cross-user propagation
+assertion went green having never involved a second user.
 
 ## Conditional Steps
 

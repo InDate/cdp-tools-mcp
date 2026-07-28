@@ -5,13 +5,13 @@
 import { z } from 'zod';
 import { promises as fs } from 'fs';
 import { join } from 'path';
-import type { CommandRecorder, ActiveSequenceState, CommandSequence } from '../command-recorder.js';
+import type { CommandRecorder, ActiveSequenceState, CommandSequence, RecordedCommand } from '../command-recorder.js';
 import type { ExecuteToolCall } from '../types.js';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import { showReplayOverlay } from '../interaction-recorder.js';
 import { getIssue } from '../issue-tracker.js';
-import { deriveConnectionReference } from '../reference-validator.js';
+import { deriveConnectionReference, sanitizeReference } from '../reference-validator.js';
 import { runRegistry, type RunRecord } from './replay-run-registry.js';
 
 import {
@@ -32,6 +32,10 @@ import {
   removeReplayCursor,
   autoLaunchChrome,
   commandNeedsBrowserConnection,
+  analyzeRecordedStepConnections,
+  commandTakesInjectedConnection,
+  normalizeStepConnections,
+  sanitizeConnectionMap,
   type ExecutionContext,
   type LoadSequenceResult,
 } from './replay-executor.js';
@@ -239,6 +243,7 @@ const replaySchema = z.object({
   filename: z.string().optional(),
   intoHistory: z.boolean().optional(),
   connectionReason: z.string().optional(),
+  connections: z.record(z.string()).optional().describe("run: rebind a multi-connection sequence's recorded references onto this session - { \"<recorded reference>\": \"<reference here>\" }. Only needed when steps carry their own connectionReason (replay({action:'get', outputFormat:'commands'}) shows which)"),
   record: z.boolean().optional(),
   variables: z.record(z.string()).optional(),
   stepTimeout: z.number().optional().describe('Per-step ms (default 30000). A step exceeding min(stepTimeout, remaining totalTimeout) fails the run at that step. wait steps are exempt (own timeoutMs) but still capped by totalTimeout'),
@@ -284,6 +289,44 @@ async function handleHistory(args: ReplayArgs, recorder: CommandRecorder) {
   return { content: [{ type: 'text', text: formatHistory(history, stats.historyCount) }] };
 }
 
+/**
+ * Decide whether an explicit batch-level `connectionReason` may replace the
+ * connections the commands were recorded against (`repeat`, `runFromLog`).
+ *
+ * Yes for a single-connection batch - that is what the parameter has always
+ * meant, and silently ignoring it (which is what "never overwrite a recorded
+ * connection" amounted to once history started retaining them) breaks a
+ * documented knob with no signal. No for a batch spanning several browsers:
+ * there is no honest single answer, and picking one reproduces bug-018.
+ */
+function resolveBatchOverride(
+  commands: Array<{ tool: string; params: Record<string, any> }>,
+  requested: string | undefined,
+  action: 'repeat' | 'runFromLog'
+): { replaceRecorded: boolean } | { error: any } {
+  if (!requested) return { replaceRecorded: false };
+
+  const refs = new Set(
+    commands
+      .filter(c => typeof c.params.connectionReason === 'string' && c.params.connectionReason.trim())
+      .map(c => sanitizeReference(c.params.connectionReason))
+  );
+
+  if (refs.size > 1) {
+    return {
+      error: createErrorResponse('INVALID_PARAMETER', {
+        parameter: 'connectionReason',
+        value: requested,
+        message: `These commands were recorded against ${refs.size} different connections (${[...refs].join(', ')}), ` +
+          `so a single connectionReason cannot apply to all of them - running them in one browser would report success without ever using the second. ` +
+          `Omit connectionReason to replay each command against the connection it was recorded with, or ${action} the commands for one connection at a time.`
+      })
+    };
+  }
+
+  return { replaceRecorded: true };
+}
+
 async function handleRepeat(
   args: ReplayArgs,
   recorder: CommandRecorder,
@@ -309,9 +352,26 @@ async function handleRepeat(
     commands.push({ tool: cmd.tool, params: cmd.params, index: idx });
   }
 
-  // Determine if we need a connection
-  const needsConnection = commands.some(cmd => commandNeedsBrowserConnection(cmd));
+  // A command replays against the connection it was RECORDED with when it has one
+  // (bug-018) - repeating a batch that spans two browsers used to resolve one
+  // connection for the whole batch and stamp it onto every command, silently
+  // running both browsers' steps in one. Only commands with no recorded
+  // connection need a batch-level one. No `connections` mapping here: repeat
+  // replays from this session's own history, so the recorded references are the
+  // live ones by construction.
+  const needsConnection = commands.some(cmd =>
+    commandNeedsBrowserConnection(cmd) && !cmd.params.connectionReason
+  );
   let connectionReason = args.connectionReason;
+
+  // An explicitly passed connectionReason must still mean "run these against
+  // that connection" - history now retains the recorded one for every browser
+  // command, so honouring only bare commands turned this documented parameter
+  // into a silent no-op. It can only be honoured when the batch is
+  // single-connection; overriding a two-browser batch is the collapse bug-018
+  // is about, so that combination is refused rather than silently picking one.
+  const override = resolveBatchOverride(commands, args.connectionReason, 'repeat');
+  if ('error' in override) return override.error;
 
   // Try to extract connection from commands if not provided
   if (!connectionReason && needsConnection) {
@@ -336,9 +396,12 @@ async function handleRepeat(
 
   for (const cmd of commands) {
     try {
-      // Add connectionReason to params if needed
+      // Fill in a batch-level connection where the command has none, and replace
+      // the recorded one only when the caller explicitly asked to retarget a
+      // single-connection batch (see resolveBatchOverride).
       const params = { ...cmd.params };
-      if (connectionReason && commandNeedsBrowserConnection(cmd)) {
+      if (connectionReason && commandNeedsBrowserConnection(cmd) &&
+          (override.replaceRecorded || !params.connectionReason)) {
         params.connectionReason = connectionReason;
       }
 
@@ -398,9 +461,17 @@ async function handleRunFromLog(
 
   const commands = lineResults as Array<{ line: number; tool: string; params: Record<string, any> }>;
 
-  // Determine if we need a connection
-  const needsConnection = commands.some(cmd => commandNeedsBrowserConnection(cmd));
+  // As in repeat: a logged command keeps the connection it was recorded with, so
+  // only the bare ones need a batch-level connection (bug-018).
+  const needsConnection = commands.some(cmd =>
+    commandNeedsBrowserConnection(cmd) && !cmd.params.connectionReason
+  );
   let connectionReason = args.connectionReason;
+
+  // Same rule as repeat: an explicit connectionReason retargets a
+  // single-connection batch, and is refused for a multi-connection one.
+  const override = resolveBatchOverride(commands, args.connectionReason, 'runFromLog');
+  if ('error' in override) return override.error;
 
   // Try to extract connection from commands if not provided
   if (!connectionReason && needsConnection) {
@@ -425,7 +496,8 @@ async function handleRunFromLog(
   for (const cmd of commands) {
     try {
       const params = { ...cmd.params };
-      if (connectionReason && commandNeedsBrowserConnection(cmd)) {
+      if (connectionReason && commandNeedsBrowserConnection(cmd) &&
+          (override.replaceRecorded || !params.connectionReason)) {
         params.connectionReason = connectionReason;
       }
 
@@ -497,7 +569,75 @@ async function handleCreate(args: ReplayArgs, recorder: CommandRecorder, getKnow
     });
   }
 
-  return { content: [{ type: 'text', text: formatSequenceCreated(sequence) }] };
+  // Recorded steps keep the connection they were driven against (bug-018). Hoist
+  // it back off when the whole sequence shares one, so the sequence stays
+  // portable and a run-level connectionReason still retargets it; keep it
+  // per-step only where the sequence genuinely spans connections.
+  const normalized = normalizeStepConnections(sequence.commands);
+  (sequence as any).commands = normalized.commands;
+  // Remember what was hoisted - `insert` needs it to tell a same-browser insert
+  // from a cross-browser one (see handleInsert).
+  if (normalized.hoisted) (sequence as any).recordedConnection = normalized.hoisted;
+
+  return { content: [{ type: 'text', text: formatSequenceCreated(sequence) + formatConnectionNote(normalized) }] };
+}
+
+/**
+ * Re-stamp the connection that `create` hoisted off the steps, so a merged
+ * command array is fully explicit about which browser each step belongs to.
+ * Without this a sequence's own bare steps read as "ambiguous" the moment
+ * anything connection-bearing is spliced in.
+ */
+function rehydrateStepConnections(sequence: CommandSequence): RecordedCommand[] {
+  const recorded = sequence.recordedConnection;
+  if (!recorded) return sequence.commands;
+  return sequence.commands.map(cmd =>
+    commandTakesInjectedConnection(cmd) && !cmd.params.connectionReason
+      ? { ...cmd, params: { ...cmd.params, connectionReason: recorded } }
+      : cmd
+  );
+}
+
+/**
+ * What `create`/`insert` did with the recorded per-step connections, and what the
+ * user has to do about it on `run`. A multi-connection sequence is only portable
+ * if its references are rebound, and an ambiguous ("mixed") recording is worth
+ * saying out loud rather than guessing at.
+ */
+function formatConnectionNote(normalized: ReturnType<typeof normalizeStepConnections>): string {
+  const { analysis, hoisted } = normalized;
+  const notes: string[] = [];
+
+  if (hoisted) {
+    return `\n\n**Connection:** every step ran against \`${hoisted}\`, so it was hoisted off the steps` +
+      ` - the sequence is portable and \`replay({ action: 'run', connectionReason: '<other>' })\` retargets it.`;
+  }
+
+  if (analysis.multiConnection) {
+    notes.push(`\n\n**Multi-connection sequence:** steps keep their own connections (${analysis.references.map(r => `\`${r}\``).join(', ')}),` +
+      ` so the recorded interleaving is reproduced instead of collapsing into one browser.` +
+      ` A run-level \`connectionReason\` does NOT override them; in another session rebind them with` +
+      ` \`replay({ action: 'run', name: '...', connections: { ${analysis.references.map(r => `"${r}": "<reference here>"`).join(', ')} } })\`.` +
+      ` A reference that doesn't exist at run time fails that step rather than falling back.`);
+  }
+
+  // NOT an else-if. A sequence can be both, and that combination is the most
+  // dangerous one: bare steps in a two-browser sequence take whatever the
+  // run-level connection happens to be, so the same sequence sends them to a
+  // different browser depending on how it is run - silently, and green either
+  // way. Returning early on multiConnection used to make this warning
+  // unreachable in exactly the case that needs it.
+  if (analysis.mixed) {
+    notes.push(`\n\n**${analysis.multiConnection ? 'Some steps name no connection' : 'Mixed connections'}:** ` +
+      `steps naming ${analysis.references.map(r => `\`${r}\``).join(', ')} are pinned, but other browser steps name none` +
+      ` (they ran against whichever connection was active at record time, which is not recorded).` +
+      ` Those bare steps take the run-level connection, so ${analysis.multiConnection
+        ? `they land in a DIFFERENT browser depending on the run-level \`connectionReason\` - and the run still reports success either way.`
+        : `a run-level \`connectionReason\` retargets them while the named steps stay put.`}` +
+      ` Re-record passing \`connectionReason\` on every step to make this deterministic.`);
+  }
+
+  return notes.join('');
 }
 
 async function handleList(recorder: CommandRecorder) {
@@ -755,6 +895,8 @@ interface PerformRunDeps {
   analysis: ReturnType<typeof analyzeSequenceConnections>;
   connectionReason: string | undefined;
   needsConnection: boolean;
+  /** Recorded-reference -> this-session-reference rebinding (args.connections). */
+  connectionMap?: Record<string, string>;
 }
 
 async function handleRun(
@@ -797,6 +939,60 @@ async function handleRun(
     return { content: [{ type: 'text', text: formatVariablePrompt(sequence.name, idParam, extractedVariables, connectionReason) }] };
   }
 
+  // Validate the connection rebinding before any side effects. A key that names
+  // no recorded reference is a typo the user needs to hear about now: silently
+  // ignoring it would leave the step on its recorded reference and, in the worst
+  // case, replay a cross-browser sequence in one browser (bug-018).
+  const connectionMap = sanitizeConnectionMap(args.connections);
+  if (connectionMap) {
+    const recorded = analyzeRecordedStepConnections(commands);
+    const launchRefs = commands
+      .filter(c => (c.tool === 'launchChrome' || c.tool === 'connectDebugger') && typeof c.params.reference === 'string')
+      .map(c => sanitizeReference(c.params.reference));
+    const known = new Set([...recorded.references, ...launchRefs]);
+    const unknown = Object.keys(connectionMap).filter(k => !known.has(k));
+    if (unknown.length > 0) {
+      return createErrorResponse('INVALID_PARAMETER', {
+        parameter: 'connections',
+        value: unknown.join(', '),
+        message: `No step in "${sequence.name}" is recorded against ${unknown.map(u => `"${u}"`).join(', ')}. ` +
+          (known.size > 0
+            ? `Recorded references: ${[...known].join(', ')}. `
+            : `No step in this sequence names a connection at all, so there is nothing to rebind - use connectionReason to set the run connection. `) +
+          `Check replay({ action: 'get', name: '${sequence.name}', outputFormat: 'commands' }).`
+      });
+    }
+
+    // Two recorded connections rebound onto ONE live reference replays the whole
+    // multi-browser sequence in a single browser and reports success - bug-018
+    // exactly, re-entered through the API that exists to prevent it. Refuse.
+    const byTarget = new Map<string, string[]>();
+    for (const [from, to] of Object.entries(connectionMap)) {
+      if (!recorded.references.includes(from)) continue;  // launch-only rename, harmless
+      byTarget.set(to, [...(byTarget.get(to) ?? []), from]);
+    }
+    const collapsed = [...byTarget.entries()].filter(([, froms]) => froms.length > 1);
+    if (collapsed.length > 0) {
+      return createErrorResponse('INVALID_PARAMETER', {
+        parameter: 'connections',
+        value: collapsed.map(([to, froms]) => `${froms.join(' + ')} -> ${to}`).join('; '),
+        message: `That mapping would run ${collapsed.map(([to, froms]) => `${froms.length} recorded connections (${froms.join(', ')}) in the single browser "${to}"`).join('; ')}. ` +
+          `"${sequence.name}" spans more than one browser precisely to test what crosses between them; collapsing it would make the run pass without ever involving a second browser. ` +
+          `Give each recorded reference its own live reference, or launch another browser first.`
+      });
+    }
+  }
+
+  // The run-level connection may itself have been DERIVED from the sequence (a
+  // launchChrome reference), in which case it is a recorded name and needs the
+  // same rebinding as the steps - otherwise it points at a reference that does
+  // not exist here, and the startUrl navigation and cursor injection silently
+  // no-op against it. An explicitly passed connectionReason is already a live
+  // reference and is left alone.
+  if (connectionMap && !args.connectionReason && connectionReason) {
+    connectionReason = connectionMap[sanitizeReference(connectionReason)] ?? connectionReason;
+  }
+
   // Validate startFrom before any side effects, so both modes reject immediately
   if (args.startFrom && args.startFrom > sequence.commands.length) {
     return createErrorResponse('INVALID_START_FROM', {
@@ -807,6 +1003,7 @@ async function handleRun(
   const deps: PerformRunDeps = {
     args, recorder, executeToolCall, getPageForConnection, getConnectionPort,
     sequence, analysis, connectionReason, needsConnection,
+    ...(connectionMap && { connectionMap }),
   };
 
   // wait: true - pre-0.7 blocking behaviour, driven by the MCP request signal.
@@ -878,7 +1075,7 @@ async function performRun(
   onProgress?: (ev: { step: number; totalSteps: number; tool: string }) => void
 ): Promise<{ response: any; outcome: RunOutcome; results?: any[] }> {
   const { args, recorder, executeToolCall, getPageForConnection, getConnectionPort,
-    sequence, analysis, connectionReason, needsConnection } = deps;
+    sequence, analysis, connectionReason, needsConnection, connectionMap } = deps;
 
   // Build execution context
   const ctx: ExecutionContext = {
@@ -886,7 +1083,8 @@ async function performRun(
     commandRecorder: recorder,
     connectionReason: connectionReason!,
     logPrefix: 'run',
-    variableStore: {}
+    variableStore: {},
+    ...(connectionMap && { connectionMap })
   };
 
   // Ensure connection is ready
@@ -1041,6 +1239,8 @@ async function performRun(
       historyIndexAtPause: recorder.getHistory().length,
       connectionReason,
       runId,
+      // step/finish must resolve per-step connections the way this run did
+      ...(connectionMap && { connectionMap }),
     };
     recorder.setActiveSequence(activeState);
 
@@ -1304,7 +1504,9 @@ async function handleStep(
     connectionReason: activeSeq.connectionReason,
     logPrefix: 'step',
     variableStore: activeSeq.capturedVariables ?? (activeSeq.capturedVariables = {}),
-    runTimestamp: activeSeq.runTimestamp ?? (activeSeq.runTimestamp = Date.now())
+    runTimestamp: activeSeq.runTimestamp ?? (activeSeq.runTimestamp = Date.now()),
+    // per-step connections resolve exactly as they did in the run that paused
+    ...(activeSeq.connectionMap && { connectionMap: activeSeq.connectionMap })
   };
 
   const execResult = await executeSteps({
@@ -1360,7 +1562,8 @@ async function handleFinish(
     connectionReason: activeSeq.connectionReason,
     logPrefix: 'finish',
     variableStore: activeSeq.capturedVariables ?? (activeSeq.capturedVariables = {}),
-    runTimestamp: activeSeq.runTimestamp ?? (activeSeq.runTimestamp = Date.now())
+    runTimestamp: activeSeq.runTimestamp ?? (activeSeq.runTimestamp = Date.now()),
+    ...(activeSeq.connectionMap && { connectionMap: activeSeq.connectionMap })
   };
 
   const execResult = await executeSteps({
@@ -1433,18 +1636,31 @@ async function handleInsert(args: ReplayArgs, recorder: CommandRecorder) {
   // Determine insert position
   const insertAfter = args.insertAfterStep !== undefined ? args.insertAfterStep : activeSeq.currentStep;
 
-  // Build new commands array
-  const newCommands = [
-    ...sequence.commands.slice(0, insertAfter),
+  // Build new commands array. Inserted history commands carry the connection they
+  // were driven against (bug-018), so re-run the create-time normalization: an
+  // insert into a single-connection sequence must not quietly pin those steps to
+  // this session's reference and make the sequence unportable.
+  // The sequence's own steps are bare because `create` hoisted their connection
+  // off; re-stamp it first. Merging without that made every insert look
+  // "ambiguous" (one named reference + bare steps), which blocks the hoist and
+  // leaves the sequence half-pinned to this session's reference - unportable,
+  // and green on a run that splits it across two browsers.
+  const existingCommands = rehydrateStepConnections(sequence);
+  const normalized = normalizeStepConnections([
+    ...existingCommands.slice(0, insertAfter),
     ...commandsToInsert,
-    ...sequence.commands.slice(insertAfter)
-  ];
+    ...existingCommands.slice(insertAfter)
+  ]);
+  const newCommands = normalized.commands;
+  const connectionNote = formatConnectionNote(normalized);
 
   if (args.overwrite) {
     // Update existing sequence in place
     (sequence as any).commands = newCommands;
+    if (normalized.hoisted) (sequence as any).recordedConnection = normalized.hoisted;
+    else delete (sequence as any).recordedConnection;
 
-    return { content: [{ type: 'text', text: formatInsertResult(sequence.name, sequence.id, commandsToInsert.length, insertAfter, newCommands.length, true) }] };
+    return { content: [{ type: 'text', text: formatInsertResult(sequence.name, sequence.id, commandsToInsert.length, insertAfter, newCommands.length, true) + connectionNote }] };
   } else {
     // Create new sequence
     const newName = args.newName || `${sequence.name}-modified`;
@@ -1460,8 +1676,9 @@ async function handleInsert(args: ReplayArgs, recorder: CommandRecorder) {
 
     // Manually set commands
     (newSequence as any).commands = newCommands;
+    if (normalized.hoisted) (newSequence as any).recordedConnection = normalized.hoisted;
 
-    return { content: [{ type: 'text', text: formatInsertResult(newName, newSequence.id, commandsToInsert.length, insertAfter, newCommands.length, false) }] };
+    return { content: [{ type: 'text', text: formatInsertResult(newName, newSequence.id, commandsToInsert.length, insertAfter, newCommands.length, false) + connectionNote }] };
   }
 }
 
@@ -1775,14 +1992,74 @@ function escapeJsString(str: string): string {
 /**
  * Generate Puppeteer test code from sequence commands
  */
+/**
+ * One page variable per recorded connection, for the code generators.
+ *
+ * A sequence that drove two browsers has to generate two pages: emitting every
+ * step against a single `page` is the bug-018 collapse relocated into the
+ * exported test, and it is silent - the generated file looks perfectly
+ * reasonable and passes while never involving the second browser. The first
+ * recorded reference keeps the name `page` so single-connection output is
+ * byte-identical to before.
+ */
+function buildPageVars(commands: Array<{ tool: string; params: Record<string, any> }>) {
+  const { references, mixed } = analyzeRecordedStepConnections(commands);
+  const vars = new Map<string, string>();
+  references.forEach((ref, i) => {
+    vars.set(ref, i === 0
+      ? 'page'
+      : 'page' + ref.split(/[^a-zA-Z0-9]+/).filter(Boolean).map(w => w[0].toUpperCase() + w.slice(1)).join(''));
+  });
+  return {
+    references,
+    mixed,
+    multi: references.length > 1,
+    /** The page a step runs against; bare steps fall back to the first page. */
+    varFor: (cmd: { params: Record<string, any> }) =>
+      (typeof cmd.params.connectionReason === 'string' && vars.get(sanitizeReference(cmd.params.connectionReason))) || 'page',
+    /** `page` is declared by the caller's preamble; these are the extras. */
+    extras: references.slice(1).map(ref => ({ ref, name: vars.get(ref)! })),
+  };
+}
+
+/**
+ * Retarget the lines a single command emitted onto its own page variable.
+ * Done as a post-pass over the emitted slice so the (long, per-tool) generator
+ * bodies stay untouched and keep emitting the plain `page`.
+ */
+function rewritePage(lines: string[], from: number, pageVar: string): void {
+  if (pageVar === 'page') return;
+  for (let i = from; i < lines.length; i++) {
+    lines[i] = lines[i].replace(/\bpage\b/g, pageVar);
+  }
+}
+
+/** Header explaining a multi-browser export, so the collapse can't happen quietly. */
+function generatedCodeHeader(pages: ReturnType<typeof buildPageVars>): string[] {
+  if (!pages.multi) return [];
+  const out = [
+    `// This sequence drove ${pages.references.length} browsers (${pages.references.join(', ')}).`,
+    `// Each gets its own page below - do NOT merge them, the recording exists to`,
+    `// test what crosses between them.`,
+  ];
+  if (pages.mixed) {
+    out.push(`// WARNING: some steps named no connection and are emitted against '${'page'}';`);
+    out.push(`// check them by hand - which browser they belonged to was not recorded.`);
+  }
+  return out;
+}
+
 function generatePuppeteerCode(commands: Array<{ tool: string; params: Record<string, any> }>, startUrl?: string): string {
+  const pages = buildPageVars(commands);
   const lines: string[] = [
     '// Generated from cdp-tools interaction recording',
+    ...generatedCodeHeader(pages),
     'const puppeteer = require(\'puppeteer\');',
     '',
     'async function runTest() {',
     '  const browser = await puppeteer.launch({ headless: false });',
     '  const page = await browser.newPage();',
+    ...pages.extras.map(e => `  const ${e.name} = await browser.newPage();  // ${e.ref}`),
     '',
   ];
 
@@ -1792,6 +2069,8 @@ function generatePuppeteerCode(commands: Array<{ tool: string; params: Record<st
   }
 
   for (const cmd of commands) {
+    // Everything this command emits is rewritten onto its own page below.
+    const emittedFrom = lines.length;
     if (cmd.tool === 'navigate') {
       const { action, ...params } = cmd.params;
       if (action === 'goto' && params.url) {
@@ -1847,6 +2126,8 @@ function generatePuppeteerCode(commands: Array<{ tool: string; params: Record<st
           break;
       }
     }
+
+    rewritePage(lines, emittedFrom, pages.varFor(cmd));
   }
 
   lines.push('  await browser.close();');
@@ -1858,11 +2139,19 @@ function generatePuppeteerCode(commands: Array<{ tool: string; params: Record<st
 }
 
 function generatePlaywrightCode(commands: Array<{ tool: string; params: Record<string, any>; delay?: number; comment?: string }>, startUrl?: string): string {
+  const pages = buildPageVars(commands);
   const lines: string[] = [
     '// Generated from cdp-tools interaction recording',
+    ...generatedCodeHeader(pages),
     "import { test, expect } from '@playwright/test';",
     '',
-    "test('recorded interaction', async ({ page }) => {",
+    // A second browser needs its own context, so the multi-connection form takes
+    // the `browser` fixture instead of `page` and opens the pages itself.
+    pages.multi
+      ? "test('recorded interaction', async ({ browser }) => {"
+      : "test('recorded interaction', async ({ page }) => {",
+    ...(pages.multi ? ['  const page = await (await browser.newContext()).newPage();'] : []),
+    ...pages.extras.map(e => `  const ${e.name} = await (await browser.newContext()).newPage();  // ${e.ref}`),
   ];
 
   if (startUrl) {
@@ -1871,6 +2160,7 @@ function generatePlaywrightCode(commands: Array<{ tool: string; params: Record<s
   }
 
   for (const cmd of commands) {
+    const emittedFrom = lines.length;
     // Add comment if present
     if (cmd.comment) {
       lines.push(`  // ${cmd.comment}`);
@@ -1950,6 +2240,8 @@ function generatePlaywrightCode(commands: Array<{ tool: string; params: Record<s
           break;
       }
     }
+
+    rewritePage(lines, emittedFrom, pages.varFor(cmd));
   }
 
   lines.push('});');

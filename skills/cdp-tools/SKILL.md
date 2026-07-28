@@ -94,6 +94,10 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
   retyped arguments drift from what actually ran
 - `replay({ action: 'history' })` lists the indices when they have scrolled
   out of view
+- Each repeated call replays against the connection it was recorded with, so a
+  batch spanning two browsers stays on both. Pass `connectionReason` on every
+  call while driving multiple browsers and this holds; drive one implicitly and
+  those calls have no connection to replay against
 - If the stretch is worth keeping, turn it into a sequence:
   `replay({ action: 'create', name: '...', indices: [58, 59, 60, 61] })`
 

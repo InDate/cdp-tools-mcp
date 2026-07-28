@@ -28,6 +28,16 @@ export interface CommandSequence {
   startUrl?: string;
   commands: RecordedCommand[];
   createdAt: number;
+  /**
+   * The connection every step was recorded against, when `create` hoisted a
+   * uniform per-step `connectionReason` off the steps (bug-018). Hoisting is
+   * what keeps a sequence portable, but it is lossy: without this, a later
+   * `insert` cannot tell whether the incoming steps came from the SAME browser
+   * as the bare ones (hoist again) or a different one (genuinely
+   * multi-connection). Absent on sequences recorded before this existed and on
+   * ones that never shared a single connection.
+   */
+  recordedConnection?: string;
 }
 
 // Internal history tracking (includes index and timestamp)
@@ -56,6 +66,11 @@ export interface ActiveSequenceState {
    *  runId clear the right paused session, and `cancel` of the session mark
    *  the owning run record cancelled. */
   runId?: string;
+  /** Recorded-reference -> this-session-reference mapping for the run that
+   *  paused (replay({ action: 'run', connections: {...} })). Carried on the
+   *  paused state so `step`/`finish` resolve per-step connections exactly the
+   *  way the original `run` did instead of reverting to raw recorded names. */
+  connectionMap?: Record<string, string>;
 }
 
 export class CommandRecorder {
@@ -144,9 +159,24 @@ export class CommandRecorder {
     // (user must view history again before inserting)
     this.historyViewedWhilePaused = false;
 
-    // Clone params and remove connectionReason to make sequences reusable
     const paramsClone = JSON.parse(JSON.stringify(params));
-    delete paramsClone.connectionReason;
+
+    // Keep the connectionReason the call was actually made with (bug-018).
+    // It used to be deleted here "to make sequences reusable", which meant a
+    // recording that drove two browsers could not be replayed against two
+    // browsers - every step fell back to the run-level connection and the
+    // sequence silently collapsed into one browser. Reusability is preserved at
+    // `create` time instead: a sequence whose steps all share one connection has
+    // it hoisted back off the steps (see normalizeStepConnections), so a
+    // run-level connectionReason still overrides. Only genuinely
+    // multi-connection sequences keep it per-step.
+    //
+    // Sanitized so a recorded reference always matches the stored connection
+    // reference ("Duo Owner Console" -> "duo-owner-console"), which is what
+    // connection lookup and the launchChrome `reference` below use.
+    if (typeof paramsClone.connectionReason === 'string') {
+      paramsClone.connectionReason = sanitizeReference(paramsClone.connectionReason);
+    }
 
     // Sanitize 'reference' param for tools that create connections
     // This ensures recorded sequences use the same reference format as the actual connection
@@ -225,10 +255,13 @@ export class CommandRecorder {
         await debugLog('command-recorder', `Invalid command index: ${idx}`);
         return null;
       }
-      // Strip index and timestamp for the sequence, but keep delay and comment
+      // Strip index and timestamp for the sequence, but keep delay and comment.
+      // params is DEEP-CLONED: the sequence is edited after creation (hoisting a
+      // uniform connectionReason off the steps, rebasing URLs), and sharing the
+      // object with the history entry made those edits silently rewrite history.
       commands.push({
         tool: cmd.tool,
-        params: cmd.params,
+        params: JSON.parse(JSON.stringify(cmd.params)),
         ...(cmd.delay !== undefined && { delay: cmd.delay }),
         ...(cmd.comment && { comment: cmd.comment }),
       });

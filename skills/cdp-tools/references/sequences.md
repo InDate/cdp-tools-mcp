@@ -218,6 +218,57 @@ validation and pause handling, not just dispatch. That's what makes
 
 Steps without an explicit `connectionReason` use the run-level one.
 
+**Recording one.** Pass `connectionReason` explicitly on **every** call while you
+drive the browsers - including the one that happens to be active. Recording
+preserves it, and `create` decides what to do with it:
+
+- all steps on one connection - hoisted off the steps, so the sequence stays
+  portable and `run({ connectionReason })` still retargets it
+- genuinely spanning connections - kept per step
+- **mixed** (some steps named, some driven implicitly through the active
+  connection) - kept as-is with a warning, because nothing can tell which
+  browser the bare steps belonged to. `create` says so; re-record naming every
+  step rather than shipping it
+
+"Bare" covers the tools whose `connectionReason` is *optional* (`inspect`,
+`execution`, `storage`, `network`, `breakpoint`, `request`), not just the
+browser-only ones - those are the ones actually left off. A sequence can be both
+multi-connection and mixed, and that is the worst case: the bare steps land in a
+different browser depending on the run-level `connectionReason`, green either
+way. `create` warns about both.
+
+**Inserting into one.** `insert` re-stamps the connection `create` hoisted off
+(kept on the sequence as `recordedConnection`) before merging, so a same-browser
+insert re-hoists and stays portable, while a cross-browser insert makes every
+step explicit and becomes a real multi-connection sequence.
+
+**Replaying one in a different session.** Recorded references are per-session,
+so rebind them:
+
+```
+replay({ action: 'run', sequenceId: 'duo',
+         connections: { 'duo-member-two': 'my-second-browser' } })
+```
+
+Recorded name on the left, a reference from this session on the right. A key
+that matches nothing in the sequence is rejected up front, listing the real
+ones, rather than being ignored. So is mapping two recorded references onto one
+browser - that would collapse the sequence into a single browser and pass.
+`issues({ action: 'workOn' | 'resolve' })` takes `connections` too.
+
+**repeat / runFromLog.** Each command replays against the connection it was
+recorded with. An explicit `connectionReason` retargets a single-connection
+batch and is refused for a multi-connection one.
+
+**Exported code.** `outputFormat: 'playwright' | 'puppeteer'` gives each recorded
+connection its own page rather than merging them into one.
+
+Two things that deliberately do not happen: a run-level `connectionReason` does
+**not** override a step's own, and a per-step reference that doesn't exist in
+this session **fails the step** - it never falls back to the run-level
+connection. Falling back is what made a two-browser sequence silently replay in
+one browser and report success.
+
 ## Conditional steps
 
 `conditional` is a virtual step tool - it runs a nested sequence when a

@@ -58,6 +58,8 @@ const issuesSchema = z.object({
     .describe('Starting URL for manual issue verification (required for create when no sequenceName provided)'),
   connectionReason: z.string().optional()
     .describe('Browser connection reference (for workOn - to replay sequence)'),
+  connections: z.record(z.string()).optional()
+    .describe("workOn/resolve: rebind a multi-connection repro sequence's recorded references onto this session - { \"<recorded reference>\": \"<reference here>\" }"),
   keepBrowserOpen: z.boolean().optional()
     .describe('Keep browser tab open after verification (default: false, closes tab after resolve)'),
   search: z.string().optional()
@@ -437,6 +439,10 @@ export function createIssuesTools(
                   wait: true,
                   name: sequenceName,
                   connectionReason: connectionRef,
+                  // A repro that spans two browsers has per-step references from
+                  // the session that recorded it; without this there is no way to
+                  // rebind them and the repro cannot run here at all.
+                  ...(args.connections && { connections: args.connections }),
                   showReplayOverlay: true,
                   issueId: issue.id,
                   issueType: issue.type,
@@ -707,6 +713,7 @@ export function createIssuesTools(
                 wait: true,
                 name: sequenceName,
                 connectionReason: connectionRef,
+                ...(args.connections && { connections: args.connections }),
                 showReplayOverlay: true,
                 issueId: issue.id,
                 issueType: issue.type,
