@@ -18,12 +18,15 @@ This skill is for working ON this repo's own source, not for using its tools to 
 **`npm version patch` (or `minor` / `major`) is the entire release.** Nothing else is needed, and nothing else should be done:
 
 1. `version` hook stamps the new version into the shipped Agent Skill (`scripts/sync-skill-version.mjs`).
-2. `postversion` hook runs `git push && git push --tags`.
+2. `postversion` hook runs `git push && git push --tags` - **automatically**. There is no separate push step, and no confirmation.
 3. The pushed `v*` tag triggers `.github/workflows/publish.yml`, which on CI runs `npm run test:run`, `npm run build:verify`, and `npm publish --provenance`.
 
 So the moment the tag lands, the package is being published. **Never run `npm publish` by hand** - it is a second, unverified path to the registry that bypasses the CI gate, and it will collide with the workflow run the tag already started.
 
-Do not tell the user a release "wasn't published" after running `npm version`; it was. Check with `gh run list --workflow=publish.yml`.
+Two things that follow from the push being automatic, and that are easy to get wrong:
+
+- **`git push` with no arguments pushes the whole branch, not just the version commit.** Every local commit sitting on `main` ships with the release. There is no such thing as "committed but held back locally" once someone runs `npm version` - so never describe a commit that way as if a later bump wouldn't carry it out, and make sure the branch is exactly what should be released *before* bumping.
+- **Do not offer to push after `npm version`, and do not say a release "wasn't published".** Both already happened. Confirm with `gh run list --workflow=publish.yml` and `npm view cdp-tools-mcp version` rather than guessing.
 
 ## Hot-reload semantics (mcp-supervisor)
 
