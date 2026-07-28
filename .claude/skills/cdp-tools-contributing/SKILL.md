@@ -11,7 +11,19 @@ This skill is for working ON this repo's own source, not for using its tools to 
 
 - `npm run build` - `tsc` + dashboard build. Also runs a `postbuild` hook (`scripts/signal-supervisor.mjs`) that sends `SIGUSR2` to a running `mcp-supervisor` process (if any), so a live Claude Code session picks up the change without a manual `/mcp` reconnect.
 - `npm test` / `npm run test:run` - vitest. Tests are colocated as `*.test.ts` next to the code they cover.
-- `npm run build:verify` - build + `scripts/verify-mcp.js` + `scripts/measure-startup.mjs`. Run this before anything release-shaped; it's also what `prepublishOnly` runs.
+- `npm run build:verify` - build + `scripts/verify-mcp.js` + `scripts/measure-startup.mjs`. Run this before anything release-shaped. (`prepublishOnly` runs `test:run` **and** `build:verify`, but it is a backstop for a hand-rolled publish that should never happen - see below.)
+
+## Releasing
+
+**`npm version patch` (or `minor` / `major`) is the entire release.** Nothing else is needed, and nothing else should be done:
+
+1. `version` hook stamps the new version into the shipped Agent Skill (`scripts/sync-skill-version.mjs`).
+2. `postversion` hook runs `git push && git push --tags`.
+3. The pushed `v*` tag triggers `.github/workflows/publish.yml`, which on CI runs `npm run test:run`, `npm run build:verify`, and `npm publish --provenance`.
+
+So the moment the tag lands, the package is being published. **Never run `npm publish` by hand** - it is a second, unverified path to the registry that bypasses the CI gate, and it will collide with the workflow run the tag already started.
+
+Do not tell the user a release "wasn't published" after running `npm version`; it was. Check with `gh run list --workflow=publish.yml`.
 
 ## Hot-reload semantics (mcp-supervisor)
 
