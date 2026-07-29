@@ -85,6 +85,31 @@ async function withReplayBypass<T>(page: any, action: () => Promise<T>): Promise
   }
 }
 
+/**
+ * Warning text when a selector matches more than one element.
+ *
+ * The action takes the first match. On a list UI that silently drifts onto the
+ * wrong row as the list grows, and the step still reports success - so the
+ * count has to be said out loud even though the action succeeded.
+ *
+ * Advisory only: a selector the browser rejects is the action's error to
+ * report, not this helper's.
+ */
+export async function ambiguousSelectorWarning(page: any, selector: string, raw: string): Promise<string | undefined> {
+  try {
+    const count: number = await page.evaluate(
+      (sel: string) => (globalThis as any).document.querySelectorAll(sel).length,
+      selector
+    );
+    if (count > 1) {
+      return `\`${raw}\` matched ${count} elements - acted on the first. Narrow it if you meant a specific one.`;
+    }
+  } catch {
+    // Counting is best-effort.
+  }
+  return undefined;
+}
+
 export function createInputTools(
   puppeteerManager: PuppeteerManager,
   cdpManager: CDPManager,
@@ -196,6 +221,10 @@ export function createInputTools(
               }
               selector = resolved.selector;
               selectorWarning = resolved.warning;
+            }
+            {
+              const ambiguous = await ambiguousSelectorWarning(page, selector, rawSelector);
+              if (ambiguous) selectorWarning = selectorWarning ? `${selectorWarning} ${ambiguous}` : ambiguous;
             }
             await checkAborted(); // after selector resolution, before any dispatch
 
@@ -545,6 +574,10 @@ export function createInputTools(
               selector = resolved.selector;
               selectorWarning = resolved.warning;
             }
+            {
+              const ambiguous = await ambiguousSelectorWarning(page, selector, rawSelector);
+              if (ambiguous) selectorWarning = selectorWarning ? `${selectorWarning} ${ambiguous}` : ambiguous;
+            }
             await checkAborted(); // after selector resolution, before any dispatch
 
             const result = await executeWithPauseDetection(
@@ -746,6 +779,10 @@ export function createInputTools(
               selector = resolved.selector;
               selectorWarning = resolved.warning;
             }
+            {
+              const ambiguous = await ambiguousSelectorWarning(page, selector, rawSelector);
+              if (ambiguous) selectorWarning = selectorWarning ? `${selectorWarning} ${ambiguous}` : ambiguous;
+            }
             await checkAborted(); // after selector resolution, before any dispatch
 
             const result = await executeWithPauseDetection(
@@ -895,6 +932,10 @@ export function createInputTools(
               }
               selector = resolved.selector;
               selectorWarning = resolved.warning;
+            }
+            {
+              const ambiguous = await ambiguousSelectorWarning(page, selector, rawSelector);
+              if (ambiguous) selectorWarning = selectorWarning ? `${selectorWarning} ${ambiguous}` : ambiguous;
             }
 
             const result = await executeWithPauseDetection(
