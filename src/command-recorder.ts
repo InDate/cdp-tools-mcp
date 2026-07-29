@@ -6,6 +6,7 @@
  */
 
 import { promises as fs } from 'fs';
+import { walkSequenceFiles } from './helpers/sequence-tree.js';
 import { join } from 'path';
 import { debugLog, isHistoryLogEnabled, logToHistoryFile } from './debug-logger.js';
 import { sanitizeReference } from './reference-validator.js';
@@ -455,7 +456,19 @@ export class CommandRecorder {
       // Sanitize filename - use name directly
       // Note: atomicWriteFile handles directory creation
       const safeFilename = sequence.name.replace(/[^a-z0-9-_]/gi, '-').toLowerCase();
-      const filename = `${safeFilename}.json`;
+      // Keep a foldered sequence in its folder. Sequences can live in
+      // subdirectories (spine/, _helpers/), and writing every save back to the
+      // root would FORK an edited file: the original stays stale in its folder
+      // while a second copy appears at the top level, which a bare runAll then
+      // runs twice and a basename load matches ambiguously.
+      let filename = `${safeFilename}.json`;
+      const existing = (await this.listSavedSequencesOnDisk())
+        .find(e => e.location === (global ? 'global' : 'working-dir') &&
+                   (e.id === sequence.id || e.name === sequence.name));
+      const existingDir = existing?.filename.includes('/')
+        ? existing.filename.slice(0, existing.filename.lastIndexOf('/'))
+        : '';
+      if (existingDir) filename = `${existingDir}/${filename}`;
       const filepath = join(targetDir, filename);
 
       // Check for conflict
@@ -494,10 +507,17 @@ export class CommandRecorder {
 
     const term = searchTerm.toLowerCase();
     const termWithoutJson = term.endsWith('.json') ? term.slice(0, -5) : term;
-    // 1. Exact filename match (with or without .json)
+    // `filename` is relative to the sequences root, so it may carry a folder
+    // ('spine/spine-01.json'). Match the bare basename too, otherwise moving a
+    // file into a folder breaks every existing load call that names it directly.
+    const base = (f: string) => f.toLowerCase().split('/').pop() || f.toLowerCase();
+
+    // 1. Exact filename match (with or without .json, full path or basename)
     const exactMatch = savedSequences.find(s =>
       s.filename.toLowerCase() === term ||
-      s.filename.toLowerCase() === termWithoutJson + '.json'
+      s.filename.toLowerCase() === termWithoutJson + '.json' ||
+      base(s.filename) === term ||
+      base(s.filename) === termWithoutJson + '.json'
     );
     if (exactMatch) {
       return { filename: exactMatch.filename, fullPath: exactMatch.fullPath, matchType: 'exact', location: exactMatch.location };
@@ -511,7 +531,8 @@ export class CommandRecorder {
 
     // 3. Filename starts with search term (gets latest by sorting)
     const prefixMatches = savedSequences.filter(s =>
-      s.filename.toLowerCase().startsWith(termWithoutJson)
+      s.filename.toLowerCase().startsWith(termWithoutJson) ||
+      base(s.filename).startsWith(termWithoutJson)
     );
     if (prefixMatches.length > 0) {
       // Sort by filename descending to get latest timestamp
@@ -623,14 +644,16 @@ export class CommandRecorder {
 
     try {
       // Read directory - if it doesn't exist, return empty list (no side effects)
-      let files: string[];
+      // Walk subdirectories too: a suite is easier to run when it can be grouped
+      // into folders (spine/, story/, _helpers/). `filename` stays relative to the
+      // sequences root ('spine/spine-01.json'), so it round-trips back through load.
+      let jsonFiles: string[];
       try {
-        files = await fs.readdir(dir);
+        jsonFiles = await walkSequenceFiles(dir);
       } catch (err: any) {
         if (err.code === 'ENOENT') return sequences; // Directory doesn't exist yet
         throw err;
       }
-      const jsonFiles = files.filter(f => f.endsWith('.json'));
 
       for (const file of jsonFiles) {
         try {

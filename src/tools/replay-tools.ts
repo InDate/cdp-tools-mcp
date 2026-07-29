@@ -3,6 +3,7 @@
  */
 
 import { z } from 'zod';
+import { selectSuiteFiles, sequenceFolders } from '../helpers/sequence-tree.js';
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import type { CommandRecorder, ActiveSequenceState, CommandSequence, RecordedCommand } from '../command-recorder.js';
@@ -226,7 +227,7 @@ const replaySchema = z.object({
   action: z.enum([
     'history', 'create', 'list', 'get', 'delete',
     'export', 'load', 'listSaved', 'deleteSaved',
-    'run', 'step', 'finish', 'insert', 'addConditional', 'status', 'cancel',
+    'run', 'runAll', 'step', 'finish', 'insert', 'addConditional', 'status', 'cancel',
     'repeat', 'runFromLog',
     'recordInteraction'
   ]),
@@ -273,6 +274,8 @@ const replaySchema = z.object({
   issueTitle: z.string().optional(),
   showReplayOverlay: z.boolean().optional(),
   showAll: z.boolean().optional().describe('Show all sequences including completed/fixed issues'),
+  folder: z.string().optional().describe("runAll: sequences subfolder to run, relative to the sequences dir (e.g. 'spine'). Omit to run every sequence outside folders whose name starts with '_'. The whole tree is always LOADED first so name references (a conditional's then, a forEach's do) resolve wherever the helper lives"),
+  continueOnFailure: z.boolean().optional().describe('runAll: keep going after a sequence fails and report every result (default true). false stops at the first failure'),
   killChromeOnFinish: z.boolean().optional().describe("run: kill the Chrome behind this run's own connection after finishing (skipped on pause/abort). Browsers a step connects to via its own connectionReason are left running - they may be instances you launched yourself. Also skipped when another live connection shares the port (a launchChrome step usually opens a tab in the same instance), and the run reports which connection kept it alive."),
 }).strict();
 
@@ -977,6 +980,146 @@ function collectNestedRebindableReferences(
   return { references, complete };
 }
 
+/**
+ * Run every sequence in a folder, in filename order, and report one line each.
+ *
+ * Two behaviours make this usable as a suite runner rather than a loop:
+ *  - the ENTIRE tree is loaded before anything runs, so a sequence in spine/
+ *    can still reference a helper in _helpers/ by name (conditional `then`,
+ *    forEach `do`) — those resolve by sequence NAME, not by path;
+ *  - a failure is recorded and the run continues (continueOnFailure, default
+ *    true). A suite that stops at the first red tells you far less than one
+ *    that finishes and shows you all of them.
+ *
+ * Folders whose name starts with '_' are loaded but never run on their own —
+ * that is where preamble/helper sequences live, which are meaningless in
+ * isolation and would fail if executed standalone.
+ */
+async function handleRunAll(
+  args: ReplayArgs,
+  recorder: CommandRecorder,
+  executeToolCall: ExecuteToolCall,
+  getPageForConnection: (connectionReason: string) => Promise<any>,
+  abortSignal?: AbortSignal,
+  getConnectionPort?: (connectionReason: string) => Promise<number | null>
+) {
+  // Stay inside ONE root. listSavedSequencesOnDisk merges the project dir with
+  // ~/.cdp-tools/sequences, and a bare runAll that swept in the user's global
+  // sequences would execute unrelated suites from other projects — and a name
+  // colliding across the two roots would select twice.
+  const wantLocation = args.global ? 'global' : 'working-dir';
+  const onDisk = (await recorder.listSavedSequencesOnDisk())
+    .filter(e => e.location === wantLocation);
+  if (onDisk.length === 0) {
+    return createErrorResponse('INVALID_PARAMETER', {
+      parameter: 'folder',
+      value: String(args.folder ?? ''),
+      message: `No sequences found in the ${args.global ? 'global (~/.cdp-tools/sequences)' : 'project'} sequences directory. Export or record one first${args.global ? '' : ', or pass global:true to run the global ones'}.`
+    });
+  }
+
+  // Load everything first so cross-folder name references resolve.
+  for (const entry of onDisk) {
+    await recorder.loadSequenceFromDisk(entry.fullPath);
+  }
+
+  const folder = (args.folder || '').replace(/^\/+|\/+$/g, '');
+  const chosen = new Set(selectSuiteFiles(onDisk.map(e => e.filename), folder));
+  const selected = onDisk
+    .filter(e => chosen.has(e.filename))
+    .sort((a, b) => a.filename.localeCompare(b.filename));
+
+  if (selected.length === 0) {
+    const folders = sequenceFolders(onDisk.map(e => e.filename));
+    return createErrorResponse('INVALID_PARAMETER', {
+      parameter: 'folder',
+      value: folder,
+      message: `No sequences under "${folder}". ` +
+        (folders.length ? `Available folders: ${folders.join(', ')}.` : 'No subfolders exist yet — sequences are all at the top level.')
+    });
+  }
+
+  const keepGoing = args.continueOnFailure !== false;
+  const results: Array<{ filename: string; name: string; ok: boolean; detail: string }> = [];
+
+  for (const entry of selected) {
+    if (abortSignal?.aborted) {
+      results.push({ filename: entry.filename, name: entry.name, ok: false, detail: 'cancelled before it ran' });
+      continue;
+    }
+    let ok = false;
+    let detail = '';
+    try {
+      // Reuse handleRun so a suite run and a single run cannot drift apart.
+      const res: any = await handleRun(
+        {
+          ...args,
+          action: 'run',
+          folder: undefined,
+          continueOnFailure: undefined,
+          name: undefined,
+          sequenceId: entry.id,
+          wait: true,
+          // Per-run args that are actively wrong when fanned across a suite:
+          // killChromeOnFinish would tear down the browser between sequences and
+          // destroy the state a _helpers preamble just established, and
+          // startFrom/stepTo/stepCount/startUrl mean something only for one
+          // specific sequence.
+          killChromeOnFinish: undefined,
+          startFrom: undefined,
+          stepTo: undefined,
+          stepCount: undefined,
+          startUrl: undefined,
+        },
+        recorder, executeToolCall, getPageForConnection, abortSignal, getConnectionPort
+      );
+      const text = (res?.content || []).map((c: any) => c?.text || '').join('\n');
+      // performRun stamps _meta.replay on every terminal response, so trust that
+      // over the prose. Regexing for a line starting with "Error:" both misses
+      // non-run outcomes (a variables prompt, a pause) and misfires on any step
+      // output that happens to echo one.
+      const meta = res?._meta?.replay;
+      if (meta && typeof meta.success === 'boolean') {
+        ok = meta.success === true && meta.paused !== true && meta.prompted !== true;
+        detail = meta.prompted
+          ? 'did not run: it has recorded variables and none were supplied — pass variables:{} to keep the recorded values'
+          : meta.paused
+            ? 'did not finish: the run PAUSED (stepTo, a breakpoint, or click validation) and is still open'
+            : (text.match(/^\s*Error:.*$/m)?.[0] || `failed at ${meta.failedSteps ?? '?'} step(s)`).trim();
+      } else {
+        // No _meta means this was not a terminal run response at all.
+        ok = false;
+        detail = (text.match(/^\s*Error:.*$/m)?.[0] || text.split('\n')[0] || 'no run result').trim();
+      }
+    } catch (err: any) {
+      ok = false;
+      detail = `threw: ${err?.message || String(err)}`;
+    }
+    results.push({ filename: entry.filename, name: entry.name, ok, detail });
+    if (!ok && !keepGoing) break;
+  }
+
+  const passed = results.filter(r => r.ok).length;
+  const failed = results.length - passed;
+  const scope = folder ? `folder "${folder}"` : 'all sequences';
+  const lines = results.map(r => `${r.ok ? 'PASS' : 'FAIL'}  ${r.filename}${r.ok ? '' : `  — ${r.detail}`}`);
+  const skipped = selected.length - results.length;
+
+  return {
+    content: [{
+      type: 'text',
+      text: [
+        `runAll ${scope}: ${passed} passed, ${failed} failed${skipped > 0 ? `, ${skipped} not run (stopped at first failure)` : ''}`,
+        '',
+        ...lines,
+        '',
+        `Loaded ${onDisk.length} sequence(s) from disk; ran ${results.length}.`,
+      ].join('\n')
+    }],
+    ...(failed > 0 ? { isError: true } : {})
+  };
+}
+
 async function handleRun(
   args: ReplayArgs,
   recorder: CommandRecorder,
@@ -1014,7 +1157,13 @@ async function handleRun(
   const extractedVariables = extractTextVariables(commands);
   if (Object.keys(extractedVariables).length > 0 && args.variables === undefined) {
     const idParam = args.sequenceId || args.name!;
-    return { content: [{ type: 'text', text: formatVariablePrompt(sequence.name, idParam, extractedVariables, connectionReason) }] };
+    // Tag it: this response is a PROMPT, not a run. runAll has to be able to
+    // tell "asked you a question" from "executed and passed", or a suite goes
+    // green for a sequence that ran zero steps.
+    return {
+      content: [{ type: 'text', text: formatVariablePrompt(sequence.name, idParam, extractedVariables, connectionReason) }],
+      _meta: { tool: 'replay', action: 'run', timestamp: Date.now(), replay: { success: false, prompted: true } }
+    };
   }
 
   // Validate the connection rebinding before any side effects. A key that names
@@ -2555,7 +2704,7 @@ export function createReplayTools(
 ) {
   return {
     replay: createTool(
-      'Record and replay command sequences for testing and automation. Actions: repeat (immediately re-execute commands by history index - use this to repeat recent actions), history (view command history), recordInteraction (record real mouse/keyboard/navigation via a browser overlay - BLOCKS until the person finishes, so do not call it unattended; tune the capture with simplifyEvents/includeHovers/preferCoordinates/preferSelectors, and add outputFormat: events|commands|review|playwright|puppeteer to dump the recording - review is a human-readable walkthrough of the captured events), create (create sequence from history indices), list (list in-memory sequences), get (get sequence details; outputFormat: commands|playwright|puppeteer returns the raw command JSON or generated test code), delete (delete from memory), export (write a sequence to disk as sequence/playwright/puppeteer), load (load sequence from disk), listSaved (list saved files), deleteSaved (delete saved file), run (start executing a sequence in the background - returns a runId immediately; poll progress/results with status, stop it with cancel; wait: true blocks until completion and returns the full result), runFromLog (execute commands from log lines), step (execute next N commands in a paused sequence), finish (complete remaining commands), insert (insert recorded commands into a sequence), addConditional (add a guarded branch step: condition + thenSequence, optionally insertAfterStep), status (with runId: one run\'s progress or final result; without: paused session + recent runs), cancel (with runId: stop that run; without: drop the paused session, or the only executing run)',
+      'Record and replay command sequences for testing and automation. Actions: repeat (immediately re-execute commands by history index - use this to repeat recent actions), history (view command history), recordInteraction (record real mouse/keyboard/navigation via a browser overlay - BLOCKS until the person finishes, so do not call it unattended; tune the capture with simplifyEvents/includeHovers/preferCoordinates/preferSelectors, and add outputFormat: events|commands|review|playwright|puppeteer to dump the recording - review is a human-readable walkthrough of the captured events), create (create sequence from history indices), list (list in-memory sequences), get (get sequence details; outputFormat: commands|playwright|puppeteer returns the raw command JSON or generated test code), delete (delete from memory), export (write a sequence to disk as sequence/playwright/puppeteer), load (load sequence from disk), listSaved (list saved files), deleteSaved (delete saved file), run (start executing a sequence in the background - returns a runId immediately; poll progress/results with status, stop it with cancel; wait: true blocks until completion and returns the full result), runAll (run every sequence in a folder of the sequences dir - loads the whole tree first so cross-folder name references resolve, runs only the chosen folder, skips folders whose name starts with an underscore unless named explicitly, and reports a pass/fail line per sequence; continueOnFailure defaults true), runFromLog (execute commands from log lines), step (execute next N commands in a paused sequence), finish (complete remaining commands), insert (insert recorded commands into a sequence), addConditional (add a guarded branch step: condition + thenSequence, optionally insertAfterStep), status (with runId: one run\'s progress or final result; without: paused session + recent runs), cancel (with runId: stop that run; without: drop the paused session, or the only executing run)',
       replaySchema,
       async (args, abortSignal) => {
         switch (args.action) {
@@ -2579,6 +2728,8 @@ export function createReplayTools(
             return handleDeleteSaved(args, commandRecorder);
           case 'run':
             return handleRun(args, commandRecorder, executeToolCall, getPageForConnection!, abortSignal, getConnectionPort);
+          case 'runAll':
+            return handleRunAll(args, commandRecorder, executeToolCall, getPageForConnection!, abortSignal, getConnectionPort);
           case 'status':
             return handleStatus(args, commandRecorder);
           case 'step':

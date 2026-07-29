@@ -6,6 +6,34 @@ regression test, a repro attached to an issue, or a multi-step automation.
 
 Everything below is the `replay` tool: `replay({ action: '...' })`.
 
+## Folders
+
+Sequences may live in subfolders of the sequences dir:
+
+```
+.cdp-tools/sequences/
+  _helpers/      preamble guards, forEach bodies - loaded, never run on their own
+  spine/
+  story/
+```
+
+Filenames are relative to that root (`spine/spine-01.json`), and `load` still
+accepts the bare basename, so moving a file into a folder does not break calls
+that name it.
+
+`replay({ action: 'runAll', folder: 'spine' })` loads the WHOLE tree, then runs
+only that folder. Loading everything matters: `conditional`'s `then` and
+`forEach`'s `do` resolve by sequence NAME, not by path, so a spine sequence can
+call a helper in `_helpers/` only if that helper was loaded too.
+
+A folder whose name starts with `_` is skipped by a bare `runAll` - those
+sequences fail in isolation by design (unbound `{{var:}}`, an unmet
+precondition). Naming one explicitly runs it anyway.
+
+Failures are recorded and the suite continues unless `continueOnFailure: false`.
+A sequence that only PROMPTS (recorded variables, none supplied) or that PAUSES
+is reported as a failure, not a pass - it did not run.
+
 ## Rules for building one
 
 These hold however you build a sequence - by hand, as a subagent, or from a

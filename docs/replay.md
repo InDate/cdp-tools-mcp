@@ -17,7 +17,7 @@ Every capability below is the one `replay` tool, dispatched on `action`:
 | History | `history`, `repeat`, `runFromLog` |
 | Authoring | `create`, `recordInteraction`, `insert`, `addConditional` |
 | Managing | `list`, `get`, `delete`, `export`, `load`, `listSaved`, `deleteSaved` |
-| Running | `run`, `step`, `finish`, `status`, `cancel` |
+| Running | `run`, `runAll`, `step`, `finish`, `status`, `cancel` |
 
 There is no `stopInteraction` and no `save` action - see
 [Recording Interactions](#recording-interactions) and
