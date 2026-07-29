@@ -16,6 +16,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createReplayTools } from './replay-tools.js';
 import { CommandRecorder } from '../command-recorder.js';
+import { productionShaped } from '../test-support/fake-execute-tool-call.js';
 import {
   analyzeRecordedStepConnections,
   normalizeStepConnections,
@@ -40,11 +41,11 @@ function connectionsResponse(refs: string[]) {
 
 function makeHarness(opts: { live?: string[] } = {}) {
   const calls: Array<{ tool: string; params: Record<string, any> }> = [];
-  const executeToolCall = vi.fn(async (tool: string, params: Record<string, any>) => {
+  const executeToolCall = vi.fn(productionShaped(async (tool: string, params: Record<string, any>) => {
     calls.push({ tool, params });
     if (tool === 'listConnections') return connectionsResponse(opts.live ?? []);
     return { content: [{ type: 'text', text: '' }] };
-  });
+  }));
 
   const recorder = new CommandRecorder();
   const { replay } = createReplayTools(
@@ -263,6 +264,95 @@ describe('run against a two-connection sequence', () => {
     expect(res.isError).toBe(true);
     expect(text(res)).toContain('duo-member-twoo');
     expect(text(res)).toContain(MEMBER);
+  });
+
+  // A setup sequence normally sits BEHIND a conditional, so its references have
+  // to be rebindable from the outer run - otherwise the only references you can
+  // rebind are the ones that needed no rebinding.
+  it('accepts a key that only a conditional sub-sequence names', async () => {
+    const { replay, recorder, calls } = makeHarness({ live: [OWNER, 'my-second-browser'] });
+    await recorder.createSequenceFromCommands('duo-setup', [
+      { tool: 'launchChrome', params: { reference: MEMBER } },
+      { tool: 'dom', params: { action: 'querySelector', selector: '#member-claim', connectionReason: MEMBER } },
+    ]);
+    await recorder.createSequenceFromCommands('duo-outer', [
+      { tool: 'conditional', params: { if: '{{!selector:#needs-setup}}', then: 'duo-setup' } },
+    ]);
+    const sequenceId = recorder.listSequences().find(s => s.name === 'duo-outer')!.id;
+
+    const res = await run(replay, {
+      sequenceId,
+      connectionReason: OWNER,
+      connections: { [MEMBER]: 'my-second-browser' },
+    });
+
+    expect(res.isError).toBeFalsy();
+    // the rebinding reached the nested step, and the nested launch was skipped
+    // because the mapped browser is already live
+    expect(calls.filter(c => c.tool === 'launchChrome')).toEqual([]);
+    // the first dom call is the selector condition itself, on the run connection
+    expect(domConnections(calls)).toEqual([OWNER, 'my-second-browser']);
+  });
+
+  it('launches the mapped browser when the session does not have it', async () => {
+    const { replay, recorder, calls } = makeHarness({ live: [OWNER] });
+    await recorder.createSequenceFromCommands('duo-setup', [
+      { tool: 'launchChrome', params: { reference: MEMBER } },
+      { tool: 'dom', params: { action: 'querySelector', selector: '#member-claim', connectionReason: MEMBER } },
+    ]);
+    await recorder.createSequenceFromCommands('duo-outer', [
+      { tool: 'conditional', params: { if: '{{!selector:#needs-setup}}', then: 'duo-setup' } },
+    ]);
+    const sequenceId = recorder.listSequences().find(s => s.name === 'duo-outer')!.id;
+
+    await run(replay, {
+      sequenceId,
+      connectionReason: OWNER,
+      connections: { [MEMBER]: 'my-second-browser' },
+    });
+
+    expect(calls.filter(c => c.tool === 'launchChrome').map(c => c.params.reference))
+      .toEqual(['my-second-browser']);
+  });
+
+  it('still rejects a typo when every sub-sequence is resolvable', async () => {
+    const { replay, recorder } = makeHarness({ live: [OWNER, 'my-second-browser'] });
+    await recorder.createSequenceFromCommands('duo-setup', [
+      { tool: 'dom', params: { action: 'querySelector', selector: '#member-claim', connectionReason: MEMBER } },
+    ]);
+    await recorder.createSequenceFromCommands('duo-outer', [
+      { tool: 'conditional', params: { if: '{{selector:#needs-setup}}', then: 'duo-setup' } },
+    ]);
+    const sequenceId = recorder.listSequences().find(s => s.name === 'duo-outer')!.id;
+
+    const res = await run(replay, {
+      sequenceId,
+      connectionReason: OWNER,
+      connections: { 'duo-member-twoo': 'my-second-browser' },
+    });
+
+    expect(res.isError).toBe(true);
+    expect(text(res)).toContain(MEMBER);
+  });
+
+  // Mutual recursion between sub-sequences must not hang the validation.
+  it('terminates on a conditional cycle', async () => {
+    const { replay, recorder } = makeHarness({ live: [OWNER] });
+    await recorder.createSequenceFromCommands('ping', [
+      { tool: 'conditional', params: { if: '{{selector:#x}}', then: 'pong' } },
+    ]);
+    await recorder.createSequenceFromCommands('pong', [
+      { tool: 'conditional', params: { if: '{{selector:#y}}', then: 'ping' } },
+    ]);
+    const sequenceId = recorder.listSequences().find(s => s.name === 'ping')!.id;
+
+    const res = await run(replay, {
+      sequenceId,
+      connectionReason: OWNER,
+      connections: { 'nobody-names-this': 'my-second-browser' },
+    });
+
+    expect(res.isError).toBe(true);
   });
 });
 
@@ -544,6 +634,34 @@ describe('generated test code', () => {
     expect(pw).toContain("await pageDuoMemberTwo.click('#member-btn');");
     expect(pw).toContain("await page.click('#owner-btn');");
     expect(pw).toContain(`drove 2 browsers`);
+  });
+
+  // A sequence made of steps the generators have no equivalent for used to
+  // export as `test('recorded interaction', async ({ page }) => {});` - a file
+  // that passes forever without doing anything it was recorded to do.
+  it('refuses to emit a green empty test for steps it cannot generate', async () => {
+    const { replay, recorder } = makeHarness();
+    await recorder.createSequenceFromCommands('setup-only', [
+      { tool: 'conditional', params: { if: '{{!indexedDB:identity/keys/device}}', then: 'mint-identity' } },
+      { tool: 'launchChrome', params: { reference: MEMBER } },
+    ]);
+
+    for (const format of ['playwright', 'puppeteer'] as const) {
+      const code = text(await replay.handler({ action: 'get', name: 'setup-only', outputFormat: format } as any));
+      expect(code).toContain('[not generated] conditional');
+      expect(code).toContain('mint-identity');
+      expect(code).toContain('[not generated] launchChrome');
+      expect(code).toContain('would otherwise pass without doing anything');
+    }
+  });
+
+  it('does not add the guard when something was generated', async () => {
+    const { replay, recorder } = makeHarness();
+    await recorder.recordCommand('input', { action: 'click', selector: '#go', connectionReason: OWNER });
+    await replay.handler({ action: 'create', name: 'has-steps', indices: [0] } as any);
+
+    const pw = text(await replay.handler({ action: 'get', name: 'has-steps', outputFormat: 'playwright' } as any));
+    expect(pw).not.toContain('would otherwise pass without doing anything');
   });
 
   it('leaves single-connection output on the plain page fixture', async () => {

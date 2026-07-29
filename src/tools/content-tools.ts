@@ -502,6 +502,12 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
 
               return {
                 content: [{ type: 'text', text: response }],
+                _meta: {
+                  tool: 'content',
+                  action,
+                  timestamp: Date.now(),
+                  content: { totalCount, ...(hiddenCount > 0 && { hiddenCount }) },
+                },
               };
             }
 

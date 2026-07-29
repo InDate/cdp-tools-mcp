@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createReplayTools } from './replay-tools.js';
 import { runRegistry } from './replay-run-registry.js';
 import type { CommandSequence, RecordedCommand } from '../command-recorder.js';
+import { productionShaped } from '../test-support/fake-execute-tool-call.js';
 
 function makeReplay(sequences: CommandSequence[], opts: { stepDelayMs?: number } = {}) {
   const byId = new Map(sequences.map(s => [s.id, s]));
@@ -24,7 +25,7 @@ function makeReplay(sequences: CommandSequence[], opts: { stepDelayMs?: number }
   } as any;
 
   const calls: Array<{ tool: string; params: Record<string, any> }> = [];
-  const executeToolCall = vi.fn(async (tool: string, params: Record<string, any>) => {
+  const executeToolCall = vi.fn(productionShaped(async (tool: string, params: Record<string, any>) => {
     calls.push({ tool, params });
     if (tool === 'dom' && opts.stepDelayMs) {
       await new Promise(r => setTimeout(r, opts.stepDelayMs));
@@ -33,7 +34,7 @@ function makeReplay(sequences: CommandSequence[], opts: { stepDelayMs?: number }
       return { content: [{ type: 'text', text: 'Element found' }] };
     }
     return { content: [{ type: 'text', text: '' }] };
-  });
+  }));
 
   const { replay } = createReplayTools(
     recorder,

@@ -7,6 +7,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createReplayTools } from './replay-tools.js';
 import type { CommandSequence, RecordedCommand } from '../command-recorder.js';
+import { productionShaped } from '../test-support/fake-execute-tool-call.js';
 
 const RUN_PORT = 9222;
 const BORROWED_PORT = 9333;
@@ -17,7 +18,10 @@ const PORTS: Record<string, number> = {
   'phone': 9444,
 };
 
-function makeReplay(commands: RecordedCommand[]) {
+function makeReplay(
+  commands: RecordedCommand[],
+  opts: { connections?: Array<{ reference: string; port: number }> } = {},
+) {
   const sequence: CommandSequence = { id: 'seq-kill', name: 'kill-seq', commands, createdAt: 1 };
 
   const recorder = {
@@ -31,10 +35,18 @@ function makeReplay(commands: RecordedCommand[]) {
   } as any;
 
   const calls: Array<{ tool: string; params: Record<string, any> }> = [];
-  const executeToolCall = vi.fn(async (tool: string, params: Record<string, any>) => {
+  const executeToolCall = vi.fn(productionShaped(async (tool: string, params: Record<string, any>) => {
     calls.push({ tool, params });
+    if (tool === 'listConnections' && opts.connections) {
+      return {
+        content: [{
+          type: 'text',
+          text: `Active debugger connections\n\n\`\`\`json\n${JSON.stringify({ connections: opts.connections }, null, 2)}\n\`\`\``,
+        }],
+      };
+    }
     return { content: [{ type: 'text', text: '' }] };
-  });
+  }));
 
   const getConnectionPort = vi.fn(async (reference: string) => PORTS[reference] ?? null);
 
@@ -103,6 +115,33 @@ describe('killChromeOnFinish', () => {
     expect(killedPorts(calls)).toEqual([RUN_PORT]);
     // and we never even asked for the port of an uninterpolated reference
     expect(getConnectionPort.mock.calls.flat()).toEqual(['run-device']);
+  });
+
+  // Driven live: a launchChrome step usually opens a TAB in the existing
+  // instance, so a second connection shares the run's port. Killing by port
+  // then takes that browser down too - the exact thing this promises not to do.
+  it('leaves the browser running when another connection shares its port', async () => {
+    const { replay, calls } = makeReplay(
+      [{ tool: 'dom', params: { action: 'querySelector', selector: '#a' } }],
+      { connections: [{ reference: 'run-device', port: RUN_PORT }, { reference: 'tab-sibling', port: RUN_PORT }] },
+    );
+
+    const res = await run(replay);
+
+    expect(killedPorts(calls)).toEqual([]);
+    expect(text(res)).toContain('Chrome left running');
+    expect(text(res)).toContain('tab-sibling');
+  });
+
+  it('still kills when the only connection on the port is the run\'s own', async () => {
+    const { replay, calls } = makeReplay(
+      [{ tool: 'dom', params: { action: 'querySelector', selector: '#a' } }],
+      { connections: [{ reference: 'run-device', port: RUN_PORT }, { reference: 'phone', port: 9444 }] },
+    );
+
+    await run(replay);
+
+    expect(killedPorts(calls)).toEqual([RUN_PORT]);
   });
 
   it('kills nothing when killChromeOnFinish is not set', async () => {

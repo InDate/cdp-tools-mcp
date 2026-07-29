@@ -8,6 +8,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { CommandSequence } from '../command-recorder.js';
+import { productionShaped } from '../test-support/fake-execute-tool-call.js';
 
 const startRecordingMock = vi.fn();
 const eventsToCommandsSpy = vi.fn();
@@ -38,7 +39,9 @@ const { createReplayTools } = await import('./replay-tools.js');
 const { CommandRecorder } = await import('../command-recorder.js');
 
 function makeTool(recorder: InstanceType<typeof CommandRecorder>) {
-  const executeToolCall = vi.fn(async () => ({ content: [] }));
+  // A real tool always returns at least one content item; `{ content: [] }`
+  // made every `content[0].text` read undefined.
+  const executeToolCall = vi.fn(productionShaped(async (..._args: any[]) => ({ content: [{ type: 'text', text: '' }] })));
   const getPageForConnection = vi.fn(async () => ({ /* fake CDP page */ }));
   return createReplayTools(recorder, executeToolCall as any, getPageForConnection as any).replay;
 }

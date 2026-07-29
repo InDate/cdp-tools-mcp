@@ -679,9 +679,11 @@ export function createIssuesTools(
                 overwrite: true,
               });
 
-              // Check if recording was successful (not cancelled)
+              // Cancellation from `_meta`: searching the sentence for
+              // "cancelled" also matched a recorded page whose own text
+              // happened to contain the word.
               const resultText = recordingResult?.content?.[0]?.text || '';
-              if (resultText.includes('cancelled')) {
+              if (recordingResult?._meta?.replay?.cancelled) {
                 return recordingResult;
               }
 
@@ -701,41 +703,61 @@ export function createIssuesTools(
               const sequencePath = join(getIssueSequencesDir(), issue.sequenceFile!);
               const sequenceName = issue.sequenceFile!.replace(/\.json$/, '');
 
-              // Load and run sequence - executeToolCall throws on error
-              await executeToolCall('replay', {
-                action: 'load',
-                filename: sequencePath,
-              });
+              const closeVerificationTab = async () => {
+                if (args.keepBrowserOpen) return;
+                try {
+                  await executeToolCall('tab', { action: 'close', reference: connectionRef });
+                } catch {
+                  // Non-fatal
+                }
+              };
 
-              replayResult = await executeToolCall('replay', {
-                action: 'run',
-                // Blocking: the failure check below parses the run's result.
-                wait: true,
-                name: sequenceName,
-                connectionReason: connectionRef,
-                ...(args.connections && { connections: args.connections }),
-                showReplayOverlay: true,
-                issueId: issue.id,
-                issueType: issue.type,
-                issueTitle: issue.title,
-              });
+              // A run that FAILS returns normally and is read below; a run that
+              // cannot start at all (missing sequence file, Chrome refused to
+              // launch) THROWS. That throw used to escape this handler, so the
+              // verification browser was left open on the one path where the
+              // user is least likely to be watching it.
+              let replayText: string;
+              try {
+                await executeToolCall('replay', {
+                  action: 'load',
+                  filename: sequencePath,
+                });
 
-              // Check if replay failed - look for "Failed" in the result text
-              const replayText = replayResult?.content?.[0]?.text || '';
-              const replayFailed = replayText.includes('**Failed:**') && !replayText.includes('**Failed:** 0');
+                replayResult = await executeToolCall('replay', {
+                  action: 'run',
+                  // Blocking: the failure check below parses the run's result.
+                  wait: true,
+                  name: sequenceName,
+                  connectionReason: connectionRef,
+                  ...(args.connections && { connections: args.connections }),
+                  showReplayOverlay: true,
+                  issueId: issue.id,
+                  issueType: issue.type,
+                  issueTitle: issue.title,
+                });
+                replayText = replayResult?.content?.[0]?.text || '';
+              } catch (replayError: any) {
+                await closeVerificationTab();
+                return createErrorResponse('ISSUES_REPLAY_FAILED', {
+                  id: issue.id,
+                  type: issue.type,
+                  title: issue.title,
+                  replayDetails: replayError?.response?.content?.[0]?.text
+                    || replayError?.message
+                    || 'The replay tool failed to run the sequence.',
+                });
+              }
+
+              // From the run's own `_meta`, not its rendered summary: the text
+              // form coupled this to the exact "**Failed:** 0" wording in
+              // replay-formatters, so a reformat there would have silently
+              // turned every failed verification into a pass.
+              const runMeta = replayResult?._meta?.replay;
+              const replayFailed = runMeta?.success === false || (runMeta?.failedSteps ?? 0) > 0;
 
               if (replayFailed) {
-                // Close the tab on failure
-                if (!args.keepBrowserOpen) {
-                  try {
-                    await executeToolCall('tab', {
-                      action: 'close',
-                      reference: connectionRef,
-                    });
-                  } catch {
-                    // Non-fatal
-                  }
-                }
+                await closeVerificationTab();
 
                 // Return error immediately with replay details
                 return createErrorResponse('ISSUES_REPLAY_FAILED', {
@@ -758,9 +780,11 @@ export function createIssuesTools(
                 issueTitle: issue.title,
               });
 
-              // Check if recording was successful (not cancelled)
+              // Cancellation from `_meta`: searching the sentence for
+              // "cancelled" also matched a recorded page whose own text
+              // happened to contain the word.
               const resultText = recordingResult?.content?.[0]?.text || '';
-              if (resultText.includes('cancelled')) {
+              if (recordingResult?._meta?.replay?.cancelled) {
                 return recordingResult;
               }
 

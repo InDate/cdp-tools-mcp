@@ -76,6 +76,9 @@ export interface ActiveSequenceState {
 export class CommandRecorder {
   private history: HistoryCommand[] = [];
   private sequences: Map<string, CommandSequence> = new Map();
+  /** Bumped per created sequence: two created in the same millisecond used to
+   *  share an id, and the second silently evicted the first from the map. */
+  private sequenceSeq = 0;
   private commandCounter = 0;
   private maxHistorySize = 1000; // Keep last 1000 commands
   private activeSequence: ActiveSequenceState | null = null;
@@ -280,7 +283,7 @@ export class CommandRecorder {
     }
 
     const sequence: CommandSequence = {
-      id: `seq-${Date.now()}`,
+      id: `seq-${Date.now()}-${++this.sequenceSeq}`,
       name,
       ...(options?.description && { description: options.description }),
       ...(options?.expectedOutcome && { expectedOutcome: options.expectedOutcome }),
@@ -323,7 +326,7 @@ export class CommandRecorder {
     }
 
     const sequence: CommandSequence = {
-      id: `seq-${Date.now()}`,
+      id: `seq-${Date.now()}-${++this.sequenceSeq}`,
       name,
       ...(options?.description && { description: options.description }),
       ...(options?.expectedOutcome && { expectedOutcome: options.expectedOutcome }),

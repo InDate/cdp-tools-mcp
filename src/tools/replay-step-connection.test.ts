@@ -9,6 +9,8 @@ import {
 import type { ExecutionContext } from './replay-executor.js';
 import type { CommandSequence, RecordedCommand } from '../command-recorder.js';
 import { configManager } from '../config.js';
+import { productionShaped } from '../test-support/fake-execute-tool-call.js';
+import { createErrorResponse } from '../messages.js';
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -23,7 +25,7 @@ interface Call {
 
 function makeHarness(responses: Record<string, any> = {}) {
   const calls: Call[] = [];
-  const executeToolCall = vi.fn(async (tool: string, params: Record<string, any>) => {
+  const executeToolCall = vi.fn(productionShaped(async (tool: string, params: Record<string, any>) => {
     calls.push({ tool, action: params.action, connectionReason: params.connectionReason, params });
     const key = `${tool}.${params.action}`;
     if (key in responses) {
@@ -35,7 +37,7 @@ function makeHarness(responses: Record<string, any> = {}) {
       return typeof r === 'function' ? r(params) : r;
     }
     return { content: [{ type: 'text', text: '' }] };
-  });
+  }));
 
   const commandRecorder = {
     recordCommand: vi.fn(),
@@ -178,8 +180,10 @@ describe('bug-009: validation machinery follows the per-step connection', () => 
     // calls[0] is the run-level "resume if a previous run left us paused" probe
     expect(calls[0]).toMatchObject({ tool: 'inspect', action: 'getCallStack', connectionReason: 'device-a' });
 
-    // every observation around the click must target device-b
-    for (const c of calls.slice(1)) {
+    // every observation around the click must target device-b (listConnections
+    // is the step-connection existence probe - it is session-wide, not per
+    // connection, so it carries none)
+    for (const c of calls.slice(1).filter(c => c.tool !== 'listConnections')) {
       expect(
         { tool: c.tool, action: c.action, connectionReason: c.connectionReason }
       ).toMatchObject({ connectionReason: 'device-b' });
@@ -264,7 +268,10 @@ describe('bug-009: validation machinery follows the per-step connection', () => 
 
   it('gathers failure diagnostics from the step connection', async () => {
     const { calls, ctx } = makeHarness({
-      'dom.querySelector': { isError: true, content: [{ type: 'text', text: 'Element not found: #missing' }] },
+      // From the real helper: a hand-written fixture had neither the `_errorId`
+      // the failure classifier prefers nor the "Error: " prefix the template
+      // actually emits.
+      'dom.querySelector': createErrorResponse('ELEMENT_NOT_FOUND', { selector: '#missing' }),
     });
 
     await executeSteps({
@@ -275,13 +282,19 @@ describe('bug-009: validation machinery follows the per-step connection', () => 
       ctx,
     });
 
+    const networkProbes = find(calls, 'network', 'search');
     const diagnostics = [
       ...find(calls, 'console', 'list'),
-      ...find(calls, 'network', 'search'),
+      ...networkProbes,
       ...find(calls, 'content', 'findInteractive'),
     ];
-    expect(diagnostics.length).toBe(3);
+    expect(diagnostics.length).toBe(4);   // console + 4xx + 5xx + interactive
     expect(diagnostics.every(c => c.connectionReason === 'device-b')).toBe(true);
+    // `network search` rejects a call with no pattern, and reads statusCode as
+    // an exact code or an "Nxx" class - `{ statusCode: '4' }` matched nothing
+    // and errored before that, losing the whole diagnostic block.
+    expect(networkProbes.map(c => c.params.statusCode)).toEqual(['4xx', '5xx']);
+    expect(networkProbes.every(c => typeof c.params.pattern === 'string')).toBe(true);
   });
 
   it('leaves run-level steps on the run connection when another step overrides', async () => {
@@ -301,5 +314,42 @@ describe('bug-009: validation machinery follows the per-step connection', () => 
     // pause probes follow suit
     expect(find(calls, 'inspect', 'getCallStack').map(c => c.connectionReason))
       .toEqual(['device-a', 'device-b', 'device-a']);
+  });
+});
+
+/**
+ * The "Page state:" suffix on a failed step. It was silently absent from every
+ * failure: the network probe asked for `{ statusCode: '4' }` with no pattern,
+ * which the tool rejects outright, so gatherDiagnostics threw and returned ''.
+ */
+describe('failure diagnostics suffix', () => {
+  it('appends the page state to the failing step error', async () => {
+    const { ctx } = makeHarness({
+      'input.click': createErrorResponse('ELEMENT_NOT_FOUND', { selector: '#go' }),
+      'console.list': {
+        content: [{ type: 'text', text: 'Console Messages: 0 of 0' }],
+        _meta: { tool: 'console', action: 'list', timestamp: 0, console: { totalCount: 7, errorCount: 2 } },
+      },
+      'network.search': (params: Record<string, any>) => ({
+        content: [{ type: 'text', text: 'matches' }],
+        _meta: {
+          tool: 'network', action: 'search', timestamp: 0,
+          network: { totalCount: 9, matchCount: params.statusCode === '4xx' ? 3 : 1 },
+        },
+      }),
+      'content.findInteractive': {
+        content: [{ type: 'text', text: 'Interactive Elements' }],
+        _meta: { tool: 'content', action: 'findInteractive', timestamp: 0, content: { totalCount: 12 } },
+      },
+    });
+
+    const result = await executeSteps({
+      sequence: seq([{ tool: 'input', params: { action: 'click', selector: '#go' } }]),
+      startStep: 0,
+      ctx,
+    });
+
+    expect(result.results[0].success).toBe(false);
+    expect(result.results[0].error).toContain('Page state: 12 interactive elements, 2 console errors, 4 failed requests');
   });
 });

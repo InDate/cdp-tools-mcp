@@ -11,7 +11,7 @@ import { checkUrlPort } from '../utils/port-check.js';
 import { configManager, ClickValidationConfig } from '../config.js';
 import type { ClickActionMeta, ConsoleToolMeta, NetworkToolMeta } from '../tool-response.js';
 import { interpolateParams } from './interpolation.js';
-import { getMessage } from '../messages.js';
+import { getMessage, isElementNotFoundFailure } from '../messages.js';
 
 // Re-export replay cursor functions
 export { injectReplayCursor, showClickEffect, showKeyPress, removeReplayCursor } from '../replay-cursor.js';
@@ -252,6 +252,9 @@ export type ConditionResult =
  *   {{!cookie:NAME}}              - true if cookie does NOT exist
  *   {{localStorage:KEY}}          - true if localStorage key exists
  *   {{!localStorage:KEY}}         - true if localStorage key does NOT exist
+ *   {{indexedDB:DB/STORE/KEY}}    - true if that IndexedDB record exists
+ *   {{indexedDB:DB/STORE}}        - true if that object store holds any record
+ *   {{!indexedDB:...}}            - negation of either form
  */
 export async function evaluateCondition(
   condition: string,
@@ -265,7 +268,7 @@ export async function evaluateCondition(
   if (!match) {
     return {
       met: false,
-      reason: `Invalid condition format: "${condition}". Expected {{type:value}} or {{!type:value}}. Supported types: selector, url, cookie, localStorage`,
+      reason: `Invalid condition format: "${condition}". Expected {{type:value}} or {{!type:value}}. Supported types: selector, url, cookie, localStorage, indexedDB`,
       isError: true
     };
   }
@@ -280,13 +283,37 @@ export async function evaluateCondition(
 
     switch (type) {
       case 'selector': {
-        const result = await executeToolCall('dom', {
-          action: 'querySelector',
-          selector: value,
-          connectionReason
-        });
-        const resultText = result?.content?.[0]?.text || '';
-        conditionMet = !result?.isError && resultText.includes('Element found');
+        // Absence is the answer, not a broken condition: it arrives as a thrown
+        // ToolError, which any other failure does too - hence the classifier.
+        const probeSelector = async () => {
+          try {
+            const res: any = await executeToolCall('dom', {
+              action: 'querySelector',
+              selector: value,
+              connectionReason
+            });
+            return { res };
+          } catch (selectorError: any) {
+            return {
+              failure: selectorError?.message || String(selectorError),
+              errorId: selectorError?.response?._errorId,
+            };
+          }
+        };
+
+        const attempt = await probeSelector();
+        if (attempt.failure) {
+          if (isElementNotFoundFailure({ errorId: attempt.errorId, text: attempt.failure })) {
+            conditionMet = false;
+            break;
+          }
+          return {
+            met: false,
+            reason: `Error evaluating selector condition "${value}": ${attempt.failure}`,
+            isError: true
+          };
+        }
+        conditionMet = (attempt.res?.content?.[0]?.text || '').includes('Element found');
         break;
       }
 
@@ -295,9 +322,10 @@ export async function evaluateCondition(
           action: 'info',
           connectionReason
         });
-        const pageText = pageInfo?.content?.[0]?.text || '';
-        const urlMatch = pageText.match(/URL:\s*([^\s,]+)/);
-        const currentUrl = urlMatch ? urlMatch[1] : '';
+        // From `_meta` where it exists: the text fallback stops the URL at the
+        // first comma or space, so a data: URL or a `?ids=1,2` query compared as
+        // a truncated prefix - `{{url:EXACT}}` could never match one.
+        const currentUrl = pageInfo?._meta?.navigate?.url ?? '';
 
         if (value.startsWith('contains:')) {
           const searchStr = value.substring('contains:'.length);
@@ -338,8 +366,10 @@ export async function evaluateCondition(
           action: 'getCookies',
           connectionReason
         });
-        const resultText = result?.content?.[0]?.text || '';
-        conditionMet = resultText.includes(`"name": "${value}"`) || resultText.includes(`name=${value}`);
+        // Names from `_meta`: grepping the rendered JSON matched another
+        // cookie's VALUE, and the `name=wanted` form matched any cookie whose
+        // name merely ENDS with it.
+        conditionMet = (result?._meta?.storage?.cookieNames ?? []).includes(value);
         break;
       }
 
@@ -349,15 +379,99 @@ export async function evaluateCondition(
           key: value,
           connectionReason
         });
-        const resultText = result?.content?.[0]?.text || '';
-        conditionMet = !result?.isError && !resultText.includes('not found') && !resultText.includes('null');
+        // Presence from `_meta`. The old text test read the whole rendered
+        // response, so a key whose VALUE was "null" - or contained "not found",
+        // or any OTHER key's value did - reported the key as missing, and a
+        // `{{localStorage:...}}` guard skipped work it should have done. An
+        // empty string is a stored value and counts as present.
+        conditionMet = result?._meta?.storage?.found === true;
+        break;
+      }
+
+      case 'indexedDB': {
+        // DB/STORE/KEY, where the key may itself contain slashes. Two segments
+        // ask "does this store hold anything at all".
+        const segments = value.split('/');
+        const [db, store, ...rest] = segments;
+        const key = rest.join('/');
+        if (!db || !store) {
+          return {
+            met: false,
+            reason: `Invalid indexedDB condition "${value}". Expected {{indexedDB:DB/STORE/KEY}} or {{indexedDB:DB/STORE}}.`,
+            isError: true
+          };
+        }
+        // A key segment that interpolated to nothing must NOT quietly become the
+        // store form ("is anything in here"), which answers a different question
+        // and would flip a setup decision with no signal.
+        if (rest.length > 0 && !key) {
+          return {
+            met: false,
+            reason: `Invalid indexedDB condition "${value}": the key is empty.`
+              + ` Use {{indexedDB:${db}/${store}}} to ask whether the store holds anything,`
+              + ` or check the {{var:...}} that produced the key.`,
+            isError: true
+          };
+        }
+
+        // A database or store that doesn't exist yet is the record being
+        // ABSENT, not a broken condition: that is the state a fresh profile is
+        // in, and the state a setup sequence exists to heal. It arrives as a
+        // thrown ToolError, like any other tool failure.
+        const probe = async (probeKey?: string | number) => {
+          try {
+            const res: any = probeKey !== undefined
+              ? await executeToolCall('storage', { action: 'idbGet', db, store, key: probeKey, connectionReason })
+              : await executeToolCall('storage', { action: 'idbGetAll', db, store, limit: 1, connectionReason });
+            return { res };
+          } catch (idbError: any) {
+            return { failure: idbError?.message || String(idbError) };
+          }
+        };
+
+        const isAbsence = (failure: string) =>
+          /does not exist|not found in database|no object store/i.test(failure);
+
+        /**
+         * Presence comes from the tool's structured `_meta`, never from its
+         * rendered text: a record whose VALUE contains "No record found for
+         * this key." (or "**Count:** 0") read as absent when this grepped the
+         * markdown.
+         */
+        const presentIn = (res: any): boolean => {
+          const meta = res?._meta?.storage;
+          return key ? meta?.found === true : (meta?.count ?? 0) > 0;
+        };
+
+        let attempt = await probe(key || undefined);
+        if (attempt.failure) {
+          if (isAbsence(attempt.failure)) { conditionMet = false; break; }
+          return {
+            met: false,
+            reason: `Error evaluating indexedDB condition "${value}": ${attempt.failure}`,
+            isError: true
+          };
+        }
+
+        conditionMet = presentIn(attempt.res);
+
+        // A condition is written as text, so a numerically-keyed store ("42")
+        // would never match its own record - IndexedDB keys 42 and "42" are
+        // different keys. Retry as a number before concluding absence.
+        if (!conditionMet && key && /^-?\d+(\.\d+)?$/.test(key)) {
+          const numeric = await probe(Number(key));
+          if (!numeric.failure && presentIn(numeric.res)) {
+            await debugLog(logPrefix, `indexedDB key "${key}" matched as a number, not a string`);
+            conditionMet = true;
+          }
+        }
         break;
       }
 
       default:
         return {
           met: false,
-          reason: `Unknown condition type: "${type}". Supported types: selector, url, cookie, localStorage`,
+          reason: `Unknown condition type: "${type}". Supported types: selector, url, cookie, localStorage, indexedDB`,
           isError: true
         };
     }
@@ -467,9 +581,55 @@ export async function executeConditionalFlow(
 
   const sequence = loadResult.sequence;
 
-  // Filter out launchChrome commands - we already have a connection
-  const filteredCommands = sequence.commands.filter(cmd => cmd.tool !== 'launchChrome');
+  // Drop launchChrome steps whose browser already exists - the caller handed us
+  // a live connection and relaunching it would throw the session away. Keep the
+  // ones whose reference is NOT live: a setup sequence that spans two browsers
+  // has to be able to create the second one, or it can only ever heal identity
+  // in browsers that happened to be open already.
+  // Probed only when there is a launch to reason about, so the common
+  // conditional costs no extra tool call.
+  const liveRefs = sequence.commands.some(cmd => cmd.tool === 'launchChrome')
+    ? await probeLiveConnectionReferences(ctx.executeToolCall)
+    : null;
+  const keptLaunches: string[] = [];
+  const filteredCommands = sequence.commands.filter(cmd => {
+    if (cmd.tool !== 'launchChrome') return true;
+
+    const recorded = typeof cmd.params?.reference === 'string'
+      ? sanitizeReference(cmd.params.reference)
+      : undefined;
+    // No reference to reason about, or no readable connection list: fall back to
+    // the old always-drop behaviour rather than risk killing the live browser.
+    if (!recorded || !liveRefs) return false;
+
+    const resolved = ctx.connectionMap?.[recorded] ?? recorded;
+    if (liveRefs.has(resolved)) return false;
+
+    debugLog(logPrefix, `Keeping launchChrome for "${resolved}" in nested sequence "${sequenceName}": no such connection in this session`);
+    keptLaunches.push(resolved);
+    return true;
+  });
   const filteredSequence = { ...sequence, commands: filteredCommands };
+
+  // A launch we KEPT created a browser that only this sub-sequence knows about,
+  // and `create` hoists a uniform connection OFF the steps - so the setup
+  // sequence is a launch followed by BARE steps. Left on the parent's
+  // connection, those steps run in the caller's browser: the run creates a
+  // browser, does nothing in it, and reports success. Bind the sub-run to the
+  // browser it just launched, exactly as a top-level run of that sequence would
+  // (extractConnectionFromSequence).
+  //
+  // Only for a launch we kept. A launch that was DROPPED means the browser
+  // already existed, and re-pointing bare steps at it would hijack a nested
+  // login/setup sequence that has always run in whatever browser called it.
+  const nestedAnalysis = analyzeSequenceConnections(filteredCommands);
+  const launchedConnection = extractConnectionFromSequence(filteredCommands, nestedAnalysis);
+  const nestedConnection = launchedConnection && keptLaunches.includes(launchedConnection)
+    ? launchedConnection
+    : undefined;
+  if (nestedConnection) {
+    await debugLog(logPrefix, `Nested sequence "${sequenceName}" runs against the browser it launched ("${nestedConnection}"), not the caller's "${ctx.connectionReason}"`);
+  }
 
   await debugLog(logPrefix, `Executing conditional sequence "${sequence.name}" with ${filteredCommands.length} commands (depth: ${currentDepth + 1})`);
 
@@ -479,6 +639,7 @@ export async function executeConditionalFlow(
     startStep: 0,
     ctx: {
       ...ctx,
+      ...(nestedConnection ? { connectionReason: nestedConnection } : {}),
       conditionalDepth: currentDepth + 1,
       conditionalCallStack: [...callStack, sequenceName]
     },
@@ -793,17 +954,42 @@ export function sequenceNeedsConnection(commands: RecordedCommand[]): boolean {
  * executeToolCall returned nothing parseable) - callers must treat null as
  * "unknown" and NOT as "empty", or every per-step connection would be rejected.
  */
-async function probeLiveConnectionReferences(
+export async function probeLiveConnectionReferences(
   executeToolCall: ExecuteToolCall
 ): Promise<Set<string> | null> {
   try {
     const result = await executeToolCall('listConnections', {});
     const text = result?.content?.[0]?.text || '';
+    const parsed = parseConnectionList(text);
+    if (!parsed) return null;
+    // A connection whose socket has already dropped is not somewhere a step can
+    // run, so it must not count as live - otherwise a healing sequence skips the
+    // launch that would have replaced it.
     const refs = new Set<string>();
-    for (const m of text.matchAll(/"reference":\s*"([^"]+)"/g)) {
-      refs.add(sanitizeReference(m[1]));
+    for (const c of parsed) {
+      if (c.connected !== false) refs.add(sanitizeReference(c.reference));
     }
     return refs.size > 0 ? refs : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The `connections` array out of a `listConnections` response, or null when the
+ * response carries no parseable JSON block (a stub, or a future format) - null
+ * means "unknown", never "empty".
+ */
+export function parseConnectionList(
+  text: string
+): Array<{ reference: string; port?: number; connected?: boolean }> | null {
+  const block = text.match(/```json\s*([\s\S]*?)```/);
+  if (!block) return null;
+  try {
+    const parsed = JSON.parse(block[1]);
+    const list = parsed?.connections;
+    if (!Array.isArray(list)) return null;
+    return list.filter((c: any) => typeof c?.reference === 'string');
   } catch {
     return null;
   }
@@ -831,7 +1017,7 @@ export function formatMissingStepConnection(opts: {
   return [
     `Step ${step} (${tool}) needs connection "${resolved}"${via}, which does not exist in this session.`,
     `Active connections: ${live.length ? live.join(', ') : 'none'}.`,
-    `This sequence spans more than one connection, so the step is NOT run against` +
+    `The step names its own connection, so it is NOT run against` +
       ` the run-level connection${runConnection ? ` "${runConnection}"` : ''} - that would replay a` +
       ` multi-browser sequence in a single browser and report success.`,
     `Either create it (launchChrome({ reference: "${resolved}" })) or rebind it:` +
@@ -856,7 +1042,7 @@ export async function checkIfPaused(
     });
 
     const callStackText = callStackResult?.content?.[0]?.text || '';
-    const isPaused = callStackText.includes('callFrameId') && !callStackText.includes('Not paused');
+    const isPaused = callStackText.includes('callFrameId');
 
     if (isPaused) {
       // Extract pause location from call stack - try header format first, then JSON
@@ -942,13 +1128,18 @@ export async function autoLaunchChrome(
   requireValidReference(connectionReason);
 
   await debugLog(logPrefix, `Auto-launching Chrome with reference: ${connectionReason} (forceNewInstance=${forceNewInstance})`);
-  const launchResult = await executeToolCall('launchChrome', { reference: connectionReason, forceNewInstance });
 
-  if (launchResult?.isError) {
-    const errorText = launchResult?.content?.[0]?.text || 'Unknown error';
+  // A launch failure arrives as a THROW in production (executeToolCall rethrows
+  // isError) - and this helper is called from inside ensureConnection's catch,
+  // so letting it through escaped the run entirely: the caller's LAUNCH_FAILED
+  // handling, and its "launch Chrome manually first" suggestion, never ran and
+  // the user saw a raw tool error instead.
+  try {
+    await executeToolCall('launchChrome', { reference: connectionReason, forceNewInstance });
+  } catch (launchError: any) {
     return {
       success: false,
-      error: `Failed to auto-launch Chrome: ${errorText}`,
+      error: `Failed to auto-launch Chrome: ${launchError?.response?.content?.[0]?.text || launchError?.message || 'Unknown error'}`,
       errorType: 'LAUNCH_FAILED'
     };
   }
@@ -974,7 +1165,8 @@ export async function ensureConnection(
   try {
     await debugLog(logPrefix, `Checking connection: ${connectionReason}`);
     const infoResult = await executeToolCall('navigate', { action: 'info', connectionReason });
-    // Check if navigate returned an error response (doesn't throw, returns isError: true)
+    // In production this throws instead, into the same catch below; the check
+    // is for a caller wired not to rethrow.
     if (infoResult?.isError) {
       throw new Error('Connection not active');
     }
@@ -1094,33 +1286,21 @@ export async function executeCommandWithRetry(
   const retryDelayMs = 500;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    // executeToolCall (index.ts) THROWS a ToolError when a tool returns an error
-    // response (result.isError), so a tool error arrives here as an exception, not
-    // a returned value. Handle BOTH: the catch is what actually drives element-not-
-    // found retries (e.g. an async-rendered button that hasn't mounted yet); the
-    // returned-isError branch is kept defensively in case a caller doesn't throw.
+    // A tool error arrives as an EXCEPTION: executeToolCall raises a ToolError
+    // for any isError response. The catch is what drives element-not-found
+    // retries (e.g. an async-rendered button that hasn't mounted yet).
     let result: any;
     try {
       result = await executeToolCall(tool, params, abortSignal);
     } catch (err: any) {
       const errorText = err?.response?.content?.[0]?.text || err?.message || '';
-      const isElementNotFound = errorText.includes('Element not found') ||
-                                errorText.includes('not found') ||
-                                errorText.includes('No element matches');
-
-      if (isRetryableAction && isElementNotFound && attempt < maxRetries) {
-        debugLog(logPrefix, `Element not found, retrying... (attempt ${attempt}/${maxRetries})`);
-        await new Promise(resolve => setTimeout(resolve, retryDelayMs));
-        continue;
-      }
-      return { success: false, error: errorText.split('\n')[0] || 'Unknown error' };
-    }
-
-    if (result && result.isError) {
-      const errorText = result.content?.[0]?.text || '';
-      const isElementNotFound = errorText.includes('Element not found') ||
-                                errorText.includes('not found') ||
-                                errorText.includes('No element matches');
+      // A bare "not found" also matched CONNECTION_NOT_FOUND, SEQUENCE_NOT_FOUND
+      // and friends, so a click against a dead connection burned all five
+      // retries and 2.5s before reporting what was wrong on the first attempt.
+      const isElementNotFound = isElementNotFoundFailure({
+        errorId: err?.response?._errorId,
+        text: errorText,
+      });
 
       if (isRetryableAction && isElementNotFound && attempt < maxRetries) {
         debugLog(logPrefix, `Element not found, retrying... (attempt ${attempt}/${maxRetries})`);
@@ -1482,28 +1662,40 @@ async function gatherDiagnostics(ctx: ExecutionContext): Promise<string> {
       type: 'error',
       connectionReason
     });
-    const consoleText = consoleResult?.content?.[0]?.text || '';
-    const errorCount = (consoleText.match(/\*\*error\*\*/gi) || []).length;
+    // Counts come from `_meta`, as validateClickAction's do. Counting
+    // `**error**` in the rendered console text also counted the word inside a
+    // logged MESSAGE, and `\d{3}` over the network text matched any three
+    // digits anywhere - a timestamp, a byte count, an id in a URL.
+    const errorCount = consoleResult?._meta?.console?.errorCount ?? 0;
 
-    const networkResult = await executeToolCall('network', {
-      action: 'search',
-      statusCode: '4',
-      connectionReason
-    });
-    const networkText = networkResult?.content?.[0]?.text || '';
-    const failedRequests = (networkText.match(/\d{3}/g) || [])
-      .filter((s: string) => s.startsWith('4') || s.startsWith('5')).length;
+    // `network search` REQUIRES a pattern and reads statusCode as an exact code
+    // or an "Nxx" class. Asking for `{ statusCode: '4' }` with no pattern was
+    // rejected outright, so this whole helper threw and every step failure was
+    // reported with no page state at all - and had it got through, '4' would
+    // have matched no request either.
+    const countRequests = async (statusCode: string) => {
+      const result = await executeToolCall('network', {
+        action: 'search',
+        pattern: '.',
+        statusCode,
+        connectionReason
+      });
+      return result?._meta?.network?.matchCount ?? 0;
+    };
+    const failedRequests = (await countRequests('4xx')) + (await countRequests('5xx'));
 
     const interactiveResult = await executeToolCall('content', {
       action: 'findInteractive',
       connectionReason
     });
-    const interactiveText = interactiveResult?.content?.[0]?.text || '';
-    const interactiveMatch = interactiveText.match(/Total: (\d+)/);
-    const interactiveCount = interactiveMatch ? interactiveMatch[1] : 'unknown';
+    const interactiveCount = interactiveResult?._meta?.content?.totalCount ?? 'unknown';
 
     return ` | Page state: ${interactiveCount} interactive elements, ${errorCount} console errors, ${failedRequests} failed requests`;
-  } catch {
+  } catch (err: any) {
+    // Say why. Swallowing this silently is how a malformed network probe hid
+    // for as long as it did: every step failure simply carried no page state,
+    // and nothing anywhere said the probe had failed.
+    debugLog(ctx.logPrefix || 'executor', `Could not gather diagnostics: ${err?.message || err}`);
     return '';
   }
 }
@@ -1706,7 +1898,12 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
         const resolved = mapConnection(recorded);
         params.connectionReason = resolved;
 
-        if (resolved !== connectionReason && recordedConnections.multiConnection) {
+        // Checked for ANY step naming a connection other than the run's, not
+        // just multi-connection sequences: a single-reference sequence pointed
+        // at a browser that isn't here otherwise fails deep inside the tool
+        // with a generic "Not connected to browser" and never names the
+        // connection it wanted.
+        if (resolved !== connectionReason) {
           const { known, live } = await stepConnectionExists(resolved);
           if (!known) {
             results.push({
@@ -2211,12 +2408,22 @@ export async function getDebugState(ctx: ExecutionContext): Promise<DebugState |
     const totalMatch = breakpointText.match(/\*\*Total:\*\*\s*(\d+)/);
     const breakpointCount = totalMatch ? parseInt(totalMatch[1], 10) : 0;
 
-    const callStackResult = await executeToolCall('inspect', {
-      action: 'getCallStack',
-      connectionReason
-    });
-    const callStackText = callStackResult?.content?.[0]?.text || '';
-    const isPaused = callStackText.includes('callFrameId') && !callStackText.includes('Not paused');
+    // "Not paused" is the ANSWER, not a failure - but inspect.getCallStack
+    // reports it as an error response, which the live executeToolCall rethrows.
+    // Letting it reach the outer catch threw away the breakpoint count already
+    // read and reported no debug state at all for the ordinary unpaused run,
+    // which is the run this exists to describe.
+    let callStackText = '';
+    try {
+      const callStackResult = await executeToolCall('inspect', {
+        action: 'getCallStack',
+        connectionReason
+      });
+      callStackText = callStackResult?.content?.[0]?.text || '';
+    } catch (callStackError: any) {
+      if (callStackError?.response?._errorId !== 'NOT_PAUSED') throw callStackError;
+    }
+    const isPaused = callStackText.includes('callFrameId');
 
     let pauseLocation: string | undefined;
     if (isPaused) {

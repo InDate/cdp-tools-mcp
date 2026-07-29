@@ -595,6 +595,13 @@ interface MCPResponse {
   isError?: boolean;
   /** Structured metadata for programmatic use (validation, replay). Decoupled from text output. */
   _meta?: ToolResponseMeta;
+  /**
+   * Message template id behind an error, for callers that must classify a
+   * failure rather than display it. In-process only - the replay executor reads
+   * the handler's return value (and ToolError's captured response) before
+   * anything is serialized, so it need not survive the wire.
+   */
+  _errorId?: string;
 }
 
 /**
@@ -609,7 +616,23 @@ export function createErrorResponse(messageId: string, variables?: Record<string
       },
     ],
     isError: true,
+    _errorId: messageId,
   };
+}
+
+/**
+ * Whether a tool failure means "that element isn't on the page", as opposed to
+ * any other failure. Prefers the response's `_errorId`; the text forms are for
+ * a failure that arrived without one. Lives beside the ELEMENT_NOT_FOUND
+ * template so a reword is caught here rather than in every caller that
+ * classifies one.
+ */
+export function isElementNotFoundFailure(failure: { errorId?: string; text?: string }): boolean {
+  if (failure.errorId) return failure.errorId === 'ELEMENT_NOT_FOUND';
+  const text = failure.text || '';
+  // The second is puppeteer's own phrasing, for a handler that let the
+  // library's error through instead of returning ELEMENT_NOT_FOUND.
+  return /Element not found:/.test(text) || /No element found for selector/i.test(text);
 }
 
 /**

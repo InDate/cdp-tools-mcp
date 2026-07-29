@@ -4,6 +4,7 @@ import type { ExecutionContext } from './replay-executor.js';
 import type { CommandSequence, RecordedCommand } from '../command-recorder.js';
 import { configManager } from '../config.js';
 import { getMessage } from '../messages.js';
+import { productionShaped } from '../test-support/fake-execute-tool-call.js';
 
 // ---------------------------------------------------------------------------
 // Harness (same style as replay-step-connection.test.ts)
@@ -17,7 +18,7 @@ interface Call {
 
 function makeHarness(responses: Record<string, any> = {}) {
   const calls: Call[] = [];
-  const executeToolCall = vi.fn(async (tool: string, params: Record<string, any>) => {
+  const executeToolCall = vi.fn(productionShaped(async (tool: string, params: Record<string, any>) => {
     calls.push({ tool, action: params.action, params });
     const key = `${tool}.${params.action}`;
     if (key in responses) {
@@ -29,7 +30,7 @@ function makeHarness(responses: Record<string, any> = {}) {
       return typeof r === 'function' ? r(params) : r;
     }
     return { content: [{ type: 'text', text: '' }] };
-  });
+  }));
 
   const commandRecorder = {
     recordCommand: vi.fn(),

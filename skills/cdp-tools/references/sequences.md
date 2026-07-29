@@ -6,6 +6,28 @@ regression test, a repro attached to an issue, or a multi-step automation.
 
 Everything below is the `replay` tool: `replay({ action: '...' })`.
 
+## Rules for building one
+
+These hold however you build a sequence - by hand, as a subagent, or from a
+slash command. They are here, once, rather than restated by each of those.
+
+- **Never hand-write sequence JSON.** Sequences come from recorded tool calls.
+  Hand-edited JSON skips the validation the tools apply and does not port.
+- **Do the work with the tools; don't describe it.** Every call you make is
+  recorded, and the sequence is assembled from that history afterwards.
+- **Pass `connectionReason` on every browser call** - including the connection
+  that is already active, and including tools where it is optional (`inspect`,
+  `execution`, `storage`, `network`, `breakpoint`, `request`). A call without it
+  records nothing about which browser it ran in, so on replay it lands wherever
+  the run-level connection points - silently, and the run still passes. This is
+  the most common way to produce a sequence that tests nothing.
+- **Check `listSaved` first.** Auth and setup flows often already exist; a
+  `conditional` step can reuse one instead of re-recording it.
+- **Keep the path minimal.** Skip exploratory calls (source searches, unrelated
+  navigation); include only what is needed to reproduce.
+- **Write a specific `expectedOutcome`** - file:line, variable names, expected
+  vs actual values. "It works" is not an expected outcome.
+
 ## Getting a sequence
 
 **Record what a human does** - `recordInteraction`
@@ -135,7 +157,9 @@ Useful `run` parameters:
 - `killChromeOnFinish` - tears down the **run-level** browser only. Browsers a
   step reached via its own `connectionReason` are deliberately left running,
   so a sequence can read from a long-lived instance you launched yourself
-  without it being killed underneath you
+  without it being killed underneath you. Skipped altogether when another live
+  connection shares the port (a `launchChrome` step usually opens a tab in the
+  same instance) - the run says which connection kept it alive
 
 Step through interactively with `step`, `finish`, `insert`, `status`, `cancel`
 (`run` with `stepTo: N` pauses after step N; the run's status becomes `paused`
@@ -252,16 +276,27 @@ replay({ action: 'run', sequenceId: 'duo',
 
 Recorded name on the left, a reference from this session on the right. A key
 that matches nothing in the sequence is rejected up front, listing the real
-ones, rather than being ignored. So is mapping two recorded references onto one
-browser - that would collapse the sequence into a single browser and pass.
+ones, rather than being ignored - "the sequence" includes the sequences its
+`conditional` steps pull in, so a setup sequence behind a conditional is
+rebindable too. Mapping two recorded references onto one browser is rejected as
+well - that would collapse the sequence into a single browser and pass.
 `issues({ action: 'workOn' | 'resolve' })` takes `connections` too.
+
+Any step naming a connection other than the run's is checked against the live
+session first, so a missing browser fails as *"step 3 needs connection
+duo-member-two, which does not exist in this session"* rather than as a generic
+"not connected to browser" from somewhere inside the tool.
 
 **repeat / runFromLog.** Each command replays against the connection it was
 recorded with. An explicit `connectionReason` retargets a single-connection
 batch and is refused for a multi-connection one.
 
 **Exported code.** `outputFormat: 'playwright' | 'puppeteer'` gives each recorded
-connection its own page rather than merging them into one.
+connection its own page rather than merging them into one. Only `navigate` and
+`input` steps have equivalents; everything else (`conditional`, `launchChrome`,
+`inspect`, `storage`, `wait`) becomes a `// [not generated]` comment, and a
+sequence where nothing could be generated exports a test that **throws** instead
+of an empty one that passes. Setup sequences are for `run`, not for export.
 
 Two things that deliberately do not happen: a run-level `connectionReason` does
 **not** override a step's own, and a per-step reference that doesn't exist in
@@ -271,10 +306,93 @@ one browser and report success.
 
 ## Conditional steps
 
-`conditional` is a virtual step tool - it runs a nested sequence when a
-condition holds. It's handled inside the executor and never appears in the
-tool list, which is why it's exempt from tool-name validation. Nested
-sequences share the parent run's captured variables.
+`conditional` is a virtual step tool - it runs another sequence inline when a
+condition holds. It's handled inside the executor and never appears in the tool
+list, which is why it's exempt from tool-name validation.
+
+```javascript
+{ tool: 'conditional', params: {
+    if: '{{selector:.login-button}}',
+    then: 'perform-login' } }
+```
+
+`then` is the **name of another sequence**, loaded and run inline. Use it for
+state that varies between runs - "log in first, but only if logged out".
+
+| Condition | True when |
+|---|---|
+| `{{selector:CSS}}` / `{{!selector:CSS}}` | element exists / doesn't |
+| `{{url:contains:STRING}}` | current URL contains the string |
+| `{{url:matches:REGEX}}` | current URL matches the regex |
+| `{{url:EXACT}}` | current URL equals the value |
+| `{{cookie:NAME}}` / `{{!cookie:NAME}}` | cookie exists / doesn't |
+| `{{localStorage:KEY}}` / `{{!localStorage:KEY}}` | key exists / doesn't |
+| `{{indexedDB:DB/STORE/KEY}}` / `{{!indexedDB:...}}` | that record exists / doesn't |
+| `{{indexedDB:DB/STORE}}` | the object store holds at least one record |
+
+A database or store that doesn't exist yet counts as **absent**, not as an
+evaluation error - that's the state a wiped profile is in, and the state a
+healing setup sequence exists to fix.
+| `{{indexedDB:DB/STORE/KEY}}` / `{{!indexedDB:...}}` | that record exists / doesn't |
+| `{{indexedDB:DB/STORE}}` | the object store holds at least one record |
+
+A database or store that doesn't exist yet is **absent**, not an error - that's
+the state a wiped profile is in. A value JSON can't represent (a
+non-extractable `CryptoKey`, a `Blob`) still counts as present, so a device
+identity is probeable directly instead of through some UI proxy. An all-digits
+key is tried as a string and then as a number, since IndexedDB keys `42` and
+`"42"` differ.
+
+Conditions are interpolated like any other parameter, so a captured variable can
+drive one: `{{indexedDB:identity/keys/{{var:deviceId}}}}`.
+
+**Not met and cannot-evaluate are different outcomes.** A condition that is
+legitimately false skips the nested sequence and the step counts as a
+**success**. A condition that can't be evaluated at all - bad format, unknown
+type, invalid or over-long regex, tool error - **fails the run**. Don't write a
+conditional expecting a malformed condition to fall through quietly.
+
+The nested sequence shares the parent run's captured variables (`saveAs` values
+flow both ways) and inherits its remaining timeout budget. A `launchChrome` step
+inside it is skipped when that reference is already connected and run when it
+isn't, so a setup sequence spanning two browsers can create the second one
+itself.
+
+**Which browser its bare steps run in** follows from that: if the nested launch
+actually ran, they run in the browser it created (a setup sequence is a launch
+plus bare steps, since `create` hoists the connection off them - leaving them on
+the caller would open a browser and then do the work in the wrong one); if the
+launch was skipped or absent, they run in the calling run's connection, so a
+nested login sequence still works wherever it's called from. Steps naming their
+own `connectionReason` are unaffected.
+
+**Two connections are not two devices.** A plain `launchChrome` opens a tab in
+the running instance, so both references share one profile - one cookie jar, one
+localStorage, one IndexedDB. A duo test built that way has ONE device identity
+under two names, and a cross-user propagation check passes without a second
+device existing. When the two sides must be genuinely separate, launch the
+second with its own profile:
+`launchChrome({ reference: 'duo-member-two', profile: 'member', forceNewInstance: true })`.
+Same `port` in `listConnections` means same instance, so shared storage.
+
+Nesting depth is capped by `replay.maxConditionalDepth` (default 10) and regexes
+by `replay.maxRegexLength` (default 500), both in `.cdp-tools/config.json`.
+Oscillating chains (A->B->A) are allowed up to the depth cap. Full detail:
+`docs/replay.md`.
+
+## When a sequence is flaky
+
+Name the symptom rather than adding sleeps - each of these has a real mechanism
+behind it, documented in `docs/replay.md`:
+
+| Symptom | What to reach for |
+|---|---|
+| Clicks land before the element exists | Click/type/hover already retry; add an explicit `wait({ selector })` step for work the previous step kicked off |
+| Consent banners or dialogs block interaction | `handleModals: true` on the input action, with a `dismissStrategy` |
+| Stale content while requests are in flight | `wait({ expression })` on a flag the app sets, not a fixed sleep |
+| localhost URL fails because nothing is running | The port check fails fast - start the server (`server({ action: 'start' })`) |
+| A run hangs or takes far too long | `stepTimeout` / `totalTimeout`; a step exceeding its budget fails the run at that step |
+| A step ran against the wrong browser | See the multi-device section - almost always a bare `connectionReason` |
 
 ## Verifying a fix
 

@@ -22,6 +22,7 @@ import { runRegistry } from './replay-run-registry.js';
 import type { CommandSequence, RecordedCommand } from '../command-recorder.js';
 import type { ExecuteToolCall } from '../types.js';
 import { configManager } from '../config.js';
+import { productionShaped } from '../test-support/fake-execute-tool-call.js';
 
 // ---------------------------------------------------------------------------
 // Harness: an executeToolCall that routes `wait` to the REAL wait handler
@@ -61,22 +62,19 @@ function makeHarness(opts: {
 
   const { wait } = createWaitTools(resolveConnectionFromReason as any);
 
-  const executeToolCall: ExecuteToolCall = vi.fn(async (tool, params, abortSignal) => {
+  // productionShaped mirrors index.ts: any isError response becomes a thrown
+  // ToolError, carrying the response the classifiers read.
+  const executeToolCall: ExecuteToolCall = vi.fn(productionShaped(async (tool: string, params: any, abortSignal?: AbortSignal) => {
     calls.push({ tool, action: params.action, params });
     if (tool === 'wait') {
-      const result = await wait.handler(params as any, abortSignal);
-      if (result?.isError) {
-        // Mirror index.ts: an isError response becomes a thrown error.
-        throw new Error(result?.content?.[0]?.text || 'Tool error');
-      }
-      return result;
+      return await wait.handler(params as any, abortSignal);
     }
     if (opts.responses && tool in opts.responses) {
       const r = opts.responses[tool];
       return typeof r === 'function' ? r(params) : r;
     }
     return { content: [{ type: 'text', text: '' }] };
-  });
+  }));
 
   const commandRecorder = {
     recordCommand: vi.fn(),

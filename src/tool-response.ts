@@ -95,6 +95,16 @@ export interface NetworkToolMeta {
 }
 
 /**
+ * Content tool metadata (findInteractive)
+ */
+export interface ContentToolMeta {
+  /** interactive elements on the page */
+  totalCount: number;
+  /** of those, not currently visible */
+  hiddenCount?: number;
+}
+
+/**
  * Request tool metadata (HTTP request/response, capturable via saveAs)
  */
 export interface RequestToolMeta {
@@ -127,6 +137,30 @@ export interface InspectToolMeta {
   valueSource?: 'exact' | 'display';
   /** Set when the expression was evaluated against a paused call frame */
   callFrameId?: string;
+}
+
+/**
+ * Storage tool metadata (IndexedDB reads).
+ *
+ * Exists so a caller can ask "is this record there?" without grepping the
+ * rendered markdown: a stored value that happens to contain the tool's own
+ * "No record found for this key." text made a present record read as absent.
+ */
+export interface StorageToolMeta {
+  /** IndexedDB only */
+  database?: string;
+  /** IndexedDB only */
+  store?: string;
+  /** idbGet / getLocalStorage / getSessionStorage: whether the key resolved */
+  found?: boolean;
+  /** the key that was probed, where the call named one */
+  key?: string;
+  /** getCookies: the names present, so a caller can test for one without reading the rendered text */
+  cookieNames?: string[];
+  /** idbGetAll: records returned (bounded by `limit`). getCookies / whole-store reads: entries present */
+  count?: number;
+  /** idbGetAll: records in the store, ignoring `limit` */
+  total?: number;
 }
 
 /**
@@ -174,6 +208,8 @@ export interface ReplayRunMeta {
   runStatus?: string;
   /** 1-based step currently executing (status action replies). */
   currentStep?: number;
+  /** recordInteraction: the person closed the recorder without saving. */
+  cancelled?: boolean;
 }
 
 /**
@@ -191,10 +227,12 @@ export interface ToolResponseMeta {
   navigate?: NavigateActionMeta;
   console?: ConsoleToolMeta;
   network?: NetworkToolMeta;
+  content?: ContentToolMeta;
   request?: RequestToolMeta;
   inspect?: InspectToolMeta;
   assert?: AssertToolMeta;
   wait?: WaitToolMeta;
+  storage?: StorageToolMeta;
   replay?: ReplayRunMeta;
 }
 

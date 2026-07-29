@@ -89,6 +89,12 @@ export function formatExecutionResults(
             const icon = sub.success ? '✓' : '✗';
             response += `   ${r.step}.${sub.step}. ${sub.tool} ${icon}\n`;
           });
+        } else if (r.conditionMet) {
+          // The condition HELD and the sequence still ran nothing - every step
+          // was already satisfied (a launchChrome for a browser that exists).
+          // Reporting this as "condition not met" would describe the opposite
+          // of what happened.
+          response += `${r.step}. **${r.tool}** (${r.sequenceName}) ✓ - condition met, no steps left to run\n`;
         } else {
           // Skipped because condition not met (not an error, just false)
           response += `${r.step}. **${r.tool}** (${r.sequenceName}) ○ - skipped (condition not met)\n`;

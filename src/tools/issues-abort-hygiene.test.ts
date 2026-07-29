@@ -16,6 +16,7 @@ import { join } from 'path';
 import { setWorkingDirOverride } from '../helpers/paths.js';
 import { __resetForTests, addIssue } from '../issue-tracker.js';
 import { createIssuesTools } from './issues-tools.js';
+import { productionShaped } from '../test-support/fake-execute-tool-call.js';
 
 vi.mock('../interaction-recorder.js', () => ({
   showTestReadyOverlay: vi.fn(),
@@ -37,7 +38,7 @@ afterEach(async () => {
 
 describe('workOn abort-listener hygiene', () => {
   it('detaches its abort listener from the signal once the handler settles', async () => {
-    const executeToolCall = vi.fn().mockResolvedValue({ content: [{ type: 'text', text: '' }] });
+    const executeToolCall = vi.fn(productionShaped(async (..._args: any[]) => ({ content: [{ type: 'text', text: '' }] })));
     const { issues } = createIssuesTools(executeToolCall);
 
     const controller = new AbortController();
@@ -59,12 +60,12 @@ describe('workOn abort-listener hygiene', () => {
 
   it('still closes the tab when aborted while the handler is in flight', async () => {
     let releaseReplay: (() => void) | undefined;
-    const executeToolCall = vi.fn(async (tool: string, params: Record<string, any>) => {
+    const executeToolCall = vi.fn(productionShaped(async (tool: string, params: Record<string, any>) => {
       if (tool === 'replay' && params.action === 'run') {
         await new Promise<void>(resolve => { releaseReplay = resolve; });
       }
       return { content: [{ type: 'text', text: '' }] };
-    });
+    }));
     const { issues } = createIssuesTools(executeToolCall);
 
     // A sequence-backed issue drives the blocking replay path.

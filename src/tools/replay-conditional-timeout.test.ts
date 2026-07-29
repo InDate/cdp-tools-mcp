@@ -16,16 +16,17 @@ import { executeSteps } from './replay-executor.js';
 import type { ExecutionContext } from './replay-executor.js';
 import type { CommandSequence, RecordedCommand } from '../command-recorder.js';
 import { configManager } from '../config.js';
+import { productionShaped } from '../test-support/fake-execute-tool-call.js';
 
 function makeHarness(responses: Record<string, any> = {}, nested?: CommandSequence) {
   const calls: string[] = [];
-  const executeToolCall = vi.fn(async (tool: string, params: Record<string, any>) => {
+  const executeToolCall = vi.fn(productionShaped(async (tool: string, params: Record<string, any>) => {
     calls.push(`${tool}.${params.action ?? ''}`);
     const key = `${tool}.${params.action}`;
     const r = key in responses ? responses[key] : responses[tool];
     if (r !== undefined) return typeof r === 'function' ? r(params) : r;
     return { content: [{ type: 'text', text: '' }] };
-  });
+  }));
 
   const commandRecorder = {
     recordCommand: vi.fn(),
@@ -68,6 +69,12 @@ beforeEach(() => {
   } as any);
 });
 
+/** The shape navigate.info really returns: the URL comes from `_meta`. */
+const pageInfo = (url: string) => ({
+  content: [{ type: 'text', text: `URL: ${url}` }],
+  _meta: { tool: 'navigate', action: 'info', timestamp: 0, navigate: { url, title: 't', action: 'info' } },
+});
+
 describe('conditional sub-sequences inherit the parent timeout budget', () => {
   // Against pre-fix code this HANGS: the substep got the 30s default rather
   // than the caller's 300ms, so nothing bounded it inside the it() timeout.
@@ -75,7 +82,7 @@ describe('conditional sub-sequences inherit the parent timeout budget', () => {
     const nested = seq('inner', [
       { tool: 'inspect', params: { action: 'evaluateExpression', expression: 'hang()' } },
     ]);
-    const { ctx } = makeHarness({ 'navigate.info': { content: [{ type: 'text', text: 'URL: https://example.com/' }] }, 'inspect.evaluateExpression': () => hangForever() }, nested);
+    const { ctx } = makeHarness({ 'navigate.info': pageInfo('https://example.com/'), 'inspect.evaluateExpression': () => hangForever() }, nested);
 
     const started = Date.now();
     const result = await executeSteps({
@@ -96,7 +103,7 @@ describe('conditional sub-sequences inherit the parent timeout budget', () => {
     const nested = seq('inner', [
       { tool: 'inspect', params: { action: 'evaluateExpression', expression: 'hang()' } },
     ]);
-    const { ctx } = makeHarness({ 'navigate.info': { content: [{ type: 'text', text: 'URL: https://example.com/' }] }, 'inspect.evaluateExpression': () => hangForever() }, nested);
+    const { ctx } = makeHarness({ 'navigate.info': pageInfo('https://example.com/'), 'inspect.evaluateExpression': () => hangForever() }, nested);
 
     const started = Date.now();
     const result = await executeSteps({
@@ -119,7 +126,7 @@ describe('conditional sub-sequences inherit the parent timeout budget', () => {
 
   it('leaves an unbudgeted caller on the defaults', async () => {
     const nested = seq('inner', [{ tool: 'navigate', params: { action: 'info' } }]);
-    const { calls, ctx } = makeHarness({ 'navigate.info': { content: [{ type: 'text', text: 'URL: https://example.com/' }] } }, nested);
+    const { calls, ctx } = makeHarness({ 'navigate.info': pageInfo('https://example.com/') }, nested);
 
     const result = await executeSteps({
       sequence: seq('outer', [

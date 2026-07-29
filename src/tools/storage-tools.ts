@@ -8,6 +8,7 @@ import { PuppeteerManager } from '../puppeteer-manager.js';
 import { executeWithPauseDetection } from '../debugger-aware-wrapper.js';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
+import type { StorageToolMeta } from '../tool-response.js';
 
 /**
  * Describe an arbitrary structured-clone value as JSON-expressible data.
@@ -270,6 +271,19 @@ export function describeStructuredValue(
  * lexical reference to `describeStructuredValue` would be undefined in-page.
  */
 const SERIALIZER_SOURCE = describeStructuredValue.toString();
+
+/**
+ * Presence for a localStorage/sessionStorage read, structurally. `getItem`
+ * returns null only when the key is absent, so a stored empty string still
+ * counts as present - which reading the rendered JSON could not tell apart.
+ */
+export function webStorageMeta(items: any, key?: string | number): StorageToolMeta {
+  if (key === undefined) {
+    return { count: Object.keys(items ?? {}).length };
+  }
+  const name = String(key);
+  return { key: name, found: items?.[name] !== null && items?.[name] !== undefined };
+}
 
 // Consolidated schema for storage tools
 const storageSchema = z.object({
@@ -613,6 +627,15 @@ export function createStorageTools(
                   text: markdown,
                 },
               ],
+              // Names structurally, so a caller asking "is this cookie set" never
+              // has to grep the rendered JSON - where another cookie's VALUE can
+              // contain the text being searched for.
+              _meta: {
+                tool: 'storage',
+                action,
+                timestamp: Date.now(),
+                storage: { cookieNames: cookies.map((c: any) => c.name), count: cookies.length },
+              },
             };
           }
 
@@ -662,6 +685,12 @@ export function createStorageTools(
                   text: markdown,
                 },
               ],
+              _meta: {
+                tool: 'storage',
+                action,
+                timestamp: Date.now(),
+                storage: webStorageMeta(result.result, args.key),
+              },
             };
           }
 
@@ -726,6 +755,12 @@ export function createStorageTools(
                   text: markdown,
                 },
               ],
+              _meta: {
+                tool: 'storage',
+                action,
+                timestamp: Date.now(),
+                storage: webStorageMeta(result.result, args.key),
+              },
             };
           }
 
@@ -794,7 +829,15 @@ export function createStorageTools(
             const markdown = idb.found
               ? `## IndexedDB Record\n\n**Database:** ${idb.database}\n**Store:** ${idb.store}\n**Key:** ${JSON.stringify(idb.key)}\n\n${formatCodeBlock(idb.value)}`
               : `## IndexedDB Record\n\n**Database:** ${idb.database}\n**Store:** ${idb.store}\n**Key:** ${JSON.stringify(idb.key)}\n\nNo record found for this key.`;
-            return { content: [{ type: 'text', text: markdown }] };
+            return {
+              content: [{ type: 'text', text: markdown }],
+              _meta: {
+                tool: 'storage',
+                action,
+                timestamp: Date.now(),
+                storage: { database: idb.database, store: idb.store, found: !!idb.found },
+              },
+            };
           }
 
           case 'idbGetAll': {
@@ -807,7 +850,20 @@ export function createStorageTools(
 
             const truncatedNote = idb.truncated ? ` (showing ${idb.count} of ${idb.total}, raise "limit" to see more)` : '';
             const markdown = `## IndexedDB Records\n\n**Database:** ${idb.database}\n**Store:** ${idb.store}\n**Count:** ${idb.count}${truncatedNote}\n\n${formatCodeBlock(idb.records)}`;
-            return { content: [{ type: 'text', text: markdown }] };
+            return {
+              content: [{ type: 'text', text: markdown }],
+              _meta: {
+                tool: 'storage',
+                action,
+                timestamp: Date.now(),
+                storage: {
+                  database: idb.database,
+                  store: idb.store,
+                  count: idb.count,
+                  ...(idb.total !== undefined && { total: idb.total }),
+                },
+              },
+            };
           }
 
           case 'idbPut': {

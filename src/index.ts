@@ -61,6 +61,7 @@ import { mkdirSync, existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import { ServerManager, detectAutoRestartCommand } from './server-manager.js';
 import { configManager } from './config.js';
+import { ToolError } from './tool-error.js';
 import { checkPortFailures, checkBreakpointPause, checkBugBlocking, checkPendingStartups, checkDuplicateSession, prependToResponse, appendToResponse, buildStatusSuffix, type StatusLineItem } from './tool-response.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock, getMessage, getFormattedResponse } from './messages.js';
 import { setChromeLauncher } from './error-helpers.js';
@@ -1369,15 +1370,6 @@ async function executeToolCall(toolName: string, params: Record<string, any>, ab
   }
 
   return result;
-}
-
-/**
- * Error that wraps a tool error response for propagation
- */
-class ToolError extends Error {
-  constructor(public response: any) {
-    super(response?.content?.[0]?.text || 'Tool error');
-  }
 }
 
 // Combine all tools (conditionally based on config)

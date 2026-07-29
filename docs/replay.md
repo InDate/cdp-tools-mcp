@@ -529,6 +529,13 @@ reuses an existing connection with the same reference - so its presence proves
 nothing about ownership. The executor would rather under-kill: a leaked browser
 is visible and closable, a killed one takes state you cannot get back.
 
+For the same reason the kill is **skipped entirely when another live connection
+shares the port** — a `launchChrome` step normally opens a tab in the existing
+instance rather than a new process, so killing by port would take those
+browsers down too. The run says so instead: *"Chrome left running (port 9224
+also serves duo-member-two, killChromeOnFinish)"*. Disconnect or close the other
+connections first if you want the instance gone.
+
 ### Preview Sequence
 
 ```javascript
@@ -729,7 +736,16 @@ replay({
 Recorded name on the left, a reference from this session on the right. Both
 sides are sanitized, so spaced forms work. A key matching nothing in the
 sequence is rejected before anything runs, listing the references the sequence
-actually uses — a typo fails loudly instead of being ignored.
+actually uses — a typo fails loudly instead of being ignored. "The sequence"
+includes any sequence reached through a `conditional` step, since a setup
+sequence normally lives behind one; when such a sub-sequence can't be resolved
+in memory the key is accepted rather than guessed at.
+
+A step naming a connection other than the run's is checked against the live
+session before it runs, whether or not the sequence spans several connections,
+so a missing browser fails as *"step 3 needs connection duo-member-two, which
+does not exist in this session"* instead of a generic "not connected to browser"
+from inside the tool.
 
 Mapping also renames the `reference` on `launchChrome` / `connectDebugger`
 steps; otherwise a mapped sequence would launch the recorded name and then drive
@@ -772,6 +788,14 @@ single-connection sequence generates exactly what it always did. Emitting every
 step against one `page` would relocate the same silent collapse into the
 exported test.
 
+The generators only know `navigate` and `input` steps. Anything else —
+`conditional`, `launchChrome`, `inspect`, `storage`, `wait`, `breakpoint` —
+becomes a `// [not generated]` comment naming the step, and a sequence where
+*nothing* could be generated exports a test that **throws** rather than an empty
+one that passes. A setup sequence made of a conditional and a launch has no
+Playwright equivalent at all; run it with `replay({ action: 'run' })` instead of
+exporting it.
+
 ### Two deliberate non-behaviours
 
 - **A run-level `connectionReason` does not override a step's own.** The step
@@ -796,8 +820,38 @@ appears in the tool list, and is exempt from tool-name validation.
 ```
 
 `then` is the name of another sequence, loaded and run inline when the condition
-holds. Any `launchChrome` steps in it are filtered out (a connection already
-exists), and it shares the parent run's captured variables.
+holds, and it shares the parent run's captured variables. A `launchChrome` step
+inside it is skipped when that reference is already connected, and run when it
+isn't - so a setup sequence spanning two browsers can create the second one.
+
+Which browser the sub-sequence's *bare* steps run in follows from that:
+
+| The nested `launchChrome` | Bare steps run in |
+|---|---|
+| **ran** (that browser didn't exist) | the browser it just launched |
+| **skipped** (already connected), or absent | the calling run's connection |
+
+That split is what makes both shapes work. A setup sequence is a launch plus
+bare steps (`create` hoists the connection off them), so its steps have to
+follow the browser it created - otherwise the run opens a browser, does the work
+in the *caller's* browser, and still reports success. A nested login sequence
+whose browser already exists keeps running in whatever browser called it. Steps
+that name their own `connectionReason` are unaffected either way.
+
+> **Two connections are not two devices.** A plain `launchChrome` reuses the
+> running instance and opens a *tab* in it, so both references share one profile
+> - one set of cookies, one localStorage, one IndexedDB. A duo test built that
+> way has a single device identity wearing two names, and a "does it propagate
+> to the other user" check passes without a second device ever existing. Give
+> the second browser its own `profile` (and `forceNewInstance: true`) when the
+> point of the test is that the two sides are genuinely separate:
+>
+> ```javascript
+> launchChrome({ reference: 'duo-member-two', profile: 'member', forceNewInstance: true })
+> ```
+>
+> `listConnections` shows the giveaway: same `port` means same instance and
+> therefore shared storage.
 
 Supported conditions:
 
@@ -809,6 +863,33 @@ Supported conditions:
 | `{{url:EXACT}}` | current URL equals the value |
 | `{{cookie:NAME}}` / `{{!cookie:NAME}}` | cookie exists / doesn't |
 | `{{localStorage:KEY}}` / `{{!localStorage:KEY}}` | key exists / doesn't |
+| `{{indexedDB:DB/STORE/KEY}}` / `{{!indexedDB:...}}` | that record exists / doesn't |
+| `{{indexedDB:DB/STORE}}` | the object store holds at least one record |
+
+An element that isn't on the page counts as *absent*, not an error, so
+`{{!selector:...}}` skips correctly. A malformed selector or a disconnected
+browser still fails the run. The page is probed once with no retry (precede an
+async marker with a `wait` step), and a hidden element counts as present.
+
+Every condition reads the tool's structured result, never its printed text, so
+stored *data* cannot answer a question about *structure*: a localStorage value
+of `"null"` (or one containing "not found") is present, an empty string is
+present, a cookie name matches exactly rather than as a suffix, and a URL
+containing a comma compares in full.
+
+A database or store that doesn't exist yet counts as *absent*, not as an
+evaluation error - that is the state a wiped profile is in, and the state a
+healing setup sequence exists to fix. A value that cannot be represented in
+JSON (a non-extractable `CryptoKey`, a `Blob`) still counts as present.
+Presence comes from the storage tool's structured result, not its printed text,
+so a record whose *value* happens to read "No record found for this key." is
+still present. A condition is written as text, so an all-digits key is probed as
+a string and then, if that misses, as a number - IndexedDB keys `42` and `"42"`
+are different keys.
+
+A condition is interpolated like any other step parameter, so a captured
+variable can drive it — `{{indexedDB:identity/keys/{{var:deviceId}}}}` after an
+earlier `inspect({ saveAs: 'deviceId' })`.
 
 A condition that is legitimately *not met* skips the nested sequence and the
 step counts as a success. A condition that cannot be *evaluated* (bad format,

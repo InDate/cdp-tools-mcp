@@ -35,8 +35,32 @@ Two things that follow from the push being automatic, and that are easy to get w
 What that means while iterating on this repo with a live Claude Code session attached:
 - Any Chrome instances the old child launched are killed - call `launchChrome` again after a rebuild.
 - Managed dev servers (the `server` tool) survive the restart and reattach automatically - they're tracked outside the child process's lifetime.
-- You do not need to tell the user to reconnect `/mcp` after `npm run build` - it already happened.
+- You do not need to tell the user to reconnect `/mcp` after `npm run build` - provided the postbuild hook actually found a supervisor to signal, which it now reports either way (see below).
 - `config({ action: 'restart' })` is a real tool call and thus part of the frozen tool list itself - if you're testing a change to the restart mechanism, be aware the *old* code's version of that tool is what actually runs until the restart it triggers completes.
+
+### When a rebuild doesn't take effect
+
+`npm run build` now says whether it reached anything: `Sent SIGUSR2 to mcp-supervisor (PID n)` means the live session has your change, and `No pidfile ... nothing to reload` means it does not (reconnect `/mcp`). If you are debugging behaviour that contradicts the source you just edited, read that line before reading the code - it silently printed nothing before, and stale-code debugging is indistinguishable from a real bug.
+
+The pidfile is last-writer-wins across supervisors, so a supervisor only deletes it on exit when it still names that process (`src/supervisor/pidfile.ts`). Deleting it unconditionally let a stale supervisor, exiting hours later, disable a live session's hot reload.
+
+## Tool failures are THROWN, not returned
+
+`executeToolCall` (`src/index.ts`) converts any `isError` response into a thrown `ToolError` (`src/tool-error.ts`) carrying that response. **Code downstream of it that branches on `result.isError` is dead**, and a test whose fake `executeToolCall` *returns* isError responses will happily cover that dead branch while the live path goes untested. That mismatch shipped several bugs: absent-element conditions failing whole runs, `LAUNCH_FAILED` never reaching the user, a leaked verification tab.
+
+So:
+
+- **Wrap every fake `executeToolCall` in `productionShaped()`** (`src/test-support/fake-execute-tool-call.ts`), which raises isError responses the way the real one does. Import the real `ToolError` rather than re-declaring its shape.
+- **Classify failures by `_errorId`, not by message text.** `createErrorResponse` attaches it, and `ToolError` carries the whole response, so `err.response._errorId` is available in-process. `isElementNotFoundFailure()` in `messages.ts` is the worked example - it lives beside the template it matches.
+- **Build fixtures with the real helpers** (`createErrorResponse`, `getErrorMessage`, `formatCodeBlock`, `webStorageMeta`). Hand-written response text drifts: fixtures asserted `Element not found: ...` for a year while `MessageManager` actually emits `Error: Element not found: ...`.
+
+## Read `_meta`, never rendered text
+
+Structured results live in `_meta` (`src/tool-response.ts`). Anything deciding *behaviour* from a tool response must read that, because rendered text mixes our formatting with page-controlled data. Every instance of grepping the markdown has been a bug: a localStorage value of `"null"` read as absent, a URL containing a comma compared truncated, `**error**` counted inside a logged message, `\d{3}` matching any three digits as an HTTP status.
+
+If the data you need isn't in `_meta`, add it there (as `ContentToolMeta` was for `findInteractive`) rather than parsing the string.
+
+Corollary: **don't add a text fallback "just in case"**. Production has exactly one shape; a fallback no code path reaches is untestable and hides drift. The one deliberate exception is a raw library exception with no `_errorId` at all.
 
 ## Where things live
 

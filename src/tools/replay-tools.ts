@@ -36,6 +36,7 @@ import {
   commandTakesInjectedConnection,
   normalizeStepConnections,
   sanitizeConnectionMap,
+  parseConnectionList,
   type ExecutionContext,
   type LoadSequenceResult,
 } from './replay-executor.js';
@@ -267,7 +268,7 @@ const replaySchema = z.object({
   issueTitle: z.string().optional(),
   showReplayOverlay: z.boolean().optional(),
   showAll: z.boolean().optional().describe('Show all sequences including completed/fixed issues'),
-  killChromeOnFinish: z.boolean().optional().describe("run: kill the Chrome behind this run's own connection after finishing (skipped on pause/abort). Browsers a step connects to via its own connectionReason are left running - they may be instances you launched yourself."),
+  killChromeOnFinish: z.boolean().optional().describe("run: kill the Chrome behind this run's own connection after finishing (skipped on pause/abort). Browsers a step connects to via its own connectionReason are left running - they may be instances you launched yourself. Also skipped when another live connection shares the port (a launchChrome step usually opens a tab in the same instance), and the run reports which connection kept it alive."),
 }).strict();
 
 // =============================================================================
@@ -899,6 +900,78 @@ interface PerformRunDeps {
   connectionMap?: Record<string, string>;
 }
 
+/**
+ * Live connection references sharing `port`, excluding `self`. Empty when the
+ * session cannot be read - an unreadable list must not stop a requested kill,
+ * only a KNOWN co-tenant does.
+ */
+async function connectionsSharingPort(
+  executeToolCall: ExecuteToolCall,
+  port: number,
+  self: string
+): Promise<string[]> {
+  try {
+    const result: any = await executeToolCall('listConnections', {});
+    const parsed = parseConnectionList(result?.content?.[0]?.text || '');
+    if (!parsed) return [];
+    return parsed
+      .filter(c => c.port === port
+        && c.connected !== false
+        && sanitizeReference(c.reference) !== sanitizeReference(self))
+      .map(c => c.reference);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * References that sequences reached through `conditional` steps name, for
+ * validating `connections`. Resolution is memory-only and best-effort: a
+ * sequence that lives on disk isn't loaded here (that would register it as a
+ * side effect of validation), so `complete: false` says "this list may be
+ * short" and the caller must not treat a missing key as a typo.
+ */
+function collectNestedRebindableReferences(
+  commands: RecordedCommand[],
+  recorder: CommandRecorder,
+  depth = 0,
+  seen = new Set<string>()
+): { references: string[]; complete: boolean } {
+  // Must track the executor's own cap, not a hardcoded copy: with a raised
+  // maxConditionalDepth, references at runtime-reachable depths would be
+  // omitted while `complete` still claimed the list was exhaustive, and a valid
+  // rebinding key would be rejected as a typo.
+  if (depth >= configManager.getReplayConfig().maxConditionalDepth) {
+    return { references: [], complete: false };
+  }
+
+  const references: string[] = [];
+  let complete = true;
+
+  for (const cmd of commands) {
+    if (cmd.tool !== 'conditional') continue;
+    const then = typeof cmd.params?.then === 'string' ? cmd.params.then : undefined;
+    if (!then || seen.has(then)) continue;
+    seen.add(then);
+
+    const nested = recorder.listSequences().find(s => s.name === then);
+    if (!nested) { complete = false; continue; }
+
+    references.push(...analyzeRecordedStepConnections(nested.commands).references);
+    for (const c of nested.commands) {
+      if ((c.tool === 'launchChrome' || c.tool === 'connectDebugger') && typeof c.params.reference === 'string') {
+        references.push(sanitizeReference(c.params.reference));
+      }
+    }
+
+    const deeper = collectNestedRebindableReferences(nested.commands, recorder, depth + 1, seen);
+    references.push(...deeper.references);
+    complete = complete && deeper.complete;
+  }
+
+  return { references, complete };
+}
+
 async function handleRun(
   args: ReplayArgs,
   recorder: CommandRecorder,
@@ -946,11 +1019,20 @@ async function handleRun(
   const connectionMap = sanitizeConnectionMap(args.connections);
   if (connectionMap) {
     const recorded = analyzeRecordedStepConnections(commands);
+    // A `conditional` step's sequence inherits this map, and a setup sequence
+    // normally lives BEHIND the conditional - so its references have to count as
+    // rebindable too, or the only rebindable ones are those needing no rebind.
+    const nested = collectNestedRebindableReferences(commands, recorder);
     const launchRefs = commands
       .filter(c => (c.tool === 'launchChrome' || c.tool === 'connectDebugger') && typeof c.params.reference === 'string')
       .map(c => sanitizeReference(c.params.reference));
-    const known = new Set([...recorded.references, ...launchRefs]);
-    const unknown = Object.keys(connectionMap).filter(k => !known.has(k));
+    const known = new Set([...recorded.references, ...launchRefs, ...nested.references]);
+    // An unresolvable nested sequence (on disk, or created later) means we
+    // cannot prove a key is a typo - and refusing a run over an unprovable
+    // typo is worse than letting an unused mapping through.
+    const unknown = nested.complete
+      ? Object.keys(connectionMap).filter(k => !known.has(k))
+      : [];
     if (unknown.length > 0) {
       return createErrorResponse('INVALID_PARAMETER', {
         parameter: 'connections',
@@ -1296,9 +1378,19 @@ async function performRun(
   // reference (CHROME_CONNECTION_REUSED), so its presence in the sequence proves
   // nothing about ownership. Rather than guess, we under-kill: a leaked browser is
   // visible and closable, a killed one takes state the user cannot get back.
+  //
+  // The kill is by PORT, and other connections can share that port - a
+  // `launchChrome` step usually opens a TAB in the same instance rather than a
+  // new process. Killing then takes those browsers down too, which is exactly
+  // what this promises not to do, so the port is checked for other tenants
+  // first.
   if (args.killChromeOnFinish && connectionReason && getConnectionPort) {
     const port = await getConnectionPort(connectionReason);
-    if (port !== null) {
+    const sharers = port === null ? [] : await connectionsSharingPort(executeToolCall, port, connectionReason);
+    if (sharers.length > 0) {
+      response += `\n\n**Chrome left running** (port ${port} also serves ${sharers.join(', ')}, killChromeOnFinish)` +
+        ` - killing it would take those connections with it.`;
+    } else if (port !== null) {
       const killResult = await executeToolCall('killChrome', {
         reason: `killChromeOnFinish: sequence "${sequence.name}" completed`,
         port,
@@ -1701,6 +1793,26 @@ async function handleRecordInteraction(
     });
   }
 
+  /**
+   * The failure text, or null when the navigation worked. A failed goto THROWS
+   * in production (executeToolCall rethrows isError), so the NAVIGATION_FAILED
+   * responses below never fired and the recorder went on to record against
+   * whatever page happened to be open - the same try/catch shape
+   * navigateToStartUrl already uses.
+   */
+  const navigateTo = async (url: string): Promise<string | null> => {
+    try {
+      const navResult = await executeToolCall('navigate', {
+        action: 'goto',
+        connectionReason: args.connectionReason!,
+        url
+      });
+      return navResult?.isError ? (navResult?.content?.[0]?.text || 'Unknown error') : null;
+    } catch (navError: any) {
+      return navError?.response?.content?.[0]?.text || navError?.message || 'Unknown error';
+    }
+  };
+
   if (!getPageForConnection) {
     return createErrorResponse('NOT_SUPPORTED', {
       message: 'Interaction recording is not supported in this context'
@@ -1748,15 +1860,11 @@ async function handleRecordInteraction(
     }
 
     // Navigate to the startUrl
-    const navResult = await executeToolCall('navigate', {
-      action: 'goto',
-      connectionReason: args.connectionReason,
-      url: startUrl
-    });
-    if (navResult?.isError) {
+    const navFailure = await navigateTo(startUrl);
+    if (navFailure) {
       return createErrorResponse('NAVIGATION_FAILED', {
         url: startUrl,
-        message: `Failed to navigate to startUrl: ${navResult?.content?.[0]?.text || 'Unknown error'}`
+        message: `Failed to navigate to startUrl: ${navFailure}`
       });
     }
 
@@ -1770,15 +1878,11 @@ async function handleRecordInteraction(
     }
   } else if (startUrl) {
     // Page already exists but startUrl provided - navigate to it
-    const navResult = await executeToolCall('navigate', {
-      action: 'goto',
-      connectionReason: args.connectionReason,
-      url: startUrl
-    });
-    if (navResult?.isError) {
+    const navFailure = await navigateTo(startUrl);
+    if (navFailure) {
       return createErrorResponse('NAVIGATION_FAILED', {
         url: startUrl,
-        message: `Failed to navigate to startUrl: ${navResult?.content?.[0]?.text || 'Unknown error'}`
+        message: `Failed to navigate to startUrl: ${navFailure}`
       });
     }
   }
@@ -1812,7 +1916,16 @@ async function handleRecordInteraction(
         content: [{
           type: 'text',
           text: '**Recording cancelled** - no sequence created.'
-        }]
+        }],
+        // Structurally too: callers were deciding this by searching the
+        // sentence for "cancelled", which any recorded page title could also
+        // have contained.
+        _meta: {
+          tool: 'replay',
+          action: 'recordInteraction',
+          timestamp: Date.now(),
+          replay: { totalSteps: 0, cancelled: true },
+        },
       };
     }
     return createErrorResponse('RECORDING_FAILED', { message: result.error });
@@ -2068,6 +2181,8 @@ function generatePuppeteerCode(commands: Array<{ tool: string; params: Record<st
     lines.push('');
   }
 
+  let generatedSteps = 0;
+
   for (const cmd of commands) {
     // Everything this command emits is rewritten onto its own page below.
     const emittedFrom = lines.length;
@@ -2127,9 +2242,17 @@ function generatePuppeteerCode(commands: Array<{ tool: string; params: Record<st
       }
     }
 
+    // Same rule as the Playwright generator: a dropped step leaves a hole.
+    if (lines.length === emittedFrom) {
+      lines.push(`  // [not generated] ${describeUngeneratedStep(cmd)}`);
+    } else {
+      generatedSteps++;
+    }
+
     rewritePage(lines, emittedFrom, pages.varFor(cmd));
   }
 
+  lines.push(...ungeneratedTestGuard(generatedSteps, commands.length, Boolean(startUrl)));
   lines.push('  await browser.close();');
   lines.push('}');
   lines.push('');
@@ -2159,6 +2282,8 @@ function generatePlaywrightCode(commands: Array<{ tool: string; params: Record<s
     lines.push('');
   }
 
+  let generatedSteps = 0;
+
   for (const cmd of commands) {
     const emittedFrom = lines.length;
     // Add comment if present
@@ -2170,6 +2295,8 @@ function generatePlaywrightCode(commands: Array<{ tool: string; params: Record<s
     if (cmd.delay && cmd.delay > 100) {
       lines.push(`  await page.waitForTimeout(${cmd.delay});`);
     }
+
+    const bodyFrom = lines.length;
 
     if (cmd.tool === 'navigate') {
       const { action, ...params } = cmd.params;
@@ -2241,12 +2368,47 @@ function generatePlaywrightCode(commands: Array<{ tool: string; params: Record<s
       }
     }
 
+    // A step with no Playwright equivalent (conditional, launchChrome, inspect,
+    // storage, wait, breakpoint...) must leave a visible hole. Dropping it
+    // silently is how a sequence turns into a test that passes without doing
+    // anything it was recorded to do.
+    if (lines.length === bodyFrom) {
+      lines.push(`  // [not generated] ${describeUngeneratedStep(cmd)}`);
+    } else {
+      generatedSteps++;
+    }
+
     rewritePage(lines, emittedFrom, pages.varFor(cmd));
   }
 
+  lines.push(...ungeneratedTestGuard(generatedSteps, commands.length, Boolean(startUrl)));
   lines.push('});');
 
   return lines.join('\n');
+}
+
+/** Names a step the generators have no equivalent for, for the emitted comment. */
+function describeUngeneratedStep(cmd: { tool: string; params: Record<string, any> }): string {
+  const action = typeof cmd.params?.action === 'string' ? `({ action: '${cmd.params.action}' })` : '';
+  const extra = cmd.tool === 'conditional' && cmd.params?.then
+    ? ` — runs the sequence "${cmd.params.then}" when ${cmd.params.if}`
+    : '';
+  return `${cmd.tool}${action}${extra}`;
+}
+
+/**
+ * Body for a generated test that ended up with nothing to run. Returning an
+ * empty test would export a permanently GREEN file - the failure mode this
+ * whole tool exists to avoid - so the generated test fails and says why.
+ */
+function ungeneratedTestGuard(generatedSteps: number, totalSteps: number, hasStartUrl: boolean): string[] {
+  if (generatedSteps > 0 || hasStartUrl) return [];
+  return [
+    '',
+    `  throw new Error('cdp-tools: none of the ${totalSteps} recorded step(s) have a generated equivalent`
+      + ` (see the "[not generated]" comments above) - this exported test would otherwise pass without doing anything.`
+      + ` Run it with replay({ action: "run" }) instead.');`,
+  ];
 }
 
 // =============================================================================

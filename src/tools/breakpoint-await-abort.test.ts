@@ -17,6 +17,7 @@ import type { ExecutionContext } from './replay-executor.js';
 import { isAbortError } from '../utils/abort.js';
 import type { CommandSequence, RecordedCommand } from '../command-recorder.js';
 import type { ExecuteToolCall } from '../types.js';
+import { ToolError } from '../tool-error.js';
 
 function makeCdpManager(overrides: Record<string, any> = {}) {
   return {
@@ -127,7 +128,9 @@ describe('breakpoint.await cancellation', () => {
     const executeToolCall: ExecuteToolCall = async (tool, params, signal) => {
       if (tool !== 'breakpoint') return { content: [{ type: 'text', text: 'ok' }] };
       const result: any = await breakpoint.handler(params as any, signal);
-      if (result?.isError) throw new Error(result.content?.[0]?.text || 'tool error');
+      // A ToolError, as index.ts raises: a plain Error drops the `response`
+      // that failure classifiers read `_errorId` from.
+      if (result?.isError) throw new ToolError(result);
       return result;
     };
 
