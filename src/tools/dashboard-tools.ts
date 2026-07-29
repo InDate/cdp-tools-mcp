@@ -4,6 +4,7 @@
  */
 
 import { z } from 'zod';
+import { livePids } from '../helpers/process-liveness.js';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import type { DuplicateSessionInfo } from '../tool-response.js';
@@ -59,11 +60,14 @@ export function getDuplicateSessionInfo(): DuplicateSessionInfo | null {
     allPpids = instance.hub.getAllPpids();
   }
 
+  // The hub prunes a pid only on a clean websocket close, so a killed MCP stays
+  // registered and every later session reads it as a duplicate. Drop the dead
+  // ones before deciding: a stale pid should be reaped, not reported.
   return {
     sessionId: session.sessionId,
     shortId: session.shortId,
-    allPids,
-    allPpids,
+    allPids: livePids(allPids, process.pid),
+    allPpids: livePids(allPpids, process.ppid),
     currentPid: process.pid,
     currentPpid: process.ppid,
   };
