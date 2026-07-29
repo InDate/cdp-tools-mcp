@@ -1060,6 +1060,11 @@ async function handleRunAll(
           name: undefined,
           sequenceId: entry.id,
           wait: true,
+          // A suite has nobody to answer a prompt. Keeping the recorded values
+          // is the only unattended behaviour that still runs the sequence;
+          // leaving it undefined turns every parameterised sequence into a
+          // no-op that a caller then has to notice.
+          variables: args.variables ?? {},
           // Per-run args that are actively wrong when fanned across a suite:
           // killChromeOnFinish would tear down the browser between sequences and
           // destroy the state a _helpers preamble just established, and
@@ -1118,6 +1123,59 @@ async function handleRunAll(
     }],
     ...(failed > 0 ? { isError: true } : {})
   };
+}
+
+/**
+ * Launch the browsers a sequence declares it needs, if they are not live yet.
+ *
+ * Naming a connection on a step does not create it. Without this, a
+ * multi-browser sequence runs only when someone has already opened those
+ * browsers by hand — so an unattended suite run skips precisely the coverage
+ * that a single browser cannot provide.
+ *
+ * A caller's `connections` rebinding wins: the declaration supplies a default
+ * browser, it does not override where the caller wants the steps pointed.
+ */
+async function ensureDeclaredConnections(
+  sequence: CommandSequence,
+  executeToolCall: ExecuteToolCall,
+  getPageForConnection: (connectionReason: string) => Promise<any>,
+  connectionMap: Record<string, string> | undefined
+): Promise<{ launched: string[]; error?: string }> {
+  const declared = sequence.requiredConnections;
+  if (!Array.isArray(declared) || declared.length === 0) return { launched: [] };
+
+  const launched: string[] = [];
+  for (const decl of declared) {
+    const wanted = sanitizeReference(decl.reference);
+    if (!wanted) continue;
+    // Rebound onto an existing session connection: nothing to launch.
+    const target = connectionMap?.[wanted] ?? wanted;
+    if (connectionMap?.[wanted]) continue;
+
+    let live = false;
+    try {
+      live = !!(await getPageForConnection(target));
+    } catch {
+      live = false;
+    }
+    if (live) continue;
+
+    try {
+      await executeToolCall('launchChrome', {
+        reference: target,
+        url: decl.url ?? sequence.startUrl,
+        forceNewInstance: decl.forceNewInstance !== false,
+      });
+      launched.push(target);
+    } catch (err: any) {
+      return {
+        launched,
+        error: `"${sequence.name}" needs the browser "${target}"${decl.role ? ` (${decl.role})` : ''} and launching it failed: ${err?.message || String(err)}`,
+      };
+    }
+  }
+  return { launched };
 }
 
 async function handleRun(
@@ -1227,6 +1285,12 @@ async function handleRun(
   // reference and is left alone.
   if (connectionMap && !args.connectionReason && connectionReason) {
     connectionReason = connectionMap[sanitizeReference(connectionReason)] ?? connectionReason;
+  }
+
+  // Bring up any browser the sequence declares before the first step.
+  const declaredConns = await ensureDeclaredConnections(sequence, executeToolCall, getPageForConnection, connectionMap);
+  if (declaredConns.error) {
+    return createErrorResponse('CONNECTION_NOT_FOUND', { message: declaredConns.error });
   }
 
   // Validate startFrom before any side effects, so both modes reject immediately

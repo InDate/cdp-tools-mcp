@@ -51,6 +51,28 @@ export interface CommandSequence {
    * ones that never shared a single connection.
    */
   recordedConnection?: string;
+  /**
+   * Browsers this sequence needs before it can run, beyond the run's own
+   * connection. A multi-browser sequence names its connections on the steps,
+   * but naming them does not create them: without this the sequence can only
+   * run when someone has already launched those browsers by hand, so a suite
+   * run skips exactly the coverage that is hardest to get any other way.
+   *
+   * Each entry is launched before the first step if that reference is not
+   * already live. A caller's `connections` rebinding wins: a declaration is a
+   * default, not an override.
+   */
+  requiredConnections?: Array<{
+    /** Connection reference the steps use, e.g. 'duo-member-two'. */
+    reference: string;
+    /** Opened on launch. Defaults to the sequence's startUrl. */
+    url?: string;
+    /** A distinct browser process, not a tab (default true) - two identities
+     *  sharing one browser share its storage, which defeats the point. */
+    forceNewInstance?: boolean;
+    /** Why this browser exists, for the run summary. */
+    role?: string;
+  }>;
 }
 
 // Internal history tracking (includes index and timestamp)
