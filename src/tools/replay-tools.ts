@@ -274,6 +274,7 @@ const replaySchema = z.object({
   issueTitle: z.string().optional(),
   showReplayOverlay: z.boolean().optional(),
   showAll: z.boolean().optional().describe('Show all sequences including completed/fixed issues'),
+  strict: z.enum(['errors', 'warnings']).optional().describe("run/runAll: fail the run when it PRODUCES console output - 'errors' fails on new console errors, 'warnings' also fails on new warnings. Counted per connection and diffed against the start of the run, so pre-existing noise is not blamed on this sequence. A sequence can be functionally correct and still be logging; strict is how you separate those questions"),
   folder: z.string().optional().describe("runAll: sequences subfolder to run, relative to the sequences dir (e.g. 'spine'). Omit to run every sequence outside folders whose name starts with '_'. The whole tree is always LOADED first so name references (a conditional's then, a forEach's do) resolve wherever the helper lives"),
   continueOnFailure: z.boolean().optional().describe('runAll: keep going after a sequence fails and report every result (default true). false stops at the first failure'),
   killChromeOnFinish: z.boolean().optional().describe("run: kill the Chrome behind this run's own connection after finishing (skipped on pause/abort). Browsers a step connects to via its own connectionReason are left running - they may be instances you launched yourself. Also skipped when another live connection shares the port (a launchChrome step usually opens a tab in the same instance), and the run reports which connection kept it alive."),
@@ -1090,7 +1091,9 @@ async function handleRunAll(
           ? 'did not run: it has recorded variables and none were supplied — pass variables:{} to keep the recorded values'
           : meta.paused
             ? 'did not finish: the run PAUSED (stepTo, a breakpoint, or click validation) and is still open'
-            : (text.match(/^\s*Error:.*$/m)?.[0] || `failed at ${meta.failedSteps ?? '?'} step(s)`).trim();
+            : (text.match(/\*\*Strict run failed\*\*[\s\S]*/)?.[0]?.replace(/\s+/g, ' ').slice(0, 200)
+             || text.match(/^\s*Error:.*$/m)?.[0]
+             || `failed at ${meta.failedSteps ?? '?'} step(s)`).trim();
       } else {
         // No _meta means this was not a terminal run response at all.
         ok = false;
@@ -1153,14 +1156,10 @@ async function ensureDeclaredConnections(
     const target = connectionMap?.[wanted] ?? wanted;
     if (connectionMap?.[wanted]) continue;
 
-    let live = false;
-    try {
-      live = !!(await getPageForConnection(target));
-    } catch {
-      live = false;
-    }
-    if (live) continue;
-
+    // Probing first is not enough: a reference can still resolve to a page after
+    // the browser was killed out of band, and skipping the launch then fails the
+    // first step that uses it. Attempt the launch and treat "already bound" as a
+    // live browser to reuse.
     try {
       await executeToolCall('launchChrome', {
         reference: target,
@@ -1169,6 +1168,12 @@ async function ensureDeclaredConnections(
       });
       launched.push(target);
     } catch (err: any) {
+      const message = String(err?.message || err);
+      if (/already bound/i.test(message)) {
+        try {
+          if (await getPageForConnection(target)) continue;
+        } catch { /* fall through to the error below */ }
+      }
       return {
         launched,
         error: `"${sequence.name}" needs the browser "${target}"${decl.role ? ` (${decl.role})` : ''} and launching it failed: ${err?.message || String(err)}`,
@@ -1211,6 +1216,50 @@ async function closeLaunchedConnections(
     }
   }
   return closed.length ? `\n\n**Declared browsers closed:** ${closed.join(', ')}` : '';
+}
+
+/** Console error/warning counts per connection, for a strict run's before/after. */
+async function snapshotConsole(
+  refs: string[],
+  executeToolCall: ExecuteToolCall
+): Promise<Record<string, { errors: number; warnings: number }>> {
+  const out: Record<string, { errors: number; warnings: number }> = {};
+  for (const ref of refs) {
+    try {
+      const res: any = await executeToolCall('console', { action: 'list', limit: 1, connectionReason: ref });
+      out[ref] = {
+        errors: res?._meta?.console?.errorCount || 0,
+        warnings: res?._meta?.console?.warnCount || 0,
+      };
+    } catch {
+      // A connection that cannot be read yet contributes nothing to the diff.
+    }
+  }
+  return out;
+}
+
+/**
+ * What a strict run should fail on: console output the sequence PRODUCED.
+ *
+ * Counted per connection and diffed against the start of the run, so noise that
+ * was already on the page is not blamed on this sequence. Warnings count only
+ * when strict is 'warnings' — a sequence can be functionally correct and still
+ * be logging, and those are different questions.
+ */
+function strictConsoleFailures(
+  before: Record<string, { errors: number; warnings: number }>,
+  after: Record<string, { errors: number; warnings: number }>,
+  includeWarnings: boolean
+): string[] {
+  const out: string[] = [];
+  for (const ref of Object.keys(after)) {
+    const b = before[ref] || { errors: 0, warnings: 0 };
+    const errs = after[ref].errors - b.errors;
+    const warns = after[ref].warnings - b.warnings;
+    if (errs > 0) out.push(`${ref}: ${errs} new console error(s)`);
+    if (includeWarnings && warns > 0) out.push(`${ref}: ${warns} new console warning(s)`);
+  }
+  return out;
 }
 
 async function handleRun(
@@ -1345,10 +1394,30 @@ async function handleRun(
   // Also what nested `replay run` STEPS use (the executor injects wait: true),
   // so a run started from inside a sequence never registers as its own
   // top-level run and its caller keeps the result.
+  // Connections a strict run watches: the run's own, plus every browser the
+  // sequence declared.
+  const watchedRefs = [...new Set([
+    ...(connectionReason ? [connectionReason] : []),
+    ...(sequence.requiredConnections || []).map(d => connectionMap?.[sanitizeReference(d.reference)] ?? sanitizeReference(d.reference)),
+  ])].filter(Boolean) as string[];
+  const consoleBefore = args.strict ? await snapshotConsole(watchedRefs, executeToolCall) : {};
+
   if (args.wait === true) {
     const { response, outcome } = await performRun(deps, abortSignal);
     // Same rule as a sequence's own teardown: a paused run is not over, and its
     // browsers are the state someone stopped to look at.
+    if (args.strict && outcome !== 'paused') {
+      const failures = strictConsoleFailures(
+        consoleBefore,
+        await snapshotConsole(watchedRefs, executeToolCall),
+        args.strict === 'warnings'
+      );
+      if (failures.length > 0 && response?.content?.[0]?.text !== undefined) {
+        response.content[0].text += `\n\n**Strict run failed** - the sequence produced console output:\n${failures.map(f => `- ${f}`).join('\n')}`;
+        response.isError = true;
+        if (response._meta?.replay) response._meta.replay.success = false;
+      }
+    }
     if (outcome !== 'paused') {
       const closedNote = await closeLaunchedConnections(declaredConns.launched, executeToolCall, getConnectionPort, sequence.name);
       if (closedNote && response?.content?.[0]?.text !== undefined) {
