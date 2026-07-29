@@ -1201,6 +1201,10 @@ async function closeLaunchedConnections(
       const sharers = await connectionsSharingPort(executeToolCall, port, ref);
       if (sharers.length > 0) continue; // someone else is on this browser
       await executeToolCall('killChrome', { reason: `sequence "${sequenceName}" declared and launched ${ref}`, port });
+      // Release the reference as well. Killing the process leaves the name
+      // bound, and the next sequence in a suite declaring the same reference
+      // then fails to launch against a browser that no longer exists.
+      await executeToolCall('disconnectDebugger', { reference: ref }).catch(() => {});
       closed.push(ref);
     } catch {
       // Best-effort: a browser that will not close is not a run failure.
@@ -1342,10 +1346,14 @@ async function handleRun(
   // so a run started from inside a sequence never registers as its own
   // top-level run and its caller keeps the result.
   if (args.wait === true) {
-    const { response } = await performRun(deps, abortSignal);
-    const closedNote = await closeLaunchedConnections(declaredConns.launched, executeToolCall, getConnectionPort, sequence.name);
-    if (closedNote && response?.content?.[0]?.text !== undefined) {
-      response.content[0].text += closedNote;
+    const { response, outcome } = await performRun(deps, abortSignal);
+    // Same rule as a sequence's own teardown: a paused run is not over, and its
+    // browsers are the state someone stopped to look at.
+    if (outcome !== 'paused') {
+      const closedNote = await closeLaunchedConnections(declaredConns.launched, executeToolCall, getConnectionPort, sequence.name);
+      if (closedNote && response?.content?.[0]?.text !== undefined) {
+        response.content[0].text += closedNote;
+      }
     }
     return response;
   }
