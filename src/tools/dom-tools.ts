@@ -14,7 +14,7 @@ import { resolveSelector, isExtendedSelector, cleanupResolvedSelector } from '..
 
 // Consolidated schema for DOM tools
 const domSchema = z.object({
-  action: z.enum(['querySelector', 'getProperties', 'snapshot']).describe('DOM action: querySelector (find element by selector), getProperties (get detailed element properties), snapshot (get full DOM snapshot)'),
+  action: z.enum(['querySelector', 'getProperties', 'snapshot', 'hitTest']).describe('DOM action: querySelector (find element by selector), getProperties (get detailed element properties), snapshot (get full DOM snapshot), hitTest (for every match: is it the topmost element at its own centre, and if not what covers it)'),
   connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
   // Parameters for querySelector and getProperties actions
   selector: z.string().optional().describe('CSS selector (required for querySelector and getProperties actions). Supports extended selectors: :has-text("text") for partial match, :text("text") for exact match. Example: button:has-text("Submit")'),
@@ -126,6 +126,80 @@ export function createDOMTools(
                 },
               ],
             };
+          }
+
+          case 'hitTest': {
+            const rawSelector = args.selector!;
+
+            let selector = rawSelector;
+            let selectorWarning: string | undefined;
+            if (isExtendedSelector(selector)) {
+              const resolved = await resolveSelector(page, selector);
+              if ('error' in resolved) {
+                return createErrorResponse('ELEMENT_NOT_FOUND', {
+                  selector: rawSelector,
+                  suggestion: resolved.suggestion,
+                });
+              }
+              selector = resolved.selector;
+              selectorWarning = resolved.warning;
+            }
+
+            const result = await executeWithPauseDetection(
+              targetCdpManager,
+              async () => page.evaluate((sel: string) => {
+                const doc = (globalThis as any).document;
+                const describe = (el: any): string => {
+                  if (!el) return 'nothing';
+                  const id = el.id ? `#${el.id}` : '';
+                  const cls = typeof el.className === 'string' && el.className.trim()
+                    ? '.' + el.className.trim().split(/\s+/).slice(0, 2).join('.')
+                    : '';
+                  const label = el.getAttribute?.('aria-label');
+                  return `${el.tagName.toLowerCase()}${id}${cls}${label ? `[aria-label="${label}"]` : ''}`;
+                };
+                return Array.from(doc.querySelectorAll(sel)).map((el: any, index: number) => {
+                  const r = el.getBoundingClientRect();
+                  const rect = { x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) };
+                  if (!r.width || !r.height) {
+                    return { index, rect, rendered: false, hittable: false, reason: 'zero size', self: describe(el) };
+                  }
+                  const cx = r.x + r.width / 2;
+                  const cy = r.y + r.height / 2;
+                  const inViewport = cx >= 0 && cy >= 0 && cx <= doc.documentElement.clientWidth && cy <= doc.documentElement.clientHeight;
+                  if (!inViewport) {
+                    return { index, rect, rendered: true, hittable: false, reason: 'centre is outside the viewport', self: describe(el) };
+                  }
+                  const top = doc.elementFromPoint(cx, cy);
+                  const hittable = !!top && (top === el || el.contains(top) || top.contains(el));
+                  return {
+                    index,
+                    rect,
+                    rendered: true,
+                    hittable,
+                    self: describe(el),
+                    ...(hittable ? {} : { occludedBy: describe(top), reason: 'another element is on top at its centre' }),
+                  };
+                });
+              }, selector),
+              'hitTest'
+            );
+
+            await cleanupResolvedSelector(page, selector);
+
+            const matches: any[] = result.result || [];
+            if (matches.length === 0) {
+              return createErrorResponse('ELEMENT_NOT_FOUND', { selector: rawSelector });
+            }
+
+            const hittable = matches.filter(m => m.hittable);
+            const lines = matches.map(m =>
+              `${m.hittable ? 'HIT ' : 'MISS'} [${m.index}] ${m.self} ${m.rect.width}x${m.rect.height} at (${m.rect.x},${m.rect.y})` +
+              (m.hittable ? '' : ` - ${m.reason}${m.occludedBy ? `: ${m.occludedBy}` : ''}`)
+            );
+            let markdown = `hitTest \`${rawSelector}\`: ${hittable.length} of ${matches.length} hittable\n\n${lines.join('\n')}`;
+            if (selectorWarning) markdown += `\n\n**Warning:** ${selectorWarning}`;
+            return { content: [{ type: 'text', text: markdown }] };
           }
 
           case 'getProperties': {
