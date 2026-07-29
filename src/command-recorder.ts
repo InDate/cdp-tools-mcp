@@ -456,11 +456,9 @@ export class CommandRecorder {
       // Sanitize filename - use name directly
       // Note: atomicWriteFile handles directory creation
       const safeFilename = sequence.name.replace(/[^a-z0-9-_]/gi, '-').toLowerCase();
-      // Keep a foldered sequence in its folder. Sequences can live in
-      // subdirectories (spine/, _helpers/), and writing every save back to the
-      // root would FORK an edited file: the original stays stale in its folder
-      // while a second copy appears at the top level, which a bare runAll then
-      // runs twice and a basename load matches ambiguously.
+      // Save back into the folder the sequence came from. Writing to the root
+      // instead forks it: the foldered original goes stale while a second copy
+      // appears at top level, which runAll then runs twice.
       let filename = `${safeFilename}.json`;
       const existing = (await this.listSavedSequencesOnDisk())
         .find(e => e.location === (global ? 'global' : 'working-dir') &&

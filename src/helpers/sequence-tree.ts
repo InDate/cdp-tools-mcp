@@ -1,11 +1,10 @@
 /**
  * Sequence folder support.
  *
- * Sequences used to live in one flat directory. A suite of any size wants
- * grouping (spine/, story/, _helpers/), so the on-disk scan recurses and every
- * filename it reports stays RELATIVE to the sequences root ('spine/spine-01.json').
- * That relative form is what `load` accepts back, so a file keeps working when it
- * moves into a folder.
+ * Sequences may be grouped into folders (spine/, story/, _helpers/). The on-disk
+ * scan recurses and every filename it reports stays RELATIVE to the sequences
+ * root ('spine/spine-01.json') — the form `load` accepts back, so a file keeps
+ * working when it moves into a folder.
  */
 import { promises as fs } from 'fs';
 import { join } from 'path';
