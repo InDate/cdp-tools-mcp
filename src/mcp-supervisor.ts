@@ -33,6 +33,7 @@ import { atomicWriteFile } from './atomic-write.js';
 import { ChildManager } from './supervisor/child-manager.js';
 import { RestartCoordinator } from './supervisor/restart-coordinator.js';
 import { NdjsonReader } from './supervisor/ndjson-reader.js';
+import { removeOwnPidFile } from './supervisor/pidfile.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -131,11 +132,9 @@ async function main(): Promise<void> {
     } catch (err) {
       logStderr(`Error killing child during shutdown: ${err}`);
     }
-    try {
-      await import('fs').then((fs) => fs.promises.unlink(pidFilePath).catch(() => {}));
-    } catch {
-      // Ignore
-    }
+    // Only if it is still OURS: a newer supervisor may own it by now, and
+    // taking that one's pidfile away silently breaks its hot reload.
+    await removeOwnPidFile(pidFilePath, process.pid);
     process.exit(0);
   };
 
