@@ -73,6 +73,10 @@ Corollary: **don't add a text fallback "just in case"**. Production has exactly 
 
 **Keep tool schema descriptions (the `.describe()` calls and `createTool()`'s first argument) terse.** They're sent to every session at `listTools` time regardless of whether the tool is ever called - that's a fixed token cost paid by every session, not a progressive-disclosure surface. Put the "why/when/what happens" detail in `skills/cdp-tools/SKILL.md` or `references/` instead, which only load when a client actually activates the skill.
 
+**Skill and reference prose is a token budget, not a page count.** Say the thing once, in the fewest words that survive being wrong. Cut restatement, worked examples that repeat an earlier one, and any sentence that only reassures the reader. If a paragraph and a table say the same thing, keep the table.
+
+**Comments are not journals.** A comment says what the code does or why the non-obvious choice was made - in one line where possible. It does not narrate history ("this used to...", "before the fix..."), argue with a previous author, or restate the line below it. Git holds the history; the comment holds the constraint. If the reason needs a paragraph, it belongs in the docs, not above the function.
+
 **When you add, rename, or change the behavior of a tool**, update all of `docs/instructions.md`, `docs/mcp-instructions.md` (only if it affects the quick-start), `skills/cdp-tools/SKILL.md` / `skills/cdp-tools/references/tool-categories.md`, and `docs/messages.md` (if it returns new response types) as needed - they currently have to be kept in sync by hand, there's no generation step.
 
 ## Config philosophy
