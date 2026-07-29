@@ -26,7 +26,7 @@ const coordinateSchema = z.object({
 
 // Consolidated input tool schema
 const inputToolSchema = z.object({
-  action: z.enum(['click', 'type', 'press', 'hover', 'focus', 'focusNext', 'focusPrevious', 'drag', 'scroll', 'mousemove', 'pinch']),
+  action: z.enum(['click', 'type', 'press', 'hover', 'focus', 'focusNext', 'focusPrevious', 'drag', 'scroll', 'mousemove', 'pinch', 'tap', 'swipe']),
   connectionReason: z.string(),
 
   // Selector-based actions
@@ -118,7 +118,7 @@ export function createInputTools(
 ) {
   return {
     input: createTool(
-      'Perform browser input actions. Actions: click (click element), type (type text into element), press (press keyboard key), hover (hover over element), focus (focus element by selector), focusNext (Tab to next focusable element), focusPrevious (Shift+Tab to previous focusable element), drag (drag from one point to another), scroll (scroll wheel at position), mousemove (move mouse to position), pinch (pinch zoom gesture)',
+      'Perform browser input actions. Actions: click (click element), type (type text into element), press (press keyboard key), hover (hover over element), focus (focus element by selector), focusNext (Tab to next focusable element), focusPrevious (Shift+Tab to previous focusable element), drag (drag from one point to another), scroll (scroll wheel at position), mousemove (move mouse to position), pinch (pinch zoom gesture), tap (real touch tap - selector or x/y), swipe (real touch drag from/to, for touch-only gestures the mouse cannot drive)',
       inputToolSchema,
       // abortSignal (#110): input events cannot be recalled once dispatched -
       // Input.dispatchMouseEvent on the wire WILL be processed by Chrome. What
@@ -1284,6 +1284,104 @@ export function createInputTools(
                   text: `Mouse moved to (${moveResult?.x}, ${moveResult?.y})${elementDesc}`,
                 },
               ],
+            };
+          }
+
+          case 'tap':
+          case 'swipe': {
+            // Real touch events. Mouse actions do not produce touchstart/
+            // touchmove, so a component that listens only for touch cannot be
+            // driven by click or drag at all.
+            const isSwipe = args.action === 'swipe';
+
+            let start = isSwipe ? args.from : (typeof args.x === 'number' && typeof args.y === 'number' ? { x: args.x, y: args.y } : undefined);
+            if (!isSwipe && !start && args.selector) {
+              const rawSelector = args.selector;
+              let selector = rawSelector;
+              if (isExtendedSelector(selector)) {
+                const resolved = await resolveSelector(page, selector);
+                if ('error' in resolved) {
+                  return createErrorResponse('ELEMENT_NOT_FOUND', { selector: rawSelector, suggestion: resolved.suggestion });
+                }
+                selector = resolved.selector;
+              }
+              const box = await page.evaluate((sel: string) => {
+                const el = (globalThis as any).document.querySelector(sel);
+                if (!el) return null;
+                const r = el.getBoundingClientRect();
+                return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+              }, selector);
+              await cleanupResolvedSelector(page, selector);
+              if (!box) return createErrorResponse('ELEMENT_NOT_FOUND', { selector: rawSelector });
+              start = box;
+            }
+
+            if (!start) {
+              return createErrorResponse('INVALID_PARAMETER', {
+                parameter: isSwipe ? 'from' : 'selector/x,y',
+                value: 'missing',
+                message: isSwipe
+                  ? 'swipe needs from:{x,y} and to:{x,y}.'
+                  : 'tap needs either a selector or x and y.'
+              });
+            }
+            if (isSwipe && !args.to) {
+              return createErrorResponse('INVALID_PARAMETER', { parameter: 'to', value: 'missing', message: 'swipe needs to:{x,y}.' });
+            }
+
+            const end = isSwipe ? args.to! : start;
+            const steps = Math.max(1, args.steps ?? 10);
+
+            const result = await executeWithPauseDetection(
+              targetCdpManager,
+              async () => {
+                const client = await page.createCDPSession();
+                const point = (x: number, y: number) => ({ x: Math.round(x), y: Math.round(y) });
+                try {
+                  return await withReplayBypass(page, async () => {
+                    throwIfAborted(abortSignal);
+                    await client.send('Input.dispatchTouchEvent', {
+                      type: 'touchStart',
+                      touchPoints: [point(start!.x, start!.y)],
+                    });
+                    if (isSwipe) {
+                      for (let i = 1; i <= steps; i++) {
+                        throwIfAborted(abortSignal);
+                        await client.send('Input.dispatchTouchEvent', {
+                          type: 'touchMove',
+                          touchPoints: [point(
+                            start!.x + ((end.x - start!.x) * i) / steps,
+                            start!.y + ((end.y - start!.y) * i) / steps
+                          )],
+                        });
+                      }
+                    }
+                    // touchEnd carries no points: the contact has lifted.
+                    await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+                    return { from: point(start!.x, start!.y), to: point(end.x, end.y), steps: isSwipe ? steps : 0 };
+                  });
+                } finally {
+                  await client.detach();
+                }
+              },
+              args.action
+            );
+
+            const r = result.result;
+            if (!r) {
+              return createErrorResponse('INVALID_PARAMETER', {
+                parameter: args.action,
+                value: 'no result',
+                message: `${args.action} dispatched but returned no result — the page may have navigated mid-gesture.`
+              });
+            }
+            return {
+              content: [{
+                type: 'text',
+                text: isSwipe
+                  ? `Swiped (touch) from (${r.from.x},${r.from.y}) to (${r.to.x},${r.to.y}) in ${r.steps} steps`
+                  : `Tapped (touch) at (${r.from.x},${r.from.y})`,
+              }],
             };
           }
 

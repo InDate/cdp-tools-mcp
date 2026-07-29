@@ -40,7 +40,8 @@ runs against (see the skill's Quick Start).
 
 **Screenshot**: `screenshot` (actions: fullPage, viewport, element, pdf)
 
-**Input**: `input` (actions: click, type, press, hover, focus, focusNext, focusPrevious, drag, scroll, mousemove, pinch)
+**Input**: `input` (actions: click, type, press, hover, focus, focusNext, focusPrevious, drag, scroll, mousemove, pinch, tap, swipe)
+- `tap` / `swipe`: real touch events via `Input.dispatchTouchEvent`. Mouse actions never produce touchstart/touchmove, so a component listening only for touch cannot be driven by `click` or `drag`. `tap` takes a selector or x/y; `swipe` takes `from`/`to` and `steps` (default 10) and emits touchstart, N touchmove, touchend
 
 **Modal**: `detectModals`, `dismissModal`
 - Individual tools, not actions
