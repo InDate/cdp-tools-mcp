@@ -1178,6 +1178,37 @@ async function ensureDeclaredConnections(
   return { launched };
 }
 
+/**
+ * Close browsers this run launched from a sequence's requiredConnections.
+ *
+ * The run created them, so the run owns them. Anything the caller supplied is
+ * left alone. Without this a suite leaves a browser behind per multi-browser
+ * sequence, and the next run silently reuses one holding state from before —
+ * which is worse than the clutter, because it looks like a fresh browser.
+ */
+async function closeLaunchedConnections(
+  launched: string[],
+  executeToolCall: ExecuteToolCall,
+  getConnectionPort: ((connectionReason: string) => Promise<number | null>) | undefined,
+  sequenceName: string
+): Promise<string> {
+  if (launched.length === 0 || !getConnectionPort) return '';
+  const closed: string[] = [];
+  for (const ref of launched) {
+    try {
+      const port = await getConnectionPort(ref);
+      if (port === null) continue;
+      const sharers = await connectionsSharingPort(executeToolCall, port, ref);
+      if (sharers.length > 0) continue; // someone else is on this browser
+      await executeToolCall('killChrome', { reason: `sequence "${sequenceName}" declared and launched ${ref}`, port });
+      closed.push(ref);
+    } catch {
+      // Best-effort: a browser that will not close is not a run failure.
+    }
+  }
+  return closed.length ? `\n\n**Declared browsers closed:** ${closed.join(', ')}` : '';
+}
+
 async function handleRun(
   args: ReplayArgs,
   recorder: CommandRecorder,
@@ -1312,6 +1343,10 @@ async function handleRun(
   // top-level run and its caller keeps the result.
   if (args.wait === true) {
     const { response } = await performRun(deps, abortSignal);
+    const closedNote = await closeLaunchedConnections(declaredConns.launched, executeToolCall, getConnectionPort, sequence.name);
+    if (closedNote && response?.content?.[0]?.text !== undefined) {
+      response.content[0].text += closedNote;
+    }
     return response;
   }
 
