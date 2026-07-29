@@ -15,7 +15,7 @@ Every capability below is the one `replay` tool, dispatched on `action`:
 | Group | Actions |
 |---|---|
 | History | `history`, `repeat`, `runFromLog` |
-| Authoring | `create`, `recordInteraction`, `insert` |
+| Authoring | `create`, `recordInteraction`, `insert`, `addConditional` |
 | Managing | `list`, `get`, `delete`, `export`, `load`, `listSaved`, `deleteSaved` |
 | Running | `run`, `step`, `finish`, `status`, `cancel` |
 
@@ -813,11 +813,36 @@ assertion went green having never involved a second user.
 `conditional` is a virtual step tool: it is handled inside the executor, never
 appears in the tool list, and is exempt from tool-name validation.
 
+Not being a real tool, it is never recorded, so `create` and `insert` — which
+both build steps out of recorded history — cannot produce one. `addConditional`
+is its authoring action:
+
+```javascript
+replay({ action: 'addConditional',
+         name: 'checkout-flow',              // or sequenceId
+         condition: '{{selector:.cookie-banner}}',
+         thenSequence: 'dismiss-cookie-banner',
+         insertAfterStep: 2,                 // omit to append; 0 puts it first
+         comment: 'EU builds only' })        // optional
+```
+
+which stores the step as:
+
 ```json
 { "tool": "conditional", "params": {
     "if": "{{selector:.cookie-banner}}",
     "then": "dismiss-cookie-banner" } }
 ```
+
+Rejected before the sequence is touched: a condition that doesn't parse, an
+unknown type, an uncompilable or over-long `url:matches` regex, a malformed
+`indexedDB` path, a `thenSequence` naming no known sequence or naming this one
+(which would recurse to `maxConditionalDepth`), an out-of-range
+`insertAfterStep`. Values holding a `{{var:...}}` token are skipped — they are
+substituted at run time.
+
+A sequence already saved on disk is rewritten in place; otherwise it waits for
+`export`. The response says which.
 
 `then` is the name of another sequence, loaded and run inline when the condition
 holds, and it shares the parent run's captured variables. A `launchChrome` step
@@ -898,6 +923,90 @@ unknown type, invalid or over-long regex, tool error) fails the run.
 Nesting is capped by `replay.maxConditionalDepth` (default 10) and regexes by
 `replay.maxRegexLength` (default 500); both are `.cdp-tools/config.json`
 settings. Oscillating chains (A→B→A) are allowed up to the depth limit.
+
+## forEach Steps
+
+`forEach` is the second virtual step tool: handled inside the executor, never a
+registered tool, exempt from tool-name validation via `VIRTUAL_STEP_TOOLS`.
+
+```json
+{ "tool": "forEach", "params": {
+    "in": "{{var:shares}}",
+    "as": "share",
+    "do": "revoke-one-share",
+    "where": "item.name !== 'Employees'",
+    "maxItems": 50 } }
+```
+
+It exists because conditions are single-subject. `{{selector:X}}` answers "does
+X exist"; there is no condition that answers "what is there", so a sequence could
+provision a missing fixture but never remove an unexpected one. That asymmetry is
+what made shared-fixture suites drift.
+
+`in` resolves in one of two ways. `{{var:name}}` is a whole-string interpolation
+token, so **the run's normal param interpolation resolves it before the step is
+dispatched** and — because whole-string tokens preserve type — what the step
+receives is the captured array itself, not a string. `resolveForEachItems`
+therefore accepts an array directly; its string branches only matter for direct
+calls and for `{{selectorAll:CSS}}`, which is not a var token and arrives
+unresolved. `{{selectorAll:CSS}}` evaluates in the page and yields one plain
+descriptor per element (`index`, `text`, `id`, `className`, `href`, `value`) —
+DOM nodes cannot cross the CDP boundary.
+
+`where` is evaluated as JavaScript in the page with `item` and `index` in scope,
+**not** in the `{{...}}` condition grammar. A filter reads fields off an
+arbitrary object, which that grammar cannot express, and adding a second
+mini-language beside it would leave two half-expressive syntaxes. A `where` that
+throws fails the run rather than excluding the item, matching how an
+unevaluatable condition behaves.
+
+Per-iteration the item is written to the shared variable store under `as` (and
+its position under `<as>Index`). The store is shared by reference with nested
+runs, so bindings are replaced rather than scoped, and a body's own `saveAs`
+captures persist across iterations.
+
+Budget is the parent's *remaining* total, decremented per iteration, so a loop
+cannot extend the run's total the way a fresh copy would. Depth shares
+`maxConditionalDepth`: a loop body that loops is the same runaway risk as a
+conditional chain. `maxItems` (default 100) is a backstop, and hitting it is
+logged rather than silently truncating.
+
+An empty source is a success with `iterations: 0`, rendered as "N item(s) found,
+none ran" — a converge loop with nothing to do must not look like a broken
+selector.
+
+## Teardown Steps
+
+`CommandSequence.teardown` is an optional second command array, run by
+`runTeardown` after the main loop in `executeSteps` reaches a terminal state.
+
+Terminal means: all steps ran, a step failed, the run was aborted, or the total
+timeout expired. It explicitly does **not** include the pause paths — `stepTo`
+(detected as `targetEnd < commands.length` with nothing failed), an unexpected
+breakpoint, or a click-validation failure, which return early and never reach the
+teardown call. A paused run is not finished, and tearing down would destroy the
+state the user paused to inspect.
+
+Three deliberate departures from how nested sequences are otherwise run:
+
+| Property | Why |
+|---|---|
+| Own `teardownTimeout` (default 60s), not `totalTimeout` | The commonest reason a run needs cleanup is that it timed out. Drawing on the exhausted parent budget would skip teardown in exactly that case. |
+| The run's `AbortSignal` is not forwarded | `replay cancel` must stop the work, not the cleanup. A cancelled run is precisely one that has left something behind. |
+| Shares `ctx.variableStore` | Teardown revokes what setup minted, and the capturing step may have run long before the failure. |
+
+The synthetic sequence passed to the nested `executeSteps` call sets
+`teardown: undefined`; without it the teardown run reaches the same code and runs
+the teardown again, unboundedly.
+
+Results land on `ExecutionResult.teardownResults` / `teardownFailed` and are
+rendered in their own section — never merged into `results` or the
+successful/failed counts. A broken cleanup must not turn a passing run red, nor
+make a failing one look like it failed somewhere it did not.
+
+Teardown is best-effort by construction: a killed cdp-tools process takes any
+pending teardown with it. It reduces accumulation; it cannot guarantee a clean
+world, so assertions that depend on absence remain order-dependent regardless.
 
 ## Debug-Aware Replay
 

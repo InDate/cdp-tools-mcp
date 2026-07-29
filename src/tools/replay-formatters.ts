@@ -25,7 +25,13 @@ export function formatExecutionResults(
   sequenceName: string,
   results: StepResult[],
   totalCommands: number,
-  durationMs: number
+  durationMs: number,
+  /**
+   * Reported in its own section, never folded into the counts above. Teardown
+   * is cleanup, so a failure in it must not turn a passing run red - or make a
+   * failing one look like it failed somewhere it didn't.
+   */
+  teardown?: { results: StepResult[]; failed?: boolean }
 ): string {
   const successful = results.filter(r => r.success).length;
   const failed = results.filter(r => !r.success).length;
@@ -57,8 +63,11 @@ export function formatExecutionResults(
   if (failed > 0) {
     response += `\n\n**Failed Commands**\n`;
     results.filter(r => !r.success).forEach((r) => {
-      if (r.tool === 'conditional' && r.substeps) {
-        response += `${r.step}. **${r.tool}** (${r.sequenceName})\n`;
+      if ((r.tool === 'conditional' || r.tool === 'forEach') && r.substeps) {
+        const scope = r.tool === 'forEach'
+          ? `${r.sequenceName}, item ${r.iterations} of ${r.itemsFound}`
+          : r.sequenceName;
+        response += `${r.step}. **${r.tool}** (${scope})\n`;
         response += `   **Error:** ${r.error}\n`;
         // Show substeps - but skip redundant error messages
         r.substeps.forEach((sub) => {
@@ -99,9 +108,34 @@ export function formatExecutionResults(
           // Skipped because condition not met (not an error, just false)
           response += `${r.step}. **${r.tool}** (${r.sequenceName}) ○ - skipped (condition not met)\n`;
         }
+      } else if (r.tool === 'forEach') {
+        // An empty source is a legitimate outcome, not a silent nothing: a
+        // converge loop with nothing left to clean up looks identical to a
+        // broken selector unless the count is stated.
+        if (r.iterations && r.substeps && r.substeps.length > 0) {
+          response += `${r.step}. **${r.tool}** (${r.sequenceName}) ✓ - ran ${r.iterations} of ${r.itemsFound} item(s)\n`;
+          r.substeps.forEach((sub) => {
+            const icon = sub.success ? '✓' : '✗';
+            response += `   ${r.step}.${sub.step}. ${sub.tool} ${icon}\n`;
+          });
+        } else {
+          response += `${r.step}. **${r.tool}** (${r.sequenceName}) ○ - ${r.itemsFound || 0} item(s) found, none ran\n`;
+        }
       } else {
         response += `${r.step}. **${r.tool}** ✓\n`;
       }
+    });
+  }
+
+  if (teardown && teardown.results.length > 0) {
+    const tdFailed = teardown.results.filter(r => !r.success).length;
+    response += `\n\n**Teardown** (${teardown.results.length} step(s)`;
+    response += tdFailed > 0 ? `, ${tdFailed} failed - does not change the run's verdict)\n` : `)\n`;
+    teardown.results.forEach((r) => {
+      const icon = r.success ? '✓' : '✗';
+      response += `T${r.step}. ${r.tool} ${icon}`;
+      if (!r.success && r.error) response += ` - ${r.error}`;
+      response += `\n`;
     });
   }
 
@@ -941,4 +975,34 @@ export function formatInsertResult(
   // hint naming it sends the caller into a validation error.
   response += `\n\nSave to disk: \`replay({ action: 'export', sequenceId: '${sequenceId}' })\``;
   return response;
+}
+
+/**
+ * Format the result of adding a `conditional` step.
+ */
+export function formatConditionalAdded(info: {
+  sequenceName: string;
+  condition: string;
+  thenSequence: string;
+  position: number;
+  totalSteps: number;
+  persistedTo?: string;
+}): string {
+  const lines = [
+    `**Conditional added to "${info.sequenceName}"**`,
+    '',
+    `- **Step ${info.position + 1}** of ${info.totalSteps}`,
+    `- **If:** \`${info.condition}\``,
+    `- **Then run:** \`${info.thenSequence}\``,
+  ];
+
+  lines.push('');
+  if (info.persistedTo) {
+    lines.push(`Saved to \`${info.persistedTo}\`.`);
+  } else {
+    lines.push(`In memory only - save with \`replay({ action: 'export', name: '${info.sequenceName}' })\`.`);
+  }
+  lines.push(`The condition is evaluated at run time; if it does not hold, the step is skipped and the sequence continues.`);
+
+  return lines.join('\n');
 }

@@ -70,6 +70,10 @@ export interface StepResult {
   substeps?: StepResult[];
   sequenceName?: string;
   conditionMet?: boolean;
+  /** forEach: how many items the source yielded, before `where` filtering. */
+  itemsFound?: number;
+  /** forEach: how many items actually ran `do` (post-filter, post-maxItems). */
+  iterations?: number;
 }
 
 export interface BreakpointHitInfo {
@@ -96,6 +100,15 @@ export interface ExecutionResult {
   breakpointHit?: BreakpointHitInfo;
   /** Click validation failure - sequence paused for inspection/retry */
   clickValidationFailure?: ClickValidationFailure;
+  /**
+   * Results of the sequence's `teardown` steps, when it has any and the run
+   * reached a terminal state. Deliberately NOT merged into `results`: teardown
+   * outcomes must never change the run's verdict, or a broken cleanup would
+   * mask the failure it was cleaning up after.
+   */
+  teardownResults?: StepResult[];
+  /** True when teardown ran but at least one of its steps failed. */
+  teardownFailed?: boolean;
 }
 
 export interface ConnectionAnalysis {
@@ -132,6 +145,19 @@ const CAPTURE_SOURCES: Record<string, (meta: any) => { found: boolean; value?: u
 
 /** Human-readable list of what supports saveAs, for error messages. */
 const CAPTURE_CAPABLE_TOOLS = Object.keys(CAPTURE_SOURCES).join(', ');
+
+/**
+ * Iterations a `forEach` will run before stopping, unless the step raises it
+ * with `maxItems`. A backstop against a source that unexpectedly returns
+ * thousands of rows, not a considered limit - the stop is always logged.
+ */
+const DEFAULT_FOREACH_MAX_ITEMS = 100;
+
+/**
+ * Teardown's default total budget. Separate from the run's `totalTimeout`
+ * because it must survive that budget being exhausted.
+ */
+const DEFAULT_TEARDOWN_TIMEOUT = 60000;
 
 /**
  * Resolve what a step's `saveAs` should write to the variable store.
@@ -241,6 +267,77 @@ export type ConditionResult =
   | { met: false; reason?: string }
   | { met: false; reason: string; isError: true };
 
+/** The condition types `evaluateCondition` knows how to answer. */
+export const CONDITION_TYPES = ['selector', 'url', 'cookie', 'localStorage', 'indexedDB'] as const;
+
+/** Shape of a handlebar condition: `{{type:value}}` or `{{!type:value}}`. */
+const CONDITION_PATTERN = /^\{\{(!?)(\w+):(.+)\}\}$/;
+
+/**
+ * Check a condition at authoring time: shape, type, and the `url`/`indexedDB`
+ * sub-forms. A value holding a `{{var:...}}` token is skipped - it is
+ * substituted at run time, so its final shape is unknowable here.
+ */
+export function validateConditionSyntax(
+  condition: string,
+  maxRegexLength = configManager.getReplayConfig().maxRegexLength
+): { ok: true } | { ok: false; reason: string } {
+  const match = condition.match(CONDITION_PATTERN);
+  if (!match) {
+    return {
+      ok: false,
+      reason: `Invalid condition format: "${condition}". Expected {{type:value}} or {{!type:value}}. Supported types: ${CONDITION_TYPES.join(', ')}`
+    };
+  }
+
+  const [, , type, value] = match;
+  if (!(CONDITION_TYPES as readonly string[]).includes(type)) {
+    return {
+      ok: false,
+      reason: `Unknown condition type: "${type}". Supported types: ${CONDITION_TYPES.join(', ')}`
+    };
+  }
+
+  const interpolated = value.includes('{{');
+
+  if (type === 'url' && value.startsWith('matches:') && !interpolated) {
+    const pattern = value.substring('matches:'.length);
+    if (pattern.length > maxRegexLength) {
+      return {
+        ok: false,
+        reason: `Regex pattern too long (${pattern.length} chars, max ${maxRegexLength}). Simplify the pattern or increase maxRegexLength in config.`
+      };
+    }
+    try {
+      new RegExp(pattern);
+    } catch (regexError: any) {
+      return {
+        ok: false,
+        reason: `Invalid regex pattern "${pattern}": ${regexError.message}. Check syntax at https://regex101.com (JavaScript flavor).`
+      };
+    }
+  }
+
+  if (type === 'indexedDB' && !interpolated) {
+    const [db, store, ...rest] = value.split('/');
+    if (!db || !store) {
+      return {
+        ok: false,
+        reason: `Invalid indexedDB condition "${value}". Expected {{indexedDB:DB/STORE/KEY}} or {{indexedDB:DB/STORE}}.`
+      };
+    }
+    if (rest.length > 0 && !rest.join('/')) {
+      return {
+        ok: false,
+        reason: `Invalid indexedDB condition "${value}": the key is empty.`
+          + ` Use {{indexedDB:${db}/${store}}} to ask whether the store holds anything.`
+      };
+    }
+  }
+
+  return { ok: true };
+}
+
 /**
  * Evaluate a handlebar-style condition
  * Supported patterns:
@@ -264,11 +361,11 @@ export async function evaluateCondition(
   const replayConfig = configManager.getReplayConfig();
 
   // Parse the handlebar pattern
-  const match = condition.match(/^\{\{(!?)(\w+):(.+)\}\}$/);
+  const match = condition.match(CONDITION_PATTERN);
   if (!match) {
     return {
       met: false,
-      reason: `Invalid condition format: "${condition}". Expected {{type:value}} or {{!type:value}}. Supported types: selector, url, cookie, localStorage, indexedDB`,
+      reason: `Invalid condition format: "${condition}". Expected {{type:value}} or {{!type:value}}. Supported types: ${CONDITION_TYPES.join(', ')}`,
       isError: true
     };
   }
@@ -471,7 +568,7 @@ export async function evaluateCondition(
       default:
         return {
           met: false,
-          reason: `Unknown condition type: "${type}". Supported types: selector, url, cookie, localStorage, indexedDB`,
+          reason: `Unknown condition type: "${type}". Supported types: ${CONDITION_TYPES.join(', ')}`,
           isError: true
         };
     }
@@ -502,6 +599,69 @@ export interface ConditionalFlowResult {
   substeps?: StepResult[];
   error?: string;
   durationMs?: number;
+}
+
+/**
+ * Shared preparation for any sequence run INSIDE another one (`conditional`'s
+ * `then`, `forEach`'s `do`): decide which of its `launchChrome` steps still
+ * apply, and which browser its bare steps belong to.
+ *
+ * Drop launchChrome steps whose browser already exists - the caller handed us a
+ * live connection and relaunching it would throw the session away. Keep the ones
+ * whose reference is NOT live: a setup sequence that spans two browsers has to be
+ * able to create the second one, or it can only ever heal identity in browsers
+ * that happened to be open already. Probed only when there is a launch to reason
+ * about, so the common nested call costs no extra tool call.
+ */
+async function prepareNestedSequence(
+  sequence: CommandSequence,
+  ctx: ExecutionContext,
+  label: string,
+  logPrefix: string
+): Promise<{ filteredSequence: CommandSequence; filteredCommands: RecordedCommand[]; nestedConnection?: string }> {
+  const liveRefs = sequence.commands.some(cmd => cmd.tool === 'launchChrome')
+    ? await probeLiveConnectionReferences(ctx.executeToolCall)
+    : null;
+  const keptLaunches: string[] = [];
+  const filteredCommands = sequence.commands.filter(cmd => {
+    if (cmd.tool !== 'launchChrome') return true;
+
+    const recorded = typeof cmd.params?.reference === 'string'
+      ? sanitizeReference(cmd.params.reference)
+      : undefined;
+    // No reference to reason about, or no readable connection list: fall back to
+    // the old always-drop behaviour rather than risk killing the live browser.
+    if (!recorded || !liveRefs) return false;
+
+    const resolved = ctx.connectionMap?.[recorded] ?? recorded;
+    if (liveRefs.has(resolved)) return false;
+
+    debugLog(logPrefix, `Keeping launchChrome for "${resolved}" in nested sequence "${label}": no such connection in this session`);
+    keptLaunches.push(resolved);
+    return true;
+  });
+
+  // A launch we KEPT created a browser that only this sub-sequence knows about,
+  // and `create` hoists a uniform connection OFF the steps - so the setup
+  // sequence is a launch followed by BARE steps. Left on the parent's
+  // connection, those steps run in the caller's browser: the run creates a
+  // browser, does nothing in it, and reports success. Bind the sub-run to the
+  // browser it just launched, exactly as a top-level run of that sequence would
+  // (extractConnectionFromSequence).
+  //
+  // Only for a launch we kept. A launch that was DROPPED means the browser
+  // already existed, and re-pointing bare steps at it would hijack a nested
+  // login/setup sequence that has always run in whatever browser called it.
+  const nestedAnalysis = analyzeSequenceConnections(filteredCommands);
+  const launchedConnection = extractConnectionFromSequence(filteredCommands, nestedAnalysis);
+  const nestedConnection = launchedConnection && keptLaunches.includes(launchedConnection)
+    ? launchedConnection
+    : undefined;
+  if (nestedConnection) {
+    await debugLog(logPrefix, `Nested sequence "${label}" runs against the browser it launched ("${nestedConnection}"), not the caller's "${ctx.connectionReason}"`);
+  }
+
+  return { filteredSequence: { ...sequence, commands: filteredCommands }, filteredCommands, nestedConnection };
 }
 
 /**
@@ -579,59 +739,10 @@ export async function executeConditionalFlow(
     return { success: false, executed: false, sequenceName, error: `Sequence "${sequenceName}" not found: ${loadResult.error}` };
   }
 
-  const sequence = loadResult.sequence;
+  const { filteredSequence, nestedConnection, filteredCommands } =
+    await prepareNestedSequence(loadResult.sequence, ctx, sequenceName, logPrefix);
 
-  // Drop launchChrome steps whose browser already exists - the caller handed us
-  // a live connection and relaunching it would throw the session away. Keep the
-  // ones whose reference is NOT live: a setup sequence that spans two browsers
-  // has to be able to create the second one, or it can only ever heal identity
-  // in browsers that happened to be open already.
-  // Probed only when there is a launch to reason about, so the common
-  // conditional costs no extra tool call.
-  const liveRefs = sequence.commands.some(cmd => cmd.tool === 'launchChrome')
-    ? await probeLiveConnectionReferences(ctx.executeToolCall)
-    : null;
-  const keptLaunches: string[] = [];
-  const filteredCommands = sequence.commands.filter(cmd => {
-    if (cmd.tool !== 'launchChrome') return true;
-
-    const recorded = typeof cmd.params?.reference === 'string'
-      ? sanitizeReference(cmd.params.reference)
-      : undefined;
-    // No reference to reason about, or no readable connection list: fall back to
-    // the old always-drop behaviour rather than risk killing the live browser.
-    if (!recorded || !liveRefs) return false;
-
-    const resolved = ctx.connectionMap?.[recorded] ?? recorded;
-    if (liveRefs.has(resolved)) return false;
-
-    debugLog(logPrefix, `Keeping launchChrome for "${resolved}" in nested sequence "${sequenceName}": no such connection in this session`);
-    keptLaunches.push(resolved);
-    return true;
-  });
-  const filteredSequence = { ...sequence, commands: filteredCommands };
-
-  // A launch we KEPT created a browser that only this sub-sequence knows about,
-  // and `create` hoists a uniform connection OFF the steps - so the setup
-  // sequence is a launch followed by BARE steps. Left on the parent's
-  // connection, those steps run in the caller's browser: the run creates a
-  // browser, does nothing in it, and reports success. Bind the sub-run to the
-  // browser it just launched, exactly as a top-level run of that sequence would
-  // (extractConnectionFromSequence).
-  //
-  // Only for a launch we kept. A launch that was DROPPED means the browser
-  // already existed, and re-pointing bare steps at it would hijack a nested
-  // login/setup sequence that has always run in whatever browser called it.
-  const nestedAnalysis = analyzeSequenceConnections(filteredCommands);
-  const launchedConnection = extractConnectionFromSequence(filteredCommands, nestedAnalysis);
-  const nestedConnection = launchedConnection && keptLaunches.includes(launchedConnection)
-    ? launchedConnection
-    : undefined;
-  if (nestedConnection) {
-    await debugLog(logPrefix, `Nested sequence "${sequenceName}" runs against the browser it launched ("${nestedConnection}"), not the caller's "${ctx.connectionReason}"`);
-  }
-
-  await debugLog(logPrefix, `Executing conditional sequence "${sequence.name}" with ${filteredCommands.length} commands (depth: ${currentDepth + 1})`);
+  await debugLog(logPrefix, `Executing conditional sequence "${filteredSequence.name}" with ${filteredCommands.length} commands (depth: ${currentDepth + 1})`);
 
   // Execute the sequence with updated call stack and depth
   const execResult = await executeSteps({
@@ -680,6 +791,259 @@ export async function executeConditionalFlow(
     substeps: execResult.results,
     durationMs: execResult.durationMs
   };
+}
+
+// =============================================================================
+// forEach
+// =============================================================================
+
+export interface ForEachFlowResult {
+  success: boolean;
+  sequenceName: string;
+  /** Items the source yielded, before `where` filtering. */
+  itemsFound: number;
+  /** Items that actually ran `do`. */
+  iterations: number;
+  substeps?: StepResult[];
+  error?: string;
+  durationMs?: number;
+}
+
+/**
+ * Resolve a `forEach` source to the array it enumerates.
+ *
+ * Two forms, deliberately no more. `{{var:name}}` reads an array a previous
+ * `saveAs` step captured - which is how anything non-DOM is enumerated, since
+ * `inspect({ action: 'evaluateExpression' })` can already return exactly the
+ * list the caller wants and is a recordable step. `{{selectorAll:CSS}}` covers
+ * the DOM case without making the caller hand-write an evaluate for it.
+ *
+ * Note the asymmetry with `conditional`'s conditions: those ask whether one
+ * named thing exists, so they can't express "give me every X". That gap is the
+ * whole reason this step exists.
+ */
+export async function resolveForEachItems(
+  source: unknown,
+  ctx: ExecutionContext
+): Promise<{ ok: true; items: unknown[] } | { ok: false; error: string }> {
+  // Already an array: `{{var:rows}}` is a whole-string token, so the run's
+  // normal param interpolation has resolved it before this step is dispatched -
+  // and it preserves type, so what arrives IS the captured array. That is the
+  // common path; the string form below only survives for a nested path that
+  // resolved to something odd, and for direct calls.
+  if (Array.isArray(source)) return { ok: true, items: source };
+
+  if (typeof source !== 'string') {
+    return {
+      ok: false,
+      error: `forEach: source resolved to ${source === null ? 'null' : typeof source}, not an array. Expected {{var:name}} pointing at an array, or {{selectorAll:CSS}}.`,
+    };
+  }
+
+  const varMatch = source.match(/^\{\{var:([^}]+)\}\}$/);
+  if (varMatch) {
+    const path = varMatch[1].trim();
+    const [head, ...rest] = path.split('.');
+    let value: any = ctx.variableStore?.[head];
+    if (value === undefined) {
+      return { ok: false, error: `forEach: no variable named "${head}". Capture one first with a { saveAs } step.` };
+    }
+    for (const key of rest) {
+      value = value?.[key];
+      if (value === undefined) {
+        return { ok: false, error: `forEach: "${path}" is undefined on the captured variable.` };
+      }
+    }
+    if (!Array.isArray(value)) {
+      return { ok: false, error: `forEach: "${path}" is ${typeof value}, not an array. The source must resolve to an array.` };
+    }
+    return { ok: true, items: value };
+  }
+
+  const selectorMatch = source.match(/^\{\{selectorAll:(.+)\}\}$/);
+  if (selectorMatch) {
+    const selector = selectorMatch[1];
+    // Elements themselves can't cross the CDP boundary, so each item is a plain
+    // descriptor. `index` is what a `do` sequence uses to address the element
+    // again (:nth-of-type and friends); text/id/class cover the common filters.
+    const expression = `(() => Array.from(document.querySelectorAll(${JSON.stringify(selector)})).map((el, index) => ({
+      index,
+      text: (el.textContent || '').trim(),
+      id: el.id || null,
+      className: typeof el.className === 'string' ? el.className : null,
+      href: el.getAttribute && el.getAttribute('href'),
+      value: 'value' in el ? el.value : undefined,
+    })))()`;
+    try {
+      const result = await ctx.executeToolCall('inspect', {
+        action: 'evaluateExpression',
+        expression,
+        ...(ctx.connectionReason ? { connectionReason: ctx.connectionReason } : {}),
+      });
+      const value = (result as any)?._meta?.inspect?.value;
+      if (!Array.isArray(value)) {
+        return { ok: false, error: `forEach: {{selectorAll:${selector}}} did not evaluate to a list.` };
+      }
+      return { ok: true, items: value };
+    } catch (err: any) {
+      return { ok: false, error: `forEach: enumerating {{selectorAll:${selector}}} failed: ${err?.message || String(err)}` };
+    }
+  }
+
+  return {
+    ok: false,
+    error: `forEach: unrecognised source "${source}". Expected {{var:name}} (an array captured by a previous saveAs) or {{selectorAll:CSS}}.`,
+  };
+}
+
+/**
+ * Evaluate a `where` predicate for one item.
+ *
+ * The predicate is JavaScript with `item` and `index` in scope, evaluated in the
+ * page - NOT the `{{...}}` condition grammar. Conditions probe the browser for
+ * one named thing; a filter has to read fields off an arbitrary object, which
+ * that grammar cannot express, and inventing a second mini-language to sit
+ * beside it would leave two half-expressive syntaxes instead of one real one.
+ */
+async function evaluateForEachFilter(
+  where: string,
+  item: unknown,
+  index: number,
+  ctx: ExecutionContext
+): Promise<{ ok: true; keep: boolean } | { ok: false; error: string }> {
+  const expression = `(() => { const item = ${JSON.stringify(item)}; const index = ${index}; return !!(${where}); })()`;
+  try {
+    const result = await ctx.executeToolCall('inspect', {
+      action: 'evaluateExpression',
+      expression,
+      ...(ctx.connectionReason ? { connectionReason: ctx.connectionReason } : {}),
+    });
+    return { ok: true, keep: (result as any)?._meta?.inspect?.value === true };
+  } catch (err: any) {
+    // A filter that cannot be evaluated is an error, not a quiet "exclude" -
+    // the same rule conditions follow. Silently dropping every item would make
+    // a typo'd predicate look like an empty result set.
+    return { ok: false, error: `forEach: where "${where}" could not be evaluated: ${err?.message || String(err)}` };
+  }
+}
+
+/**
+ * Run a sequence once per item of an enumerated source.
+ *
+ * Each iteration binds the item to `as` in the run's variable store (and its
+ * position to `<as>Index`), so the body addresses it with {{var:<as>.field}}
+ * exactly like any captured variable. The binding is REPLACED per iteration
+ * rather than scoped, because the variable store is shared by reference across
+ * nested runs - which also means a body's own `saveAs` captures survive into
+ * the next iteration, and a caller relying on that should say so.
+ */
+export async function executeForEachFlow(
+  params: { in: unknown; as: string; do: string; where?: string; maxItems?: number },
+  ctx: ExecutionContext,
+  recorder: CommandRecorder,
+  /** The parent's REMAINING budget - a loop must not extend the total. */
+  budget?: { stepTimeout?: number; totalTimeout?: number },
+  abortSignal?: AbortSignal
+): Promise<ForEachFlowResult> {
+  const { logPrefix = 'executor' } = ctx;
+  const replayConfig = configManager.getReplayConfig();
+  const startedAt = Date.now();
+  const sequenceName = params.do;
+  const currentDepth = ctx.conditionalDepth ?? 0;
+  const callStack = ctx.conditionalCallStack ?? [];
+
+  // Shares the conditional depth budget: a loop body that loops is the same
+  // runaway risk, and one cap is easier to reason about than two.
+  if (currentDepth >= replayConfig.maxConditionalDepth) {
+    const chain = [...callStack, sequenceName].join(' → ');
+    return {
+      success: false, sequenceName, itemsFound: 0, iterations: 0,
+      error: `Nesting depth limit (${replayConfig.maxConditionalDepth}) reached: ${chain}. Increase maxConditionalDepth in config if this is intentional.`,
+    };
+  }
+
+  const resolved = await resolveForEachItems(params.in, ctx);
+  if (!resolved.ok) {
+    return { success: false, sequenceName, itemsFound: 0, iterations: 0, error: resolved.error };
+  }
+
+  const itemsFound = resolved.items.length;
+  const cap = params.maxItems ?? DEFAULT_FOREACH_MAX_ITEMS;
+
+  const loadResult = await loadSequence({ name: sequenceName }, recorder);
+  if (!loadResult.success) {
+    return {
+      success: false, sequenceName, itemsFound, iterations: 0,
+      error: `Sequence "${sequenceName}" not found: ${loadResult.error}`,
+    };
+  }
+  const { filteredSequence, nestedConnection } =
+    await prepareNestedSequence(loadResult.sequence, ctx, sequenceName, logPrefix);
+
+  const substeps: StepResult[] = [];
+  let iterations = 0;
+
+  for (let index = 0; index < itemsFound; index++) {
+    if (abortSignal?.aborted) {
+      return {
+        success: false, sequenceName, itemsFound, iterations, substeps,
+        error: 'Replay aborted by user', durationMs: Date.now() - startedAt,
+      };
+    }
+    if (iterations >= cap) {
+      await debugLog(logPrefix, `forEach: stopping at maxItems (${cap}) with ${itemsFound - index} item(s) unvisited`);
+      break;
+    }
+
+    const item = resolved.items[index];
+
+    if (params.where) {
+      const filtered = await evaluateForEachFilter(params.where, item, index, ctx);
+      if (!filtered.ok) {
+        return {
+          success: false, sequenceName, itemsFound, iterations, substeps,
+          error: filtered.error, durationMs: Date.now() - startedAt,
+        };
+      }
+      if (!filtered.keep) continue;
+    }
+
+    const store = (ctx.variableStore ??= {});
+    store[params.as] = item;
+    store[`${params.as}Index`] = index;
+    iterations++;
+
+    const elapsed = Date.now() - startedAt;
+    const execResult = await executeSteps({
+      sequence: filteredSequence,
+      startStep: 0,
+      ctx: {
+        ...ctx,
+        ...(nestedConnection ? { connectionReason: nestedConnection } : {}),
+        conditionalDepth: currentDepth + 1,
+        conditionalCallStack: [...callStack, sequenceName],
+      },
+      ...(budget?.stepTimeout !== undefined ? { stepTimeout: budget.stepTimeout } : {}),
+      ...(budget?.totalTimeout !== undefined
+        ? { totalTimeout: Math.max(0, budget.totalTimeout - elapsed) }
+        : {}),
+      abortSignal,
+    });
+
+    substeps.push(...execResult.results);
+
+    const failedStep = execResult.results.find(r => !r.success);
+    if (failedStep) {
+      return {
+        success: false, sequenceName, itemsFound, iterations, substeps,
+        error: `forEach body "${sequenceName}" failed on item ${index + 1}/${itemsFound} at step ${failedStep.step} (${failedStep.tool}): ${failedStep.error}`,
+        durationMs: Date.now() - startedAt,
+      };
+    }
+  }
+
+  await debugLog(logPrefix, `forEach over ${itemsFound} item(s) ran ${iterations} iteration(s) of "${sequenceName}"`);
+  return { success: true, sequenceName, itemsFound, iterations, substeps, durationMs: Date.now() - startedAt };
 }
 
 // =============================================================================
@@ -1705,6 +2069,14 @@ async function gatherDiagnostics(ctx: ExecutionContext): Promise<string> {
 // =============================================================================
 
 export interface ExecuteStepsOptions {
+  /**
+   * Teardown's own total budget, independent of `totalTimeout`.
+   *
+   * It has to be independent: the commonest reason a run needs cleaning up
+   * after is that it ran out of time, and a teardown drawing on the exhausted
+   * parent budget would be skipped in exactly that case.
+   */
+  teardownTimeout?: number;
   sequence: CommandSequence;
   startStep: number;
   endStep?: number; // undefined = run to completion
@@ -2085,6 +2457,51 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
         continue; // Skip the regular execution path
       }
 
+      // Handle forEach the same way - a virtual step the executor runs itself.
+      if (cmd.tool === 'forEach') {
+        // `in` is checked for presence only, not for being a string: whole-string
+        // {{var:}} interpolation has already turned it into the captured array.
+        const missing = ['in', 'as', 'do'].filter(k =>
+          k === 'in' ? params[k] === undefined || params[k] === '' : typeof params[k] !== 'string' || !params[k]
+        );
+        if (missing.length > 0) {
+          results.push({
+            step: i + 1,
+            tool: cmd.tool,
+            success: false,
+            error: `forEach requires ${missing.map(m => `"${m}"`).join(', ')}. Expected { in: '{{var:rows}}' | '{{selectorAll:CSS}}', as: 'row', do: '<sequence name>' }`
+          });
+          break;
+        }
+
+        const loopResult = await executeForEachFlow(
+          { in: params.in, as: params.as, do: params.do, where: params.where, maxItems: params.maxItems },
+          stepCtx,
+          commandRecorder,
+          // Remaining, not the original: looping must not extend the total.
+          { stepTimeout, totalTimeout: Math.max(0, totalTimeout - (Date.now() - startTime)) },
+          abortSignal
+        );
+
+        results.push({
+          step: i + 1,
+          tool: cmd.tool,
+          success: loopResult.success,
+          sequenceName: loopResult.sequenceName,
+          itemsFound: loopResult.itemsFound,
+          iterations: loopResult.iterations,
+          substeps: loopResult.substeps,
+          error: loopResult.error
+        });
+
+        if (!loopResult.success) {
+          break;
+        }
+
+        debugLog(logPrefix, `Step ${i + 1} completed: forEach ran ${loopResult.iterations}/${loopResult.itemsFound} item(s) of "${loopResult.sequenceName}"`);
+        continue; // Skip the regular execution path
+      }
+
       // Capture pre-click state for validation
       let preClickState: PreClickState | null = null;
       const clickConfig = configManager.getClickValidationConfig();
@@ -2334,11 +2751,90 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
     }
   }
 
+  // The loop is over. Every path that reaches here is terminal for the MAIN
+  // steps - success, a failed step, an abort, or the total timeout - EXCEPT a
+  // clean stop at `endStep`, which is a stepTo pause with more steps to come.
+  // The pause paths that return early above (breakpoint, click validation)
+  // never reach here, which is what we want: the run is not over, so cleaning
+  // up would destroy the state the user paused to look at.
+  const stoppedShortOfEnd = targetEnd < commands.length;
+  const anyFailed = results.some(r => !r.success);
+  const isPaused = stoppedShortOfEnd && !anyFailed;
+
+  const teardownOutcome = isPaused
+    ? undefined
+    : await runTeardown(sequence, {
+        ctx,
+        stepTimeout,
+        teardownTimeout: options.teardownTimeout,
+        overrideConnectionReason,
+        variables,
+        record,
+      });
+
   return {
     results,
     totalCommands: commands.length,
-    durationMs: Date.now() - startTime
+    durationMs: Date.now() - startTime,
+    ...(teardownOutcome ? { teardownResults: teardownOutcome.results, teardownFailed: teardownOutcome.failed } : {})
   };
+}
+
+/**
+ * Run a sequence's `teardown` steps, if it has any.
+ *
+ * Three properties matter, and each one is a way this feature fails if it is
+ * missed:
+ *
+ * - **Its own budget.** `teardownTimeout` is deliberately not drawn from the
+ *   run's `totalTimeout`. The commonest reason a run needs cleaning up after is
+ *   that it timed out, and sharing the budget would skip teardown exactly then.
+ * - **No abort signal.** The run's signal is not passed down. `replay cancel`
+ *   must stop the work, not the cleanup - a cancelled run is precisely one that
+ *   has left something behind.
+ * - **The variable store, shared.** Teardown reads `ctx.variableStore`, so it
+ *   can revoke whatever setup minted, even though the step that captured it may
+ *   have run long before the failure.
+ *
+ * Teardown is always best-effort. A killed process takes any pending teardown
+ * with it, so it reduces accumulation and cannot guarantee a clean world -
+ * assertions that depend on nothing being left over are still wrong.
+ */
+async function runTeardown(
+  sequence: CommandSequence,
+  opts: {
+    ctx: ExecutionContext;
+    stepTimeout: number;
+    teardownTimeout?: number;
+    overrideConnectionReason?: string;
+    variables?: Record<string, string>;
+    record?: boolean;
+  }
+): Promise<{ results: StepResult[]; failed: boolean } | undefined> {
+  const teardown = sequence.teardown;
+  if (!teardown || teardown.length === 0) return undefined;
+
+  const logPrefix = opts.ctx.logPrefix ?? 'executor';
+  await debugLog(logPrefix, `Running ${teardown.length} teardown step(s) for "${sequence.name}"`);
+
+  // `teardown: undefined` on the synthetic sequence: without it the teardown
+  // run would reach this same code and run the teardown again, forever.
+  const result = await executeSteps({
+    sequence: { ...sequence, commands: teardown, teardown: undefined },
+    startStep: 0,
+    ctx: opts.ctx,
+    stepTimeout: opts.stepTimeout,
+    totalTimeout: opts.teardownTimeout ?? DEFAULT_TEARDOWN_TIMEOUT,
+    ...(opts.overrideConnectionReason ? { overrideConnectionReason: opts.overrideConnectionReason } : {}),
+    ...(opts.variables ? { variables: opts.variables } : {}),
+    ...(opts.record !== undefined ? { record: opts.record } : {}),
+  });
+
+  const failed = result.results.some(r => !r.success);
+  if (failed) {
+    await debugLog(logPrefix, `Teardown for "${sequence.name}" had failing steps - reported alongside, not folded into the run's verdict`);
+  }
+  return { results: result.results, failed };
 }
 
 /**

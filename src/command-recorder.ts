@@ -27,6 +27,18 @@ export interface CommandSequence {
   expectedOutcome?: string;
   startUrl?: string;
   commands: RecordedCommand[];
+  /**
+   * Steps that run after `commands` reach a terminal state - success, a failed
+   * step, an abort, or the total timeout - but NOT when the run pauses (stepTo,
+   * a breakpoint, click validation), since a paused run is not over and its
+   * state is what the user stopped to inspect.
+   *
+   * They run on their own timeout budget and without the run's abort signal, so
+   * a cancelled or timed-out run still cleans up after itself, and they share
+   * the run's variable store so they can undo what setup captured. Their
+   * outcome never changes the run's verdict.
+   */
+  teardown?: RecordedCommand[];
   createdAt: number;
   /**
    * The connection every step was recorded against, when `create` hoisted a
@@ -482,7 +494,6 @@ export class CommandRecorder {
 
     const term = searchTerm.toLowerCase();
     const termWithoutJson = term.endsWith('.json') ? term.slice(0, -5) : term;
-
     // 1. Exact filename match (with or without .json)
     const exactMatch = savedSequences.find(s =>
       s.filename.toLowerCase() === term ||

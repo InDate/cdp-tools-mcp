@@ -37,6 +37,7 @@ import {
   normalizeStepConnections,
   sanitizeConnectionMap,
   parseConnectionList,
+  validateConditionSyntax,
   type ExecutionContext,
   type LoadSequenceResult,
 } from './replay-executor.js';
@@ -50,7 +51,7 @@ import {
  * through the MCP tool map (see replay-executor.ts). These are always valid
  * step names even though they are not registered tools.
  */
-const VIRTUAL_STEP_TOOLS = new Set(['conditional']);
+const VIRTUAL_STEP_TOOLS = new Set(['conditional', 'forEach']);
 
 /** Levenshtein distance, used only to suggest a likely intended tool name. */
 function editDistance(a: string, b: string): number {
@@ -195,6 +196,7 @@ import {
   formatStepResults,
   formatInsertPrompt,
   formatInsertResult,
+  formatConditionalAdded,
   formatEventsForReview,
 } from './replay-formatters.js';
 
@@ -224,7 +226,7 @@ const replaySchema = z.object({
   action: z.enum([
     'history', 'create', 'list', 'get', 'delete',
     'export', 'load', 'listSaved', 'deleteSaved',
-    'run', 'step', 'finish', 'insert', 'status', 'cancel',
+    'run', 'step', 'finish', 'insert', 'addConditional', 'status', 'cancel',
     'repeat', 'runFromLog',
     'recordInteraction'
   ]),
@@ -254,6 +256,9 @@ const replaySchema = z.object({
   stepCount: z.number().optional().describe('Steps to run'),
   insertIndices: z.array(z.number()).optional(),
   insertAfterStep: z.number().optional(),
+  condition: z.string().optional().describe("addConditional: the guard, e.g. '{{selector:.cookie-banner}}' or '{{!localStorage:token}}'"),
+  thenSequence: z.string().optional().describe('addConditional: name of the sequence to run when the condition holds'),
+  comment: z.string().optional().describe('addConditional: note stored on the step'),
   overwrite: z.boolean().optional(),
   newName: z.string().optional(),
   showOverlay: z.boolean().optional(),
@@ -1356,7 +1361,15 @@ async function performRun(
   await cleanup();
 
   // Format results
-  let response = formatExecutionResults(sequence.name, execResult.results, execResult.totalCommands, execResult.durationMs);
+  let response = formatExecutionResults(
+    sequence.name,
+    execResult.results,
+    execResult.totalCommands,
+    execResult.durationMs,
+    execResult.teardownResults
+      ? { results: execResult.teardownResults, ...(execResult.teardownFailed !== undefined ? { failed: execResult.teardownFailed } : {}) }
+      : undefined
+  );
 
   // Add debug state if successful
   const failed = execResult.results.filter(r => !r.success).length;
@@ -1772,6 +1785,118 @@ async function handleInsert(args: ReplayArgs, recorder: CommandRecorder) {
 
     return { content: [{ type: 'text', text: formatInsertResult(newName, newSequence.id, commandsToInsert.length, insertAfter, newCommands.length, false) + connectionNote }] };
   }
+}
+
+/**
+ * Add a `conditional` step to a sequence.
+ *
+ * `conditional` is a virtual step, never a registered tool, so it cannot be
+ * recorded and cannot come out of `create`/`insert`. This is its only
+ * authoring route.
+ */
+async function handleAddConditional(args: ReplayArgs, recorder: CommandRecorder) {
+  if (!args.condition) {
+    return createErrorResponse('MISSING_PARAMETER', {
+      action: 'addConditional',
+      missing: 'condition',
+      message: 'The "addConditional" action requires a "condition" parameter, e.g. "{{selector:.cookie-banner}}"'
+    });
+  }
+  if (!args.thenSequence) {
+    return createErrorResponse('MISSING_PARAMETER', {
+      action: 'addConditional',
+      missing: 'thenSequence',
+      message: 'The "addConditional" action requires a "thenSequence" parameter naming the sequence to run when the condition holds'
+    });
+  }
+
+  const loadResult = await loadSequence({ name: args.name, sequenceId: args.sequenceId }, recorder);
+  if (!loadResult.success) {
+    return handleLoadSequenceError(loadResult, 'addConditional');
+  }
+  const sequence = loadResult.sequence;
+
+  const syntax = validateConditionSyntax(args.condition);
+  if (!syntax.ok) {
+    return createErrorResponse('INVALID_PARAMETER', {
+      parameter: 'condition',
+      value: args.condition,
+      message: syntax.reason
+    });
+  }
+
+  // Self-reference recurses until the depth cap truncates it.
+  if (args.thenSequence === sequence.name) {
+    return createErrorResponse('INVALID_PARAMETER', {
+      parameter: 'thenSequence',
+      value: args.thenSequence,
+      message: `A conditional cannot branch to its own sequence ("${sequence.name}") - that recurses until maxConditionalDepth stops it.`
+    });
+  }
+
+  // The target resolves by name at run time, so an unchecked typo fails
+  // halfway through a run.
+  const inMemory = recorder.listSequences().some(s => s.name === args.thenSequence);
+  const onDisk = await recorder.listSavedSequencesOnDisk();
+  if (!inMemory && !onDisk.some(s => s.name === args.thenSequence)) {
+    // A disk sequence is in memory once loaded, so the lists overlap.
+    const available = [...new Set([
+      ...recorder.listSequences().map(s => s.name),
+      ...onDisk.map(s => s.name)
+    ])];
+    return createErrorResponse('SEQUENCE_NOT_FOUND', {
+      message: `No sequence named "${args.thenSequence}" to branch to. Available: ${available.join(', ') || 'none'}`
+    });
+  }
+
+  const commands = sequence.commands;
+  const insertAfter = args.insertAfterStep !== undefined ? args.insertAfterStep : commands.length;
+  if (insertAfter < 0 || insertAfter > commands.length) {
+    return createErrorResponse('INVALID_PARAMETER', {
+      parameter: 'insertAfterStep',
+      value: String(insertAfter),
+      message: `insertAfterStep must be between 0 (before the first step) and ${commands.length} (after the last). Omit it to append.`
+    });
+  }
+
+  const step: RecordedCommand = {
+    tool: 'conditional',
+    params: { if: args.condition, then: args.thenSequence },
+    ...(args.comment ? { comment: args.comment } : {})
+  };
+
+  (sequence as any).commands = [
+    ...commands.slice(0, insertAfter),
+    step,
+    ...commands.slice(insertAfter)
+  ];
+
+  // Write back to the file this came from; a memory-only sequence waits for
+  // `export`, which is where it gets its filename.
+  let persisted: string | undefined;
+  const existingFile = onDisk.find(s => s.name === sequence.name);
+  if (existingFile) {
+    const saved = await recorder.saveSequenceToDisk(
+      sequence.id,
+      existingFile.location === 'global',
+      true
+    );
+    if (saved?.success) persisted = saved.filepath;
+  }
+
+  return {
+    content: [{
+      type: 'text',
+      text: formatConditionalAdded({
+        sequenceName: sequence.name,
+        condition: args.condition,
+        thenSequence: args.thenSequence,
+        position: insertAfter,
+        totalSteps: sequence.commands.length,
+        persistedTo: persisted
+      })
+    }]
+  };
 }
 
 // =============================================================================
@@ -2430,7 +2555,7 @@ export function createReplayTools(
 ) {
   return {
     replay: createTool(
-      'Record and replay command sequences for testing and automation. Actions: repeat (immediately re-execute commands by history index - use this to repeat recent actions), history (view command history), recordInteraction (record real mouse/keyboard/navigation via a browser overlay - BLOCKS until the person finishes, so do not call it unattended; tune the capture with simplifyEvents/includeHovers/preferCoordinates/preferSelectors, and add outputFormat: events|commands|review|playwright|puppeteer to dump the recording - review is a human-readable walkthrough of the captured events), create (create sequence from history indices), list (list in-memory sequences), get (get sequence details; outputFormat: commands|playwright|puppeteer returns the raw command JSON or generated test code), delete (delete from memory), export (write a sequence to disk as sequence/playwright/puppeteer), load (load sequence from disk), listSaved (list saved files), deleteSaved (delete saved file), run (start executing a sequence in the background - returns a runId immediately; poll progress/results with status, stop it with cancel; wait: true blocks until completion and returns the full result), runFromLog (execute commands from log lines), step (execute next N commands in a paused sequence), finish (complete remaining commands), insert (insert recorded commands into a sequence), status (with runId: one run\'s progress or final result; without: paused session + recent runs), cancel (with runId: stop that run; without: drop the paused session, or the only executing run)',
+      'Record and replay command sequences for testing and automation. Actions: repeat (immediately re-execute commands by history index - use this to repeat recent actions), history (view command history), recordInteraction (record real mouse/keyboard/navigation via a browser overlay - BLOCKS until the person finishes, so do not call it unattended; tune the capture with simplifyEvents/includeHovers/preferCoordinates/preferSelectors, and add outputFormat: events|commands|review|playwright|puppeteer to dump the recording - review is a human-readable walkthrough of the captured events), create (create sequence from history indices), list (list in-memory sequences), get (get sequence details; outputFormat: commands|playwright|puppeteer returns the raw command JSON or generated test code), delete (delete from memory), export (write a sequence to disk as sequence/playwright/puppeteer), load (load sequence from disk), listSaved (list saved files), deleteSaved (delete saved file), run (start executing a sequence in the background - returns a runId immediately; poll progress/results with status, stop it with cancel; wait: true blocks until completion and returns the full result), runFromLog (execute commands from log lines), step (execute next N commands in a paused sequence), finish (complete remaining commands), insert (insert recorded commands into a sequence), addConditional (add a guarded branch step: condition + thenSequence, optionally insertAfterStep), status (with runId: one run\'s progress or final result; without: paused session + recent runs), cancel (with runId: stop that run; without: drop the paused session, or the only executing run)',
       replaySchema,
       async (args, abortSignal) => {
         switch (args.action) {
@@ -2462,6 +2587,8 @@ export function createReplayTools(
             return handleFinish(commandRecorder, executeToolCall);
           case 'insert':
             return handleInsert(args, commandRecorder);
+          case 'addConditional':
+            return handleAddConditional(args, commandRecorder);
           case 'cancel':
             return handleCancel(args, commandRecorder);
           case 'repeat':

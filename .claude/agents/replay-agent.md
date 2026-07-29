@@ -29,7 +29,8 @@ belongs there, not here.
 
 2. **Look for existing sequences** with `replay({ action: 'listSaved' })`. Auth
    and setup flows are often already built - reference them from a
-   `conditional` step rather than re-recording them.
+   `conditional` step (`replay({ action: 'addConditional' })`) rather than
+   re-recording them.
 
 3. **Plan with TodoWrite.** A debug sequence usually needs: navigate to the
    issue, find the source, set logpoints for state, set a breakpoint at the

@@ -13,6 +13,7 @@ slash command. They are here, once, rather than restated by each of those.
 
 - **Never hand-write sequence JSON.** Sequences come from recorded tool calls.
   Hand-edited JSON skips the validation the tools apply and does not port.
+  Conditionals are no exception: they have their own action, `addConditional`.
 - **Do the work with the tools; don't describe it.** Every call you make is
   recorded, and the sequence is assembled from that history afterwards.
 - **Pass `connectionReason` on every browser call** - including the connection
@@ -310,14 +311,23 @@ one browser and report success.
 condition holds. It's handled inside the executor and never appears in the tool
 list, which is why it's exempt from tool-name validation.
 
+Not being a tool, it is never recorded, so `create`/`insert` cannot produce
+one. `addConditional` is its authoring route:
+
 ```javascript
-{ tool: 'conditional', params: {
-    if: '{{selector:.login-button}}',
-    then: 'perform-login' } }
+replay({ action: 'addConditional',
+         name: 'checkout-flow',          // or sequenceId
+         condition: '{{selector:.login-button}}',
+         thenSequence: 'perform-login',  // name of another sequence
+         insertAfterStep: 0 })           // omit to append
 ```
 
-`then` is the **name of another sequence**, loaded and run inline. Use it for
-state that varies between runs - "log in first, but only if logged out".
+which stores `{ tool: 'conditional', params: { if, then } }`. Use it for state
+that varies between runs - "log in first, but only if logged out".
+
+Condition syntax and the branch target are checked before the sequence is
+touched. A sequence already saved on disk is rewritten in place; otherwise it
+waits for `export`. The response says which.
 
 | Condition | True when |
 |---|---|
@@ -379,6 +389,87 @@ Nesting depth is capped by `replay.maxConditionalDepth` (default 10) and regexes
 by `replay.maxRegexLength` (default 500), both in `.cdp-tools/config.json`.
 Oscillating chains (A->B->A) are allowed up to the depth cap. Full detail:
 `docs/replay.md`.
+
+## `forEach` steps
+
+A condition asks whether ONE named thing exists, so `conditional` can express
+"add it if it's missing" but never "remove everything that shouldn't be here".
+`forEach` is the other half: enumerate a source, run a sequence per item.
+
+```javascript
+{ tool: 'forEach', params: {
+    in: '{{var:shares}}',                 // an array a previous saveAs captured
+    as: 'share',                          // bound per iteration
+    do: 'revoke-one-share',               // sequence name, run once per item
+    where: 'item.name !== "Employees"',   // optional filter
+    maxItems: 50 } }                      // optional cap (default 100)
+```
+
+**`in` takes two forms.** `{{var:name}}` reads an array a previous `saveAs`
+captured - which is how anything non-DOM is enumerated, since
+`inspect({ action: 'evaluateExpression', saveAs: 'shares' })` can return exactly
+the list you want and is a recordable step. `{{selectorAll:CSS}}` enumerates the
+DOM, yielding `{ index, text, id, className, href, value }` per element -
+elements themselves cannot cross the CDP boundary, so `index` is what the body
+uses to address one again.
+
+**`as` binds the item**, readable in the body as `{{var:share.id}}` like any
+captured variable, with its position in `{{var:shareIndex}}`. The binding is
+replaced per iteration, not scoped - the variable store is shared by reference
+across nested runs, so a body's own `saveAs` captures also survive into the next
+iteration.
+
+**`where` is JavaScript, not the `{{...}}` condition grammar**, evaluated in the
+page with `item` and `index` in scope. Conditions probe the browser for one named
+thing; a filter has to read fields off an arbitrary object, which that grammar
+cannot express. A `where` that cannot be evaluated **fails the run** - the same
+rule a malformed condition follows, because silently excluding every item makes a
+typo look like an empty result set.
+
+An empty source is a **success**, and the run output says how many items were
+found - a converge loop with nothing left to clean up would otherwise be
+indistinguishable from a broken selector. A body failure stops the run and names
+which item it was on. Depth shares `maxConditionalDepth` with `conditional`.
+
+## `teardown` - steps that always run
+
+A sequence can carry a `teardown` array beside its `commands`:
+
+```json
+{ "name": "mint-and-check",
+  "commands": [ ... ],
+  "teardown": [
+    { "tool": "request",
+      "params": { "url": "/api/share/revoke/{{var:mint.body.id}}", "method": "POST" } }
+  ] }
+```
+
+They run once the main steps reach a terminal state - success, a failed step, an
+abort, or the total timeout - which is what makes cleanup survive the cases that
+need it. Three properties, each deliberate:
+
+- **Their own timeout budget** (`teardownTimeout`, default 60s), not drawn from
+  the run's `totalTimeout`. The commonest reason a run needs cleaning up after is
+  that it timed out; sharing the budget would skip teardown exactly then.
+- **The run's abort signal is NOT passed down**, so `replay cancel` stops the
+  work and not the cleanup. A cancelled run is precisely one that left something
+  behind.
+- **The variable store is shared**, so teardown can revoke what setup minted even
+  though the capturing step ran long before the failure.
+
+They do **not** run when a run *pauses* - `stepTo`, a breakpoint, a click
+validation failure. A paused run is not over, and its state is what you stopped
+to look at.
+
+A failing teardown step never changes the run's verdict; it is reported in its
+own section. Otherwise a broken cleanup would mask the failure it was cleaning up
+after.
+
+**Teardown is always best-effort.** A killed cdp-tools process takes any pending
+teardown with it, so it reduces accumulation and cannot guarantee a clean world.
+An assertion that depends on nothing being left over ("No assets yet") stays
+order-dependent whether or not teardown exists - mint your own fixture and assert
+on that instead, and teardown becomes hygiene rather than correctness.
 
 ## When a sequence is flaky
 

@@ -71,7 +71,7 @@ runs against (see the skill's Quick Start).
 - Use `global: true` to access servers started from a different working directory
 - `start({ watch: true, watchPaths?: [...] })`: cdp-tools watches the given paths (default: cwd) and auto-restarts the server on file changes, instead of relying on `--watch`/nodemon. Pause-aware: if a breakpoint debugger is paused on that server's inspector port, the restart queues instead of firing immediately - `cancelPendingRestart` discards a queued restart to keep debugging without it firing on resume
 
-**Replay**: `replay` (actions: history, create, list, get, delete, export, load, listSaved, deleteSaved, run, step, finish, insert, status, cancel, repeat, runFromLog, recordInteraction)
+**Replay**: `replay` (actions: history, create, list, get, delete, export, load, listSaved, deleteSaved, run, step, finish, insert, addConditional, status, cancel, repeat, runFromLog, recordInteraction)
 - `recordInteraction`: record mouse, keyboard, and navigation events with a visual overlay
 - `export`: export a sequence to file - `format: sequence | playwright | puppeteer`
 - `repeat`: instantly re-execute commands by history index - `replay({ action: 'repeat', indices: [0, 1, 2] })`. Each tool response shows its history index in the "Repeat" hint
