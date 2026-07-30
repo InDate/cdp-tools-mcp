@@ -79,6 +79,8 @@ export class NetworkMonitor {
    */
   private liveSessions: Set<string> = new Set();
   private wsClient: any = null;
+  /** The page wsClient belongs to, so re-entry can tell "again" from "elsewhere". */
+  private wsPage: any = null;
   private requests: Map<string, StoredNetworkRequest> = new Map();
   private requestIdCounter = 0;
   private maxRequests = 1000;
@@ -114,19 +116,33 @@ export class NetworkMonitor {
     this.isMonitoring = true;
   }
 
-  /** Subscribe to the CDP WebSocket lifecycle events for this page and its workers. */
+  /**
+   * Subscribe to the CDP WebSocket lifecycle events for this page and its workers.
+   *
+   * Called again after every navigation (page-tools restartMonitoring), but the
+   * page's CDP session and its auto-attach both survive navigation - so one
+   * session per page is set up once and kept.
+   *
+   * Recreating it per navigation is worse than redundant. A second session
+   * auto-attaches to the same workers and records every socket twice, and
+   * detaching the first orphans whatever it had already recorded: nothing is
+   * left to deliver those sockets' close events, so they read open forever. A
+   * frozen-open entry is exactly what makes a "is the transport up?" check pass
+   * over a dead socket.
+   */
   private async startSocketMonitoring(page: Page): Promise<void> {
-    // Re-entered after every navigation (page-tools restartMonitoring). Each
-    // entry opens a session that auto-attaches to the page's workers, so
-    // without dropping the previous one they accumulate and every stacked
-    // session records the same physical socket again - inflating the counts a
-    // run's health verdict is computed from.
+    if (this.wsClient && this.wsPage === page) return;
+    // A genuinely different page: that session's sockets belong to a document
+    // that is gone.
     const previous = this.wsClient;
     this.wsClient = null;
     if (previous) {
       try { await previous.detach(); } catch { /* already gone with its target */ }
+      for (const sock of this.sockets.values()) if (!sock.closedAt) sock.closedAt = Date.now();
+      this.liveSessions.clear();
     }
     try {
+      this.wsPage = page;
       const client: any = await (page as any).createCDPSession();
       this.wsClient = client;
       await client.send('Network.enable');
@@ -141,16 +157,23 @@ export class NetworkMonitor {
       // first line runs - otherwise a socket opened at worker boot is missed.
       client.on('Target.attachedToTarget', async (e: any) => {
         const child = client.connection?.()?.session(e.sessionId);
-        if (!child) return;
         try {
-          await child.send('Network.enable');
-          this.liveSessions.add(e.sessionId);
-          this.bindSocketEvents(child, String(e.targetInfo?.type || 'worker'), e.sessionId);
+          if (child) {
+            await child.send('Network.enable');
+            this.liveSessions.add(e.sessionId);
+            this.bindSocketEvents(child, String(e.targetInfo?.type || 'worker'), e.sessionId);
+          }
         } catch {
           // Target went away mid-attach; nothing to unwind.
         } finally {
+          // Must run on EVERY path, including no child session. The target is
+          // held before its first line, so failing to resume it does not lose
+          // monitoring - it stops the worker existing, and an app whose sync
+          // lives in that worker simply never starts.
           if (e.waitingForDebugger) {
-            await child.send('Runtime.runIfWaitingForDebugger').catch(() => {});
+            const resume = child ?? client;
+            await resume.send('Runtime.runIfWaitingForDebugger', child ? undefined : { sessionId: e.sessionId })
+              .catch(() => {});
           }
         }
       });

@@ -150,24 +150,27 @@ async function assertDom(
   let detail: string | undefined;
   let passed = false;
 
+  const NO_MATCH: DomProbe = { count: 0, visible: false, hittable: false, text: null, attribute: null, enabled: false, coveredBy: null };
+
   while (true) {
     let selector = rawSelector!;
     let resolvedExtended = false;
+    let matched = true;
     if (isExtendedSelector(selector)) {
       const r = await resolveSelector(page, selector);
-      if ('error' in r) {
-        // An extended selector that matches nothing yet is a not-yet, not a
-        // broken step - keep polling until the deadline says otherwise.
-        probe = { count: 0, visible: false, hittable: false, text: null, attribute: null, enabled: false, coveredBy: null };
-        if (Date.now() >= deadline) break;
-        await new Promise(r => setTimeout(r, 250));
-        continue;
-      }
-      selector = r.selector;
-      resolvedExtended = true;
+      // An extended selector reports "no match" as an error. That is a fact
+      // about the page, not a broken step - and for `absent` it is the fact
+      // being asserted, so it has to reach the condition below rather than
+      // short-circuit into a retry that can only ever time out.
+      if ('error' in r) matched = false;
+      else { selector = r.selector; resolvedExtended = true; }
     }
-    probe = await probeDom(page, selector, attribute);
-    if (resolvedExtended) await cleanupResolvedSelector(page, selector);
+    if (matched) {
+      probe = await probeDom(page, selector, attribute);
+      if (resolvedExtended) await cleanupResolvedSelector(page, selector);
+    } else {
+      probe = NO_MATCH;
+    }
 
     switch (condition) {
       case 'present': passed = probe.count > 0; break;
@@ -246,6 +249,10 @@ async function probeDom(page: any, selector: string, attribute?: string): Promis
     if (!el) {
       return { count: 0, visible: false, hittable: false, text: null, attribute: null, enabled: false, coveredBy: null };
     }
+    // Bring it into view first, as `input` does. Otherwise hit-testing an
+    // element below the fold returns null and reads as unreachable, when a user
+    // would simply scroll to it.
+    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
     const r = el.getBoundingClientRect();
     const style = (globalThis as any).getComputedStyle(el);
     const visible = r.width > 0 && r.height > 0 && style.visibility !== 'hidden' && style.display !== 'none' && Number(style.opacity) !== 0;

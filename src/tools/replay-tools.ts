@@ -1545,9 +1545,17 @@ async function handleRun(
   // leaves the run's own connection idle - demanding a transport there fails a
   // healthy run for a browser that was never asked to do anything.
   const stepRefs = analyzeRecordedStepConnections(commands);
-  const drivenRefs = stepRefs.references.length > 0 && !stepRefs.mixed
+  const namedRefs = stepRefs.references.length > 0 && !stepRefs.mixed
     ? stepRefs.references.map(r => connectionMap?.[sanitizeReference(r)] ?? sanitizeReference(r))
     : watchedRefs;
+  // Absence is only checked on connections that are BOTH driven and watched, so
+  // a driven ref nobody snapshots would quietly drop out of the check - the
+  // declaration silently stops being enforced, which is the failure this whole
+  // check exists to prevent. Widen the watch list instead of narrowing the
+  // verdict.
+  const unwatchedDriven = namedRefs.filter(r => !watchedRefs.includes(r));
+  if (unwatchedDriven.length > 0) watchedRefs.push(...unwatchedDriven);
+  const drivenRefs = namedRefs;
   const consoleBefore = args.strict ? await snapshotConsole(watchedRefs, executeToolCall) : {};
   const socketsBefore = checkSockets ? await snapshotSockets(watchedRefs, executeToolCall) : {};
 

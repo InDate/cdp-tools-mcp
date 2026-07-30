@@ -59,7 +59,7 @@ const inputToolSchema = z.object({
   distance: z.number().optional()
     .describe('swipe: travel in px. Default is a short, reveal-sized nudge (60% of the element, capped at 96px) because a long fast swipe commits the destructive action on rows that have ranges - pass a larger distance deliberately to over-drag'),
   durationMs: z.number().optional()
-    .describe('swipe: how long the gesture takes, spread across `steps`. Without it the moves go out as fast as the transport allows, which reads as a flick - and a component that distinguishes a flick from a drag (dismiss vs open) cannot be driven at all. ~300ms is a deliberate drag'),
+    .describe('swipe: how long the gesture takes, spread across `steps` (default 300 - a deliberate drag). Velocity is a real input to gesture handling: unpaced moves go out as fast as the transport allows, which reads as a flick, and a flick is a DIFFERENT gesture - on a swipe-action row it commits the destructive action instead of revealing it. Pass a small value deliberately to test the flick'),
 
   // scroll
   deltaX: z.number().optional().describe('Horizontal scroll px'),
@@ -1386,11 +1386,14 @@ export function createInputTools(
                       touchPoints: [point(start!.x, start!.y)],
                     });
                     if (isSwipe) {
-                      // Pace the moves when asked: velocity is a real input to
-                      // gesture handling, and an unpaced drag arrives as a
-                      // flick, which such components treat as a different
-                      // gesture entirely.
-                      const perStep = args.durationMs ? args.durationMs / steps : 0;
+                      // Paced by default. Unpaced, the moves arrive within a few
+                      // ms of each other - velocity of several px/ms, which
+                      // gesture handlers read as a flick. On a row whose flick
+                      // means "commit the destructive action", the safe-looking
+                      // call (no timing given, short travel) would fire it.
+                      // Distance does not protect against this; only pacing
+                      // does.
+                      const perStep = (args.durationMs ?? 300) / steps;
                       for (let i = 1; i <= steps; i++) {
                         throwIfAborted(abortSignal);
                         await client.send('Input.dispatchTouchEvent', {
