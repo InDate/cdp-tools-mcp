@@ -53,6 +53,14 @@ const inputToolSchema = z.object({
   to: coordinateSchema.optional(),
   steps: z.number().optional().describe('Drag smoothness'),
 
+  // swipe: gesture on an element, instead of from/to pixels
+  direction: z.enum(['left', 'right', 'up', 'down']).optional()
+    .describe("swipe: gesture direction across `selector`'s box, resolved at run time. Use this rather than from/to for anything in a list - a row's coordinates move with the rows above it"),
+  distance: z.number().optional()
+    .describe('swipe: travel in px. Default is a short, reveal-sized nudge (60% of the element, capped at 96px) because a long fast swipe commits the destructive action on rows that have ranges - pass a larger distance deliberately to over-drag'),
+  durationMs: z.number().optional()
+    .describe('swipe: how long the gesture takes, spread across `steps`. Without it the moves go out as fast as the transport allows, which reads as a flick - and a component that distinguishes a flick from a drag (dismiss vs open) cannot be driven at all. ~300ms is a deliberate drag'),
+
   // scroll
   deltaX: z.number().optional().describe('Horizontal scroll px'),
   deltaY: z.number().optional().describe('Vertical scroll px'),
@@ -118,7 +126,7 @@ export function createInputTools(
 ) {
   return {
     input: createTool(
-      'Perform browser input actions. Actions: click (click element), type (type text into element), press (press keyboard key), hover (hover over element), focus (focus element by selector), focusNext (Tab to next focusable element), focusPrevious (Shift+Tab to previous focusable element), drag (drag from one point to another), scroll (scroll wheel at position), mousemove (move mouse to position), pinch (pinch zoom gesture), tap (real touch tap - selector or x/y), swipe (real touch drag from/to, for touch-only gestures the mouse cannot drive)',
+      'Perform browser input actions. Actions: click (click element), type (type text into element), press (press keyboard key), hover (hover over element), focus (focus element by selector), focusNext (Tab to next focusable element), focusPrevious (Shift+Tab to previous focusable element), drag (drag from one point to another), scroll (scroll wheel at position), mousemove (move mouse to position), pinch (pinch zoom gesture), tap (real touch tap - selector or x/y), swipe (real touch drag - selector + direction, or raw from/to - for touch-only gestures the mouse cannot drive)',
       inputToolSchema,
       // abortSignal (#110): input events cannot be recalled once dispatched -
       // Input.dispatchMouseEvent on the wire WILL be processed by Chrome. What
@@ -1295,7 +1303,13 @@ export function createInputTools(
             const isSwipe = args.action === 'swipe';
 
             let start = isSwipe ? args.from : (typeof args.x === 'number' && typeof args.y === 'number' ? { x: args.x, y: args.y } : undefined);
-            if (!isSwipe && !start && args.selector) {
+            // A gesture across an element: its geometry is read now, because a
+            // row's coordinates move with whatever is above it and a sequence
+            // cannot know them in advance. Without this, gesture-revealed
+            // actions get faked with a programmatic click in page JS, which
+            // proves nothing about the gesture.
+            let selectorEnd: { x: number; y: number } | undefined;
+            if ((!isSwipe || args.direction) && !start && args.selector) {
               const rawSelector = args.selector;
               let selector = rawSelector;
               if (isExtendedSelector(selector)) {
@@ -1308,12 +1322,35 @@ export function createInputTools(
               const box = await page.evaluate((sel: string) => {
                 const el = (globalThis as any).document.querySelector(sel);
                 if (!el) return null;
+                el.scrollIntoView({ block: 'center', inline: 'center' });
                 const r = el.getBoundingClientRect();
-                return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+                const doc = (globalThis as any).document.documentElement;
+                return {
+                  x: r.x + r.width / 2, y: r.y + r.height / 2,
+                  width: r.width, height: r.height,
+                  viewW: doc.clientWidth, viewH: doc.clientHeight,
+                };
               }, selector);
               await cleanupResolvedSelector(page, selector);
               if (!box) return createErrorResponse('ELEMENT_NOT_FOUND', { selector: rawSelector });
-              start = box;
+              start = { x: box.x, y: box.y };
+              if (args.direction) {
+                const along = (args.direction === 'left' || args.direction === 'right') ? box.width : box.height;
+                // Deliberately short. A swipe-action row has ranges - a nudge
+                // peeks, further opens, further still commits the destructive
+                // action - and 60% of a wide row lands in the last one. Travel
+                // far enough to reveal, and let a caller that WANTS the
+                // over-drag ask for it.
+                const travel = args.distance ?? Math.min(Math.round(along * 0.6), 96);
+                const dx = args.direction === 'left' ? -travel : args.direction === 'right' ? travel : 0;
+                const dy = args.direction === 'up' ? -travel : args.direction === 'down' ? travel : 0;
+                // Stay on-screen: a gesture ending outside the viewport lands
+                // nowhere and reads as an unresponsive component.
+                selectorEnd = {
+                  x: Math.max(1, Math.min(box.viewW - 1, box.x + dx)),
+                  y: Math.max(1, Math.min(box.viewH - 1, box.y + dy)),
+                };
+              }
             }
 
             if (!start) {
@@ -1321,15 +1358,19 @@ export function createInputTools(
                 parameter: isSwipe ? 'from' : 'selector/x,y',
                 value: 'missing',
                 message: isSwipe
-                  ? 'swipe needs from:{x,y} and to:{x,y}.'
+                  ? 'swipe needs from:{x,y} and to:{x,y}, or selector + direction.'
                   : 'tap needs either a selector or x and y.'
               });
             }
-            if (isSwipe && !args.to) {
-              return createErrorResponse('INVALID_PARAMETER', { parameter: 'to', value: 'missing', message: 'swipe needs to:{x,y}.' });
+            if (isSwipe && !args.to && !selectorEnd) {
+              return createErrorResponse('INVALID_PARAMETER', {
+                parameter: 'to',
+                value: 'missing',
+                message: 'swipe needs to:{x,y}, or direction alongside selector.'
+              });
             }
 
-            const end = isSwipe ? args.to! : start;
+            const end = isSwipe ? (args.to ?? selectorEnd!) : start;
             const steps = Math.max(1, args.steps ?? 10);
 
             const result = await executeWithPauseDetection(
@@ -1345,6 +1386,11 @@ export function createInputTools(
                       touchPoints: [point(start!.x, start!.y)],
                     });
                     if (isSwipe) {
+                      // Pace the moves when asked: velocity is a real input to
+                      // gesture handling, and an unpaced drag arrives as a
+                      // flick, which such components treat as a different
+                      // gesture entirely.
+                      const perStep = args.durationMs ? args.durationMs / steps : 0;
                       for (let i = 1; i <= steps; i++) {
                         throwIfAborted(abortSignal);
                         await client.send('Input.dispatchTouchEvent', {
@@ -1354,6 +1400,7 @@ export function createInputTools(
                             start!.y + ((end.y - start!.y) * i) / steps
                           )],
                         });
+                        if (perStep > 0 && i < steps) await abortableSleep(perStep, abortSignal);
                       }
                     }
                     // touchEnd carries no points: the contact has lifted.
