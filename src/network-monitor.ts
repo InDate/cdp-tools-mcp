@@ -51,6 +51,10 @@ export interface StoredWebSocket {
    * has its real transport here, not on the page.
    */
   target: string;
+  /** CDP session the socket was seen on; scopes its id and its lifetime. */
+  sessionId: string;
+  /** Closed because its target went away, not by an observed close event. */
+  closedWithTarget?: boolean;
 }
 
 export class NetworkMonitor {
@@ -93,11 +97,21 @@ export class NetworkMonitor {
 
   /** Subscribe to the CDP WebSocket lifecycle events for this page and its workers. */
   private async startSocketMonitoring(page: Page): Promise<void> {
+    // Re-entered after every navigation (page-tools restartMonitoring). Each
+    // entry opens a session that auto-attaches to the page's workers, so
+    // without dropping the previous one they accumulate and every stacked
+    // session records the same physical socket again - inflating the counts a
+    // run's health verdict is computed from.
+    const previous = this.wsClient;
+    this.wsClient = null;
+    if (previous) {
+      try { await previous.detach(); } catch { /* already gone with its target */ }
+    }
     try {
       const client: any = await (page as any).createCDPSession();
       this.wsClient = client;
       await client.send('Network.enable');
-      this.bindSocketEvents(client, 'page');
+      this.bindSocketEvents(client, 'page', 'page');
 
       // A socket opened inside a Web Worker belongs to that worker's target and
       // emits nothing on the page session, so each worker needs its own session
@@ -108,12 +122,24 @@ export class NetworkMonitor {
         if (!child) return;
         try {
           await child.send('Network.enable');
-          this.bindSocketEvents(child, String(e.targetInfo?.type || 'worker'));
+          this.bindSocketEvents(child, String(e.targetInfo?.type || 'worker'), e.sessionId);
         } catch {
           // Target went away mid-attach; nothing to unwind.
         } finally {
           if (e.waitingForDebugger) {
             await child.send('Runtime.runIfWaitingForDebugger').catch(() => {});
+          }
+        }
+      });
+
+      // A target that goes away takes its sockets with it and delivers no
+      // webSocketClosed for them - a navigation replaces the worker, and its
+      // socket would otherwise read as open forever.
+      client.on('Target.detachedFromTarget', (e: any) => {
+        for (const sock of this.sockets.values()) {
+          if (sock.sessionId === e.sessionId && !sock.closedAt) {
+            sock.closedAt = Date.now();
+            sock.closedWithTarget = true;
           }
         }
       });
@@ -127,21 +153,28 @@ export class NetworkMonitor {
     }
   }
 
-  /** Funnel one session's WebSocket lifecycle into the shared store. */
-  private bindSocketEvents(client: any, target: string): void {
+  /**
+   * Funnel one session's WebSocket lifecycle into the shared store.
+   *
+   * CDP requestIds are unique per session, not globally, so the store is keyed
+   * by session and id together - two targets can otherwise overwrite each
+   * other's sockets.
+   */
+  private bindSocketEvents(client: any, target: string, sessionId: string): void {
+    const key = (requestId: string) => `${sessionId}:${requestId}`;
     client.on('Network.webSocketCreated', (e: any) => {
-      this.sockets.set(e.requestId, {
-        id: e.requestId, url: e.url, openedAt: Date.now(), errors: [], target,
+      this.sockets.set(key(e.requestId), {
+        id: e.requestId, url: e.url, openedAt: Date.now(), errors: [], target, sessionId,
       });
       this.lastActivityTime = Date.now();
     });
     client.on('Network.webSocketClosed', (e: any) => {
-      const sock = this.sockets.get(e.requestId);
+      const sock = this.sockets.get(key(e.requestId));
       if (sock) sock.closedAt = Date.now();
       this.lastActivityTime = Date.now();
     });
     client.on('Network.webSocketFrameError', (e: any) => {
-      const sock = this.sockets.get(e.requestId);
+      const sock = this.sockets.get(key(e.requestId));
       if (sock) sock.errors.push(String(e.errorMessage || 'frame error'));
     });
   }

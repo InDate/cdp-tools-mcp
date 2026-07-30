@@ -72,7 +72,8 @@ export function createNetworkTools(
             const sockets = targetNetworkMonitor.getSockets();
             const health = targetNetworkMonitor.getSocketHealth();
             const lines = sockets.map((sock: any) => {
-              const state = sock.closedAt ? `closed after ${sock.closedAt - sock.openedAt}ms` : 'open';
+              const how = sock.closedWithTarget ? ' with its target' : '';
+              const state = sock.closedAt ? `closed${how} after ${sock.closedAt - sock.openedAt}ms` : 'open';
               const errs = sock.errors.length ? ` - ${sock.errors.length} frame error(s): ${sock.errors.slice(0, 2).join('; ')}` : '';
               return `${sock.closedAt ? 'CLOSED' : 'OPEN  '} [${sock.target || 'page'}] ${sock.url} (${state})${errs}`;
             });
@@ -82,7 +83,16 @@ export function createNetworkTools(
 
             return {
               content: [{ type: 'text', text }],
-              _meta: { tool: 'network', action: 'sockets', timestamp: Date.now(), sockets: health },
+              _meta: {
+                tool: 'network', action: 'sockets', timestamp: Date.now(), sockets: health,
+                // Per-socket, so a run's health diff can name the socket that
+                // died and tell a declared transport from dev-server noise.
+                socketList: sockets.map((s: any) => ({
+                  id: `${s.sessionId}:${s.id}`, url: s.url, target: s.target,
+                  closed: !!s.closedAt, errors: s.errors.length,
+                  closedWithTarget: !!s.closedWithTarget,
+                })),
+              },
             };
           }
 

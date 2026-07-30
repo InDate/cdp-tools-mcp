@@ -73,6 +73,23 @@ export interface CommandSequence {
     /** Why this browser exists, for the run summary. */
     role?: string;
   }>;
+  /**
+   * WebSockets this sequence's assertions depend on. Declared here rather than
+   * passed per run because the caller cannot be expected to know which socket
+   * carries an app's data - the sequence does, and a declaration cannot be
+   * forgotten by whoever invokes the run.
+   *
+   * Each entry is a substring of the socket URL. A run enforces, for every
+   * entry: at least one matching socket is open when the run ends, and no
+   * matching socket closed or hit frame errors while it executed. That covers
+   * both a transport that died mid-run and one that never came up - the second
+   * being invisible to any "is it up now" assertion written as a final step.
+   *
+   * Match on the app's own path (`/api/sync/socket`), not the origin, so the
+   * declaration survives `baseUrl` retargeting. Dev-server sockets (Vite HMR
+   * and friends) simply go undeclared and are ignored.
+   */
+  requiredSockets?: string[];
 }
 
 // Internal history tracking (includes index and timestamp)
