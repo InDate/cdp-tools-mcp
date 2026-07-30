@@ -30,7 +30,32 @@ export interface StoredNetworkRequest {
   errorText?: string;
 }
 
+/**
+ * One WebSocket's life. Puppeteer's page events do not cover WebSockets, so
+ * these come from the raw CDP Network domain.
+ *
+ * A socket that opened and is still open is healthy. One that CLOSED during a
+ * run is the interesting case: an app whose reads come over a socket can keep
+ * rendering the last synced snapshot afterwards and pass every assertion.
+ */
+export interface StoredWebSocket {
+  id: string;
+  url: string;
+  openedAt: number;
+  closedAt?: number;
+  /** Frame-level protocol errors, which do not necessarily close the socket. */
+  errors: string[];
+  /**
+   * CDP target type that owns the socket - 'page', or a worker type such as
+   * 'worker'/'shared_worker'/'service_worker'. An app that syncs from a worker
+   * has its real transport here, not on the page.
+   */
+  target: string;
+}
+
 export class NetworkMonitor {
+  private sockets: Map<string, StoredWebSocket> = new Map();
+  private wsClient: any = null;
   private requests: Map<string, StoredNetworkRequest> = new Map();
   private requestIdCounter = 0;
   private maxRequests = 1000;
@@ -59,7 +84,82 @@ export class NetworkMonitor {
       this.onRequestFailed(request);
     });
 
+    // WebSocket lifecycle rides the CDP Network domain - puppeteer surfaces no
+    // page event for it. Failing to attach must not break HTTP monitoring.
+    void this.startSocketMonitoring(page);
+
     this.isMonitoring = true;
+  }
+
+  /** Subscribe to the CDP WebSocket lifecycle events for this page and its workers. */
+  private async startSocketMonitoring(page: Page): Promise<void> {
+    try {
+      const client: any = await (page as any).createCDPSession();
+      this.wsClient = client;
+      await client.send('Network.enable');
+      this.bindSocketEvents(client, 'page');
+
+      // A socket opened inside a Web Worker belongs to that worker's target and
+      // emits nothing on the page session, so each worker needs its own session
+      // with Network enabled. waitForDebuggerOnStart holds the worker before its
+      // first line runs - otherwise a socket opened at worker boot is missed.
+      client.on('Target.attachedToTarget', async (e: any) => {
+        const child = client.connection?.()?.session(e.sessionId);
+        if (!child) return;
+        try {
+          await child.send('Network.enable');
+          this.bindSocketEvents(child, String(e.targetInfo?.type || 'worker'));
+        } catch {
+          // Target went away mid-attach; nothing to unwind.
+        } finally {
+          if (e.waitingForDebugger) {
+            await child.send('Runtime.runIfWaitingForDebugger').catch(() => {});
+          }
+        }
+      });
+      await client.send('Target.setAutoAttach', {
+        autoAttach: true,
+        waitForDebuggerOnStart: true,
+        flatten: true,
+      });
+    } catch {
+      // No CDP session: HTTP monitoring still works, sockets are simply unseen.
+    }
+  }
+
+  /** Funnel one session's WebSocket lifecycle into the shared store. */
+  private bindSocketEvents(client: any, target: string): void {
+    client.on('Network.webSocketCreated', (e: any) => {
+      this.sockets.set(e.requestId, {
+        id: e.requestId, url: e.url, openedAt: Date.now(), errors: [], target,
+      });
+      this.lastActivityTime = Date.now();
+    });
+    client.on('Network.webSocketClosed', (e: any) => {
+      const sock = this.sockets.get(e.requestId);
+      if (sock) sock.closedAt = Date.now();
+      this.lastActivityTime = Date.now();
+    });
+    client.on('Network.webSocketFrameError', (e: any) => {
+      const sock = this.sockets.get(e.requestId);
+      if (sock) sock.errors.push(String(e.errorMessage || 'frame error'));
+    });
+  }
+
+  /** Every WebSocket seen, oldest first. */
+  getSockets(): StoredWebSocket[] {
+    return [...this.sockets.values()].sort((a, b) => a.openedAt - b.openedAt);
+  }
+
+  /** Open / closed / errored counts, for a health check. */
+  getSocketHealth(): { total: number; open: number; closed: number; errored: number } {
+    const all = this.getSockets();
+    return {
+      total: all.length,
+      open: all.filter(s => !s.closedAt).length,
+      closed: all.filter(s => s.closedAt).length,
+      errored: all.filter(s => s.errors.length > 0).length,
+    };
   }
 
   /**
@@ -207,6 +307,10 @@ export class NetworkMonitor {
   /**
    * Clear all requests
    */
+  clearSockets(): void {
+    this.sockets.clear();
+  }
+
   clear(): void {
     this.requests.clear();
     this.requestIdCounter = 0;

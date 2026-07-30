@@ -15,8 +15,8 @@ import type { ToolResponseMeta, NetworkToolMeta } from '../tool-response.js';
 
 // Consolidated network tool schema
 const networkToolSchema = z.object({
-  action: z.enum(['list', 'get', 'search', 'enable', 'disable', 'setConditions'])
-    .describe('Network action: list (list network requests), get (get specific request details), search (search requests by pattern), enable (enable network monitoring), disable (disable network monitoring), setConditions (set network conditions)'),
+  action: z.enum(['list', 'get', 'search', 'enable', 'disable', 'setConditions', 'sockets'])
+    .describe('Network action: list (list network requests), get (get specific request details), search (search requests by pattern), enable (enable network monitoring), disable (disable network monitoring), setConditions (set network conditions), sockets (WebSocket lifecycle: what opened, what closed, what errored - puppeteer surfaces no page event for these, so they come from the CDP Network domain)'),
   connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 
   // list action parameters
@@ -51,6 +51,41 @@ export function createNetworkTools(
         const { action, connectionReason } = args;
 
         switch (action) {
+          case 'sockets': {
+            if (!connectionReason) {
+              return createErrorResponse('CONNECTION_NOT_FOUND', {
+                message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
+              });
+            }
+            const resolved = await resolveConnectionFromReason(connectionReason);
+            if (!resolved) {
+              return createErrorResponse('CONNECTION_NOT_FOUND', {
+                message: 'No Chrome browser available. Use `launchChrome` first to start a browser.'
+              });
+            }
+            const targetPuppeteerManager = resolved.puppeteerManager || puppeteerManager;
+            const targetNetworkMonitor = resolved.networkMonitor || networkMonitor;
+            if (!targetNetworkMonitor.isActive() && targetPuppeteerManager.isConnected()) {
+              targetNetworkMonitor.startMonitoring(targetPuppeteerManager.getPage());
+            }
+
+            const sockets = targetNetworkMonitor.getSockets();
+            const health = targetNetworkMonitor.getSocketHealth();
+            const lines = sockets.map((sock: any) => {
+              const state = sock.closedAt ? `closed after ${sock.closedAt - sock.openedAt}ms` : 'open';
+              const errs = sock.errors.length ? ` - ${sock.errors.length} frame error(s): ${sock.errors.slice(0, 2).join('; ')}` : '';
+              return `${sock.closedAt ? 'CLOSED' : 'OPEN  '} [${sock.target || 'page'}] ${sock.url} (${state})${errs}`;
+            });
+            const text = sockets.length === 0
+              ? 'No WebSockets seen on this connection. Monitoring starts when the connection does, so a socket opened before then is not counted.'
+              : `${health.total} WebSocket(s): ${health.open} open, ${health.closed} closed, ${health.errored} with frame errors\n\n${lines.join('\n')}`;
+
+            return {
+              content: [{ type: 'text', text }],
+              _meta: { tool: 'network', action: 'sockets', timestamp: Date.now(), sockets: health },
+            };
+          }
+
           case 'list': {
             const { resourceType, limit = 100, offset = 0 } = args;
 

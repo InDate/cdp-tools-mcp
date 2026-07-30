@@ -274,6 +274,7 @@ const replaySchema = z.object({
   issueTitle: z.string().optional(),
   showReplayOverlay: z.boolean().optional(),
   showAll: z.boolean().optional().describe('Show all sequences including completed/fixed issues'),
+  requireSockets: z.boolean().optional().describe("run/runAll: fail the run if a WebSocket CLOSED or hit frame errors while it executed. Diffed against the start, so a socket already down is not blamed on this sequence. Catches a drop that recovered before the last step, which a final assertion cannot see"),
   strict: z.enum(['errors', 'warnings']).optional().describe("run/runAll: fail the run when it PRODUCES console output - 'errors' fails on new console errors, 'warnings' also fails on new warnings. Counted per connection and diffed against the start of the run, so pre-existing noise is not blamed on this sequence. A sequence can be functionally correct and still be logging; strict is how you separate those questions"),
   folder: z.string().optional().describe("runAll: sequences subfolder to run, relative to the sequences dir (e.g. 'spine'). Omit to run every sequence outside folders whose name starts with '_'. The whole tree is always LOADED first so name references (a conditional's then, a forEach's do) resolve wherever the helper lives"),
   continueOnFailure: z.boolean().optional().describe('runAll: keep going after a sequence fails and report every result (default true). false stops at the first failure'),
@@ -1091,7 +1092,8 @@ async function handleRunAll(
           ? 'did not run: it has recorded variables and none were supplied — pass variables:{} to keep the recorded values'
           : meta.paused
             ? 'did not finish: the run PAUSED (stepTo, a breakpoint, or click validation) and is still open'
-            : (text.match(/\*\*Strict run failed\*\*[\s\S]*/)?.[0]?.replace(/\s+/g, ' ').slice(0, 200)
+            : (text.match(/\*\*Socket health failed\*\*[\s\S]*?(?=\n\n\*\*|$)/)?.[0]?.replace(/\s+/g, ' ').slice(0, 200)
+             || text.match(/\*\*Strict run failed\*\*[\s\S]*/)?.[0]?.replace(/\s+/g, ' ').slice(0, 200)
              || text.match(/^\s*Error:.*$/m)?.[0]
              || `failed at ${meta.failedSteps ?? '?'} step(s)`).trim();
       } else {
@@ -1262,6 +1264,47 @@ function strictConsoleFailures(
   return out;
 }
 
+/** WebSocket health per connection, for a run's before/after comparison. */
+async function snapshotSockets(
+  refs: string[],
+  executeToolCall: ExecuteToolCall
+): Promise<Record<string, { total: number; open: number; closed: number; errored: number }>> {
+  const out: Record<string, any> = {};
+  for (const ref of refs) {
+    try {
+      const res: any = await executeToolCall('network', { action: 'sockets', connectionReason: ref });
+      out[ref] = res?._meta?.sockets || { total: 0, open: 0, closed: 0, errored: 0 };
+    } catch {
+      // Unreadable connection contributes nothing to the diff.
+    }
+  }
+  return out;
+}
+
+/**
+ * Socket problems a run CAUSED.
+ *
+ * Diffed against the start so a socket that was already closed is not blamed on
+ * this sequence. This is the check a per-step assertion cannot make: the app
+ * keeps rendering the last synced snapshot after its socket dies, so a run can
+ * pass every assertion while the transport was down for most of it — and a
+ * final "is it up now" probe misses a drop that already recovered.
+ */
+function socketFailures(
+  before: Record<string, any>,
+  after: Record<string, any>
+): string[] {
+  const out: string[] = [];
+  for (const ref of Object.keys(after)) {
+    const b = before[ref] || { closed: 0, errored: 0 };
+    const closed = (after[ref].closed || 0) - (b.closed || 0);
+    const errored = (after[ref].errored || 0) - (b.errored || 0);
+    if (closed > 0) out.push(`${ref}: ${closed} WebSocket(s) closed during the run`);
+    if (errored > 0) out.push(`${ref}: ${errored} WebSocket(s) hit frame errors`);
+  }
+  return out;
+}
+
 async function handleRun(
   args: ReplayArgs,
   recorder: CommandRecorder,
@@ -1401,11 +1444,20 @@ async function handleRun(
     ...(sequence.requiredConnections || []).map(d => connectionMap?.[sanitizeReference(d.reference)] ?? sanitizeReference(d.reference)),
   ])].filter(Boolean) as string[];
   const consoleBefore = args.strict ? await snapshotConsole(watchedRefs, executeToolCall) : {};
+  const socketsBefore = args.requireSockets ? await snapshotSockets(watchedRefs, executeToolCall) : {};
 
   if (args.wait === true) {
     const { response, outcome } = await performRun(deps, abortSignal);
     // Same rule as a sequence's own teardown: a paused run is not over, and its
     // browsers are the state someone stopped to look at.
+    if (args.requireSockets && outcome !== 'paused') {
+      const failures = socketFailures(socketsBefore, await snapshotSockets(watchedRefs, executeToolCall));
+      if (failures.length > 0 && response?.content?.[0]?.text !== undefined) {
+        response.content[0].text += `\n\n**Socket health failed** - the transport did not stay up:\n${failures.map(f => `- ${f}`).join('\n')}`;
+        response.isError = true;
+        if (response._meta?.replay) response._meta.replay.success = false;
+      }
+    }
     if (args.strict && outcome !== 'paused') {
       const failures = strictConsoleFailures(
         consoleBefore,
