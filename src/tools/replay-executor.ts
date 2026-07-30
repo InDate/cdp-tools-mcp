@@ -213,7 +213,7 @@ export const TOOLS_NEEDING_CONNECTION = [
  */
 export const TOOLS_ACCEPTING_CONNECTION = [
   ...TOOLS_NEEDING_CONNECTION,
-  'inspect', 'execution', 'breakpoint', 'getSourceCode', 'detectModals', 'dismissModal',
+  'inspect', 'execution', 'breakpoint', 'getSourceCode', 'detectModals', 'dismissModal', 'assert',
   'wait'
 ];
 

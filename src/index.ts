@@ -1398,7 +1398,7 @@ const allTools = {
   // Request tools (HTTP requests as sequence steps, node or browser destination)
   ...(configManager.isToolEnabled('request') ? createRequestTools(resolveConnectionFromReason) : {}),
   // Assert tool (inline assertions as sequence steps)
-  ...(configManager.isToolEnabled('assert') ? createAssertTools() : {}),
+  ...(configManager.isToolEnabled('assert') ? createAssertTools(resolveConnectionFromReason) : {}),
   // Wait tool (wait primitive for sequences - MCP-side condition polling / sleep)
   ...(configManager.isToolEnabled('wait') ? createWaitTools(resolveConnectionFromReason) : {}),
   // Replay tools
