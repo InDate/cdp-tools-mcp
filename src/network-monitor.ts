@@ -53,12 +53,31 @@ export interface StoredWebSocket {
   target: string;
   /** CDP session the socket was seen on; scopes its id and its lifetime. */
   sessionId: string;
-  /** Closed because its target went away, not by an observed close event. */
+  /**
+   * Its target is gone, so the close came with the teardown rather than from
+   * the transport failing. Decided when the socket is read, not when it closed:
+   * a close event and its target's detach race, and blaming whichever arrived
+   * first made healthy navigations and identity changes look like drops.
+   */
   closedWithTarget?: boolean;
+  /**
+   * The page sent a close frame - it hung up on purpose (an app dropping a
+   * socket on sign-out or an identity change), rather than losing the
+   * transport. `Network.webSocketClosed` carries no close code, so the sent
+   * opcode-8 frame is the only CDP-visible signal of intent.
+   */
+  clientClosed?: boolean;
 }
 
 export class NetworkMonitor {
   private sockets: Map<string, StoredWebSocket> = new Map();
+  /**
+   * Sessions still attached. Whether a socket's target is gone has to be
+   * answered when the question is asked, not when the socket closed: the close
+   * event and the target's detach race, and if the close lands first the socket
+   * looks self-inflicted when its worker was actually being torn down.
+   */
+  private liveSessions: Set<string> = new Set();
   private wsClient: any = null;
   private requests: Map<string, StoredNetworkRequest> = new Map();
   private requestIdCounter = 0;
@@ -111,6 +130,9 @@ export class NetworkMonitor {
       const client: any = await (page as any).createCDPSession();
       this.wsClient = client;
       await client.send('Network.enable');
+      // The page's own session outlives every navigation, so its sockets are
+      // judged on their own close events, never as target teardown.
+      this.liveSessions.add('page');
       this.bindSocketEvents(client, 'page', 'page');
 
       // A socket opened inside a Web Worker belongs to that worker's target and
@@ -122,6 +144,7 @@ export class NetworkMonitor {
         if (!child) return;
         try {
           await child.send('Network.enable');
+          this.liveSessions.add(e.sessionId);
           this.bindSocketEvents(child, String(e.targetInfo?.type || 'worker'), e.sessionId);
         } catch {
           // Target went away mid-attach; nothing to unwind.
@@ -136,10 +159,10 @@ export class NetworkMonitor {
       // webSocketClosed for them - a navigation replaces the worker, and its
       // socket would otherwise read as open forever.
       client.on('Target.detachedFromTarget', (e: any) => {
+        this.liveSessions.delete(e.sessionId);
         for (const sock of this.sockets.values()) {
           if (sock.sessionId === e.sessionId && !sock.closedAt) {
             sock.closedAt = Date.now();
-            sock.closedWithTarget = true;
           }
         }
       });
@@ -177,11 +200,25 @@ export class NetworkMonitor {
       const sock = this.sockets.get(key(e.requestId));
       if (sock) sock.errors.push(String(e.errorMessage || 'frame error'));
     });
+    // Opcode 8 is the close frame. Sent by the page means it chose to hang up.
+    client.on('Network.webSocketFrameSent', (e: any) => {
+      if (e?.response?.opcode !== 8) return;
+      const sock = this.sockets.get(key(e.requestId));
+      if (sock) sock.clientClosed = true;
+    });
   }
 
   /** Every WebSocket seen, oldest first. */
   getSockets(): StoredWebSocket[] {
-    return [...this.sockets.values()].sort((a, b) => a.openedAt - b.openedAt);
+    return [...this.sockets.values()]
+      .map(s => ({
+        ...s,
+        // Answered now rather than at close time - see closedWithTarget. The
+        // page session is never detached while monitoring runs, so a page
+        // socket is only ever judged on its own close.
+        closedWithTarget: !!s.closedAt && !this.liveSessions.has(s.sessionId),
+      }))
+      .sort((a, b) => a.openedAt - b.openedAt);
   }
 
   /** Open / closed / errored counts, for a health check. */

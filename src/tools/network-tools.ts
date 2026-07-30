@@ -72,7 +72,8 @@ export function createNetworkTools(
             const sockets = targetNetworkMonitor.getSockets();
             const health = targetNetworkMonitor.getSocketHealth();
             const lines = sockets.map((sock: any) => {
-              const how = sock.closedWithTarget ? ' with its target' : '';
+              const how = sock.closedWithTarget ? ' with its target'
+                : sock.clientClosed ? ' by the page' : '';
               const state = sock.closedAt ? `closed${how} after ${sock.closedAt - sock.openedAt}ms` : 'open';
               const errs = sock.errors.length ? ` - ${sock.errors.length} frame error(s): ${sock.errors.slice(0, 2).join('; ')}` : '';
               return `${sock.closedAt ? 'CLOSED' : 'OPEN  '} [${sock.target || 'page'}] ${sock.url} (${state})${errs}`;
@@ -91,6 +92,7 @@ export function createNetworkTools(
                   id: `${s.sessionId}:${s.id}`, url: s.url, target: s.target,
                   closed: !!s.closedAt, errors: s.errors.length,
                   closedWithTarget: !!s.closedWithTarget,
+                  clientClosed: !!s.clientClosed,
                 })),
               },
             };

@@ -1273,6 +1273,8 @@ interface SocketSnapshot {
   errors: number;
   /** Went away with its target rather than closing on its own. */
   closedWithTarget?: boolean;
+  /** The page hung up on purpose, rather than losing the transport. */
+  clientClosed?: boolean;
 }
 
 /**
@@ -1336,13 +1338,20 @@ function socketLabel(url: string): string {
  * With no declaration (`requireSockets: true` on the run) every socket is in
  * scope for closures, but nothing can be required to exist - which socket ought
  * to be there is exactly what the declaration carries.
+ *
+ * Absence is returned separately because it is the one verdict worth waiting
+ * on: sampled the instant the last step ends, it catches an app mid-reconnect
+ * and calls a recovering transport a dead one. Closures and frame errors are
+ * already-happened facts and never resolve by waiting.
  */
 function socketFailures(
   before: Record<string, SocketSnapshot[] | { unreadable: string }>,
   after: Record<string, SocketSnapshot[] | { unreadable: string }>,
-  required: string[]
-): string[] {
+  required: string[],
+  requiredOn: string[]
+): { settled: string[]; absent: string[] } {
   const out: string[] = [];
+  const absent: string[] = [];
   const inScope = (url: string) => required.length === 0 || required.some(m => url.includes(m));
   const list = (v: SocketSnapshot[] | { unreadable: string } | undefined): SocketSnapshot[] =>
     Array.isArray(v) ? v : [];
@@ -1359,12 +1368,16 @@ function socketFailures(
     for (const sock of now) {
       if (!inScope(sock.url)) continue;
       const prev = was.get(sock.id);
-      // A socket already closed before the run started is not this run's doing,
-      // and neither is one torn down with its target: a `navigate` replaces the
-      // page's workers, so their sockets close structurally on every step that
-      // moves. Whether the app reconnected afterwards is the end-state check's
+      // Three closes this run did not cause, all of them normal:
+      //  - already closed before the run started;
+      //  - torn down with its target, since a `navigate` replaces the page's
+      //    workers and takes their sockets with it;
+      //  - hung up by the page itself, which an app does on sign-out or an
+      //    identity change.
+      // Whether a socket came back afterwards is the end-state check's
       // question, not this one's.
-      if (sock.closed && !sock.closedWithTarget && !prev?.closed) {
+      const deliberate = sock.closedWithTarget || sock.clientClosed;
+      if (sock.closed && !deliberate && !prev?.closed) {
         out.push(`${ref}: ${socketLabel(sock.url)} [${sock.target}] closed during the run`);
       }
       const newErrors = sock.errors - (prev?.errors || 0);
@@ -1373,16 +1386,16 @@ function socketFailures(
       }
     }
 
-    for (const match of required) {
+    for (const match of requiredOn.includes(ref) ? required : []) {
       const matching = now.filter(s => s.url.includes(match));
       if (!matching.some(s => !s.closed)) {
-        out.push(matching.length === 0
+        absent.push(matching.length === 0
           ? `${ref}: no WebSocket matching "${match}" was ever seen - the transport this sequence asserts on never opened`
           : `${ref}: no open WebSocket matching "${match}" at the end of the run (${matching.length} seen, all closed)`);
       }
     }
   }
-  return out;
+  return { settled: out, absent };
 }
 
 async function handleRun(
@@ -1527,6 +1540,14 @@ async function handleRun(
   // whether or not the caller asked - that is the point of declaring it.
   const requiredSockets = sequence.requiredSockets || [];
   const checkSockets = args.requireSockets === true || requiredSockets.length > 0;
+  // Requiring a declared socket to EXIST only makes sense on the browsers this
+  // sequence drives. A multi-browser sequence names its connections per step and
+  // leaves the run's own connection idle - demanding a transport there fails a
+  // healthy run for a browser that was never asked to do anything.
+  const stepRefs = analyzeRecordedStepConnections(commands);
+  const drivenRefs = stepRefs.references.length > 0 && !stepRefs.mixed
+    ? stepRefs.references.map(r => connectionMap?.[sanitizeReference(r)] ?? sanitizeReference(r))
+    : watchedRefs;
   const consoleBefore = args.strict ? await snapshotConsole(watchedRefs, executeToolCall) : {};
   const socketsBefore = checkSockets ? await snapshotSockets(watchedRefs, executeToolCall) : {};
 
@@ -1547,9 +1568,22 @@ async function handleRun(
       if (response._meta?.replay) response._meta.replay.success = false;
     };
     if (checkSockets) {
+      // A declared socket missing at the last step may just be reconnecting, so
+      // give it the same order of grace an in-page liveness assertion gets
+      // rather than calling a recovering transport dead. Closures and frame
+      // errors are settled facts - only absence is worth re-reading.
+      let verdict = socketFailures(
+        socketsBefore, await snapshotSockets(watchedRefs, executeToolCall), requiredSockets, drivenRefs
+      );
+      for (let attempt = 0; verdict.absent.length > 0 && attempt < 5; attempt++) {
+        await new Promise(r => setTimeout(r, 1000));
+        verdict = socketFailures(
+          socketsBefore, await snapshotSockets(watchedRefs, executeToolCall), requiredSockets, drivenRefs
+        );
+      }
       fail(
         '**Socket health failed** - the transport did not stay up:',
-        socketFailures(socketsBefore, await snapshotSockets(watchedRefs, executeToolCall), requiredSockets)
+        [...verdict.settled, ...verdict.absent]
       );
     }
     if (args.strict) {
