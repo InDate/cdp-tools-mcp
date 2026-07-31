@@ -1825,6 +1825,11 @@ async function runCliSequence(argv: string[]): Promise<void> {
       name: sequenceName,
       connectionReason,
       killChromeOnFinish: !keepChrome,
+      // A CLI run has nobody to answer a prompt, so a parameterised sequence
+      // must keep its recorded values. Leaving this undefined made every such
+      // sequence exit 1 having executed nothing - a "failure" that is really
+      // the run asking a question into a pipe. Same reason runAll passes it.
+      variables: {},
     });
 
     console.log(runResult?.content?.[0]?.text || '');

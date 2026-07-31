@@ -1202,6 +1202,31 @@ async function handleRunAll(
  * browser, it does not override where the caller wants the steps pointed.
  */
 /**
+ * Connections a sequence actually loads the app in - the ones a declared
+ * WebSocket could plausibly belong to.
+ *
+ * A navigate step names its connection or takes the run's; either way the app
+ * comes up there and its sockets open. Everything else (asserting a captured
+ * value, waiting, inspecting) can take a connection without ever giving the
+ * transport a page to live on, so counting those made an idle browser look
+ * driven and failed the run for a socket nothing had asked it to open.
+ *
+ * Empty when the sequence never navigates - it is then driving a page someone
+ * else loaded, and the caller falls back to the wider rule rather than
+ * silently checking nothing.
+ */
+function navigatedConnections(commands: RecordedCommand[], runConnection: string | undefined): string[] {
+  const refs: string[] = [];
+  for (const cmd of commands) {
+    if (cmd.tool !== 'navigate') continue;
+    const raw = cmd.params?.connectionReason;
+    const ref = typeof raw === 'string' && raw.trim() ? sanitizeReference(raw) : runConnection;
+    if (ref && !refs.includes(ref)) refs.push(ref);
+  }
+  return refs;
+}
+
+/**
  * Reject a declaration set whose profiles cannot mean what it says, before
  * anything is launched.
  *
@@ -1698,10 +1723,20 @@ async function handleRun(
   // sequence drives. A multi-browser sequence names its connections per step and
   // leaves the run's own connection idle - demanding a transport there fails a
   // healthy run for a browser that was never asked to do anything.
+  //
+  // "Drives" is read from the NAVIGATE steps, because a socket rides on a
+  // loaded app: a connection that never navigated has no page for the
+  // transport to belong to. Inferring it from connection injection instead
+  // failed a healthy three-browser run - its 3 bare steps were `assert`s over
+  // values already captured, which take a connection but load nothing, and
+  // that was enough to demand a sync socket on the run's own idle browser.
   const stepRefs = analyzeRecordedStepConnections(commands);
-  const namedRefs = stepRefs.references.length > 0 && !stepRefs.mixed
-    ? stepRefs.references.map(r => connectionMap?.[sanitizeReference(r)] ?? sanitizeReference(r))
-    : watchedRefs;
+  const navigatedRefs = navigatedConnections(commands, connectionReason);
+  const namedRefs = navigatedRefs.length > 0
+    ? navigatedRefs.map(r => connectionMap?.[sanitizeReference(r)] ?? sanitizeReference(r))
+    : stepRefs.references.length > 0 && !stepRefs.mixed
+      ? stepRefs.references.map(r => connectionMap?.[sanitizeReference(r)] ?? sanitizeReference(r))
+      : watchedRefs;
   // Absence is only checked on connections that are BOTH driven and watched, so
   // a driven ref nobody snapshots would quietly drop out of the check - the
   // declaration silently stops being enforced, which is the failure this whole
