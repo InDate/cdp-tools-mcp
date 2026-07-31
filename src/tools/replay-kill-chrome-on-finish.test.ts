@@ -50,6 +50,14 @@ function makeReplay(
         }],
       };
     }
+    if (tool === 'network' && params.action === 'sockets') {
+      // Readable only while the browser is alive, which is the point: after the
+      // kill this would be an error, and the verdict would blame the sequence.
+      return {
+        content: [{ type: 'text', text: '' }],
+        _meta: { socketList: [{ id: 's1', url: 'ws://localhost/api/sync', target: 'page', closed: false, errors: 0 }] },
+      };
+    }
     if (tool === 'launchChrome') {
       // Production stamps ownership on the response; a reference that already
       // existed comes back reused, and a reused browser is not the run's.
@@ -197,6 +205,25 @@ describe('killChromeOnFinish', () => {
 
     expect(killedPorts(calls)).toEqual([RUN_PORT]);
     expect(killedPorts(calls)).not.toContain(BORROWED_PORT);
+  });
+
+  // The kill interrogates the browser and so does the health verdict. Killing
+  // first made every killChromeOnFinish run with declared sockets fail with
+  // "could not read socket health - Connection not found" - a failure produced
+  // by the run's own cleanup.
+  it('reads socket health BEFORE killing the browser', async () => {
+    const { replay, calls } = makeReplay(
+      [{ tool: 'dom', params: { action: 'querySelector', selector: '#a' } }],
+    );
+
+    const res = await run(replay, { requireSockets: true });
+
+    const order = calls.map(c => c.tool);
+    const lastNetwork = order.lastIndexOf('network');
+    const kill = order.indexOf('killChrome');
+    expect(lastNetwork).toBeGreaterThan(-1);
+    expect(kill).toBeGreaterThan(lastNetwork);
+    expect(text(res)).not.toContain('could not read socket health');
   });
 
   it('kills nothing when killChromeOnFinish is not set', async () => {

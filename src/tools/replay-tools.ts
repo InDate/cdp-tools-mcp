@@ -1768,16 +1768,68 @@ async function handleRun(
     declaredConns.launched, executeToolCall, getConnectionPort, sequence.name
   );
 
+  /**
+   * Tear down the browsers this run owns: its own connection, plus any a step
+   * CREATED. Runs AFTER the health verdicts, because both of them interrogate
+   * the browser - a run with `killChromeOnFinish` and declared sockets used to
+   * kill Chrome first and then report "could not read socket health -
+   * Connection not found" as a socket FAILURE. Every such run failed, for a
+   * reason that was an artefact of its own cleanup.
+   *
+   * Ownership is not guessed from the sequence text: a `launchChrome` step
+   * hands back an existing browser when the reference is already bound, which
+   * is the multi-device case where killing would destroy state the user cannot
+   * get back. The launch response says which it was, and only the ones this run
+   * created are killed (issue #103).
+   *
+   * The kill is by PORT, and other connections can share one - a `launchChrome`
+   * step usually opens a TAB in the same instance - so the port is checked for
+   * other tenants first.
+   */
+  const killOwnedChrome = async (): Promise<string> => {
+    if (!args.killChromeOnFinish) return '';
+    let note = '';
+    if (connectionReason && getConnectionPort) {
+      const port = await getConnectionPort(connectionReason);
+      const sharers = port === null ? [] : await connectionsSharingPort(executeToolCall, port, connectionReason);
+      if (sharers.length > 0) {
+        note += `\n\n**Chrome left running** (port ${port} also serves ${sharers.join(', ')}, killChromeOnFinish)` +
+          ` - killing it would take those connections with it.`;
+      } else if (port !== null) {
+        const killResult = await executeToolCall('killChrome', {
+          reason: `killChromeOnFinish: sequence "${sequence.name}" completed`,
+          port,
+        }).catch((error: any) => ({ isError: true, error }));
+        note += killResult?.isError
+          ? `\n\n**Chrome kill failed** (${connectionReason}, port ${port}, killChromeOnFinish)`
+          : `\n\n**Chrome killed** (${connectionReason}, port ${port}, killChromeOnFinish)`;
+      }
+    }
+    // The run-level connection is handled above; everything else here is a
+    // browser a step of this run opened and nobody else asked for.
+    const stepOwned = [...deps.launchedConnections].filter(ref => ref !== connectionReason);
+    note += await closeLaunchedConnections(
+      stepOwned, executeToolCall, getConnectionPort, sequence.name, 'launched in a step'
+    );
+    return note;
+  };
+
+  /** Everything a terminal run owes: verdicts first, then teardown. */
+  const settle = async (response: any, outcome: string): Promise<boolean> => {
+    const healthy = await applyHealthChecks(response, outcome);
+    if (outcome === 'paused') return healthy;
+    const notes = (await killOwnedChrome()) + (await closeDeclared());
+    if (notes && response?.content?.[0]?.text !== undefined) {
+      response.content[0].text += notes;
+    }
+    return healthy;
+  };
+
   if (args.wait === true) {
     const { response, outcome } = await performRun(deps, abortSignal);
-    await applyHealthChecks(response, outcome);
+    await settle(response, outcome);
     if (outcome === 'paused') {
       pendingDeclaredCleanups.set(cleanupKey(undefined, sequence.id), closeDeclared);
-    } else {
-      const closedNote = await closeDeclared();
-      if (closedNote && response?.content?.[0]?.text !== undefined) {
-        response.content[0].text += closedNote;
-      }
     }
     return response;
   }
@@ -1805,14 +1857,9 @@ async function handleRun(
   }).then(async ({ response, outcome, results }) => {
     // A background run is read through its record, so the verdicts have to land
     // there too - otherwise the same sequence passes or fails on `wait` alone.
-    const healthy = await applyHealthChecks(response, outcome).catch(() => true);
+    const healthy = await settle(response, outcome).catch(() => true);
     if (outcome === 'paused') {
       pendingDeclaredCleanups.set(cleanupKey(runId, sequence.id), closeDeclared);
-    } else {
-      const closedNote = await closeDeclared();
-      if (closedNote && response?.content?.[0]?.text !== undefined) {
-        response.content[0].text += closedNote;
-      }
     }
     record.finalResponse = response;
     if (results) record.results = results;
@@ -2075,46 +2122,6 @@ async function performRun(
     if (debugState) {
       response += formatDebugState(debugState, connectionReason);
     }
-  }
-
-  // Kill the Chrome this run owns, if requested: its own connection, plus any
-  // browser a step CREATED.
-  //
-  // Ownership is not guessed from the sequence text - a `launchChrome` step
-  // hands back an existing browser when the reference is already bound
-  // (CHROME_CONNECTION_REUSED), which is the multi-device case where killing
-  // would destroy state the user cannot get back. The launch response now says
-  // which it was, and the executor records only the ones it created (issue
-  // #103). A borrowed browser is still left running.
-  //
-  // The kill is by PORT, and other connections can share that port - a
-  // `launchChrome` step usually opens a TAB in the same instance rather than a
-  // new process. Killing then takes those browsers down too, which is exactly
-  // what this promises not to do, so the port is checked for other tenants
-  // first.
-  if (args.killChromeOnFinish && connectionReason && getConnectionPort) {
-    const port = await getConnectionPort(connectionReason);
-    const sharers = port === null ? [] : await connectionsSharingPort(executeToolCall, port, connectionReason);
-    if (sharers.length > 0) {
-      response += `\n\n**Chrome left running** (port ${port} also serves ${sharers.join(', ')}, killChromeOnFinish)` +
-        ` - killing it would take those connections with it.`;
-    } else if (port !== null) {
-      const killResult = await executeToolCall('killChrome', {
-        reason: `killChromeOnFinish: sequence "${sequence.name}" completed`,
-        port,
-      }).catch((error: any) => ({ isError: true, error }));
-      response += killResult?.isError
-        ? `\n\n**Chrome kill failed** (${connectionReason}, port ${port}, killChromeOnFinish)`
-        : `\n\n**Chrome killed** (${connectionReason}, port ${port}, killChromeOnFinish)`;
-    }
-  }
-  if (args.killChromeOnFinish) {
-    // The run-level connection is handled above; everything else here is a
-    // browser a step of this run opened and nobody else asked for.
-    const stepOwned = [...launchedConnections].filter(ref => ref !== connectionReason);
-    response += await closeLaunchedConnections(
-      stepOwned, executeToolCall, getConnectionPort, sequence.name, 'launched in a step'
-    );
   }
 
   return {
