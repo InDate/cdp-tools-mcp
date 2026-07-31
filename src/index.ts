@@ -377,6 +377,19 @@ async function isChromeRunning(port: number): Promise<boolean> {
   }
 }
 
+/**
+ * Stamp a launchChrome response with who owns the resulting connection.
+ *
+ * A replay run cannot tell from the text whether it CREATED a browser or was
+ * handed one that already existed, and guessing either way is destructive: kill
+ * a borrowed browser and the user loses state they cannot recover, keep an
+ * owned one and every run leaks a process (issue #103).
+ */
+function withLaunchMeta(response: any, reference: string, reused: boolean): any {
+  response._meta = { ...(response._meta || {}), launchChrome: { reference, reused } };
+  return response;
+}
+
 // Connection management tools
 const connectionTools = {
   launchChrome: createTool(
@@ -533,11 +546,18 @@ const connectionTools = {
             title = await page.title();
           }
 
-          return createSuccessResponse('CHROME_CONNECTION_REUSED', {
-            reference: sanitizedRef,
-            title,
-            url: pageUrl
-          });
+          // `reused: true` is how a replay run tells a browser it BORROWED from
+          // one it created: the reference already existed, so it belongs to
+          // whoever made it and must survive killChromeOnFinish.
+          return withLaunchMeta(
+            createSuccessResponse('CHROME_CONNECTION_REUSED', {
+              reference: sanitizedRef,
+              title,
+              url: pageUrl
+            }),
+            sanitizedRef,
+            true
+          );
         }
       }
 
@@ -757,15 +777,19 @@ const connectionTools = {
             ? `\n\nNote: This connection auto-closes after ${inactivityTimeoutMinutes} min of no tool activity against it. Any tool call using this connectionReason resets the timer.`
             : '';
 
-          return createSuccessResponse('CHROME_LAUNCH_SUCCESS', {
+          return withLaunchMeta(
+            createSuccessResponse('CHROME_LAUNCH_SUCCESS', {
+              reference,
+              title: title || '(no title)',
+              url: pageUrl,
+              consoleStats: consoleStats || undefined,
+              hasUserReference: !!userReference,
+              viewport: viewportSet,
+              inactivityNote,
+            }),
             reference,
-            title: title || '(no title)',
-            url: pageUrl,
-            consoleStats: consoleStats || undefined,
-            hasUserReference: !!userReference,
-            viewport: viewportSet,
-            inactivityNote,
-          });
+            false
+          );
         } else {
           return createSuccessResponse('CHROME_LAUNCH_NO_CONNECT', { port: port.toString() }, { port, isNewBrowser });
         }

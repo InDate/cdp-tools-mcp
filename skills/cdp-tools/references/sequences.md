@@ -183,12 +183,14 @@ Useful `run` parameters:
   `stepTimeout` (they have their own `timeoutMs`) but still capped by
   `totalTimeout`
 - `variables` - substitute recorded typed text (see below)
-- `killChromeOnFinish` - tears down the **run-level** browser only. Browsers a
-  step reached via its own `connectionReason` are deliberately left running,
-  so a sequence can read from a long-lived instance you launched yourself
-  without it being killed underneath you. Skipped altogether when another live
-  connection shares the port (a `launchChrome` step usually opens a tab in the
-  same instance) - the run says which connection kept it alive
+- `killChromeOnFinish` - tears down the browsers this run OWNS: its own
+  run-level connection, plus any browser a `launchChrome` step actually
+  created. A step that reached an already-bound reference only borrowed that
+  browser, so it is left running and a sequence can read from a long-lived
+  instance you launched yourself without it being killed underneath you.
+  Skipped for any browser whose port another live connection shares (a
+  `launchChrome` step usually opens a tab in the same instance) - the run says
+  which connection kept it alive
 
 Step through interactively with `step`, `finish`, `insert`, `status`, `cancel`
 (`run` with `stepTo: N` pauses after step N; the run's status becomes `paused`

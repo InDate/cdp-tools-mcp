@@ -517,17 +517,16 @@ replay({ action: 'run', name: 'smoke-test', connectionReason: 'ci-run',
          killChromeOnFinish: true })
 ```
 
-`killChromeOnFinish` kills **only** the Chrome behind this run's own
-(run-level) connection, and only after the run finishes - it is skipped on
-pause, breakpoint, click-validation failure or abort.
+`killChromeOnFinish` kills the browsers the run **owns**: its own (run-level)
+connection, plus every browser a `launchChrome` step actually created. It runs
+only after the run finishes - it is skipped on pause, breakpoint,
+click-validation failure or abort.
 
-Browsers that a *step* reached via its own `connectionReason` are deliberately
-left running. This narrowness is intentional: nothing tracks which connections
-the run itself caused to be launched, a per-step connection is usually a
-long-lived instance you started by hand, and a `launchChrome` step silently
-reuses an existing connection with the same reference - so its presence proves
-nothing about ownership. The executor would rather under-kill: a leaked browser
-is visible and closable, a killed one takes state you cannot get back.
+Ownership is read from the launch itself, not guessed from the sequence: a
+`launchChrome` step against a reference that already exists hands back someone
+else's browser (`CHROME_CONNECTION_REUSED`), and those are left running - that
+is the long-lived instance you started by hand, and killing it would take state
+you cannot get back.
 
 For the same reason the kill is **skipped entirely when another live connection
 shares the port** — a `launchChrome` step normally opens a tab in the existing

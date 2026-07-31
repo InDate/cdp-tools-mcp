@@ -59,6 +59,15 @@ export interface ExecutionContext {
    * pre-sanitized (see sanitizeConnectionMap). Inherited by nested sequences.
    */
   connectionMap?: Record<string, string>;
+  /**
+   * References this run CAUSED to be launched, filled in as `launchChrome`
+   * steps succeed with `reused: false`. Shared by reference with per-step ctx
+   * clones and nested sequences, so ownership survives every early return the
+   * executor has - a paused, failed or aborted run knows what it created just
+   * as well as a completed one. `killChromeOnFinish` kills exactly this set
+   * plus the run's own connection, and nothing else (issue #103).
+   */
+  launchedConnections?: Set<string>;
 }
 
 export interface StepResult {
@@ -2564,6 +2573,17 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
           error: `${execResult.error}${diagnostics}`
         });
         break;
+      }
+
+      // Note a browser this step created, so the run can close what it opened
+      // and leave what it borrowed. The reference is read from the response
+      // rather than the params: `reused: true` means the reference already
+      // existed and the browser is someone else's (issue #103).
+      if (cmd.tool === 'launchChrome' && ctx.launchedConnections) {
+        const launchMeta = execResult.result?._meta?.launchChrome;
+        if (launchMeta?.reference && launchMeta.reused === false) {
+          ctx.launchedConnections.add(launchMeta.reference);
+        }
       }
 
       // Track breakpoints set by this sequence

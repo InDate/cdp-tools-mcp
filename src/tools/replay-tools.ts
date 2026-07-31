@@ -278,7 +278,7 @@ const replaySchema = z.object({
   strict: z.enum(['errors', 'warnings']).optional().describe("run/runAll: fail the run when it PRODUCES console output - 'errors' fails on new console errors, 'warnings' also fails on new warnings. Counted per connection and diffed against the start of the run, so pre-existing noise is not blamed on this sequence. A sequence can be functionally correct and still be logging; strict is how you separate those questions"),
   folder: z.string().optional().describe("runAll: sequences subfolder to run, relative to the sequences dir (e.g. 'spine'). Omit to run every sequence outside folders whose name starts with '_'. The whole tree is always LOADED first so name references (a conditional's then, a forEach's do) resolve wherever the helper lives"),
   continueOnFailure: z.boolean().optional().describe('runAll: keep going after a sequence fails and report every result (default true). false stops at the first failure'),
-  killChromeOnFinish: z.boolean().optional().describe("run: kill the Chrome behind this run's own connection after finishing (skipped on pause/abort). Browsers a step connects to via its own connectionReason are left running - they may be instances you launched yourself. Also skipped when another live connection shares the port (a launchChrome step usually opens a tab in the same instance), and the run reports which connection kept it alive."),
+  killChromeOnFinish: z.boolean().optional().describe("run: after finishing (skipped on pause/abort), kill the browsers this run owns - its own connection plus any a launchChrome step actually created. A step that reached an already-bound reference only borrowed that browser and it is left running, so an instance you launched yourself survives. Also skipped for any browser whose port another live connection shares (a launchChrome step usually opens a tab in the same instance), and the run reports which connection kept it alive."),
 }).strict();
 
 // =============================================================================
@@ -908,6 +908,8 @@ interface PerformRunDeps {
   needsConnection: boolean;
   /** Recorded-reference -> this-session-reference rebinding (args.connections). */
   connectionMap?: Record<string, string>;
+  /** Filled in by the executor: references the run's own steps launched. */
+  launchedConnections: Set<string>;
 }
 
 /**
@@ -1197,7 +1199,9 @@ async function closeLaunchedConnections(
   launched: string[],
   executeToolCall: ExecuteToolCall,
   getConnectionPort: ((connectionReason: string) => Promise<number | null>) | undefined,
-  sequenceName: string
+  sequenceName: string,
+  /** How the run came to own these, for the kill reason and the closing note. */
+  origin: string = 'declared and launched'
 ): Promise<string> {
   if (launched.length === 0 || !getConnectionPort) return '';
   const closed: string[] = [];
@@ -1207,7 +1211,7 @@ async function closeLaunchedConnections(
       if (port === null) continue;
       const sharers = await connectionsSharingPort(executeToolCall, port, ref);
       if (sharers.length > 0) continue; // someone else is on this browser
-      await executeToolCall('killChrome', { reason: `sequence "${sequenceName}" declared and launched ${ref}`, port });
+      await executeToolCall('killChrome', { reason: `sequence "${sequenceName}" ${origin} ${ref}`, port });
       // Release the reference as well. Killing the process leaves the name
       // bound, and the next sequence in a suite declaring the same reference
       // then fails to launch against a browser that no longer exists.
@@ -1217,7 +1221,30 @@ async function closeLaunchedConnections(
       // Best-effort: a browser that will not close is not a run failure.
     }
   }
-  return closed.length ? `\n\n**Declared browsers closed:** ${closed.join(', ')}` : '';
+  return closed.length ? `\n\n**Browsers closed** (${origin}): ${closed.join(', ')}` : '';
+}
+
+/**
+ * Declared-browser cleanups owed by a run that PAUSED, keyed by run id (or by
+ * sequence id for a `wait: true` pause, which registers no run record).
+ *
+ * A pause is the one outcome that deliberately keeps its browsers - they are
+ * the state someone stopped to inspect. Every way out of a pause is terminal
+ * though (cancel, step to the end, finish), and each used to drop the launched
+ * references on the floor: the browsers stayed up and the next run reused one
+ * carrying the previous run's state (issue #127).
+ */
+const pendingDeclaredCleanups = new Map<string, () => Promise<string>>();
+
+const cleanupKey = (runId: string | undefined, sequenceId: string) => runId ?? `seq:${sequenceId}`;
+
+/** Run and forget the cleanup a paused run left owing, if any. */
+async function drainDeclaredCleanup(runId: string | undefined, sequenceId: string): Promise<string> {
+  const key = cleanupKey(runId, sequenceId);
+  const cleanup = pendingDeclaredCleanups.get(key);
+  if (!cleanup) return '';
+  pendingDeclaredCleanups.delete(key);
+  return cleanup().catch(() => '');
 }
 
 /** Console error/warning counts per connection, for a strict run's before/after. */
@@ -1523,6 +1550,7 @@ async function handleRun(
   const deps: PerformRunDeps = {
     args, recorder, executeToolCall, getPageForConnection, getConnectionPort,
     sequence, analysis, connectionReason, needsConnection,
+    launchedConnections: new Set<string>(),
     ...(connectionMap && { connectionMap }),
   };
 
@@ -1607,11 +1635,20 @@ async function handleRun(
     return healthy;
   };
 
+  // Closing the browsers the sequence declared, deferred so that every terminal
+  // outcome uses one path: a pause hands the debt to `pendingDeclaredCleanups`
+  // and whatever ends the pause pays it (issues #127, #137).
+  const closeDeclared = () => closeLaunchedConnections(
+    declaredConns.launched, executeToolCall, getConnectionPort, sequence.name
+  );
+
   if (args.wait === true) {
     const { response, outcome } = await performRun(deps, abortSignal);
     await applyHealthChecks(response, outcome);
-    if (outcome !== 'paused') {
-      const closedNote = await closeLaunchedConnections(declaredConns.launched, executeToolCall, getConnectionPort, sequence.name);
+    if (outcome === 'paused') {
+      pendingDeclaredCleanups.set(cleanupKey(undefined, sequence.id), closeDeclared);
+    } else {
+      const closedNote = await closeDeclared();
       if (closedNote && response?.content?.[0]?.text !== undefined) {
         response.content[0].text += closedNote;
       }
@@ -1643,13 +1680,23 @@ async function handleRun(
     // A background run is read through its record, so the verdicts have to land
     // there too - otherwise the same sequence passes or fails on `wait` alone.
     const healthy = await applyHealthChecks(response, outcome).catch(() => true);
+    if (outcome === 'paused') {
+      pendingDeclaredCleanups.set(cleanupKey(runId, sequence.id), closeDeclared);
+    } else {
+      const closedNote = await closeDeclared();
+      if (closedNote && response?.content?.[0]?.text !== undefined) {
+        response.content[0].text += closedNote;
+      }
+    }
     record.finalResponse = response;
     if (results) record.results = results;
     record.endedAt = Date.now();
     // Still not derived by parsing the response: the check reports its own
     // verdict, and a run whose transport died did not complete successfully.
     record.status = !healthy && outcome === 'completed' ? 'failed' : outcome;
-  }).catch((error: any) => {
+  }).catch(async (error: any) => {
+    // A run that blew up still launched what it launched.
+    await closeDeclared().catch(() => '');
     record.error = error?.message || String(error);
     record.endedAt = Date.now();
     record.status = 'failed';
@@ -1684,7 +1731,8 @@ async function performRun(
   onProgress?: (ev: { step: number; totalSteps: number; tool: string }) => void
 ): Promise<{ response: any; outcome: RunOutcome; results?: any[] }> {
   const { args, recorder, executeToolCall, getPageForConnection, getConnectionPort,
-    sequence, analysis, connectionReason, needsConnection, connectionMap } = deps;
+    sequence, analysis, connectionReason, needsConnection, connectionMap,
+    launchedConnections } = deps;
 
   // Build execution context
   const ctx: ExecutionContext = {
@@ -1693,6 +1741,7 @@ async function performRun(
     connectionReason: connectionReason!,
     logPrefix: 'run',
     variableStore: {},
+    launchedConnections,
     ...(connectionMap && { connectionMap })
   };
 
@@ -1902,17 +1951,15 @@ async function performRun(
     }
   }
 
-  // Kill the Chrome used by this run's own connection, if requested.
+  // Kill the Chrome this run owns, if requested: its own connection, plus any
+  // browser a step CREATED.
   //
-  // Deliberately run-level ONLY. A multi-device sequence can touch several browsers
-  // (steps may carry their own connectionReason), but a per-step connection is
-  // usually one the run did NOT launch: a long-lived instance the user started by
-  // hand and expects to keep. Nothing here tracks which connections the run itself
-  // caused to be launched - `didAutoLaunch` covers the run-level connection only,
-  // and a `launchChrome` step silently reuses an existing connection with the same
-  // reference (CHROME_CONNECTION_REUSED), so its presence in the sequence proves
-  // nothing about ownership. Rather than guess, we under-kill: a leaked browser is
-  // visible and closable, a killed one takes state the user cannot get back.
+  // Ownership is not guessed from the sequence text - a `launchChrome` step
+  // hands back an existing browser when the reference is already bound
+  // (CHROME_CONNECTION_REUSED), which is the multi-device case where killing
+  // would destroy state the user cannot get back. The launch response now says
+  // which it was, and the executor records only the ones it created (issue
+  // #103). A borrowed browser is still left running.
   //
   // The kill is by PORT, and other connections can share that port - a
   // `launchChrome` step usually opens a TAB in the same instance rather than a
@@ -1934,6 +1981,14 @@ async function performRun(
         ? `\n\n**Chrome kill failed** (${connectionReason}, port ${port}, killChromeOnFinish)`
         : `\n\n**Chrome killed** (${connectionReason}, port ${port}, killChromeOnFinish)`;
     }
+  }
+  if (args.killChromeOnFinish) {
+    // The run-level connection is handled above; everything else here is a
+    // browser a step of this run opened and nobody else asked for.
+    const stepOwned = [...launchedConnections].filter(ref => ref !== connectionReason);
+    response += await closeLaunchedConnections(
+      stepOwned, executeToolCall, getConnectionPort, sequence.name, 'launched in a step'
+    );
   }
 
   return {
@@ -2023,7 +2078,7 @@ async function handleStatus(args: ReplayArgs, recorder: CommandRecorder) {
 }
 
 /** Cancel one specific registered run, whatever state it is in. */
-function cancelRunRecord(record: RunRecord, recorder: CommandRecorder) {
+async function cancelRunRecord(record: RunRecord, recorder: CommandRecorder) {
   if (record.status === 'running' || record.status === 'cancelling') {
     record.status = 'cancelling';
     record.controller.abort();
@@ -2040,10 +2095,14 @@ function cancelRunRecord(record: RunRecord, recorder: CommandRecorder) {
     }
     record.status = 'cancelled';
     record.endedAt = record.endedAt ?? Date.now();
-    return createSuccessResponse('REPLAY_RUN_CANCELLED', {
+    // Cancelling ends the run, so it cleans up like any other terminal outcome.
+    const closedNote = await drainDeclaredCleanup(record.runId, record.sequenceId);
+    const response = createSuccessResponse('REPLAY_RUN_CANCELLED', {
       runId: record.runId,
       name: record.sequenceName,
     });
+    if (closedNote) response.content[0].text += closedNote;
+    return response;
   }
 
   return createSuccessResponse('REPLAY_RUN_ALREADY_FINISHED', {
@@ -2076,7 +2135,10 @@ async function handleCancel(args: ReplayArgs, recorder: CommandRecorder) {
     }
     const name = activeSeq.sequenceName;
     recorder.setActiveSequence(null);
-    return { content: [{ type: 'text', text: `**Cancelled:** ${name}` }] };
+    // Terminal: close what the paused run launched, whichever way it paused
+    // (a `wait: true` pause registers no run record, hence the sequence key).
+    const closedNote = await drainDeclaredCleanup(activeSeq.runId, activeSeq.sequenceId);
+    return { content: [{ type: 'text', text: `**Cancelled:** ${name}${closedNote}` }] };
   }
 
   // No paused session: fall through to background runs. Unambiguous only if
@@ -2122,7 +2184,8 @@ async function handleStep(
 
   if (startStep >= commands.length) {
     recorder.setActiveSequence(null);
-    return { content: [{ type: 'text', text: `**Sequence complete.** All ${commands.length} steps executed.` }] };
+    const closedNote = await drainDeclaredCleanup(activeSeq.runId, activeSeq.sequenceId);
+    return { content: [{ type: 'text', text: `**Sequence complete.** All ${commands.length} steps executed.${closedNote}` }] };
   }
 
   const ctx: ExecutionContext = {
@@ -2147,13 +2210,17 @@ async function handleStep(
   const failed = execResult.results.some(r => !r.success);
 
   // Update active sequence state
+  let closedNote = '';
   if (failed || lastExecuted >= commands.length) {
     recorder.setActiveSequence(null);
+    // Stepping off the end (or onto a failure) ends the run: same cleanup a
+    // straight-through run gets.
+    closedNote = await drainDeclaredCleanup(activeSeq.runId, activeSeq.sequenceId);
   } else {
     recorder.updateActiveSequenceStep(lastExecuted);
   }
 
-  return { content: [{ type: 'text', text: formatStepResults(sequence.name, execResult.results, startStep, commands.length, failed) }] };
+  return { content: [{ type: 'text', text: formatStepResults(sequence.name, execResult.results, startStep, commands.length, failed) + closedNote }] };
 }
 
 async function handleFinish(
@@ -2180,7 +2247,8 @@ async function handleFinish(
 
   if (startStep >= commands.length) {
     recorder.setActiveSequence(null);
-    return { content: [{ type: 'text', text: `**Sequence already complete.** All ${commands.length} steps executed.` }] };
+    const alreadyDone = await drainDeclaredCleanup(activeSeq.runId, activeSeq.sequenceId);
+    return { content: [{ type: 'text', text: `**Sequence already complete.** All ${commands.length} steps executed.${alreadyDone}` }] };
   }
 
   const ctx: ExecutionContext = {
@@ -2201,8 +2269,9 @@ async function handleFinish(
 
   // Clear active sequence
   recorder.setActiveSequence(null);
+  const closedNote = await drainDeclaredCleanup(activeSeq.runId, activeSeq.sequenceId);
 
-  return { content: [{ type: 'text', text: formatExecutionResults(sequence.name, execResult.results, commands.length, execResult.durationMs) }] };
+  return { content: [{ type: 'text', text: formatExecutionResults(sequence.name, execResult.results, commands.length, execResult.durationMs) + closedNote }] };
 }
 
 async function handleInsert(args: ReplayArgs, recorder: CommandRecorder) {

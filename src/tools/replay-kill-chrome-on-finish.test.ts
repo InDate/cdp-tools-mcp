@@ -20,7 +20,11 @@ const PORTS: Record<string, number> = {
 
 function makeReplay(
   commands: RecordedCommand[],
-  opts: { connections?: Array<{ reference: string; port: number }> } = {},
+  opts: {
+    connections?: Array<{ reference: string; port: number }>;
+    /** References a launchChrome step finds already bound (someone else's). */
+    reused?: string[];
+  } = {},
 ) {
   const sequence: CommandSequence = { id: 'seq-kill', name: 'kill-seq', commands, createdAt: 1 };
 
@@ -43,6 +47,19 @@ function makeReplay(
           type: 'text',
           text: `Active debugger connections\n\n\`\`\`json\n${JSON.stringify({ connections: opts.connections }, null, 2)}\n\`\`\``,
         }],
+      };
+    }
+    if (tool === 'launchChrome') {
+      // Production stamps ownership on the response; a reference that already
+      // existed comes back reused, and a reused browser is not the run's.
+      return {
+        content: [{ type: 'text', text: '' }],
+        _meta: {
+          launchChrome: {
+            reference: params.reference,
+            reused: (opts.reused || []).includes(params.reference),
+          },
+        },
       };
     }
     return { content: [{ type: 'text', text: '' }] };
@@ -144,6 +161,43 @@ describe('killChromeOnFinish', () => {
     expect(killedPorts(calls)).toEqual([RUN_PORT]);
   });
 
+  // The other half of the trade: under-killing leaks a process on every run.
+  // A step's browser is only spared when the step BORROWED it (issue #103).
+  it('kills a per-step browser the run itself launched', async () => {
+    // The device shape: the sequence brings up its own browsers, so the run
+    // takes no connectionReason of its own and the second launch is a browser
+    // that exists only because this run opened it.
+    const { replay, calls } = makeReplay([
+      { tool: 'launchChrome', params: { reference: 'run-device' } },
+      { tool: 'dom', params: { action: 'querySelector', selector: '#a', connectionReason: 'run-device' } },
+      { tool: 'launchChrome', params: { reference: 'phone' } },
+      { tool: 'dom', params: { action: 'querySelector', selector: '#b', connectionReason: 'phone' } },
+    ]);
+
+    await run(replay, { connectionReason: undefined });
+
+    expect(killedPorts(calls)).toContain(PORTS['phone']);
+    // and the reference is released, so the next run can launch it again
+    expect(calls.some(c => c.tool === 'disconnectDebugger' && c.params.reference === 'phone')).toBe(true);
+  });
+
+  it('leaves a per-step browser alone when the launch only reused it', async () => {
+    const { replay, calls } = makeReplay(
+      [
+        { tool: 'launchChrome', params: { reference: 'run-device' } },
+        { tool: 'dom', params: { action: 'querySelector', selector: '#a', connectionReason: 'run-device' } },
+        { tool: 'launchChrome', params: { reference: 'borrowed-device' } },
+        { tool: 'dom', params: { action: 'querySelector', selector: '#b', connectionReason: 'borrowed-device' } },
+      ],
+      { reused: ['borrowed-device'] },
+    );
+
+    await run(replay, { connectionReason: undefined });
+
+    expect(killedPorts(calls)).toEqual([RUN_PORT]);
+    expect(killedPorts(calls)).not.toContain(BORROWED_PORT);
+  });
+
   it('kills nothing when killChromeOnFinish is not set', async () => {
     const { replay, calls } = makeReplay([
       { tool: 'dom', params: { action: 'querySelector', selector: '#a', connectionReason: 'borrowed-device' } },
@@ -154,3 +208,5 @@ describe('killChromeOnFinish', () => {
     expect(killedPorts(calls)).toEqual([]);
   });
 });
+
+
