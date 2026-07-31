@@ -15,7 +15,7 @@ Every capability below is the one `replay` tool, dispatched on `action`:
 | Group | Actions |
 |---|---|
 | History | `history`, `repeat`, `runFromLog` |
-| Authoring | `create`, `recordInteraction`, `insert`, `addConditional` |
+| Authoring | `create`, `recordInteraction`, `insert`, `addConditional`, `declare` |
 | Managing | `list`, `get`, `delete`, `export`, `load`, `listSaved`, `deleteSaved` |
 | Running | `run`, `runAll`, `step`, `finish`, `status`, `cancel` |
 
@@ -788,8 +788,29 @@ session.
 ### Declaring the browsers a sequence needs
 
 A multi-browser sequence can say which browsers it needs, instead of expecting
-whoever runs it to have launched them first. `requiredConnections` lives on the
-sequence, next to `commands`:
+whoever runs it to have launched them first. Set it with `declare`:
+
+```javascript
+replay({
+  action: 'declare',
+  name: 'duo-stock-propagation',
+  requiredConnections: [
+    { reference: 'duo-member-two', profile: 'device-a', role: 'the member who draws stock' }
+  ],
+  requiredSockets: ['/api/sync/socket'],
+})
+```
+
+Each list **replaces** its field and `[]` clears it — a declaration is a whole
+statement about the run, and merging would make "drop the second browser"
+unexpressible. Passing only one list leaves the other alone. The sequence is
+written back to the file it came from; a memory-only sequence waits for
+`export`. Declarations that cannot mean what they say (two references on one
+profile, a reference declared twice, a profile name that is not a safe
+directory segment, an empty socket pattern that would match every socket) are
+refused here rather than on the next run.
+
+It lands on the sequence next to `commands`:
 
 ```json
 {
@@ -870,10 +891,12 @@ the next run finds the device exactly as this one left it.
 ### Declaring the sockets a sequence depends on
 
 `requiredSockets` is the same idea for transports: a list of URL substrings
-naming the WebSockets the sequence's assertions ride on.
+naming the WebSockets the sequence's assertions ride on. Set by the same
+action:
 
-```json
-{ "requiredSockets": ["/api/sync/socket"] }
+```javascript
+replay({ action: 'declare', name: 'duo-stock-propagation',
+         requiredSockets: ['/api/sync/socket'] })
 ```
 
 A sequence that declares them is checked whether or not the caller asks for it

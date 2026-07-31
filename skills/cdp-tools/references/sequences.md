@@ -41,7 +41,9 @@ slash command. They are here, once, rather than restated by each of those.
 
 - **Never hand-write sequence JSON.** Sequences come from recorded tool calls.
   Hand-edited JSON skips the validation the tools apply and does not port.
-  Conditionals are no exception: they have their own action, `addConditional`.
+  The things that cannot be recorded have their own actions rather than being
+  an exception to this: `addConditional` for a guarded branch, `declare` for
+  the browsers and sockets a sequence needs.
 - **Do the work with the tools; don't describe it.** Every call you make is
   recorded, and the sequence is assembled from that history afterwards.
 - **Pass `connectionReason` on every browser call** - including the connection
@@ -305,8 +307,20 @@ insert re-hoists and stays portable, while a cross-browser insert makes every
 step explicit and becomes a real multi-connection sequence.
 
 **Declaring the browsers it needs.** A sequence can bring up its own browsers
-instead of expecting the caller to have launched them, via
-`requiredConnections` on the sequence (sibling of `commands`):
+instead of expecting the caller to have launched them. Set it with `declare`:
+
+```js
+replay({ action: 'declare', name: 'duo-stock-propagation',
+         requiredConnections: [
+           { reference: 'duo-member-two', role: 'the member who draws stock',
+             url: 'http://localhost:5173/login' }
+         ] })
+```
+
+Each list replaces its field and `[]` clears it; passing one leaves the other
+untouched. The sequence is written back to its file (a memory-only one waits
+for `export`), and a declaration that cannot mean what it says is refused here
+rather than on the next run. It lands on the sequence next to `commands`:
 
 ```json
 "requiredConnections": [
@@ -349,8 +363,9 @@ that were already up, or that share a port with another live connection, are
 left alone.
 
 **Declaring the sockets it depends on.** `requiredSockets` is the same idea for
-transports: URL substrings of the WebSockets the assertions ride on
-(`"requiredSockets": ["/api/sync/socket"]`). A sequence that declares them is
+transports: URL substrings of the WebSockets the assertions ride on, set by the
+same action (`replay({ action: 'declare', name: '...', requiredSockets:
+['/api/sync/socket'] })`). A sequence that declares them is
 checked without the caller asking - `requireSockets: true` is only for a
 sequence that declares none. Per entry the run fails when a matching socket
 closed or hit frame errors mid-run, or when none is open at the end (including

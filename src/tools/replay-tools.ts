@@ -13,6 +13,7 @@ import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import { showReplayOverlay } from '../interaction-recorder.js';
 import { getIssue } from '../issue-tracker.js';
 import { deriveConnectionReference, sanitizeReference } from '../reference-validator.js';
+import { normalizeProfileName } from '../chrome-launcher.js';
 import { runRegistry, type RunRecord } from './replay-run-registry.js';
 
 import {
@@ -198,6 +199,7 @@ import {
   formatInsertPrompt,
   formatInsertResult,
   formatConditionalAdded,
+  formatDeclarations,
   formatEventsForReview,
 } from './replay-formatters.js';
 
@@ -227,7 +229,7 @@ const replaySchema = z.object({
   action: z.enum([
     'history', 'create', 'list', 'get', 'delete',
     'export', 'load', 'listSaved', 'deleteSaved',
-    'run', 'runAll', 'step', 'finish', 'insert', 'addConditional', 'status', 'cancel',
+    'run', 'runAll', 'step', 'finish', 'insert', 'addConditional', 'declare', 'status', 'cancel',
     'repeat', 'runFromLog',
     'recordInteraction'
   ]),
@@ -247,6 +249,14 @@ const replaySchema = z.object({
   filename: z.string().optional(),
   intoHistory: z.boolean().optional(),
   connectionReason: z.string().optional(),
+  requiredConnections: z.array(z.object({
+    reference: z.string().describe('Reference the steps use, e.g. "duo-member-two"'),
+    profile: z.string().optional().describe('Named persistent Chrome profile to come up on (launchChrome({ profile })). The durable identity: its storage survives between runs, so a device enrolled once stays enrolled'),
+    url: z.string().optional().describe("Opened on launch (defaults to the sequence's startUrl)"),
+    role: z.string().optional().describe('Why this browser exists, shown in the run summary'),
+    forceNewInstance: z.boolean().optional().describe('A distinct process rather than a tab. Default true, but false when profile is set - only one live Chrome may hold a profile'),
+  }).strict()).optional().describe('declare: the browsers this sequence needs. Replaces the whole list; [] clears it'),
+  requiredSockets: z.array(z.string()).optional().describe("declare: URL substrings of the WebSockets this sequence's assertions ride on, e.g. ['/api/sync/socket']. Match the app's own path, not the origin, so it survives baseUrl. Replaces the whole list; [] clears it"),
   connections: z.record(z.string()).optional().describe("run: rebind a multi-connection sequence's recorded references onto this session - { \"<recorded reference>\": \"<reference here>\" }. Only needed when steps carry their own connectionReason (replay({action:'get', outputFormat:'commands'}) shows which)"),
   record: z.boolean().optional(),
   variables: z.record(z.string()).optional(),
@@ -2558,6 +2568,116 @@ async function handleAddConditional(args: ReplayArgs, recorder: CommandRecorder)
   };
 }
 
+/**
+ * Set what a sequence DECLARES: the browsers it needs, and the sockets its
+ * assertions ride on.
+ *
+ * Declarations cannot be recorded - they are statements about a run, not steps
+ * in it - so before this the only way to add them was to open the JSON and
+ * type them in, against advice that otherwise says to keep sequences inside
+ * the tools. That also put them squarely in the path of the bug where an
+ * edited file was shadowed by the copy in memory.
+ *
+ * Each list REPLACES its field, and `[]` clears it: a declaration set is a
+ * whole statement about the run, and merging would make "remove the second
+ * browser" unexpressible.
+ */
+async function handleDeclare(args: ReplayArgs, recorder: CommandRecorder) {
+  if (args.requiredConnections === undefined && args.requiredSockets === undefined) {
+    return createErrorResponse('MISSING_PARAMETER', {
+      action: 'declare',
+      missing: 'requiredConnections or requiredSockets',
+      message: 'The "declare" action needs at least one of "requiredConnections" (browsers the sequence needs) ' +
+        'or "requiredSockets" (URL substrings of the WebSockets its assertions ride on). Pass [] to clear one.',
+    });
+  }
+
+  const loadResult = await loadSequence({ name: args.name, sequenceId: args.sequenceId }, recorder);
+  if (!loadResult.success) {
+    return handleLoadSequenceError(loadResult, 'declare');
+  }
+  const sequence = loadResult.sequence;
+
+  if (args.requiredConnections !== undefined) {
+    const seen = new Map<string, string>();
+    for (const decl of args.requiredConnections) {
+      const reference = sanitizeReference(decl.reference);
+      if (!reference) {
+        return createErrorResponse('INVALID_PARAMETER', {
+          parameter: 'requiredConnections',
+          value: decl.reference,
+          message: `"${decl.reference}" is not a usable connection reference.`,
+        });
+      }
+      if (seen.has(reference)) {
+        return createErrorResponse('INVALID_PARAMETER', {
+          parameter: 'requiredConnections',
+          value: reference,
+          message: `"${reference}" is declared twice. One entry per browser - a second entry cannot mean anything the first does not.`,
+        });
+      }
+      seen.set(reference, decl.profile ?? '');
+      if (decl.profile) {
+        try {
+          normalizeProfileName(decl.profile);
+        } catch (err: any) {
+          return createErrorResponse('INVALID_PARAMETER', {
+            parameter: 'requiredConnections',
+            value: decl.profile,
+            message: err?.message || String(err),
+          });
+        }
+      }
+    }
+    // Same rule the run enforces, applied at authoring time so it fails while
+    // you are writing the declaration rather than on the next run.
+    const conflict = declaredProfileConflict(args.requiredConnections, undefined);
+    if (conflict) {
+      return createErrorResponse('INVALID_PARAMETER', {
+        parameter: 'requiredConnections',
+        value: sequence.name,
+        message: conflict,
+      });
+    }
+    (sequence as any).requiredConnections = args.requiredConnections.length > 0
+      ? args.requiredConnections.map(d => ({ ...d, reference: sanitizeReference(d.reference) }))
+      : undefined;
+  }
+
+  if (args.requiredSockets !== undefined) {
+    const blank = args.requiredSockets.find(s => s.trim().length === 0);
+    if (blank !== undefined) {
+      return createErrorResponse('INVALID_PARAMETER', {
+        parameter: 'requiredSockets',
+        value: '(empty string)',
+        message: 'An empty socket pattern matches every socket, including the dev server\'s own - name the path your app uses, e.g. "/api/sync/socket".',
+      });
+    }
+    (sequence as any).requiredSockets = args.requiredSockets.length > 0 ? args.requiredSockets : undefined;
+  }
+
+  // Write back to the file this came from; a memory-only sequence waits for
+  // `export`, which is where it gets its filename.
+  let persisted: string | undefined;
+  const existingFile = (await recorder.listSavedSequencesOnDisk())
+    .find(s => s.name === sequence.name);
+  if (existingFile) {
+    const saved = await recorder.saveSequenceToDisk(
+      sequence.id,
+      existingFile.location === 'global',
+      true
+    );
+    if (saved?.success) persisted = saved.filepath;
+  }
+
+  return {
+    content: [{
+      type: 'text',
+      text: formatDeclarations(sequence, persisted),
+    }],
+  };
+}
+
 // =============================================================================
 // Interaction Recording Handlers
 // =============================================================================
@@ -3214,7 +3334,7 @@ export function createReplayTools(
 ) {
   return {
     replay: createTool(
-      'Record and replay command sequences for testing and automation. Actions: repeat (immediately re-execute commands by history index - use this to repeat recent actions), history (view command history), recordInteraction (record real mouse/keyboard/navigation via a browser overlay - BLOCKS until the person finishes, so do not call it unattended; tune the capture with simplifyEvents/includeHovers/preferCoordinates/preferSelectors, and add outputFormat: events|commands|review|playwright|puppeteer to dump the recording - review is a human-readable walkthrough of the captured events), create (create sequence from history indices), list (list in-memory sequences), get (get sequence details; outputFormat: commands|playwright|puppeteer returns the raw command JSON or generated test code), delete (delete from memory), export (write a sequence to disk as sequence/playwright/puppeteer), load (load sequence from disk), listSaved (list saved files), deleteSaved (delete saved file), run (start executing a sequence in the background - returns a runId immediately; poll progress/results with status, stop it with cancel; wait: true blocks until completion and returns the full result), runAll (run every sequence in a folder of the sequences dir - loads the whole tree first so cross-folder name references resolve, runs only the chosen folder, skips folders whose name starts with an underscore unless named explicitly, and reports a pass/fail line per sequence; continueOnFailure defaults true), runFromLog (execute commands from log lines), step (execute next N commands in a paused sequence), finish (complete remaining commands), insert (insert recorded commands into a sequence), addConditional (add a guarded branch step: condition + thenSequence, optionally insertAfterStep), status (with runId: one run\'s progress or final result; without: paused session + recent runs), cancel (with runId: stop that run; without: drop the paused session, or the only executing run)',
+      'Record and replay command sequences for testing and automation. Actions: repeat (immediately re-execute commands by history index - use this to repeat recent actions), history (view command history), recordInteraction (record real mouse/keyboard/navigation via a browser overlay - BLOCKS until the person finishes, so do not call it unattended; tune the capture with simplifyEvents/includeHovers/preferCoordinates/preferSelectors, and add outputFormat: events|commands|review|playwright|puppeteer to dump the recording - review is a human-readable walkthrough of the captured events), create (create sequence from history indices), list (list in-memory sequences), get (get sequence details; outputFormat: commands|playwright|puppeteer returns the raw command JSON or generated test code), delete (delete from memory), export (write a sequence to disk as sequence/playwright/puppeteer), load (load sequence from disk), listSaved (list saved files), deleteSaved (delete saved file), run (start executing a sequence in the background - returns a runId immediately; poll progress/results with status, stop it with cancel; wait: true blocks until completion and returns the full result), runAll (run every sequence in a folder of the sequences dir - loads the whole tree first so cross-folder name references resolve, runs only the chosen folder, skips folders whose name starts with an underscore unless named explicitly, and reports a pass/fail line per sequence; continueOnFailure defaults true), runFromLog (execute commands from log lines), step (execute next N commands in a paused sequence), finish (complete remaining commands), insert (insert recorded commands into a sequence), addConditional (add a guarded branch step: condition + thenSequence, optionally insertAfterStep), declare (set what the sequence needs: requiredConnections - the browsers, optionally each on a persistent profile - and requiredSockets - URL substrings of the WebSockets its assertions ride on; each list replaces the field, [] clears it, and the sequence is written back to its file), status (with runId: one run\'s progress or final result; without: paused session + recent runs), cancel (with runId: stop that run; without: drop the paused session, or the only executing run)',
       replaySchema,
       async (args, abortSignal) => {
         switch (args.action) {
@@ -3250,6 +3370,8 @@ export function createReplayTools(
             return handleInsert(args, commandRecorder);
           case 'addConditional':
             return handleAddConditional(args, commandRecorder);
+          case 'declare':
+            return handleDeclare(args, commandRecorder);
           case 'cancel':
             return handleCancel(args, commandRecorder);
           case 'repeat':

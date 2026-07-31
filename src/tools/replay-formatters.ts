@@ -1006,3 +1006,47 @@ export function formatConditionalAdded(info: {
 
   return lines.join('\n');
 }
+
+/**
+ * What a sequence now declares, after `declare` has set it.
+ *
+ * Reads back the whole statement rather than just the change: each list
+ * replaces its field, so "what does this sequence declare now" is the only
+ * question the caller can act on.
+ */
+export function formatDeclarations(sequence: CommandSequence, persistedTo?: string): string {
+  const connections = sequence.requiredConnections ?? [];
+  const sockets = sequence.requiredSockets ?? [];
+  const lines = [`**"${sequence.name}" declares**`, ''];
+
+  if (connections.length === 0) {
+    lines.push('- **Browsers:** none - the run brings up only its own connection');
+  } else {
+    lines.push('- **Browsers:**');
+    for (const decl of connections) {
+      const notes = [
+        decl.profile ? `profile \`${decl.profile}\`` : null,
+        decl.role,
+        decl.url ? `opens ${decl.url}` : null,
+        decl.profile && decl.forceNewInstance !== true ? 'reuses the Chrome already on that profile' : null,
+        !decl.profile && decl.forceNewInstance === false ? 'may share an existing browser' : null,
+      ].filter(Boolean);
+      lines.push(`  - \`${decl.reference}\`${notes.length ? ` - ${notes.join('; ')}` : ''}`);
+    }
+  }
+
+  lines.push(sockets.length === 0
+    ? '- **Sockets:** none declared - socket health is only checked when a run asks for it'
+    : `- **Sockets:** ${sockets.map(s => `\`${s}\``).join(', ')} - checked on every run, without asking`);
+
+  lines.push('');
+  lines.push(persistedTo
+    ? `Saved to \`${persistedTo}\`.`
+    : `In memory only - save with \`replay({ action: 'export', name: '${sequence.name}' })\`.`);
+
+  if (connections.some(d => d.profile)) {
+    lines.push('A profile-bearing reference cannot be rebound with `connections` at run time: the profile is the identity, and pointing it at another browser would pass while testing the wrong one.');
+  }
+
+  return lines.join('\n');
+}
