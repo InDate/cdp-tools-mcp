@@ -888,6 +888,40 @@ Two consequences worth knowing:
 Teardown kills the browser, never the profile: the directory is persistent, so
 the next run finds the device exactly as this one left it.
 
+### Saying what kind of sequence it is
+
+`tags` are free-form labels the suite runner selects on:
+
+```javascript
+replay({ action: 'declare', name: 'spine-09-retire-asset', tags: ['ui'] })
+replay({ action: 'declare', name: 'story-b1-pool',        tags: ['contract', 'slow'] })
+
+replay({ action: 'runAll', tags: ['ui'] })              // only those
+replay({ action: 'runAll', folder: 'spine', tags: ['ui'] })  // composes with folder
+```
+
+Several tags mean **any of**. Tags are lowercased, trimmed and de-duplicated on
+the way in — a tag is matched, not displayed, and `tags: ['UI']` skipping a
+sequence tagged `ui` would quietly run less than you asked for. Spaces are
+refused for the same reason: `slow ui` is ambiguous in a filter, `slow-ui`
+isn't.
+
+Every `runAll` reports the split, filtered or not:
+
+```
+runAll folder "tagcheck": 3 passed, 0 failed (1 contract, 1 ui, 1 untagged)
+```
+
+That line is the point of the feature. A suite of 43 sequences reporting "36
+passed" reads as interface coverage, and 14 of those may never issue an `input`
+step — `navigate` → `request` → `assert`, with the browser present only to hold
+the auth cookie. Good contract tests, but no UI regression can fail one of
+them. The split makes the balance visible on every run instead of on an audit.
+
+Folders can't carry this: they're already spoken for by scenario shape
+(`spine/`, `story/`, `_helpers/`), and a sequence has one folder but can
+legitimately be both `contract` and `slow`.
+
 ### Declaring the sockets a sequence depends on
 
 `requiredSockets` is the same idea for transports: a list of URL substrings

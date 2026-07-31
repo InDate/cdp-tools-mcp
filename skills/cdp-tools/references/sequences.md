@@ -26,6 +26,18 @@ only that folder. Loading everything matters: `conditional`'s `then` and
 `forEach`'s `do` resolve by sequence NAME, not by path, so a spine sequence can
 call a helper in `_helpers/` only if that helper was loaded too.
 
+**Tags are the other axis.** `replay({ action: 'declare', name: '...', tags:
+['ui'] })` labels a sequence; `replay({ action: 'runAll', tags: ['ui'] })` runs
+only those, and composes with `folder`. Several tags mean *any of*. Tags are
+lowercased and de-duplicated (a tag is matched, not displayed) and may not
+contain spaces.
+
+Every `runAll` reports the split whether or not you filtered - `3 passed (1
+contract, 1 ui, 1 untagged)`. That is the point: a suite reporting "36 passed"
+reads as interface coverage even when a third of it never issues an `input`
+step, and folders cannot carry the distinction because they already carry
+scenario shape.
+
 A folder whose name starts with `_` is skipped by a bare `runAll` - those
 sequences fail in isolation by design (unbound `{{var:}}`, an unmet
 precondition). Naming one explicitly runs it anyway.

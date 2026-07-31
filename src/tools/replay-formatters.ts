@@ -1039,6 +1039,11 @@ export function formatDeclarations(sequence: CommandSequence, persistedTo?: stri
     ? '- **Sockets:** none declared - socket health is only checked when a run asks for it'
     : `- **Sockets:** ${sockets.map(s => `\`${s}\``).join(', ')} - checked on every run, without asking`);
 
+  const tags = sequence.tags ?? [];
+  lines.push(tags.length === 0
+    ? "- **Tags:** none - it runs in every `runAll`, and counts as untagged in the summary split"
+    : `- **Tags:** ${tags.map(t => `\`${t}\``).join(', ')} - selectable with \`runAll({ tags: [...] })\``);
+
   lines.push('');
   lines.push(persistedTo
     ? `Saved to \`${persistedTo}\`.`

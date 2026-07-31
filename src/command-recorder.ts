@@ -106,6 +106,22 @@ export interface CommandSequence {
    * and friends) simply go undeclared and are ignored.
    */
   requiredSockets?: string[];
+  /**
+   * What kind of sequence this is, for selecting and reporting on a suite:
+   * `['ui']`, `['contract', 'slow']`.
+   *
+   * Deliberately free-form rather than a closed `kind`, because the split that
+   * matters is not knowable in advance - a suite wants to slice by area and
+   * speed as readily as by ui-vs-contract, and folders are already spoken for
+   * by scenario shape (spine/story/duo).
+   *
+   * What this answers: a suite reporting "36 passed" reads as interface
+   * coverage, and in one 43-sequence suite 14 of those never issued a single
+   * `input` step - navigate, request, assert, with the browser present only to
+   * hold the auth cookie. Good contract tests, but no UI regression can fail
+   * any of them, and nothing said so.
+   */
+  tags?: string[];
 }
 
 // Internal history tracking (includes index and timestamp)

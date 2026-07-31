@@ -256,6 +256,7 @@ const replaySchema = z.object({
     role: z.string().optional().describe('Why this browser exists, shown in the run summary'),
     forceNewInstance: z.boolean().optional().describe('A distinct process rather than a tab. Default true, but false when profile is set - only one live Chrome may hold a profile'),
   }).strict()).optional().describe('declare: the browsers this sequence needs. Replaces the whole list; [] clears it'),
+  tags: z.array(z.string()).optional().describe("declare: what kind of sequence this is, e.g. ['ui'] or ['contract','slow'] - replaces the whole list, [] clears it. runAll: run only sequences carrying at least one of these tags; the summary reports the split either way"),
   requiredSockets: z.array(z.string()).optional().describe("declare: URL substrings of the WebSockets this sequence's assertions ride on, e.g. ['/api/sync/socket']. Match the app's own path, not the origin, so it survives baseUrl. Replaces the whole list; [] clears it"),
   connections: z.record(z.string()).optional().describe("run: rebind a multi-connection sequence's recorded references onto this session - { \"<recorded reference>\": \"<reference here>\" }. Only needed when steps carry their own connectionReason (replay({action:'get', outputFormat:'commands'}) shows which)"),
   record: z.boolean().optional(),
@@ -1039,9 +1040,37 @@ async function handleRunAll(
 
   const folder = (args.folder || '').replace(/^\/+|\/+$/g, '');
   const chosen = new Set(selectSuiteFiles(onDisk.map(e => e.filename), folder));
-  const selected = onDisk
+  const tagsOf = (name: string) => recorder.listSequences().find(s => s.name === name)?.tags ?? [];
+
+  // Tag selection runs after the folder pick, so `folder` and `tags` compose:
+  // "the ui sequences in spine/" is one call, not a choice between two axes.
+  let wantTags: string[] = [];
+  if (args.tags !== undefined) {
+    const cleaned = normalizeTags(args.tags);
+    if ('error' in cleaned) {
+      return createErrorResponse('INVALID_PARAMETER', { parameter: 'tags', value: args.tags.join(', '), message: cleaned.error });
+    }
+    wantTags = cleaned.tags;
+  }
+
+  const inFolder = onDisk
     .filter(e => chosen.has(e.filename))
     .sort((a, b) => a.filename.localeCompare(b.filename));
+  const selected = wantTags.length === 0
+    ? inFolder
+    : inFolder.filter(e => tagsOf(e.name).some(t => wantTags.includes(t)));
+
+  if (wantTags.length > 0 && selected.length === 0) {
+    const available = [...new Set(inFolder.flatMap(e => tagsOf(e.name)))].sort();
+    return createErrorResponse('INVALID_PARAMETER', {
+      parameter: 'tags',
+      value: wantTags.join(', '),
+      message: `No sequence ${folder ? `under "${folder}" ` : ''}carries ${wantTags.length > 1 ? 'any of those tags' : `the tag "${wantTags[0]}"`}. ` +
+        (available.length
+          ? `Tags in use here: ${available.join(', ')}.`
+          : `No sequence here is tagged yet - set one with replay({ action: 'declare', name: '...', tags: ['ui'] }).`),
+    });
+  }
 
   if (selected.length === 0) {
     const folders = sequenceFolders(onDisk.map(e => e.filename));
@@ -1123,7 +1152,25 @@ async function handleRunAll(
 
   const passed = results.filter(r => r.ok).length;
   const failed = results.length - passed;
-  const scope = folder ? `folder "${folder}"` : 'all sequences';
+  const scope = [
+    folder ? `folder "${folder}"` : 'all sequences',
+    wantTags.length ? `tagged ${wantTags.join(' or ')}` : '',
+  ].filter(Boolean).join(', ');
+
+  // What the suite actually covered, reported every run rather than needing an
+  // audit to discover: "36 passed" reads as interface coverage whether or not
+  // any of it drove the interface.
+  const tagCounts = new Map<string, number>();
+  let untagged = 0;
+  for (const r of results) {
+    const tags = tagsOf(r.name);
+    if (tags.length === 0) untagged++;
+    for (const tag of tags) tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
+  }
+  const split = [
+    ...[...tagCounts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([tag, n]) => `${n} ${tag}`),
+    ...(untagged > 0 ? [`${untagged} untagged`] : []),
+  ].join(', ');
   const lines = results.map(r => `${r.ok ? 'PASS' : 'FAIL'}  ${r.filename}${r.ok ? '' : `  — ${r.detail}`}`);
   const skipped = selected.length - results.length;
 
@@ -1131,7 +1178,8 @@ async function handleRunAll(
     content: [{
       type: 'text',
       text: [
-        `runAll ${scope}: ${passed} passed, ${failed} failed${skipped > 0 ? `, ${skipped} not run (stopped at first failure)` : ''}`,
+        `runAll ${scope}: ${passed} passed, ${failed} failed${skipped > 0 ? `, ${skipped} not run (stopped at first failure)` : ''}` +
+          (split ? ` (${split})` : ''),
         '',
         ...lines,
         '',
@@ -2569,8 +2617,32 @@ async function handleAddConditional(args: ReplayArgs, recorder: CommandRecorder)
 }
 
 /**
- * Set what a sequence DECLARES: the browsers it needs, and the sockets its
- * assertions ride on.
+ * Tidy a tag list into the form selection can rely on: trimmed, lowercased,
+ * de-duplicated, order preserved.
+ *
+ * Case and stray whitespace are normalised rather than rejected because a tag
+ * is matched, not displayed - `runAll({ tags: ['UI'] })` skipping a sequence
+ * tagged `ui` would be a silent miss, which for a suite means quietly running
+ * less than you asked for.
+ */
+function normalizeTags(tags: string[]): { tags: string[] } | { error: string } {
+  const out: string[] = [];
+  for (const raw of tags) {
+    const tag = raw.trim().toLowerCase();
+    if (!tag) {
+      return { error: 'An empty tag cannot select anything - drop it, or pass [] to clear the list.' };
+    }
+    if (/\s/.test(tag)) {
+      return { error: `"${raw.trim()}" contains a space. Tags are single words so they stay unambiguous in a filter - use a hyphen ("${tag.replace(/\s+/g, '-')}").` };
+    }
+    if (!out.includes(tag)) out.push(tag);
+  }
+  return { tags: out };
+}
+
+/**
+ * Set what a sequence DECLARES: the browsers it needs, the sockets its
+ * assertions ride on, and what kind of sequence it is.
  *
  * Declarations cannot be recorded - they are statements about a run, not steps
  * in it - so before this the only way to add them was to open the JSON and
@@ -2583,12 +2655,13 @@ async function handleAddConditional(args: ReplayArgs, recorder: CommandRecorder)
  * browser" unexpressible.
  */
 async function handleDeclare(args: ReplayArgs, recorder: CommandRecorder) {
-  if (args.requiredConnections === undefined && args.requiredSockets === undefined) {
+  if (args.requiredConnections === undefined && args.requiredSockets === undefined && args.tags === undefined) {
     return createErrorResponse('MISSING_PARAMETER', {
       action: 'declare',
-      missing: 'requiredConnections or requiredSockets',
-      message: 'The "declare" action needs at least one of "requiredConnections" (browsers the sequence needs) ' +
-        'or "requiredSockets" (URL substrings of the WebSockets its assertions ride on). Pass [] to clear one.',
+      missing: 'requiredConnections, requiredSockets or tags',
+      message: 'The "declare" action needs at least one of "requiredConnections" (browsers the sequence needs), ' +
+        '"requiredSockets" (URL substrings of the WebSockets its assertions ride on), or "tags" (what kind of ' +
+        'sequence this is, which runAll selects on). Pass [] to clear one.',
     });
   }
 
@@ -2654,6 +2727,18 @@ async function handleDeclare(args: ReplayArgs, recorder: CommandRecorder) {
       });
     }
     (sequence as any).requiredSockets = args.requiredSockets.length > 0 ? args.requiredSockets : undefined;
+  }
+
+  if (args.tags !== undefined) {
+    const cleaned = normalizeTags(args.tags);
+    if ('error' in cleaned) {
+      return createErrorResponse('INVALID_PARAMETER', {
+        parameter: 'tags',
+        value: args.tags.join(', '),
+        message: cleaned.error,
+      });
+    }
+    (sequence as any).tags = cleaned.tags.length > 0 ? cleaned.tags : undefined;
   }
 
   // Write back to the file this came from; a memory-only sequence waits for
@@ -3334,7 +3419,7 @@ export function createReplayTools(
 ) {
   return {
     replay: createTool(
-      'Record and replay command sequences for testing and automation. Actions: repeat (immediately re-execute commands by history index - use this to repeat recent actions), history (view command history), recordInteraction (record real mouse/keyboard/navigation via a browser overlay - BLOCKS until the person finishes, so do not call it unattended; tune the capture with simplifyEvents/includeHovers/preferCoordinates/preferSelectors, and add outputFormat: events|commands|review|playwright|puppeteer to dump the recording - review is a human-readable walkthrough of the captured events), create (create sequence from history indices), list (list in-memory sequences), get (get sequence details; outputFormat: commands|playwright|puppeteer returns the raw command JSON or generated test code), delete (delete from memory), export (write a sequence to disk as sequence/playwright/puppeteer), load (load sequence from disk), listSaved (list saved files), deleteSaved (delete saved file), run (start executing a sequence in the background - returns a runId immediately; poll progress/results with status, stop it with cancel; wait: true blocks until completion and returns the full result), runAll (run every sequence in a folder of the sequences dir - loads the whole tree first so cross-folder name references resolve, runs only the chosen folder, skips folders whose name starts with an underscore unless named explicitly, and reports a pass/fail line per sequence; continueOnFailure defaults true), runFromLog (execute commands from log lines), step (execute next N commands in a paused sequence), finish (complete remaining commands), insert (insert recorded commands into a sequence), addConditional (add a guarded branch step: condition + thenSequence, optionally insertAfterStep), declare (set what the sequence needs: requiredConnections - the browsers, optionally each on a persistent profile - and requiredSockets - URL substrings of the WebSockets its assertions ride on; each list replaces the field, [] clears it, and the sequence is written back to its file), status (with runId: one run\'s progress or final result; without: paused session + recent runs), cancel (with runId: stop that run; without: drop the paused session, or the only executing run)',
+      'Record and replay command sequences for testing and automation. Actions: repeat (immediately re-execute commands by history index - use this to repeat recent actions), history (view command history), recordInteraction (record real mouse/keyboard/navigation via a browser overlay - BLOCKS until the person finishes, so do not call it unattended; tune the capture with simplifyEvents/includeHovers/preferCoordinates/preferSelectors, and add outputFormat: events|commands|review|playwright|puppeteer to dump the recording - review is a human-readable walkthrough of the captured events), create (create sequence from history indices), list (list in-memory sequences), get (get sequence details; outputFormat: commands|playwright|puppeteer returns the raw command JSON or generated test code), delete (delete from memory), export (write a sequence to disk as sequence/playwright/puppeteer), load (load sequence from disk), listSaved (list saved files), deleteSaved (delete saved file), run (start executing a sequence in the background - returns a runId immediately; poll progress/results with status, stop it with cancel; wait: true blocks until completion and returns the full result), runAll (run every sequence in a folder of the sequences dir, or only those carrying a given tag - loads the whole tree first so cross-folder name references resolve, runs only the chosen folder, skips folders whose name starts with an underscore unless named explicitly, and reports a pass/fail line per sequence; continueOnFailure defaults true), runFromLog (execute commands from log lines), step (execute next N commands in a paused sequence), finish (complete remaining commands), insert (insert recorded commands into a sequence), addConditional (add a guarded branch step: condition + thenSequence, optionally insertAfterStep), declare (set what the sequence needs and what it is: requiredConnections - the browsers, optionally each on a persistent profile - requiredSockets - URL substrings of the WebSockets its assertions ride on - and tags, which runAll selects on; each list replaces the field, [] clears it, and the sequence is written back to its file), status (with runId: one run\'s progress or final result; without: paused session + recent runs), cancel (with runId: stop that run; without: drop the paused session, or the only executing run)',
       replaySchema,
       async (args, abortSignal) => {
         switch (args.action) {
