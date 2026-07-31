@@ -44,6 +44,14 @@ What that means while iterating on this repo with a live Claude Code session att
 
 The pidfile is last-writer-wins across supervisors, so a supervisor only deletes it on exit when it still names that process (`src/supervisor/pidfile.ts`). Deleting it unconditionally let a stale supervisor, exiting hours later, disable a live session's hot reload.
 
+**That line is a claim about a pid, not proof your session reloaded.** The build signals whoever is named in *this repo's* pidfile; when the session is supervised from a different project directory, that is someone else's supervisor and the signal lands harmlessly there. Ask the running server instead:
+
+```
+config({ action: 'status' })
+```
+
+It reports `Built:` (mtime of the `build/index.js` the process actually loaded, read at startup), `Running:` (which file that is), and `pid` / `supervisor`. A `Built` timestamp older than the build you just ran means you are talking to the previous code - reconnect `/mcp`, or find the supervisor that is actually serving you. Do this before concluding that behaviour contradicts your source: several hours of debugging a fix that already worked came from not being able to ask this question.
+
 ## Tool failures are THROWN, not returned
 
 `executeToolCall` (`src/index.ts`) converts any `isError` response into a thrown `ToolError` (`src/tool-error.ts`) carrying that response. **Code downstream of it that branches on `result.isError` is dead**, and a test whose fake `executeToolCall` *returns* isError responses will happily cover that dead branch while the live path goes untested. That mismatch shipped several bugs: absent-element conditions failing whole runs, `LAUNCH_FAILED` never reaching the user, a leaked verification tab.

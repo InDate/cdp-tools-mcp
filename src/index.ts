@@ -57,7 +57,7 @@ import { createIssuesTools } from './tools/issues-tools.js';
 import { createDashboardTools, setDashboardInstance, getDashboardInstance, setSessionInfo, getDuplicateSessionInfo } from './tools/dashboard-tools.js';
 import { initializeDashboard, shutdownDashboard, type DashboardInstance, type ConnectionInfo as DashboardConnectionInfo } from './dashboard/index.js';
 import { Orchestrator } from './log-processor/orchestrator.js';
-import { mkdirSync, existsSync, readFileSync } from 'fs';
+import { mkdirSync, existsSync, readFileSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { ServerManager, detectAutoRestartCommand } from './server-manager.js';
 import { configManager } from './config.js';
@@ -88,6 +88,28 @@ const SERVER_VERSION: string = (() => {
     return JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8')).version ?? '0.0.0';
   } catch {
     return '0.0.0';
+  }
+})();
+
+/**
+ * Which build is actually answering, so a session can tell whether the code it
+ * is calling is the code it just compiled.
+ *
+ * A rebuild signals the supervisor named in this project's pidfile, which is
+ * not necessarily the supervisor serving this session - when it isn't, the
+ * build reports success and the old code keeps answering. There was no way to
+ * notice: behaviour was read from a stale build for several iterations and a
+ * fix that already worked was called broken (issue #135).
+ *
+ * `buildMtime` is read once at startup, so it dates the running code rather
+ * than whatever is on disk now - which is the whole point of the comparison.
+ */
+const BUILD_IDENTITY: { entryPath: string; buildMtime: string } = (() => {
+  const entryPath = __filename;
+  try {
+    return { entryPath, buildMtime: statSync(entryPath).mtime.toISOString() };
+  } catch {
+    return { entryPath, buildMtime: 'unknown' };
   }
 })();
 
@@ -1441,7 +1463,7 @@ const allTools = {
   // Server management tools
   ...(configManager.isToolEnabled('server') ? createServerTools(serverManager) : {}),
   // Config management tools (always enabled - not toggleable)
-  ...createConfigTools(chromeLauncher),
+  ...createConfigTools(chromeLauncher, { version: SERVER_VERSION, ...BUILD_IDENTITY }),
   // Plugin management tools (always enabled - not toggleable)
   ...createPluginTools(() => orchestratorInstance),
   // Issues tracking tools

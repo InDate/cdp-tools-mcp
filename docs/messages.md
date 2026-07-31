@@ -3134,6 +3134,14 @@ Persistent Chrome profiles are not available - the config tool was created witho
 | Local: {{localPath}} | {{localExists}} |
 | Global: {{globalPath}} | {{globalExists}} |
 
+**Server:** v{{version}} (pid {{serverPid}}, supervisor {{supervisorPid}})
+**Running:** {{entryPath}}
+**Built:** {{buildMtime}}
+
+After a rebuild, a `Built` timestamp older than the build means this server
+never reloaded - the rebuild signalled a supervisor that is not the one serving
+you, and everything you are observing is the previous code.
+
 ---
 
 ## CONFIG_USE_LOCAL_SUCCESS

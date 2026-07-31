@@ -30,7 +30,17 @@ export interface ProfileStore {
   resetPersistentProfile(profile: string): Promise<{ profile: string; path: string; existed: boolean }>;
 }
 
-export function createConfigTools(profileStore?: ProfileStore) {
+/**
+ * Which build is answering, for `config status`. Supplied by the entry point,
+ * which is the only thing that knows where it was loaded from.
+ */
+export interface ServerIdentity {
+  version: string;
+  entryPath: string;
+  buildMtime: string;
+}
+
+export function createConfigTools(profileStore?: ProfileStore, serverIdentity?: ServerIdentity) {
   return {
     config: createTool(
       'Manage cdp-tools configuration. Actions: status (show where config is loaded from), useLocal (switch to project-local config), useGlobal (switch to global ~/.cdp-tools config), reset (reset to defaults), backup (create timestamped backup), cloneFromGlobal (copy global config to local), show (display current settings), listTools (list all toggleable tools with their status and dependencies), reload (re-read config.json now; edits also hot-reload automatically within ~250ms), restart (restart cdp-tools itself if stuck or broken), listProfiles (list named persistent Chrome profiles and where they live), resetProfile (wipe and recreate a named persistent Chrome profile, clearing its cookies/localStorage/IndexedDB)',
@@ -46,6 +56,15 @@ export function createConfigTools(profileStore?: ProfileStore) {
               globalPath: status.globalPath,
               localExists: status.localExists ? 'yes' : 'no',
               globalExists: status.globalExists ? 'yes' : 'no',
+              // Which build is answering. After `npm run build`, a buildMtime
+              // older than the build means the running server never reloaded -
+              // the rebuild signalled a supervisor that is not serving this
+              // session, and everything you observe is the previous code.
+              version: serverIdentity?.version,
+              entryPath: serverIdentity?.entryPath,
+              buildMtime: serverIdentity?.buildMtime,
+              serverPid: String(process.pid),
+              supervisorPid: process.ppid ? String(process.ppid) : undefined,
             });
           }
 
