@@ -68,8 +68,23 @@ export interface CommandSequence {
     reference: string;
     /** Opened on launch. Defaults to the sequence's startUrl. */
     url?: string;
-    /** A distinct browser process, not a tab (default true) - two identities
-     *  sharing one browser share its storage, which defeats the point. */
+    /**
+     * Named persistent Chrome profile to bring this reference up on, e.g.
+     * 'device-a' (see launchChrome({ profile })). The profile is the durable
+     * identity - its cookies, localStorage and IndexedDB survive between runs,
+     * so a device enrolled once stays enrolled - while the reference is only a
+     * name for this session. Declaring the pair is what lets a saved sequence
+     * be re-run tomorrow without rewiring which reference means which device.
+     *
+     * Implies reuse: a live Chrome already on this profile is the browser this
+     * declaration wants, so `forceNewInstance` defaults to FALSE here. Only one
+     * live Chrome may hold a profile, so forcing a second process would fail
+     * against the very browser it was asking for.
+     */
+    profile?: string;
+    /** A distinct browser process, not a tab (default true, but false when
+     *  `profile` is set) - two identities sharing one browser share its
+     *  storage, which defeats the point. */
     forceNewInstance?: boolean;
     /** Why this browser exists, for the run summary. */
     role?: string;

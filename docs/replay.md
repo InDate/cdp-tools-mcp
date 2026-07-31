@@ -806,8 +806,9 @@ sequence, next to `commands`:
 | Field | Meaning |
 |---|---|
 | `reference` | The reference the steps use |
+| `profile` | Named persistent Chrome profile to come up on (see below) |
 | `url` | Opened on launch (defaults to the sequence's `startUrl`) |
-| `forceNewInstance` | A separate browser process rather than a tab, default **true** — two identities sharing one browser share its storage, which defeats the point |
+| `forceNewInstance` | A separate browser process rather than a tab, default **true** — two identities sharing one browser share its storage, which defeats the point. Defaults to **false** when `profile` is set |
 | `role` | Why this browser exists, for the run summary |
 
 The run brings each one up before the first step. A reference already bound to
@@ -827,6 +828,44 @@ running too. The run says which it closed:
 ```
 **Browsers closed** (declared and launched): duo-member-two
 ```
+
+#### Declaring the device, not just the browser
+
+`profile` names a persistent Chrome profile (the same ones
+`launchChrome({ profile })` creates, under `~/.cdp-tools/profiles`):
+
+```json
+"requiredConnections": [
+  { "reference": "device-a", "profile": "device-a", "role": "the enrolled device" }
+]
+```
+
+The profile is the durable half. Its cookies, localStorage and IndexedDB —
+including non-extractable CryptoKeys — survive between runs, so a device
+enrolled once stays enrolled, while the reference is only a name for this
+session. Declaring the pair is what lets a saved multi-device sequence be re-run
+tomorrow without rewiring which reference means which device.
+
+Steps still address browsers by `connectionReason`. There is no per-step
+`profile`: a step names a browser, the declaration decides what that browser
+is.
+
+Two consequences worth knowing:
+
+- **A profile implies reuse.** Only one live Chrome may hold a profile, so
+  `forceNewInstance` defaults to `false` here — a Chrome already running that
+  profile *is* the browser the declaration wants, whatever reference it is
+  bound to. Set `forceNewInstance: true` explicitly if you really want a spawn
+  attempt.
+- **A profile-bearing reference cannot be rebound.** Elsewhere a `connections`
+  mapping wins over a declaration, because a declaration is only a default. A
+  profile is an identity claim: pointing `device-a` at another browser would run
+  device-a's steps somewhere that is not device-a and report success. The run is
+  refused instead. Two declarations naming the same profile are refused for the
+  same reason — they would be one browser wearing two names.
+
+Teardown kills the browser, never the profile: the directory is persistent, so
+the next run finds the device exactly as this one left it.
 
 ### Declaring the sockets a sequence depends on
 

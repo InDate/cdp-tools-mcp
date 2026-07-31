@@ -525,8 +525,18 @@ const connectionTools = {
         await debugLog('index', `launchChrome: forceNewInstance requested port ${decision.port} but it is already in use`);
         return createErrorResponse('CHROME_FORCED_PORT_IN_USE', { port: decision.port.toString() });
       }
-      const port = decision.port;
-      await debugLog('index', `launchChrome called: port=${port}, requested=${args.port}, reserved=${configManager.getCurrentPort()}, forceNewInstance=${args.forceNewInstance}, url=${args.url}, autoConnect=${args.autoConnect}, reference=${args.reference}`);
+      // A named profile is an identity, and the Chrome already holding it IS
+      // that identity - so go to its port rather than the session's reserved
+      // one. Without this, `launchChrome({ profile })` for a profile that is up
+      // under some other reference resolves to a free port, finds nothing
+      // there, and refuses to spawn because the profile is held elsewhere:
+      // "already running" reported as a conflict. An explicit port or
+      // forceNewInstance is a deliberate override and still wins.
+      const profileHolderPort = profileName && !args.port && !args.forceNewInstance
+        ? chromeLauncher.findPortForProfile(profileName)
+        : undefined;
+      const port = profileHolderPort ?? decision.port;
+      await debugLog('index', `launchChrome called: port=${port}, requested=${args.port}, reserved=${configManager.getCurrentPort()}, profileHolder=${profileHolderPort ?? 'none'}, forceNewInstance=${args.forceNewInstance}, url=${args.url}, autoConnect=${args.autoConnect}, reference=${args.reference}`);
       const url = args.url;
       const autoConnect = args.autoConnect ?? true;
 

@@ -1143,14 +1143,63 @@ async function handleRunAll(
  * A caller's `connections` rebinding wins: the declaration supplies a default
  * browser, it does not override where the caller wants the steps pointed.
  */
+/**
+ * Reject a declaration set whose profiles cannot mean what it says, before
+ * anything is launched.
+ *
+ * Two failures, both of which would otherwise surface later as something else:
+ *
+ * - **Two references on one profile.** Only one live Chrome may hold a profile,
+ *   so the second launch fails - but the message would be about ports, not
+ *   about a sequence asking two identities to be the same browser. Same shape
+ *   as the `connections` rule that refuses collapsing two references into one.
+ *
+ * - **Rebinding a profile-bearing reference.** A rebind normally wins, because
+ *   a declaration is only a default. A profile is not a default, it is an
+ *   identity claim: pointing "device-a" at some other browser runs device-a's
+ *   steps somewhere that is not device-a, and the run reports success. That is
+ *   the class of lie the per-step connection rules exist to prevent.
+ */
+function declaredProfileConflict(
+  declared: NonNullable<CommandSequence['requiredConnections']>,
+  connectionMap: Record<string, string> | undefined
+): string | null {
+  const byProfile = new Map<string, string[]>();
+  for (const decl of declared) {
+    if (!decl.profile) continue;
+    const reference = sanitizeReference(decl.reference);
+    if (!reference) continue;
+
+    const rebound = connectionMap?.[reference];
+    if (rebound) {
+      return `"${reference}" is declared on the persistent profile "${decl.profile}", so it names a specific browser identity, ` +
+        `not a default - rebinding it onto "${rebound}" would run its steps in a browser that is not "${decl.profile}" and pass. ` +
+        `Drop it from \`connections\`, or drop the profile from the declaration.`;
+    }
+
+    byProfile.set(decl.profile, [...(byProfile.get(decl.profile) || []), reference]);
+  }
+
+  for (const [profile, references] of byProfile) {
+    if (references.length > 1) {
+      return `${references.length} declared connections (${references.join(', ')}) name the same persistent profile "${profile}". ` +
+        `Only one live Chrome may hold a profile, so they would be one browser - give each identity its own profile.`;
+    }
+  }
+  return null;
+}
+
 async function ensureDeclaredConnections(
   sequence: CommandSequence,
   executeToolCall: ExecuteToolCall,
   getPageForConnection: (connectionReason: string) => Promise<any>,
   connectionMap: Record<string, string> | undefined
-): Promise<{ launched: string[]; error?: string }> {
+): Promise<{ launched: string[]; error?: string; invalid?: boolean }> {
   const declared = sequence.requiredConnections;
   if (!Array.isArray(declared) || declared.length === 0) return { launched: [] };
+
+  const conflict = declaredProfileConflict(declared, connectionMap);
+  if (conflict) return { launched: [], error: `"${sequence.name}": ${conflict}`, invalid: true };
 
   const launched: string[] = [];
   for (const decl of declared) {
@@ -1168,7 +1217,14 @@ async function ensureDeclaredConnections(
       await executeToolCall('launchChrome', {
         reference: target,
         url: decl.url ?? sequence.startUrl,
-        forceNewInstance: decl.forceNewInstance !== false,
+        // A profile IS the browser this declaration wants, so a live Chrome
+        // already running it is the target rather than something to spawn
+        // beside - and only one Chrome may hold a profile, so forcing a second
+        // process fails against the browser it was asking for.
+        forceNewInstance: decl.profile
+          ? decl.forceNewInstance === true
+          : decl.forceNewInstance !== false,
+        ...(decl.profile && { profile: decl.profile }),
       });
       launched.push(target);
     } catch (err: any) {
@@ -1537,7 +1593,19 @@ async function handleRun(
   // Bring up any browser the sequence declares before the first step.
   const declaredConns = await ensureDeclaredConnections(sequence, executeToolCall, getPageForConnection, connectionMap);
   if (declaredConns.error) {
-    return createErrorResponse('CONNECTION_NOT_FOUND', { message: declaredConns.error });
+    // A declaration that contradicts itself is a bad sequence, not a missing
+    // browser - saying "connection not found" would send you looking for one.
+    return declaredConns.invalid
+      ? createErrorResponse('INVALID_PARAMETER', {
+          parameter: 'requiredConnections',
+          value: sequence.name,
+          message: declaredConns.error,
+        })
+      // Not CONNECTION_NOT_FOUND: that template renders a generic "no active
+      // browser connection" and drops the message, so every failed declaration
+      // reported the same thing and never said which browser, which role, or
+      // why the launch failed.
+      : createErrorResponse('DECLARED_CONNECTION_FAILED', { message: declaredConns.error });
   }
 
   // Validate startFrom before any side effects, so both modes reject immediately

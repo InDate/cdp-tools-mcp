@@ -317,6 +317,18 @@ Connection with reference "{{reference}}" not found
 
 ---
 
+## DECLARED_CONNECTION_FAILED
+
+**Type:** error
+**Code:** DECLARED_CONNECTION_FAILED
+**Summary:** A browser the sequence declares could not be brought up
+
+{{message}}
+
+The run stopped before its first step, so nothing has been executed yet.
+
+---
+
 ## CONNECTION_NOT_FOUND
 
 **Type:** error

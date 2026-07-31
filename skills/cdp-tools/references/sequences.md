@@ -321,6 +321,26 @@ its storage); `role` shows up in the run summary. A reference already bound to
 a live browser is reused, and a `connections` mapping wins over the
 declaration. A browser that will not launch fails the run before step 1.
 
+**`profile` makes the device durable.** Add the persistent profile the browser
+should come up on - the same ones `launchChrome({ profile })` creates:
+
+```json
+{ "reference": "device-a", "profile": "device-a", "role": "the enrolled device" }
+```
+
+Storage (cookies, localStorage, IndexedDB, non-extractable CryptoKeys) survives
+between runs, so a device enrolled once stays enrolled; the reference is just
+this session's name for it. Steps still address browsers by `connectionReason` -
+there is no per-step `profile`.
+
+Two rules follow. `forceNewInstance` defaults to **false** when a profile is
+named, because only one live Chrome may hold a profile and the one already
+running it is the browser you asked for. And a profile-bearing reference may
+**not** be rebound through `connections`, nor may two declarations share one
+profile: a profile is an identity claim, not a default, and pointing it
+elsewhere would run device-a's steps in a browser that is not device-a and pass.
+Teardown kills the browser but never the profile directory.
+
 The run closes what it launched on every terminal outcome - completed, failed,
 cancelled - and reports *"Browsers closed (declared and launched): ..."*. A
 pause keeps them (that is the state you stopped to inspect); whatever ends the
