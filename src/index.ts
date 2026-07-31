@@ -1832,6 +1832,11 @@ async function main() {
     // Ignore cleanup errors - best effort only
   });
 
+  // Pick up sequences edited on disk mid-session, the way a managed dev server
+  // picks up its own sources. Attaches only to directories that already exist;
+  // a later save or load starts it.
+  commandRecorder.startSequenceWatch();
+
   // Start non-blocking session detection (polls for file modified after MCP start)
   const cwd = process.cwd();
   const mcpStartTime = Date.now();

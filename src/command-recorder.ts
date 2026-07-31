@@ -5,9 +5,10 @@
  * by selecting specific command indices from the history.
  */
 
-import { promises as fs } from 'fs';
+import { promises as fs, existsSync } from 'fs';
 import { walkSequenceFiles } from './helpers/sequence-tree.js';
-import { join } from 'path';
+import { ServerFileWatcher } from './server-watcher.js';
+import { join, dirname } from 'path';
 import { debugLog, isHistoryLogEnabled, logToHistoryFile } from './debug-logger.js';
 import { sanitizeReference } from './reference-validator.js';
 import { getOutputPath } from './helpers/paths.js';
@@ -135,12 +136,132 @@ export class CommandRecorder {
   private maxHistorySize = 1000; // Keep last 1000 commands
   private activeSequence: ActiveSequenceState | null = null;
   private historyViewedWhilePaused: boolean = false;
+  /**
+   * Where each in-memory sequence came from, for the ones that came from disk.
+   * A sequence built from history has no entry and is never touched by the
+   * watcher - it exists nowhere else, so there is nothing to reload it from.
+   */
+  private sequenceSources: Map<string, { path: string; mtimeMs: number }> = new Map();
+  private sequenceWatcher: ServerFileWatcher | null = null;
+  private watchedDirs: Set<string> = new Set();
 
   /**
    * Get the sequences directory for a specific scope
    */
   getSequencesDir(global: boolean = false): string {
     return getOutputPath('sequences', { global });
+  }
+
+  /**
+   * Watch the sequences directories and reload edited files, the way a managed
+   * dev server is restarted when its sources change.
+   *
+   * Memory used to shadow disk for the lifetime of the session: a sequence
+   * loaded once kept running its original version however many times you edited
+   * the file, with nothing in the run output to say so. `runAll` reloads the
+   * whole tree first, so the same sequence behaved differently depending on how
+   * it was invoked - which is how the stale copy stayed invisible.
+   *
+   * Idempotent, and safe to call before the directories exist: it attaches to
+   * whichever are present and callers re-invoke it after a save or load.
+   */
+  startSequenceWatch(): void {
+    // The sequences directories, plus wherever loaded files actually live - a
+    // sequence can be loaded by absolute path, or out of an issue's own folder.
+    const dirs = [
+      this.getSequencesDir(false),
+      this.getSequencesDir(true),
+      ...[...this.sequenceSources.values()].map(s => dirname(s.path)),
+    ].filter((dir, i, all) => all.indexOf(dir) === i && existsSync(dir));
+    if (dirs.length === 0) return;
+    // Nothing new to cover: leave the running watcher alone.
+    if (this.sequenceWatcher && dirs.every(dir => this.watchedDirs.has(dir))) return;
+
+    this.sequenceWatcher?.stop();
+    this.watchedDirs = new Set(dirs);
+    this.sequenceWatcher = new ServerFileWatcher({
+      paths: dirs,
+      // Sequences live UNDER .cdp-tools, which the default exclude list drops -
+      // taking every sequence with it.
+      excludeDirNames: ['node_modules', '.git'],
+      onChange: () => { void this.reloadChangedSequences(); },
+    });
+    this.sequenceWatcher.start();
+  }
+
+  /** Stop watching (tests, shutdown). */
+  stopSequenceWatch(): void {
+    this.sequenceWatcher?.stop();
+    this.sequenceWatcher = null;
+    this.watchedDirs.clear();
+  }
+
+  /**
+   * Re-read every disk-backed sequence whose file is newer than the copy in
+   * memory. Returns the names actually reloaded.
+   *
+   * A file that has gone missing or will not parse leaves the in-memory copy
+   * alone: a watcher fires mid-write as readily as after one, and dropping a
+   * good sequence because it was caught half-written would be worse than the
+   * staleness this exists to fix.
+   */
+  async reloadChangedSequences(ids?: string[]): Promise<string[]> {
+    const reloaded: string[] = [];
+    const scope = ids
+      ? [...this.sequenceSources].filter(([id]) => ids.includes(id))
+      : [...this.sequenceSources];
+    for (const [id, source] of scope) {
+      let mtimeMs: number;
+      try {
+        mtimeMs = (await fs.stat(source.path)).mtimeMs;
+      } catch {
+        continue;
+      }
+      if (mtimeMs <= source.mtimeMs) continue;
+
+      let parsed: CommandSequence;
+      try {
+        parsed = await this.parseSequenceFile(source.path);
+      } catch {
+        continue;
+      }
+
+      this.sequences.delete(id);
+      this.sequenceSources.delete(id);
+      this.registerLoadedSequence(parsed);
+      this.sequenceSources.set(parsed.id, { path: source.path, mtimeMs });
+      reloaded.push(parsed.name);
+      await debugLog('command-recorder', `Reloaded edited sequence "${parsed.name}" from ${source.path}`);
+    }
+    return reloaded;
+  }
+
+  /**
+   * The current copy of a sequence, re-read first if its file has changed
+   * since it was loaded.
+   *
+   * The watcher debounces (400ms), and an edit followed immediately by a run
+   * is the normal rhythm - so a run does not wait for the watcher to catch up,
+   * it asks. One stat on the way past.
+   */
+  async getFreshSequence(id: string): Promise<CommandSequence | undefined> {
+    if (this.sequenceSources.has(id)) {
+      const [reloadedName] = await this.reloadChangedSequences([id]);
+      if (reloadedName) {
+        return [...this.sequences.values()].find(s => s.name === reloadedName);
+      }
+    }
+    return this.sequences.get(id);
+  }
+
+  /** Remember which file a sequence came from, so the watcher can refresh it. */
+  private async trackSequenceSource(sequence: CommandSequence, filepath: string): Promise<void> {
+    try {
+      this.sequenceSources.set(sequence.id, { path: filepath, mtimeMs: (await fs.stat(filepath)).mtimeMs });
+    } catch {
+      // Unreadable stat just means this one is not watched.
+    }
+    this.startSequenceWatch();
   }
 
   /**
@@ -525,6 +646,9 @@ export class CommandRecorder {
         ...sequence
       };
       await atomicWriteFile(filepath, JSON.stringify(exportData, null, 2));
+      // Now disk-backed: watch it, and record THIS write's mtime so the save
+      // does not read back as an external edit.
+      await this.trackSequenceSource(sequence, filepath);
       await debugLog('command-recorder', `Saved sequence "${sequence.name}" to ${filepath}`);
       return { success: true, filepath };
     } catch (error: any) {
@@ -645,6 +769,7 @@ export class CommandRecorder {
           await debugLog('command-recorder', `Rejected sequence "${sequence.name}" from ${filename} (validation failed) - existing sequence left intact`);
           return null;
         }
+        await this.trackSequenceSource(sequence, filename);
         await debugLog('command-recorder', `Loaded sequence "${sequence.name}" from ${filename}`);
         return sequence;
       }
@@ -665,6 +790,7 @@ export class CommandRecorder {
         return null;
       }
 
+      await this.trackSequenceSource(sequence, filepath);
       await debugLog('command-recorder', `Loaded sequence "${sequence.name}" from ${filepath}`);
       return sequence;
     } catch (error: any) {

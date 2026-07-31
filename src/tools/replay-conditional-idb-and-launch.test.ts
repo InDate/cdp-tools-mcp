@@ -35,6 +35,7 @@ function makeHarness(responses: Record<string, any> = {}, nested?: CommandSequen
     recordCommand: vi.fn(),
     getCurrentHistoryIndex: () => 0,
     getSequence: (id: string) => (nested?.id === id ? nested : undefined),
+    getFreshSequence: async (id: string) => (nested?.id === id ? nested : undefined),
     listSequences: () => (nested ? [nested] : []),
   } as any;
 

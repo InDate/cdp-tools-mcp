@@ -23,6 +23,7 @@ function makeReplay(options?: {
   const recorder = {
     listSequences: vi.fn(() => sequences),
     getSequence: vi.fn((id: string) => sequences.find(s => s.id === id)),
+    getFreshSequence: vi.fn(async (id: string) => sequences.find(s => s.id === id)),
     loadSequenceFromDisk: vi.fn(async () => null),
     listSavedSequencesOnDisk: vi.fn(async () => options?.onDisk ?? []),
     saveSequenceToDisk: vi.fn(async () => options?.saveResult ?? null),

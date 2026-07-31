@@ -14,6 +14,7 @@ function makeReplay(sequences: CommandSequence[], opts: { stepDelayMs?: number }
 
   const recorder = {
     getSequence: vi.fn((id: string) => byId.get(id)),
+    getFreshSequence: vi.fn(async (id: string) => byId.get(id)),
     listSequences: vi.fn(() => sequences),
     loadSequenceFromDisk: vi.fn(async () => null),
     getHistory: vi.fn(() => []),

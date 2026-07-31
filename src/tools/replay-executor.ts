@@ -1083,7 +1083,10 @@ export async function loadSequence(
   recorder: CommandRecorder
 ): Promise<LoadSequenceResult> {
   if (args.sequenceId) {
-    const sequence = recorder.getSequence(args.sequenceId);
+    // Disk wins when the file is newer: memory used to shadow an edited
+    // sequence for the whole session, so a re-run silently executed the old
+    // version (issue #134).
+    const sequence = await recorder.getFreshSequence(args.sequenceId);
     if (!sequence) {
       return {
         success: false,
@@ -1099,8 +1102,9 @@ export async function loadSequence(
     const memorySequences = recorder.listSequences();
     const memoryMatch = memorySequences.find(s => s.name === args.name);
     if (memoryMatch) {
-      await debugLog('executor', `Found sequence "${memoryMatch.name}" in memory`);
-      return { success: true, sequence: memoryMatch };
+      const current = await recorder.getFreshSequence(memoryMatch.id) ?? memoryMatch;
+      await debugLog('executor', `Found sequence "${current.name}" in memory`);
+      return { success: true, sequence: current };
     }
 
     // Then check disk (loadSequenceFromDisk has fuzzy matching built in)

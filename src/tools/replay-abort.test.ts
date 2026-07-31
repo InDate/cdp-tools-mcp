@@ -81,6 +81,8 @@ function makeHarness(opts: {
     getCurrentHistoryIndex: () => 0,
     listSequences: vi.fn(() => [] as CommandSequence[]),
     loadSequenceFromDisk: vi.fn(async () => null),
+    getFreshSequence: vi.fn(async (id: string) =>
+      (commandRecorder.listSequences() as CommandSequence[]).find(s => s.id === id)),
   } as any;
 
   const ctx: ExecutionContext = {
@@ -287,6 +289,7 @@ describe('replay cancel end to end', () => {
     const recorder = {
       ...h.commandRecorder,
       getSequence: vi.fn((id: string) => (id === sequence.id ? sequence : undefined)),
+      getFreshSequence: vi.fn(async (id: string) => (id === sequence.id ? sequence : undefined)),
       listSequences: vi.fn(() => [sequence]),
       getHistory: vi.fn(() => []),
       setActiveSequence: vi.fn(),

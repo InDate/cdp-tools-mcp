@@ -30,6 +30,7 @@ function makeReplay(
 
   const recorder = {
     getSequence: vi.fn(() => sequence),
+    getFreshSequence: vi.fn(async () => sequence),
     listSequences: vi.fn(() => [sequence]),
     loadSequenceFromDisk: vi.fn(async () => sequence),
     getHistory: vi.fn(() => []),

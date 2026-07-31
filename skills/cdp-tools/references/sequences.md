@@ -127,6 +127,13 @@ indices to `create`.
 the offending step, rather than failing halfway through a run after earlier
 steps already changed state.
 
+**Editing a sequence file mid-session just works.** The sequences directories
+are watched like a managed dev server's sources, and a run re-checks the file's
+timestamp anyway - so the version you just saved is the version that runs. No
+`load` needed to pick up an edit. A file caught mid-write leaves the loaded copy
+in place rather than replacing a good sequence with a half-saved one, and a
+sequence built from history has no file to reload from.
+
 ## Running
 
 ```

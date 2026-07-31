@@ -34,6 +34,7 @@ function makeHarness(responses: Record<string, any> = {}, nested?: CommandSequen
     // executeConditionalFlow resolves the `then` sequence via loadSequence,
     // which matches by name against listSequences().
     getSequence: (id: string) => (nested?.id === id ? nested : undefined),
+    getFreshSequence: async (id: string) => (nested?.id === id ? nested : undefined),
     listSequences: () => (nested ? [nested] : []),
   } as any;
 

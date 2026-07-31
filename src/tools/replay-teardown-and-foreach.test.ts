@@ -35,6 +35,7 @@ function makeHarness(responses: Record<string, any> = {}, nested?: CommandSequen
     recordCommand: vi.fn(),
     getCurrentHistoryIndex: () => 0,
     getSequence: (id: string) => nested?.find(s => s.id === id),
+    getFreshSequence: async (id: string) => nested?.find(s => s.id === id),
     listSequences: () => nested ?? [],
     loadSequenceFromDisk: vi.fn(async () => null),
     listSavedSequencesOnDisk: vi.fn(async () => []),

@@ -326,6 +326,26 @@ replay({ action: 'deleteSaved', filename: 'login-flow.json' })
 `run` and `get` load by `name` from disk on their own, so `load` is only needed
 when you want the sequence in memory (or in history) first.
 
+### Editing a sequence mid-session
+
+Edit the file and run it - the edit is what runs. The sequences directories are
+watched the way a managed dev server watches its own sources, so an edited file
+is re-read into memory shortly after you save it, and a run re-checks the file's
+timestamp on the way past rather than waiting for the watcher. Both are needed:
+the watcher keeps memory honest while you work, and the check at run time closes
+the gap between saving a file and immediately running it.
+
+In-memory copies used to shadow disk for the rest of the session - you edited a
+sequence, ran it by name, and silently got the previous version, while `runAll`
+reloaded the tree first and ran the new one. The same sequence behaved
+differently depending on how it was invoked.
+
+A file that is missing or mid-write leaves the loaded copy in place: a watcher
+fires as readily during a write as after one, and dropping a good sequence
+because it was caught half-saved is worse than the staleness this replaces. A
+sequence built from history and never saved is untouched by any of this - there
+is no file to reload it from.
+
 ## Running Sequences
 
 ### Basic Run
