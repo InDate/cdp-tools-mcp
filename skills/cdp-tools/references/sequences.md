@@ -297,6 +297,42 @@ way. `create` warns about both.
 insert re-hoists and stays portable, while a cross-browser insert makes every
 step explicit and becomes a real multi-connection sequence.
 
+**Declaring the browsers it needs.** A sequence can bring up its own browsers
+instead of expecting the caller to have launched them, via
+`requiredConnections` on the sequence (sibling of `commands`):
+
+```json
+"requiredConnections": [
+  { "reference": "duo-member-two", "role": "the member who draws stock",
+    "url": "http://localhost:5173/login" }
+]
+```
+
+`url` defaults to the sequence's `startUrl`; `forceNewInstance` defaults to
+**true** (a separate process, not a tab - two identities in one browser share
+its storage); `role` shows up in the run summary. A reference already bound to
+a live browser is reused, and a `connections` mapping wins over the
+declaration. A browser that will not launch fails the run before step 1.
+
+The run closes what it launched on every terminal outcome - completed, failed,
+cancelled - and reports *"Browsers closed (declared and launched): ..."*. A
+pause keeps them (that is the state you stopped to inspect); whatever ends the
+pause (`cancel`, `finish`, stepping off the end) closes them then. Browsers
+that were already up, or that share a port with another live connection, are
+left alone.
+
+**Declaring the sockets it depends on.** `requiredSockets` is the same idea for
+transports: URL substrings of the WebSockets the assertions ride on
+(`"requiredSockets": ["/api/sync/socket"]`). A sequence that declares them is
+checked without the caller asking - `requireSockets: true` is only for a
+sequence that declares none. Per entry the run fails when a matching socket
+closed or hit frame errors mid-run, or when none is open at the end (including
+one that never opened - invisible to any final "is it up" assertion). Closes
+the run did not cause are not blamed on it: a socket torn down with its target
+by a navigation, or hung up by the page, is normal. Match the app's own path,
+not the origin, so the declaration survives `baseUrl`; dev-server sockets (Vite
+HMR) go undeclared and are ignored.
+
 **Replaying one in a different session.** Recorded references are per-session,
 so rebind them:
 

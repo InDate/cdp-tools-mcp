@@ -765,6 +765,70 @@ and cursor injection would silently no-op.
 multi-browser repro sequence attached to an issue can be replayed in a fresh
 session.
 
+### Declaring the browsers a sequence needs
+
+A multi-browser sequence can say which browsers it needs, instead of expecting
+whoever runs it to have launched them first. `requiredConnections` lives on the
+sequence, next to `commands`:
+
+```json
+{
+  "name": "duo-stock-propagation",
+  "startUrl": "http://localhost:5173/",
+  "requiredConnections": [
+    { "reference": "duo-member-two", "role": "the member who draws stock",
+      "url": "http://localhost:5173/login" }
+  ],
+  "commands": [ ... ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `reference` | The reference the steps use |
+| `url` | Opened on launch (defaults to the sequence's `startUrl`) |
+| `forceNewInstance` | A separate browser process rather than a tab, default **true** — two identities sharing one browser share its storage, which defeats the point |
+| `role` | Why this browser exists, for the run summary |
+
+The run brings each one up before the first step. A reference already bound to
+a live browser is reused, so a browser you launched by hand is not duplicated,
+and a `connections` mapping wins over the declaration — the declaration
+supplies a default, it does not override where the caller points the steps. A
+browser that cannot be launched fails the run before any step executes, naming
+the reference and its role.
+
+The run **closes what it launched**, on every terminal outcome: completed,
+failed, and cancelled. A pause is the exception — those browsers are the state
+you stopped to inspect — but whatever ends the pause (`cancel`, `finish`, or
+stepping off the end) closes them then. Browsers that were already up are left
+alone, and a browser sharing its port with another live connection is left
+running too. The run says which it closed:
+
+```
+**Browsers closed** (declared and launched): duo-member-two
+```
+
+### Declaring the sockets a sequence depends on
+
+`requiredSockets` is the same idea for transports: a list of URL substrings
+naming the WebSockets the sequence's assertions ride on.
+
+```json
+{ "requiredSockets": ["/api/sync/socket"] }
+```
+
+A sequence that declares them is checked whether or not the caller asks for it
+(`requireSockets: true` is only needed for a sequence that declares none). For
+each entry the run fails when a matching socket closed or hit frame errors
+while it executed, or when none is open at the end — including one that never
+opened at all, which no "is it up now" final assertion can catch. Closes the
+run did not cause are not blamed on it: a socket torn down with its target by a
+navigation, or hung up by the page itself, is normal.
+
+Match on the app's own path rather than the origin, so the declaration survives
+`baseUrl` retargeting. Dev-server sockets (Vite HMR and friends) simply go
+undeclared and are ignored.
+
 ### repeat / runFromLog
 
 History retains the connection each command was recorded with, so both replay
