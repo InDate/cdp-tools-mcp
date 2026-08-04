@@ -220,9 +220,30 @@ export interface ToolsConfig {
   disabled: string[];  // Tools to disable (takes priority over enabled)
 }
 
+/**
+ * Session lifetime configuration.
+ *
+ * Read by the supervisor process, not this ConfigManager - see
+ * src/supervisor/idle-config.ts, which parses the same file directly because
+ * the supervisor stays out of the server's module graph. Declared here so the
+ * shape stays in one place and `config({ action: 'show' })` reports it.
+ */
+export interface SessionConfig {
+  /**
+   * Minutes without any traffic from the MCP client before the server is
+   * suspended: it releases its connections, Chrome instances and managed dev
+   * servers and exits, while the supervisor stays connected and spawns a
+   * fresh server on the next request (default: 120, set to 0 to disable).
+   */
+  idleSuspendMinutes: number;
+  /** How often to check the MCP client is still alive, in seconds (default: 60) */
+  clientPollSeconds: number;
+}
+
 export interface CdpToolsConfig {
   version: number;
   configLocation: 'local' | 'global';  // Where to load config from on startup
+  session: SessionConfig;
   chrome: ChromeConfig;
   portMonitoring: PortMonitoringConfig;
   replay: ReplayConfig;
@@ -238,6 +259,10 @@ export interface CdpToolsConfig {
 const DEFAULT_CONFIG: CdpToolsConfig = {
   version: 1,
   configLocation: 'local',
+  session: {
+    idleSuspendMinutes: 120,  // Suspend after 2h of client silence (0 = never)
+    clientPollSeconds: 60,    // Check the client is still alive every minute
+  },
   chrome: {
     startingDebugPort: 9222,
     inactivityTimeoutMinutes: 5,
@@ -639,6 +664,10 @@ export class ConfigManager {
     return {
       version: loaded.version ?? defaults.version,
       configLocation: loaded.configLocation ?? defaults.configLocation,
+      session: {
+        idleSuspendMinutes: loaded.session?.idleSuspendMinutes ?? defaults.session.idleSuspendMinutes,
+        clientPollSeconds: loaded.session?.clientPollSeconds ?? defaults.session.clientPollSeconds,
+      },
       chrome: {
         startingDebugPort: loaded.chrome?.startingDebugPort ?? defaults.chrome.startingDebugPort,
         inactivityTimeoutMinutes: loaded.chrome?.inactivityTimeoutMinutes ?? defaults.chrome.inactivityTimeoutMinutes,

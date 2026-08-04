@@ -20,6 +20,7 @@
     "test:ui": "vitest --ui",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
+    "stress:suspend": "node scripts/stress-suspend.mjs",
     "prepublishOnly": "npm run test:run && npm run build:verify",
     "version": "node scripts/sync-skill-version.mjs",
     "postversion": "git push && git push --tags"

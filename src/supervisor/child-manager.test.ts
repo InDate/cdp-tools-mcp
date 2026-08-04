@@ -61,6 +61,55 @@ describe('ChildManager (real subprocess)', () => {
     expect(exitInfo.code).toBe(1);
   }, 10000);
 
+  it('suspend() signals the child and resolves once it has released and exited', async () => {
+    const manager = new ChildManager({
+      execPath: process.execPath,
+      scriptPath: FIXTURE_PATH,
+      extraArgs: [],
+      cwd: __dirname,
+      suspendGraceMs: 3000,
+    });
+
+    manager.spawn();
+    await new Promise((resolve) => setTimeout(resolve, 200)); // let its handler register
+
+    await manager.suspend();
+    expect(manager.isRunning()).toBe(false);
+  }, 10000);
+
+  it('suspend() escalates to a kill for a child that never finishes releasing', async () => {
+    const manager = new ChildManager({
+      execPath: process.execPath,
+      scriptPath: FIXTURE_PATH,
+      extraArgs: ['ignore-suspend'],
+      cwd: __dirname,
+      suspendGraceMs: 300,
+      killGraceMs: 300,
+    });
+
+    manager.spawn();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    await manager.suspend();
+    expect(manager.isRunning()).toBe(false);
+  }, 10000);
+
+  it('suspend() on an already-dead child resolves immediately without throwing', async () => {
+    const manager = new ChildManager({
+      execPath: process.execPath,
+      scriptPath: FIXTURE_PATH,
+      extraArgs: ['crash'],
+      cwd: __dirname,
+    });
+
+    await new Promise<void>((resolve) => {
+      manager.onExit(() => resolve());
+      manager.spawn();
+    });
+
+    await expect(manager.suspend()).resolves.toBeUndefined();
+  }, 10000);
+
   it('kill() on an already-dead child resolves immediately without throwing', async () => {
     const manager = new ChildManager({
       execPath: process.execPath,

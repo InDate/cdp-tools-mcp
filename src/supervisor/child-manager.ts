@@ -21,6 +21,8 @@ export interface ChildManagerOptions {
   extraArgs: string[];
   cwd: string;
   killGraceMs?: number;
+  /** How long a suspending child gets to release its resources (default: 15s). */
+  suspendGraceMs?: number;
 }
 
 export interface ChildExitInfo {
@@ -37,9 +39,11 @@ export class ChildManager {
   private child: ChildProcess | null = null;
   private onExitCallback: ((info: ChildExitInfo) => void) | null = null;
   private readonly killGraceMs: number;
+  private readonly suspendGraceMs: number;
 
   constructor(private readonly opts: ChildManagerOptions) {
     this.killGraceMs = opts.killGraceMs ?? 3000;
+    this.suspendGraceMs = opts.suspendGraceMs ?? 15000;
   }
 
   /** Registered once; fires for every child this instance ever spawns. */
@@ -70,6 +74,54 @@ export class ChildManager {
 
   isRunning(): boolean {
     return this.child !== null;
+  }
+
+  /**
+   * Ask the child to release everything it holds - Chrome, managed dev
+   * servers, monitors - and exit, resolving once it has actually gone.
+   *
+   * SIGUSR2 rather than SIGUSR1 because Node reserves SIGUSR1 for starting its
+   * own inspector, and it is sent to the child alone rather than to its
+   * process group: the point is to give the child a chance to shut its own
+   * children down in order, not to kill them out from under it. If it doesn't
+   * finish in time, kill() escalates through the usual SIGTERM/SIGKILL path.
+   */
+  async suspend(): Promise<void> {
+    const child = this.child;
+    if (!child || child.pid === undefined) {
+      return;
+    }
+
+    const exited = await new Promise<boolean>((resolve) => {
+      let settled = false;
+      const onExit = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(true);
+      };
+      child.once('exit', onExit);
+
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        child.off('exit', onExit);
+        resolve(false);
+      }, this.suspendGraceMs);
+
+      try {
+        process.kill(child.pid!, 'SIGUSR2');
+      } catch {
+        settled = true;
+        clearTimeout(timer);
+        child.off('exit', onExit);
+        resolve(false); // already gone, or unsignalable - let kill() settle it
+      }
+    });
+
+    if (!exited) {
+      await this.kill();
+    }
   }
 
   /** Kill the current child (if any) and resolve once it has actually exited. */

@@ -2144,6 +2144,19 @@ async function main() {
 
   // Cleanup function for graceful shutdown
   let isCleaningUp = false;
+  /**
+   * Releases everything this session privately holds: CDP connections, the
+   * Chrome instances it launched, source maps, its reserved debug port, and
+   * the in-process monitors. Everything here dies with this process anyway.
+   *
+   * Managed dev servers are deliberately NOT stopped, on any path including an
+   * idle suspend. They are shared: `servers.json` records no owner, and any
+   * session in the same directory reattaches to the same running server, so a
+   * session that stopped them on the way out could kill a dev server another
+   * window is actively using. Reaping them needs ownership, which needs a
+   * claims registry - issue #139. Until then the rule is the asymmetry:
+   * under-stopping leaks, over-stopping destroys someone's running work.
+   */
   const cleanup = async (signal: string) => {
     if (isCleaningUp) {
       return; // Prevent multiple cleanup calls
@@ -2154,6 +2167,7 @@ async function main() {
 
     try {
       if (cleanupInterval) clearInterval(cleanupInterval); // Stop periodic cleanup
+
       await connectionManager.closeAll();
       sourceMapHandler.clear();
       await chromeLauncher.kill();
@@ -2194,6 +2208,14 @@ async function main() {
   process.on('SIGINT', () => cleanup('SIGINT'));   // Ctrl+C
   process.on('SIGTERM', () => cleanup('SIGTERM')); // Graceful shutdown (systemd, Docker, etc.)
   process.on('SIGHUP', () => cleanup('SIGHUP'));   // Terminal hangup
+
+  // The supervisor's idle-suspend signal. Kept distinct from SIGTERM even
+  // though both tear down the same things today: the supervisor means
+  // something different by it (stay connected, respawn on the next request),
+  // it is what the logs show, and the claims work will give it its own
+  // teardown. (SIGUSR2 rather than SIGUSR1, which Node reserves for its own
+  // inspector.)
+  process.on('SIGUSR2', () => cleanup('SIGUSR2 (idle suspend)'));
 
   // Handle stdin close - this catches when the parent process (Claude Code) terminates
   // without sending a signal. MCP uses stdin/stdout for communication, so if stdin closes,

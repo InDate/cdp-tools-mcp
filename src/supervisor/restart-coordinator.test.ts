@@ -328,6 +328,48 @@ describe('RestartCoordinator - onChildExit (crash) vs deliberate restart', () =>
   });
 });
 
+describe('RestartCoordinator - cancelled requests', () => {
+  it('stops awaiting a cancelled request, so idle suspend is not blocked forever', async () => {
+    const deps = makeDeps();
+    deps.suspendChild = vi.fn().mockResolvedValue(undefined);
+    const coordinator = new RestartCoordinator(deps);
+
+    coordinator.handleHostLine('{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{}}');
+    // MCP forbids answering a cancelled request, so no response will ever come.
+    coordinator.handleHostLine('{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":9}}');
+
+    coordinator.suspend('idle');
+    await flushPromises();
+
+    expect(deps.suspendChild).toHaveBeenCalledTimes(1);
+    expect(coordinator.getPhase()).toBe('suspended');
+  });
+
+  it('swallows a late response to a cancelled request', () => {
+    const deps = makeDeps();
+    const coordinator = new RestartCoordinator(deps);
+
+    coordinator.handleHostLine('{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{}}');
+    coordinator.handleHostLine('{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":9}}');
+    deps.hostLines.length = 0;
+
+    coordinator.handleChildLine('{"jsonrpc":"2.0","id":9,"result":{}}');
+    expect(deps.hostLines).toEqual([]);
+  });
+
+  it('still blocks suspend for requests that were not cancelled', () => {
+    const deps = makeDeps();
+    deps.suspendChild = vi.fn().mockResolvedValue(undefined);
+    const coordinator = new RestartCoordinator(deps);
+
+    coordinator.handleHostLine('{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{}}');
+    coordinator.handleHostLine('{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":10}}');
+
+    coordinator.suspend('idle');
+    expect(deps.suspendChild).not.toHaveBeenCalled();
+  });
+});
+
 // Real timers, so `.then()` chains attached to already-resolved/pending native
 // Promises actually get a chance to run.
 async function flushMicrotasks(): Promise<void> {
@@ -339,3 +381,152 @@ async function flushMicrotasks(): Promise<void> {
 async function flushPromises(): Promise<void> {
   await flushMicrotasks();
 }
+
+describe('RestartCoordinator - idle suspend', () => {
+  const TOOL_CALL = '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{}}';
+
+  async function handshake(deps: ReturnType<typeof makeDeps>, coordinator: RestartCoordinator) {
+    coordinator.handleHostLine(INIT_REQUEST);
+    coordinator.handleHostLine(INITIALIZED_NOTIF);
+    coordinator.handleChildLine('{"jsonrpc":"2.0","id":1,"result":{}}');
+    deps.childLines.length = 0;
+    deps.hostLines.length = 0;
+  }
+
+  it('tears the child down and stays suspended until the host speaks again', async () => {
+    const deps = makeDeps();
+    const suspendChild = vi.fn().mockResolvedValue(undefined);
+    deps.suspendChild = suspendChild;
+    const coordinator = new RestartCoordinator(deps);
+    await handshake(deps, coordinator);
+
+    coordinator.suspend('idle for 120 minute(s)');
+    expect(suspendChild).toHaveBeenCalledTimes(1);
+    await flushPromises();
+    expect(coordinator.getPhase()).toBe('suspended');
+    expect(deps.spawnChild).not.toHaveBeenCalled();
+  });
+
+  it('respawns and replays the handshake on the next host line', async () => {
+    const deps = makeDeps();
+    deps.suspendChild = vi.fn().mockResolvedValue(undefined);
+    const coordinator = new RestartCoordinator(deps);
+    await handshake(deps, coordinator);
+
+    coordinator.suspend('idle');
+    await flushPromises();
+
+    coordinator.handleHostLine(TOOL_CALL);
+
+    expect(deps.spawnChild).toHaveBeenCalledTimes(1);
+    expect(coordinator.getPhase()).toBe('ready');
+    // Replayed handshake first, then the request that woke us - and the
+    // request is forwarded rather than answered with an error.
+    expect(deps.childLines).toEqual([INIT_REQUEST, INITIALIZED_NOTIF, TOOL_CALL]);
+    expect(deps.hostLines.every((line) => !line.includes('"error"'))).toBe(true);
+  });
+
+  it('swallows the replayed initialize response the host already has', async () => {
+    const deps = makeDeps();
+    deps.suspendChild = vi.fn().mockResolvedValue(undefined);
+    const coordinator = new RestartCoordinator(deps);
+    await handshake(deps, coordinator);
+
+    coordinator.suspend('idle');
+    await flushPromises();
+    coordinator.handleHostLine(TOOL_CALL);
+
+    coordinator.handleChildLine('{"jsonrpc":"2.0","id":1,"result":{}}');
+    expect(deps.hostLines.some((line) => JSON.parse(line).id === 1)).toBe(false);
+
+    coordinator.handleChildLine('{"jsonrpc":"2.0","id":9,"result":{}}');
+    expect(JSON.parse(deps.hostLines.at(-1)!)).toMatchObject({ id: 9 });
+  });
+
+  it('queues a request that arrives while the child is still exiting', async () => {
+    const deps = makeDeps();
+    let releaseTeardown: () => void = () => {};
+    deps.suspendChild = vi.fn(() => new Promise<void>((resolve) => { releaseTeardown = resolve; }));
+    const coordinator = new RestartCoordinator(deps);
+    await handshake(deps, coordinator);
+
+    coordinator.suspend('idle');
+    expect(coordinator.getPhase()).toBe('suspending');
+
+    coordinator.handleHostLine(TOOL_CALL);
+    // Nothing spawned yet - two children must never be alive at once.
+    expect(deps.spawnChild).not.toHaveBeenCalled();
+    expect(deps.hostLines).toEqual([]);
+
+    releaseTeardown();
+    await flushPromises();
+
+    expect(deps.spawnChild).toHaveBeenCalledTimes(1);
+    expect(deps.childLines).toContain(TOOL_CALL);
+  });
+
+  it('refuses to suspend with a request in flight', () => {
+    const deps = makeDeps();
+    deps.suspendChild = vi.fn().mockResolvedValue(undefined);
+    const coordinator = new RestartCoordinator(deps);
+    coordinator.handleHostLine(TOOL_CALL);
+
+    coordinator.suspend('idle');
+
+    expect(deps.suspendChild).not.toHaveBeenCalled();
+    expect(coordinator.getPhase()).toBe('ready');
+  });
+
+  it('refuses to suspend while restarting', () => {
+    const deps = makeDeps();
+    deps.suspendChild = vi.fn().mockResolvedValue(undefined);
+    const coordinator = new RestartCoordinator(deps);
+    coordinator.requestRestart('signal');
+
+    coordinator.suspend('idle');
+
+    expect(deps.suspendChild).not.toHaveBeenCalled();
+  });
+
+  it('ignores a restart trigger while suspended, leaving the next request to spawn a fresh build', async () => {
+    const deps = makeDeps();
+    deps.suspendChild = vi.fn().mockResolvedValue(undefined);
+    const coordinator = new RestartCoordinator(deps);
+    await handshake(deps, coordinator);
+
+    coordinator.suspend('idle');
+    await flushPromises();
+
+    coordinator.requestRestart('signal');
+    await flushPromises();
+
+    expect(deps.killChild).not.toHaveBeenCalled();
+    expect(deps.spawnChild).not.toHaveBeenCalled();
+    expect(coordinator.getPhase()).toBe('suspended');
+  });
+
+  it('does not treat the suspended child\'s exit as a crash', async () => {
+    const deps = makeDeps();
+    deps.suspendChild = vi.fn(async () => { coordinator.onChildExit(); });
+    const coordinator = new RestartCoordinator(deps);
+    await handshake(deps, coordinator);
+
+    coordinator.suspend('idle');
+    await flushPromises();
+
+    expect(deps.spawnChild).not.toHaveBeenCalled();
+    expect(coordinator.getPhase()).toBe('suspended');
+  });
+
+  it('falls back to killChild when no suspendChild is wired', async () => {
+    const deps = makeDeps();
+    const coordinator = new RestartCoordinator(deps);
+    await handshake(deps, coordinator);
+
+    coordinator.suspend('idle');
+    await flushPromises();
+
+    expect(deps.killChild).toHaveBeenCalledTimes(1);
+    expect(coordinator.getPhase()).toBe('suspended');
+  });
+});

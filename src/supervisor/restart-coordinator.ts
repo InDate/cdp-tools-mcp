@@ -15,15 +15,23 @@
  *   child (deliberate restart or crash), so the host never hangs waiting
  *   for an answer that will never arrive.
  * - Back off and eventually give up on repeated unplanned crashes.
+ * - Suspend an idle session: let the child (and everything it holds - Chrome,
+ *   dev servers, monitor buffers) go, while this supervisor stays resident on
+ *   the host's stdio, and bring a fresh child back on the next host line.
  */
 import { classifyLine, serializeMessage } from './ndjson-reader.js';
 
-export type SupervisorPhase = 'ready' | 'restarting' | 'idle-gave-up';
+export type SupervisorPhase = 'ready' | 'restarting' | 'idle-gave-up' | 'suspending' | 'suspended';
 
 export interface RestartCoordinatorDeps {
   writeToChild: (line: string) => void;
   writeToHost: (line: string) => void;
   killChild: () => Promise<void>;
+  /**
+   * Ask the child to release everything it holds and exit - a deeper teardown
+   * than killChild(), which leaves managed dev servers running.
+   */
+  suspendChild?: () => Promise<void>;
   spawnChild: () => void;
   logStderr: (message: string) => void;
 }
@@ -54,6 +62,8 @@ export class RestartCoordinator {
 
   private inFlight = new Map<string | number, { method: string }>();
   private abandonedIds = new Set<string | number>();
+  /** Host lines that arrived while the suspending child was still exiting. */
+  private suspendQueue: string[] = [];
 
   private expectingExit = false;
   private crashAttempt = 0;
@@ -80,6 +90,23 @@ export class RestartCoordinator {
   handleHostLine(line: string): void {
     const parsed = classifyLine(line);
 
+    // A line that lands while the old child is still going down waits for it:
+    // spawning a replacement now would leave two children alive at once, and
+    // erroring the request would punish the user for the timing of their own
+    // first call back.
+    if (this.phase === 'suspending') {
+      this.suspendQueue.push(line);
+      return;
+    }
+
+    // Any traffic at all means the session is alive again - bring the child
+    // back before handling the line, so this very request is the one that
+    // resumes us rather than the one that gets an error.
+    if (this.phase === 'suspended') {
+      this.deps.logStderr('Host activity after suspend; respawning child');
+      this.spawnAndReplay();
+    }
+
     if (this.phase !== 'ready') {
       if (parsed.kind === 'request') {
         this.sendSynthesizedError(parsed.id);
@@ -102,6 +129,19 @@ export class RestartCoordinator {
       parsed.method === 'notifications/initialized'
     ) {
       this.initializedLine = line;
+    }
+
+    // A cancelled request never gets a response - MCP forbids answering one -
+    // so its id would sit in `inFlight` forever, and since suspend refuses to
+    // run with anything in flight, one Esc during a long tool call would
+    // silently disable idle suspend for the rest of the session.
+    if (parsed.kind === 'notification' && parsed.method === 'notifications/cancelled') {
+      const cancelledId = (parsed.raw as { params?: { requestId?: string | number } })?.params?.requestId;
+      if (cancelledId !== undefined && this.inFlight.delete(cancelledId)) {
+        // Should a late response arrive anyway, swallow it: the host has moved on.
+        this.abandonedIds.add(cancelledId);
+        this.deps.logStderr(`Host cancelled request ${cancelledId}; no longer awaiting a response`);
+      }
     }
 
     // The captured init request's lifecycle is managed separately (via
@@ -190,6 +230,13 @@ export class RestartCoordinator {
       this.deps.logStderr(`Restart already in progress, ignoring additional trigger (${reason})`);
       return;
     }
+    if (this.phase === 'suspending' || this.phase === 'suspended') {
+      // Nothing is running to restart, and the next host line will spawn a
+      // child from whatever is on disk by then - which for a rebuild trigger
+      // is exactly the new build.
+      this.deps.logStderr(`Suspended, so ignoring restart trigger (${reason}); next request spawns a fresh child`);
+      return;
+    }
     if (this.phase === 'idle-gave-up') {
       this.crashAttempt = 0;
     }
@@ -209,6 +256,47 @@ export class RestartCoordinator {
       .then(() => {
         this.expectingExit = false;
         this.spawnAndReplay();
+      });
+  }
+
+  /**
+   * Idle timeout reached: drop the child and everything it holds, and stay
+   * resident on the host's stdio so the connection itself survives. The next
+   * host line respawns via handleHostLine().
+   *
+   * Only ever suspends from a settled 'ready' state - suspending mid-restart
+   * or while the crash backoff is deciding what to do would race with it.
+   */
+  suspend(reason: string): void {
+    if (this.phase !== 'ready') {
+      this.deps.logStderr(`Not suspending while phase=${this.phase}`);
+      return;
+    }
+    if (this.inFlight.size > 0) {
+      this.deps.logStderr(`Not suspending with ${this.inFlight.size} request(s) in flight`);
+      return;
+    }
+
+    this.deps.logStderr(`Suspending idle child (${reason})`);
+    this.clearStabilityTimer();
+    this.phase = 'suspending';
+    this.expectingExit = true;
+
+    const teardown = this.deps.suspendChild ?? this.deps.killChild;
+    teardown()
+      .catch((err) => this.deps.logStderr(`suspendChild() failed (continuing anyway): ${err}`))
+      .then(() => {
+        // No child is running now, so nothing is left to report an exit we
+        // would have to distinguish from a crash.
+        this.expectingExit = false;
+        this.crashAttempt = 0;
+        this.phase = 'suspended';
+
+        const queued = this.suspendQueue;
+        this.suspendQueue = [];
+        for (const queuedLine of queued) {
+          this.handleHostLine(queuedLine);
+        }
       });
   }
 

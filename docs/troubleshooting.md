@@ -1,5 +1,24 @@
 # Troubleshooting
 
+## Session Issues
+
+### Chrome closed itself and my connections are gone
+
+**Problem:** After a long break, connections are gone and Chrome is closed -
+but the MCP connection still works and dev servers are still running.
+
+**Cause:** The session was suspended. With no request from the client for
+`session.idleSuspendMinutes` (default 120), cdp-tools releases what it holds
+and exits; the supervisor stays connected and started a fresh server for your
+next call.
+
+**Solutions:**
+- Relaunch Chrome (`launchChrome`). Managed dev servers were left running and
+  the fresh server reattached to them, so there is nothing to restart there.
+- Raise or disable the threshold in `.cdp-tools/config.json`:
+  `{"session": {"idleSuspendMinutes": 0}}`. Read at supervisor startup, so it
+  applies from the next reconnect.
+
 ## Chrome Connection Issues
 
 ### "Chrome is already running on port X"
