@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { debugLog } from '../debug-logger.js';
 import { getOutputPath } from '../helpers/paths.js';
+import { readProcessStartTime } from '../server-claims.js';
 import type {
   Runner,
   RunnerType,
@@ -29,6 +30,8 @@ export class NativeRunner implements Runner {
   private pid: number = -1;
   private port: number | null = null;
   private startedAt: Date | null = null;
+  /** OS-reported start time of `pid`, to detect a recycled pid. */
+  private pidStartedAt: string = '';
   private logCursor = { stdout: 0, stderr: 0 };
   private global: boolean = false;
 
@@ -50,6 +53,7 @@ export class NativeRunner implements Runner {
     this.command = data.command;
     this.cwd = data.cwd;
     this.pid = data.pid;
+    this.pidStartedAt = data.pidStartedAt ?? '';
     this.port = data.port ?? null;
     this.startedAt = new Date(data.startedAt);
     this.global = data.global ?? false;
@@ -75,14 +79,33 @@ export class NativeRunner implements Runner {
     }
   }
 
+  /**
+   * PROCESS IDENTITY
+   *
+   * `kill(pid, 0)` only answers "is some process wearing this number", which
+   * is not the same question. A dev server that crashed leaves its pid behind
+   * in servers.json, and once the OS recycles that number the dead server
+   * reads as running: it gets recovered instead of restarted, autoRun never
+   * fires, and `server list` reports a corpse as live.
+   *
+   * So a pid recovered from disk is only trusted when the OS still reports the
+   * same start time for it. An unreadable start time on either side cannot
+   * disprove anything, so it counts as alive - the cost of being wrong that way
+   * is a server we decline to touch, rather than one we wrongly declare dead.
+   */
   private isProcessRunning(pid: number): boolean {
     if (pid <= 0) return false;
     try {
       process.kill(pid, 0);
-      return true;
-    } catch {
-      return false;
+    } catch (err: any) {
+      // EPERM means it exists but belongs to another user - still running.
+      if (err?.code !== 'EPERM') return false;
     }
+
+    if (!this.pidStartedAt) return true;
+    const currentStart = readProcessStartTime(pid);
+    if (!currentStart) return true;
+    return currentStart === this.pidStartedAt;
   }
 
   private detectPortFromLine(line: string): number | null {
@@ -156,6 +179,7 @@ export class NativeRunner implements Runner {
 
     this.process = serverProcess;
     this.pid = pid;
+    this.pidStartedAt = readProcessStartTime(pid);
     this.startedAt = new Date();
     this.logCursor = { stdout: 0, stderr: 0 };
 
@@ -169,6 +193,7 @@ export class NativeRunner implements Runner {
 
     if (!this.isProcessRunning(this.pid)) {
       this.pid = -1;
+      this.pidStartedAt = '';
       this.process = null;
       return;
     }
@@ -226,6 +251,7 @@ export class NativeRunner implements Runner {
     });
 
     this.pid = -1;
+    this.pidStartedAt = '';
     this.process = null;
     await debugLog('NativeRunner', `Stopped ${this.id}`);
   }
@@ -236,9 +262,21 @@ export class NativeRunner implements Runner {
 
   async getStatus(): Promise<RunnerStatus> {
     const running = this.isProcessRunning(this.pid);
+
+    // A pid that no longer names this server is worse than no pid at all: it
+    // is what gets persisted to servers.json, shown in `server list`, and read
+    // back by the next session. Forget it the moment we know it is stale, so
+    // the recorded state stops pointing at a process that isn't there.
+    if (!running && this.pid > 0) {
+      void debugLog('NativeRunner', `${this.id} is no longer running as PID ${this.pid}; clearing it`);
+      this.pid = -1;
+      this.pidStartedAt = '';
+    }
+
     return {
       running,
       pid: this.pid,
+      pidStartedAt: this.pidStartedAt || undefined,
       port: this.port ?? undefined,
       startedAt: this.startedAt ?? undefined,
     };
@@ -379,6 +417,7 @@ export class NativeRunner implements Runner {
   getCommand(): string { return this.command; }
   getCwd(): string { return this.cwd; }
   getPid(): number { return this.pid; }
+  getPidStartedAt(): string { return this.pidStartedAt; }
   getPort(): number | null { return this.port; }
   getStartedAt(): Date | null { return this.startedAt; }
 

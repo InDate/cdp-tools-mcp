@@ -9,7 +9,7 @@
  * is actively using (issue #139).
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { ServerManager } from './server-manager.js';
@@ -172,6 +172,59 @@ describe('stopOwnedServers and session presence', () => {
 
     expect(stopped).toEqual(['last-one-out']);
     expect(await waitForExit(pid)).toBe(true);
+  }, 20000);
+});
+
+describe('recorded pid honesty', () => {
+  function persistedServers(): any[] {
+    return JSON.parse(readFileSync(join(workDir, '.cdp-tools', 'servers.json'), 'utf-8')).servers;
+  }
+
+  it('drops the pid from servers.json once the session releases the server', async () => {
+    const manager = new ServerManager(storeFor(OWN_SUPERVISOR));
+    const pid = await startServer(manager, 'released');
+    expect(persistedServers()[0].pid).toBe(pid);
+
+    await manager.stopOwnedServers();
+
+    // A pid pointing at a process that no longer exists is what makes the file
+    // unreadable to a human and dangerous to the next session.
+    expect(persistedServers()[0].pid).toBeLessThanOrEqual(0);
+  }, 20000);
+
+  it('forgets the pid of a server that died on its own', async () => {
+    const manager = new ServerManager(storeFor(OWN_SUPERVISOR));
+    const pid = await startServer(manager, 'crashed');
+
+    process.kill(pid, 'SIGKILL'); // died outside cdp-tools; stop() never ran
+    expect(await waitForExit(pid)).toBe(true);
+
+    // Reading status is what notices the process is gone; saving is what makes
+    // servers.json stop advertising it.
+    const status = await manager.getStatus();
+    expect(status.find((entry) => entry.id === 'crashed')?.running).toBe(false);
+
+    await manager.saveState();
+    expect(persistedServers()[0].pid).toBeLessThanOrEqual(0);
+  }, 20000);
+
+  it('does not mistake a recycled pid for the original server', async () => {
+    const manager = new ServerManager(storeFor(OWN_SUPERVISOR));
+    await startServer(manager, 'recycled');
+
+    // Rewrite persisted state as an older cdp-tools would leave it after a
+    // crash: a pid that now belongs to something else entirely.
+    const statePath = join(workDir, '.cdp-tools', 'servers.json');
+    const state = JSON.parse(readFileSync(statePath, 'utf-8'));
+    await manager.stopServer('recycled');
+    state.servers[0].pid = process.pid; // very much alive, but not our server
+    state.servers[0].pidStartedAt = 'Mon Jan  1 00:00:00 1990';
+    writeFileSync(statePath, JSON.stringify(state));
+
+    const fresh = new ServerManager(storeFor(OWN_SUPERVISOR));
+    const result = await fresh.initialize();
+
+    expect(result.recovered).not.toContain('recycled');
   }, 20000);
 });
 

@@ -904,6 +904,7 @@ export class ServerManager {
         command: this.getRunnerCommand(runner),
         cwd: this.getRunnerCwd(runner),
         pid: status.pid,
+        pidStartedAt: status.pidStartedAt,
         containerId,
         port: status.port,
         autoRun: managed.autoRun,

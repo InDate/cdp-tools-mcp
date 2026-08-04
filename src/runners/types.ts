@@ -39,6 +39,12 @@ export interface RunnerLogOptions {
 export interface RunnerStatus {
   running: boolean;
   pid: number;
+  /**
+   * When the OS says `pid` started, so a recycled pid cannot pass for the
+   * server that used to hold it. Empty when unreadable; see
+   * PROCESS IDENTITY in native-runner.ts.
+   */
+  pidStartedAt?: string;
   containerId?: string;
   port?: number;
   startedAt?: Date;
@@ -122,6 +128,14 @@ export interface PersistedRunnerState {
   command: string;
   cwd: string;
   pid: number;
+  /**
+   * When the OS says `pid` started. A pid alone cannot be trusted across a
+   * restart: a crashed server leaves its pid here, and once the OS recycles
+   * that number the dead server reads as running. See PROCESS IDENTITY in
+   * native-runner.ts. Absent for records written before this existed, which
+   * are treated as unverifiable rather than dead.
+   */
+  pidStartedAt?: string;
   containerId?: string;
   port?: number;
   autoRun: boolean;
