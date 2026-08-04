@@ -14,6 +14,7 @@ import { getOutputPath } from './helpers/paths.js';
 import { atomicWriteFile } from './atomic-write.js';
 import { configManager } from './config.js';
 import { ServerFileWatcher } from './server-watcher.js';
+import { serverClaims, type ServerClaimsStore } from './server-claims.js';
 import {
   type Runner,
   type RunnerType,
@@ -578,6 +579,12 @@ export class ServerManager {
   private pauseChecker: ((inspectorPort: number) => boolean) | null = null;
   /** Watch-mode restart coordination, keyed by serverId - see WatchRestartState */
   private watchState: Map<string, WatchRestartState> = new Map();
+  /** Ownership claims - who may stop a shared dev server (see server-claims.ts) */
+  private readonly claims: ServerClaimsStore;
+
+  constructor(claimsStore: ServerClaimsStore = serverClaims) {
+    this.claims = claimsStore;
+  }
 
   /**
    * Set the function used to check whether a CDP connection at a given
@@ -608,7 +615,7 @@ export class ServerManager {
    * Initialize - load state and recover/start auto-run servers
    * Loads from both local (project) and global (~/.cdp-tools/) storage
    */
-  async initialize(): Promise<{ recovered: string[]; started: string[]; failed: string[]; monitoredPorts: number[] }> {
+  async initialize(): Promise<{ recovered: string[]; started: string[]; failed: string[]; monitoredPorts: number[]; collected: string[] }> {
     const recovered: string[] = [];
     const started: string[] = [];
     const failed: string[] = [];
@@ -652,6 +659,12 @@ export class ServerManager {
     // fresh on each startup, catching cases where Docker stopped since last run
     resetDockerCaches();
 
+    // Read before the loop below claims anything: a server we are about to
+    // claim during recovery would otherwise look owned by us and never be
+    // collected, no matter how long ago its real owners died (issue #139).
+    const abandoned = this.findAbandonedServerIds();
+    const collected: string[] = [];
+
     for (const server of allServers) {
       const runnerType = server.type || 'native';
       const runner = createRunner(runnerType, server.id);
@@ -684,6 +697,29 @@ export class ServerManager {
         if (runner.type === 'native' && 'initializeCursorToEOF' in runner) {
           await (runner as any).initializeCursorToEOF();
         }
+
+        // Every session that ever claimed this server is gone, so nobody is
+        // coming back for it - this is the closed-window leak, collected at
+        // the first opportunity rather than left running until reboot.
+        // Another window on this project may be using it even though it never
+        // claimed it - only the last session out collects.
+        if (
+          abandoned.get(server.global ?? false)?.has(server.id) &&
+          !this.claims.hasOtherLiveSessionIn(server.cwd)
+        ) {
+          try {
+            await debugLog('ServerClaims', `Collecting abandoned server ${server.id}`);
+            await this.stopServer(server.id);
+            collected.push(server.id);
+            continue;
+          } catch (error) {
+            await debugLog('ServerClaims', `Failed to collect ${server.id}: ${error}`);
+          }
+        }
+
+        // Reattaching is use: this session now depends on the server, so it
+        // takes a claim alongside whoever else already holds one.
+        await this.claims.claim(server.id, server.cwd, server.global ?? false);
 
         recovered.push(server.id);
         await debugLog('ServerManager', `Recovered running server: ${server.id} (${runnerType}, global=${server.global})`);
@@ -790,8 +826,12 @@ export class ServerManager {
       }
     }
 
+    if (collected.length > 0) {
+      console.error(`[cdp-tools] Collected ${collected.length} abandoned dev server(s): ${collected.join(', ')}`);
+    }
+
     await this.saveState();
-    return { recovered, started, failed, monitoredPorts };
+    return { recovered, started, failed, monitoredPorts, collected };
   }
 
   /**
@@ -1171,6 +1211,11 @@ export class ServerManager {
 
     await this.saveState();
 
+    // Starting a server is what makes this session its owner. Without a claim
+    // nothing can tell it apart from a server another window is using, so
+    // nobody may ever stop it (issue #139).
+    await this.claims.claim(serverId, cwd, isGlobal ?? false);
+
     await debugLog('ServerManager', `Server started: ${serverId} (${runnerType}, PID: ${result.pid})`);
 
     let autoRestartWarning: string | undefined;
@@ -1478,6 +1523,7 @@ export class ServerManager {
 
     await debugLog('ServerManager', `Stopping server ${serverId}`);
     await managed.runner.stop();
+    this.claims.release(serverId, managed.global ?? false);
     await this.saveState();
     await debugLog('ServerManager', `Server ${serverId} stopped`);
   }
@@ -1819,6 +1865,68 @@ export class ServerManager {
   }
 
   /**
+   * Stop every server this session owns outright - one no live session other
+   * than this one claims. Used when the session is going away for good (an
+   * idle suspend, or a client that closed), which is the only time it is safe
+   * to take a dev server down.
+   *
+   * A server another window is still using is left alone, and so is one whose
+   * ownership cannot be established: over-stopping destroys running work,
+   * under-stopping leaves a process for the next `initialize()` to collect.
+   */
+  async stopOwnedServers(): Promise<{ stopped: string[]; keptForOthers: string[] }> {
+    const stopped: string[] = [];
+    const keptForOthers: string[] = [];
+
+    for (const [serverId, managed] of this.servers) {
+      const isGlobal = managed.global ?? false;
+      try {
+        if (!(await managed.runner.isRunning())) continue;
+
+        const serverCwd = this.getRunnerCwd(managed.runner) ?? process.cwd();
+        if (!this.claims.mayStop(serverId, serverCwd, isGlobal)) {
+          keptForOthers.push(serverId);
+          // Drop only OUR claim: the server keeps running for whoever else
+          // holds one, and stays collectable once they are gone too.
+          this.claims.release(serverId, isGlobal);
+          continue;
+        }
+
+        await this.stopServer(serverId);
+        stopped.push(serverId);
+      } catch (error) {
+        await debugLog('ServerManager', `Failed to release ${serverId}: ${error}`);
+        keptForOthers.push(serverId);
+      }
+    }
+
+    return { stopped, keptForOthers };
+  }
+
+  /**
+   * Server ids whose every claim was dead, per storage scope, with those dead
+   * claims deleted as a side effect.
+   *
+   * Must be read BEFORE this session claims anything during recovery -
+   * otherwise our own fresh claim makes an orphan look owned, and nothing is
+   * ever collected.
+   *
+   * A server with no claim file at all is absent from this: it predates
+   * claims, or was started outside cdp-tools, and neither is ours to kill.
+   */
+  private findAbandonedServerIds(): Map<boolean, Set<string>> {
+    const byScope = new Map<boolean, Set<string>>();
+    for (const isGlobal of [false, true]) {
+      const { removed, unclaimedServerIds } = this.claims.collectDeadClaims(isGlobal);
+      if (removed > 0) {
+        void debugLog('ServerClaims', `Removed ${removed} dead claim(s) (global=${isGlobal})`);
+      }
+      byScope.set(isGlobal, new Set(unclaimedServerIds));
+    }
+    return byScope;
+  }
+
+  /**
    * Stop all servers
    */
   async stopAll(): Promise<string[]> {
@@ -1876,9 +1984,55 @@ export class ServerManager {
    * Stopped servers remain in config and can be manually restarted
    */
   async cleanup(): Promise<number> {
-    // Just refresh status, don't remove anything
+    // Pick up servers another session started after this one loaded its state.
+    // Without this a second editor window can neither see nor stop them - its
+    // map was built once at startup - and, more importantly, it never claims
+    // them, so it has no say in whether they are collected.
+    await this.adoptNewlyPersistedServers();
+
     // Servers are only removed via the explicit 'remove' action
     return 0;
+  }
+
+  /**
+   * Add running servers that appeared in persisted state since this session
+   * loaded, claiming each one: seeing a server is enough to depend on it.
+   */
+  private async adoptNewlyPersistedServers(): Promise<void> {
+    let persisted: Array<PersistedRunnerState & { global: boolean }>;
+    try {
+      const [local, global] = await Promise.all([this.loadState(false), this.loadState(true)]);
+      persisted = [
+        ...local.servers.map(server => ({ ...server, global: false })),
+        ...global.servers.map(server => ({ ...server, global: true })),
+      ];
+    } catch {
+      return; // Unreadable state is not worth failing a list over.
+    }
+
+    for (const server of persisted) {
+      if (this.servers.has(server.id)) continue;
+
+      try {
+        const runner = createRunner(server.type || 'native', server.id);
+        runner.restore(server);
+        if (!(await runner.isRunning())) continue;
+
+        this.servers.set(server.id, {
+          id: server.id,
+          runner,
+          autoRun: server.autoRun,
+          monitorPort: server.monitorPort,
+          global: server.global,
+          watch: server.watch,
+          watchPaths: server.watchPaths,
+        });
+        await this.claims.claim(server.id, server.cwd, server.global);
+        await debugLog('ServerManager', `Adopted server started elsewhere: ${server.id}`);
+      } catch (error) {
+        await debugLog('ServerManager', `Could not adopt ${server.id}: ${error}`);
+      }
+    }
   }
 
   /**

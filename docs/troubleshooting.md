@@ -2,10 +2,10 @@
 
 ## Session Issues
 
-### Chrome closed itself and my connections are gone
+### Chrome and my dev server closed while I was away
 
-**Problem:** After a long break, connections are gone and Chrome is closed -
-but the MCP connection still works and dev servers are still running.
+**Problem:** After a long break, connections are gone, Chrome is closed and a
+dev server has stopped - but the MCP connection still works.
 
 **Cause:** The session was suspended. With no request from the client for
 `session.idleSuspendMinutes` (default 120), cdp-tools releases what it holds
@@ -13,11 +13,29 @@ and exits; the supervisor stays connected and started a fresh server for your
 next call.
 
 **Solutions:**
-- Relaunch Chrome (`launchChrome`). Managed dev servers were left running and
-  the fresh server reattached to them, so there is nothing to restart there.
+- Relaunch Chrome (`launchChrome`) and restart the dev server
+  (`server({ action: 'start', serverId: '...' })`) - its config is kept.
 - Raise or disable the threshold in `.cdp-tools/config.json`:
   `{"session": {"idleSuspendMinutes": 0}}`. Read at supervisor startup, so it
   applies from the next reconnect.
+
+A dev server another window is using is never stopped this way: it is only
+released when no other live session claims it or is working in its directory.
+
+### A dev server stopped when I opened a new session
+
+**Problem:** Starting cdp-tools in a project stopped a dev server that was
+already running.
+
+**Cause:** Every session that had claimed it was gone, so it was collected as
+abandoned - otherwise a dev server from a window you closed days ago keeps
+running until you reboot.
+
+**Solutions:**
+- Restart it (`server({ action: 'start', serverId: '...' })`).
+- To keep a server outside this lifecycle, run it yourself rather than through
+  the `server` tool; cdp-tools only collects servers it manages, and only ones
+  it can prove nobody is left to use.
 
 ## Chrome Connection Issues
 

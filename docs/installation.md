@@ -76,12 +76,20 @@ Chrome instances, dev servers and monitor buffers nobody is using. Two things
 stop that:
 
 - **Idle suspend.** After two hours with no request from the client, the server
-  releases what it privately holds - connections, the Chrome instances it
-  launched, monitor buffers - and exits. The supervisor stays connected, so the
-  MCP connection itself survives: the next tool call starts a fresh server. You
-  will need to relaunch Chrome (`launchChrome`). Managed dev servers keep
-  running and are reattached to, because they are shared between sessions on a
-  project and stopping them could pull one out from under another window.
+  releases what it holds - connections, the Chrome instances it launched,
+  monitor buffers, and the dev servers it owns - and exits. The supervisor
+  stays connected, so the MCP connection itself survives: the next tool call
+  starts a fresh server. You will need to relaunch Chrome (`launchChrome`) and
+  restart dev servers (`server({ action: 'start', serverId: '...' })`); their
+  config is kept.
+- **Shared dev servers are protected.** A dev server is only stopped when no
+  other live session claims it or is working in its directory, so a window that
+  goes idle never takes down a server another window is using. Ownership is
+  tracked in `.cdp-tools/server-claims/`, keyed by the supervisor process that
+  owns each session.
+- **Abandoned dev servers are collected.** A window closed for good used to
+  leave its dev servers running until reboot. The next session in that
+  directory now stops any whose owning sessions are all gone.
 - **Orphan reaping.** When the client that launched cdp-tools is gone, the
   server tree shuts itself down, rather than waiting for a stdin EOF that never
   arrives when an `npm exec` wrapper is holding the pipe open.

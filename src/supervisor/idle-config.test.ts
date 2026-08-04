@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   readSupervisorSessionConfig,
+  idleCheckIntervalMs,
   DEFAULT_IDLE_SUSPEND_MINUTES,
   DEFAULT_CLIENT_POLL_SECONDS,
 } from './idle-config.js';
@@ -111,5 +112,26 @@ describe('readSupervisorSessionConfig - global config', () => {
       readFile: () => { throw new Error('ENOENT'); },
     });
     expect(config.idleSuspendMinutes).toBe(DEFAULT_IDLE_SUSPEND_MINUTES);
+  });
+});
+
+describe('idleCheckIntervalMs', () => {
+  it('checks every 5 minutes at the shipped 2 hour default', () => {
+    // The production timing, verified directly rather than inferred: two hours
+    // is too long to wait out in a test, so the arithmetic is the thing tested.
+    const thresholdMs = DEFAULT_IDLE_SUSPEND_MINUTES * 60_000;
+    expect(thresholdMs).toBe(7_200_000);
+    expect(idleCheckIntervalMs(thresholdMs)).toBe(300_000);
+  });
+
+  it('suspends within a quarter of the threshold for shorter settings', () => {
+    expect(idleCheckIntervalMs(20 * 60_000)).toBe(5 * 60_000); // 20min -> capped at 5min
+    expect(idleCheckIntervalMs(8 * 60_000)).toBe(2 * 60_000);  // 8min -> quarter
+    expect(idleCheckIntervalMs(60_000)).toBe(15_000);          // 1min -> quarter
+  });
+
+  it('never spins on a sub-minute threshold', () => {
+    expect(idleCheckIntervalMs(1_800)).toBe(1_000);
+    expect(idleCheckIntervalMs(0)).toBe(1_000);
   });
 });

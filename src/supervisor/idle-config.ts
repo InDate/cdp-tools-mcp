@@ -30,6 +30,21 @@ function readNumber(value: unknown): number | null {
   return parsed;
 }
 
+/**
+ * How often to test for idleness, given the threshold.
+ *
+ * A quarter of the threshold, so a suspend lands within ~25% of it, but never
+ * more often than every 5 minutes - at the 2h default that is 5 minutes, and
+ * the timer is otherwise doing nothing all day. The 1s floor only matters for
+ * the sub-minute thresholds used by the stress harness.
+ *
+ * Pure and exported so the production timings are actually tested, rather than
+ * only reasoned about: the default threshold is too long to wait out in a test.
+ */
+export function idleCheckIntervalMs(idleThresholdMs: number): number {
+  return Math.max(1_000, Math.min(idleThresholdMs / 4, 5 * 60_000));
+}
+
 export interface ReadSessionConfigDeps {
   /** Path to config.json, as resolved by getConfigPath(). */
   configPath: string;

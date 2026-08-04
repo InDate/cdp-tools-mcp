@@ -350,10 +350,10 @@ async function scenarioLeak({ cycles }) {
 }
 
 /**
- * 3. What a suspend does and does not release, checked against the real server
- *    rather than a fixture: the Chrome it launched must be gone, and a managed
- *    dev server must still be running - dev servers are shared between
- *    sessions, so suspending must never take one down.
+ * 3. What a suspend releases, checked against the real server rather than a
+ *    fixture: the Chrome it launched and the dev server it owns must both be
+ *    gone. "Owns" is the whole subtlety - see the `shared` scenario for the
+ *    other half of the rule.
  */
 async function scenarioRelease() {
   if (!existsSync(join(REPO_ROOT, 'build', 'index.js'))) {
@@ -433,9 +433,8 @@ async function scenarioRelease() {
     for (const pid of chromePids) {
       if (isAlive(pid)) failures.push(`Chrome pid ${pid} survived the suspend`);
     }
-    // Dev servers are shared, so a suspend must leave them alone. This is the
-    // assertion that would catch a regression back to stopping them.
-    if (!(await isListening(devServerPort))) failures.push(`dev server on ${devServerPort} was stopped by the suspend`);
+    // Nobody else claims this one, so the suspend owns it and must release it.
+    if (await isListening(devServerPort)) failures.push(`dev server on ${devServerPort} survived the suspend unclaimed`);
     if (supervisor.children().length > 0) failures.push('child still running after suspend');
 
     // And the connection itself must still work.
@@ -444,13 +443,100 @@ async function scenarioRelease() {
 
     return {
       passed: failures.length === 0,
-      detail: `${chromePids.length} chrome pid(s) released, dev server on ${devServerPort} left running`,
+      detail: `${chromePids.length} chrome pid(s) and the owned dev server on ${devServerPort} released`,
       failures,
     };
   } finally {
     await supervisor.stop();
     // A scenario that aborts mid-way must not leave a listener behind for the
     // next run to trip over.
+    try {
+      execSync(`pkill -f ${devServerScript} 2>/dev/null`, { stdio: 'ignore' });
+    } catch {
+      // best effort
+    }
+    rmSync(workDir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * 3b. The other half of the ownership rule, and the one that costs a user real
+ *     work if it breaks: a dev server that a second, still-live session also
+ *     claims must survive the first session's suspend. A regression here kills
+ *     a dev server out from under an editor window that is actively using it.
+ */
+async function scenarioShared() {
+  if (!existsSync(join(REPO_ROOT, 'build', 'index.js'))) {
+    return { skipped: true, detail: 'build/index.js missing - run npm run build first' };
+  }
+
+  const workDir = mkdtempSync(join(tmpdir(), 'cdp-stress-shared-'));
+  const devServerScript = join(workDir, 'stress-dev-server.mjs');
+  const devServerPort = await findFreePort(39_617);
+  const failures = [];
+
+  // Two sessions in one project: A suspends quickly, B stays awake.
+  const sessionA = startSupervisor({ idleMinutes: 0.5, childScript: null, cwd: workDir });
+  const sessionB = startSupervisor({ idleMinutes: 0, childScript: null, cwd: workDir });
+
+  try {
+    writeFileSync(
+      devServerScript,
+      `import { createServer } from 'http';\n` +
+        `createServer((req, res) => res.end('ok')).listen(${devServerPort}, () => console.log('listening on ${devServerPort}'));\n`
+    );
+
+    await sessionA.handshake();
+    await waitForChild(sessionA);
+
+    const started = await sessionA.request(
+      'tools/call',
+      {
+        name: 'server',
+        arguments: {
+          action: 'start',
+          id: 'stress-shared-server',
+          command: `node ${devServerScript}`,
+          cwd: workDir,
+          port: devServerPort,
+        },
+      },
+      { timeoutMs: 60_000 }
+    );
+    if (started.error || started.result?.isError) {
+      failures.push(`server start failed: ${toolText(started).slice(0, 300)}`);
+      return { passed: false, detail: 'could not start the shared dev server', failures };
+    }
+    await waitUntil(() => isListening(devServerPort), { timeoutMs: 20_000, what: 'the dev server to listen' });
+
+    // B is the second window on this project. It deliberately does NOT have to
+    // know about the server: it was already running when the server started,
+    // which is the ordering that claims alone cannot cover. Its presence in
+    // the directory is what has to protect the server.
+    await sessionB.handshake();
+    await waitForChild(sessionB);
+    await sessionB.request('tools/call', { name: 'server', arguments: { action: 'list' } }, { timeoutMs: 60_000 });
+
+    await waitForSuspend(sessionA, 60_000);
+    await sleep(2000);
+
+    if (!(await isListening(devServerPort))) {
+      failures.push(`dev server on ${devServerPort} was stopped despite a second live session claiming it`);
+    }
+
+    // And once B goes too, the server is collectable rather than pinned: B's
+    // own suspend owns it now.
+    await sessionB.request('tools/call', { name: 'server', arguments: { action: 'stop', serverId: 'stress-shared-server' } }, { timeoutMs: 60_000 });
+    await waitUntil(async () => !(await isListening(devServerPort)), { timeoutMs: 20_000, what: 'the dev server to stop for its last owner' });
+
+    return {
+      passed: failures.length === 0,
+      detail: `shared server on ${devServerPort} survived session A's suspend, stopped for session B`,
+      failures,
+    };
+  } finally {
+    await sessionA.stop();
+    await sessionB.stop();
     try {
       execSync(`pkill -f ${devServerScript} 2>/dev/null`, { stdio: 'ignore' });
     } catch {
@@ -677,7 +763,8 @@ async function scenarioReaper() {
 const SCENARIOS = {
   race: { run: scenarioRace, description: 'requests landing across the teardown window' },
   leak: { run: scenarioLeak, description: 'supervisor RSS/fd across many suspend cycles' },
-  release: { run: scenarioRelease, description: 'real Chrome released, shared dev server left alone' },
+  release: { run: scenarioRelease, description: 'real Chrome and an owned dev server released' },
+  shared: { run: scenarioShared, description: 'a dev server another live session claims is left alone' },
   signals: { run: scenarioSignals, description: 'rebuild/shutdown/child-kill during teardown' },
   escalation: { run: scenarioEscalation, description: 'child ignoring the suspend signal' },
   reaper: { run: scenarioReaper, description: 'orphan reaping across several trees' },

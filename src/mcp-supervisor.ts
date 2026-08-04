@@ -40,7 +40,7 @@ import { RestartCoordinator } from './supervisor/restart-coordinator.js';
 import { NdjsonReader } from './supervisor/ndjson-reader.js';
 import { removeOwnPidFile } from './supervisor/pidfile.js';
 import { ClientWatcher } from './supervisor/client-watcher.js';
-import { readSupervisorSessionConfig } from './supervisor/idle-config.js';
+import { readSupervisorSessionConfig, idleCheckIntervalMs } from './supervisor/idle-config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -150,11 +150,7 @@ async function main(): Promise<void> {
   let idleCheckTimer: ReturnType<typeof setInterval> | null = null;
   if (sessionConfig.idleSuspendMinutes > 0) {
     const idleThresholdMs = sessionConfig.idleSuspendMinutes * 60_000;
-    // Quarter of the threshold, so the suspend lands within ~25% of it, but
-    // never more often than every 5 minutes for the long thresholds that are
-    // the normal case. The 1s floor only matters for the very short thresholds
-    // used in testing.
-    const checkIntervalMs = Math.max(1_000, Math.min(idleThresholdMs / 4, 5 * 60_000));
+    const checkIntervalMs = idleCheckIntervalMs(idleThresholdMs);
     logStderr(`Idle suspend after ${sessionConfig.idleSuspendMinutes} minute(s) without host activity`);
 
     idleCheckTimer = setInterval(() => {
@@ -195,9 +191,14 @@ async function main(): Promise<void> {
     if (idleCheckTimer) clearInterval(idleCheckTimer);
     coordinator.prepareForShutdown();
     try {
-      await childManager.kill();
+      // Every path into here means the session itself is over - a signal, the
+      // host's stdin closing, or the client being gone - so the child gets the
+      // release teardown rather than a bare kill, and takes the dev servers it
+      // owns with it. A rebuild restart does NOT come through here: it goes via
+      // requestRestart(), which kills shallowly so the next child can reattach.
+      await childManager.suspend();
     } catch (err) {
-      logStderr(`Error killing child during shutdown: ${err}`);
+      logStderr(`Error stopping child during shutdown: ${err}`);
     }
     // Only if it is still OURS: a newer supervisor may own it by now, and
     // taking that one's pidfile away silently breaks its hot reload.

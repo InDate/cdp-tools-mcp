@@ -74,6 +74,7 @@ import { validateReference, requireValidReference, deriveConnectionReference, UN
 import { initializePaths, getOutputPath } from './helpers/paths.js';
 import { cleanupStaleTempFiles, cleanupStaleTempFilesSync } from './atomic-write.js';
 import { createSessionDetector, type SessionInfo, type SessionDetector } from './session-detector.js';
+import { serverClaims } from './server-claims.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -2072,6 +2073,12 @@ async function main() {
 
   // Note: Config was already loaded earlier (before orchestrator startup) for debug logging
 
+  // Announce this session BEFORE the manager decides anything: collection asks
+  // whether another live session is working in a server's directory, and a
+  // session that has not registered yet is invisible to that question.
+  serverClaims.collectDeadSessions();
+  await serverClaims.registerSession(process.cwd());
+
   // Initialize server manager - recover running servers and start auto-run servers
   const serverInitResult = await serverManager.initialize();
   if (serverInitResult.recovered.length > 0) {
@@ -2145,19 +2152,17 @@ async function main() {
   // Cleanup function for graceful shutdown
   let isCleaningUp = false;
   /**
-   * Releases everything this session privately holds: CDP connections, the
-   * Chrome instances it launched, source maps, its reserved debug port, and
-   * the in-process monitors. Everything here dies with this process anyway.
+   * Releases what this session privately holds: CDP connections, the Chrome
+   * instances it launched, source maps, its reserved debug port, and the
+   * in-process monitors. All of that dies with this process anyway.
    *
-   * Managed dev servers are deliberately NOT stopped, on any path including an
-   * idle suspend. They are shared: `servers.json` records no owner, and any
-   * session in the same directory reattaches to the same running server, so a
-   * session that stopped them on the way out could kill a dev server another
-   * window is actively using. Reaping them needs ownership, which needs a
-   * claims registry - issue #139. Until then the rule is the asymmetry:
-   * under-stopping leaks, over-stopping destroys someone's running work.
+   * @param releaseOwnedServers - also stop the managed dev servers this
+   *   session owns, meaning the ones no other live session claims (see
+   *   server-claims.ts). Only for teardowns where the session is going away -
+   *   an idle suspend, or a client that closed. A rebuild restart passes
+   *   false: the child is coming straight back and will reattach.
    */
-  const cleanup = async (signal: string) => {
+  const cleanup = async (signal: string, releaseOwnedServers = false) => {
     if (isCleaningUp) {
       return; // Prevent multiple cleanup calls
     }
@@ -2167,6 +2172,33 @@ async function main() {
 
     try {
       if (cleanupInterval) clearInterval(cleanupInterval); // Stop periodic cleanup
+
+      // Dev servers go first: they are detached, so if anything below hangs
+      // (closing a CDP connection to a dead socket is the usual suspect) and
+      // the supervisor's grace period runs out, the SIGKILL that follows would
+      // leave them running with nobody managing them.
+      if (releaseOwnedServers) {
+        try {
+          const { stopped, keptForOthers } = await serverManager.stopOwnedServers();
+          if (stopped.length > 0) {
+            console.error(`[cdp-tools] Stopped ${stopped.length} owned dev server(s): ${stopped.join(', ')}`);
+          }
+          if (keptForOthers.length > 0) {
+            console.error(`[cdp-tools] Left ${keptForOthers.length} dev server(s) for other sessions: ${keptForOthers.join(', ')}`);
+          }
+          await serverManager.getPortMonitor().stopAll();
+        } catch (error) {
+          console.error(`[cdp-tools] Error releasing dev servers: ${error}`);
+        }
+        // This session is over: nothing of ours may keep pinning a server that
+        // the next session would otherwise collect.
+        serverClaims.releaseAllOwn();
+        serverClaims.unregisterSession();
+      } else {
+        // A rebuild restart: the child is coming straight back, so its claims
+        // stay. Presence is withdrawn and re-announced by the next child.
+        serverClaims.unregisterSession();
+      }
 
       await connectionManager.closeAll();
       sourceMapHandler.clear();
@@ -2209,13 +2241,12 @@ async function main() {
   process.on('SIGTERM', () => cleanup('SIGTERM')); // Graceful shutdown (systemd, Docker, etc.)
   process.on('SIGHUP', () => cleanup('SIGHUP'));   // Terminal hangup
 
-  // The supervisor's idle-suspend signal. Kept distinct from SIGTERM even
-  // though both tear down the same things today: the supervisor means
-  // something different by it (stay connected, respawn on the next request),
-  // it is what the logs show, and the claims work will give it its own
-  // teardown. (SIGUSR2 rather than SIGUSR1, which Node reserves for its own
-  // inspector.)
-  process.on('SIGUSR2', () => cleanup('SIGUSR2 (idle suspend)'));
+  // The supervisor's release signal: this session is going away (idle
+  // suspend, or its client closed), so the dev servers it owns go with it.
+  // SIGTERM stays the shallow teardown, because a rebuild restart uses it and
+  // must leave servers running for the next child to reattach to. (SIGUSR2
+  // rather than SIGUSR1, which Node reserves for its own inspector.)
+  process.on('SIGUSR2', () => cleanup('SIGUSR2 (session release)', true));
 
   // Handle stdin close - this catches when the parent process (Claude Code) terminates
   // without sending a signal. MCP uses stdin/stdout for communication, so if stdin closes,
