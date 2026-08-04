@@ -2,7 +2,7 @@
 name: cdp-tools
 description: Debug JavaScript/TypeScript running in Chrome or Node.js via the cdp-tools MCP server - set breakpoints and logpoints, inspect call stacks and variables, monitor console/network activity, automate browser interactions (navigate, click, type, screenshot), manage dev servers, and record/replay reproduction sequences with automated fix verification. Use whenever a task involves debugging a running app, reproducing or verifying a bug, tracing runtime behavior, or the user mentions breakpoints, Chrome DevTools, CDP, replay sequences, or cdp-tools MCP tools (launchChrome, navigate, breakpoint, inspect, replay, server, issues, etc.).
 compatibility: Requires the cdp-tools-mcp MCP server to be connected (tools such as launchChrome, breakpoint, inspect, replay, server, issues).
-version: 0.7.1
+version: 0.7.2
 ---
 
 # cdp-tools Debugger Usage
