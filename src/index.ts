@@ -75,6 +75,7 @@ import { initializePaths, getOutputPath } from './helpers/paths.js';
 import { cleanupStaleTempFiles, cleanupStaleTempFilesSync } from './atomic-write.js';
 import { createSessionDetector, type SessionInfo, type SessionDetector } from './session-detector.js';
 import { serverClaims } from './server-claims.js';
+import { sizeWindowToViewport } from './window-sizing.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -424,8 +425,8 @@ const connectionTools = {
       forceNewInstance: z.boolean().optional().describe('Always spawn a fresh Chrome process instead of reusing/tabbing into an existing instance. Without `port`, a free port is chosen automatically; with `port`, that port is used and the call errors if it is already in use. Errors if `reference` is already bound to a live connection.'),
       headless: z.boolean().optional().default(false).describe('Launch in headless mode (no visible window, prevents focus stealing). Default: false'),
       reference: z.string().optional().describe('Connection reference name (3 descriptive words). If not provided, defaults to "unnamed-connection-default". Use this to identify the connection when calling other tools.'),
-      width: z.number().optional().describe('Viewport width in pixels (optional). If set, the browser viewport will be resized after launch.'),
-      height: z.number().optional().describe('Viewport height in pixels (optional). If set, the browser viewport will be resized after launch.'),
+      width: z.number().optional().describe('Viewport width in CSS px. Sizes the real OS window, not an emulated viewport, so the page keeps tracking window resizes. Bigger than the display is clamped and reported. Headless emulates instead.'),
+      height: z.number().optional().describe('Viewport height in CSS px. Sized like `width`.'),
       profile: z.string().optional().describe('Named persistent Chrome profile, e.g. "device-a". Naming a profile makes it persistent: it maps to a stable user-data-dir under ~/.cdp-tools/profiles (override per project with chrome.persistentProfileRoot) and is never deleted, so cookies, localStorage and IndexedDB - including non-extractable CryptoKeys - survive across runs. Created on first use. Does NOT pin a port; port selection is unchanged. Wipe it with config({action:"resetProfile", profile:"device-a"}). Only one live Chrome may hold a given profile at a time.'),
       chromeArgs: z.array(z.string()).optional().describe('Extra Chrome command-line flags to pass through at launch, e.g. ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"]. Merged after the managed defaults. The CDP_TOOLS_EXTRA_CHROME_ARGS env var (space-separated) is also always merged. Only applies when this call actually launches Chrome (ignored when an existing instance on the port is reused).'),
     }).strict(),
@@ -631,6 +632,7 @@ const connectionTools = {
         let pageUrl = 'about:blank';
         let consoleStats = '';
         let viewportSet: { width: number; height: number } | undefined;
+        let viewportClamped: { width: number; height: number } | undefined;
 
         if (autoConnect) {
           try {
@@ -706,16 +708,23 @@ const connectionTools = {
                 logpointTracker.handleConsoleMessage(message);
               });
 
-              // Set viewport dimensions if specified
               if (args.width !== undefined || args.height !== undefined) {
-                const currentViewport = page.viewport() || { width: 800, height: 600 };
-                const newViewport = {
-                  width: args.width ?? currentViewport.width,
-                  height: args.height ?? currentViewport.height,
+                const current = await page.evaluate(() => {
+                  const w = (globalThis as any).window;
+                  return { width: w.innerWidth, height: w.innerHeight };
+                });
+                const target = {
+                  width: args.width ?? current.width,
+                  height: args.height ?? current.height,
                 };
-                await page.setViewport(newViewport);
-                viewportSet = newViewport;
-                await debugLog('index', `Set viewport to ${newViewport.width}x${newViewport.height}`);
+                const sized = await sizeWindowToViewport(page, target, args.headless === true);
+                viewportSet = sized.viewport;
+                viewportClamped = sized.clampedTo;
+                await debugLog(
+                  'index',
+                  `Sized ${sized.mode} to ${sized.viewport.width}x${sized.viewport.height}` +
+                    (sized.clampedTo ? ` (clamped from ${target.width}x${target.height})` : '')
+                );
               }
 
               // Navigate to URL if provided
@@ -818,6 +827,7 @@ const connectionTools = {
               consoleStats: consoleStats || undefined,
               hasUserReference: !!userReference,
               viewport: viewportSet,
+              viewportClamped: viewportClamped ? true : undefined,
               inactivityNote,
             }),
             reference,

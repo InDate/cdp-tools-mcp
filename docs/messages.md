@@ -124,7 +124,7 @@ Reusing it would give you a different browser identity than you asked for.
 **Type:** success
 **Summary:** Chrome launched and connected
 
-Title: {{title}}, URL: {{url}}{{#viewport}}, Viewport: {{viewport.width}}x{{viewport.height}}{{/viewport}}{{#consoleStats}}
+Title: {{title}}, URL: {{url}}{{#viewport}}, Viewport: {{viewport.width}}x{{viewport.height}}{{/viewport}}{{#viewportClamped}} (settled here, not the size requested){{/viewportClamped}}{{#consoleStats}}
 
 Console: {{consoleStats}}{{/consoleStats}}
 
