@@ -1,8 +1,11 @@
 {
   "mcpServers": {
-    "cdp-tools": {
-      "command": "node",
-      "args": ["build/mcp-supervisor.js"]
+    "devharness": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "devharness@0.8.0"
+      ]
     }
   }
 }

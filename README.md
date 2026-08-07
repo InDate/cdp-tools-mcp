@@ -103,6 +103,14 @@ claude mcp add devharness -- npx devharness@latest
 
 **Other clients** — `npx devharness@latest` over stdio.
 
+**As a Claude Code plugin** — this registers the server for you:
+```
+/plugin marketplace add InDate/indate-tools
+/plugin install devharness@indate-tools
+```
+The plugin pins an exact server version rather than tracking `@latest`, so what
+you installed is what runs until you update it.
+
 ### Skill
 
 Bundled [Agent Skill](https://agentskills.io) at `skills/devharness/`. Same

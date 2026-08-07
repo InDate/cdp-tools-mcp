@@ -117,9 +117,27 @@ function verifySkillVersionStamp() {
     }
 
     console.log(`✓ SKILL.md version stamp matches package.json (${pkgVersion})`);
+
+    // .mcp.json is the plugin manifest that ships to users: it is what their
+    // install actually runs. Pinned deliberately rather than @latest, which
+    // makes it a third place the version has to be bumped - so check it here
+    // rather than discover it after a release installs the wrong build.
+    const mcp = JSON.parse(readFileSync(join(REPO_ROOT, '.mcp.json'), 'utf-8'));
+    const args = mcp.mcpServers?.devharness?.args ?? [];
+    const spec = args.find((a) => a.startsWith('devharness@'));
+    if (!spec) {
+      console.error('✗ .mcp.json does not pin a devharness@<version> package spec');
+      return false;
+    }
+    const pinned = spec.split('@')[1];
+    if (pinned !== pkgVersion) {
+      console.error(`✗ .mcp.json installs devharness@${pinned} but package.json is ${pkgVersion} - bump the pin`);
+      return false;
+    }
+    console.log(`✓ .mcp.json pins devharness@${pinned}`);
     return true;
   } catch (error) {
-    console.error(`✗ Cannot verify skill version stamp: ${error.message}`);
+    console.error(`✗ Cannot verify version stamps: ${error.message}`);
     return false;
   }
 }
