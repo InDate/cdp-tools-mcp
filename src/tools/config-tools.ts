@@ -43,7 +43,7 @@ export interface ServerIdentity {
 export function createConfigTools(profileStore?: ProfileStore, serverIdentity?: ServerIdentity) {
   return {
     config: createTool(
-      'Manage cdp-tools configuration. Actions: status (show where config is loaded from), useLocal (switch to project-local config), useGlobal (switch to global ~/.cdp-tools config), reset (reset to defaults), backup (create timestamped backup), cloneFromGlobal (copy global config to local), show (display current settings), listTools (list all toggleable tools with their status and dependencies), reload (re-read config.json now; edits also hot-reload automatically within ~250ms), restart (restart cdp-tools itself if stuck or broken), listProfiles (list named persistent Chrome profiles and where they live), resetProfile (wipe and recreate a named persistent Chrome profile, clearing its cookies/localStorage/IndexedDB)',
+      'Manage cdp-tools configuration. Actions: status (show where config is loaded from), useLocal (switch to project-local config), useGlobal (switch to global ~/.devharness config), reset (reset to defaults), backup (create timestamped backup), cloneFromGlobal (copy global config to local), show (display current settings), listTools (list all toggleable tools with their status and dependencies), reload (re-read config.json now; edits also hot-reload automatically within ~250ms), restart (restart cdp-tools itself if stuck or broken), listProfiles (list named persistent Chrome profiles and where they live), resetProfile (wipe and recreate a named persistent Chrome profile, clearing its cookies/localStorage/IndexedDB)',
       configSchema,
       async (args: ConfigArgs) => {
         switch (args.action) {
@@ -51,7 +51,7 @@ export function createConfigTools(profileStore?: ProfileStore, serverIdentity?: 
             const status = configManager.getStatus();
             return createSuccessResponse('CONFIG_STATUS', {
               loadedFrom: status.loadedFrom || 'In-memory defaults (no file)',
-              location: status.isLocal ? 'local (project)' : 'global (~/.cdp-tools)',
+              location: status.isLocal ? 'local (project)' : 'global (~/.devharness)',
               localPath: status.localPath,
               globalPath: status.globalPath,
               localExists: status.localExists ? 'yes' : 'no',

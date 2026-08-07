@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Renamed from `cdp-tools-mcp` to `devharness`.** Old name described the
+  transport. `cdp-tools-mcp` is deprecated on npm and points here. No tool
+  names or arguments changed.
+
+- **State moved `.cdp-tools/` -> `.devharness/`**, project-local and `~/`.
+  Migrated, not switched: the old directory is renamed into place on first run,
+  so profiles (logins, IndexedDB), config, sequences, and issues carry over.
+  Rename is atomic, so the data is never half-moved.
+
+  If the rename fails (cross-device, permissions, directory held open), the old
+  location keeps being used and logs why. Starting from an empty directory would
+  be indistinguishable from data loss.
+
+  `DEVHARNESS_DIR` supersedes `CDP_TOOLS_DIR`, which still works.
+
 ### Changed - BREAKING
 
 - **`replay({ action: 'run' })` no longer blocks.** It validates the request, registers a run, and returns immediately with a `runId` (in the text and in `_meta.replay.runId`); the sequence executes in the background.

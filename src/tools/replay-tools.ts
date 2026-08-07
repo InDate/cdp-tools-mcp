@@ -244,7 +244,7 @@ const replaySchema = z.object({
   sequenceId: z.string().optional(),
   runId: z.string().optional().describe('status/cancel: address a specific background run by the id that run returned'),
   wait: z.boolean().optional().describe('run: block until the run completes and return the full result (pre-0.7 behaviour). Default false: return a runId immediately and execute in the background'),
-  global: z.boolean().optional().describe('Use ~/.cdp-tools/'),
+  global: z.boolean().optional().describe('Use ~/.devharness/'),
   format: z.enum(['sequence', 'playwright', 'puppeteer']).optional(),
   filename: z.string().optional(),
   intoHistory: z.boolean().optional(),
@@ -778,7 +778,7 @@ async function handleExport(args: ReplayArgs, recorder: CommandRecorder) {
 
   // If only exporting sequence JSON, we're done
   if (format === 'sequence') {
-    const location = args.global ? 'global (~/.cdp-tools/sequences/)' : 'working directory';
+    const location = args.global ? 'global (~/.devharness/sequences/)' : 'working directory';
     return createSuccessResponse('EXPORT_SEQUENCE_SUCCESS', {
       filename: sequenceResult.filepath,
       location
@@ -1019,7 +1019,7 @@ async function handleRunAll(
   getConnectionPort?: (connectionReason: string) => Promise<number | null>
 ) {
   // Stay inside ONE root. listSavedSequencesOnDisk merges the project dir with
-  // ~/.cdp-tools/sequences, and a bare runAll that swept in the user's global
+  // ~/.devharness/sequences, and a bare runAll that swept in the user's global
   // sequences would execute unrelated suites from other projects — and a name
   // colliding across the two roots would select twice.
   const wantLocation = args.global ? 'global' : 'working-dir';
@@ -1029,7 +1029,7 @@ async function handleRunAll(
     return createErrorResponse('INVALID_PARAMETER', {
       parameter: 'folder',
       value: String(args.folder ?? ''),
-      message: `No sequences found in the ${args.global ? 'global (~/.cdp-tools/sequences)' : 'project'} sequences directory. Export or record one first${args.global ? '' : ', or pass global:true to run the global ones'}.`
+      message: `No sequences found in the ${args.global ? 'global (~/.devharness/sequences)' : 'project'} sequences directory. Export or record one first${args.global ? '' : ', or pass global:true to run the global ones'}.`
     });
   }
 

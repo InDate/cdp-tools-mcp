@@ -177,7 +177,7 @@ describe('stopOwnedServers and session presence', () => {
 
 describe('recorded pid honesty', () => {
   function persistedServers(): any[] {
-    return JSON.parse(readFileSync(join(workDir, '.cdp-tools', 'servers.json'), 'utf-8')).servers;
+    return JSON.parse(readFileSync(join(workDir, '.devharness', 'servers.json'), 'utf-8')).servers;
   }
 
   it('drops the pid from servers.json once the session releases the server', async () => {
@@ -214,7 +214,7 @@ describe('recorded pid honesty', () => {
 
     // Rewrite persisted state as an older cdp-tools would leave it after a
     // crash: a pid that now belongs to something else entirely.
-    const statePath = join(workDir, '.cdp-tools', 'servers.json');
+    const statePath = join(workDir, '.devharness', 'servers.json');
     const state = JSON.parse(readFileSync(statePath, 'utf-8'));
     await manager.stopServer('recycled');
     state.servers[0].pid = process.pid; // very much alive, but not our server

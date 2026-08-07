@@ -253,7 +253,7 @@ function handleGet(monitor: ConsoleMonitor, args: ConsoleArgs) {
 }
 
 function handleClear(monitor: ConsoleMonitor, connectionReason: string, reason: string) {
-  console.error(`[cdp-tools] clearConsole - Reason: ${reason}, Connection: ${connectionReason}`);
+  console.error(`[devharness] clearConsole - Reason: ${reason}, Connection: ${connectionReason}`);
   const count = monitor.getCount();
   monitor.clear();
   return createSuccessResponse('CONSOLE_CLEARED', { count });

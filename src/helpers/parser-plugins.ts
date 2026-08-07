@@ -1,8 +1,8 @@
 /**
  * Page-parser plugin loader.
  *
- * A parser plugin is a small ES module dropped into `.cdp-tools/parsers/`
- * (project first, then `~/.cdp-tools/parsers/`). It is imported dynamically at
+ * A parser plugin is a small ES module dropped into `.devharness/parsers/`
+ * (project first, then `~/.devharness/parsers/`). It is imported dynamically at
  * call time — so adding or editing a parser needs no rebuild/restart of the
  * server. Each plugin default-exports:
  *

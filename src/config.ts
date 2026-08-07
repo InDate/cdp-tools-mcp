@@ -1,12 +1,12 @@
 /**
  * Configuration Manager
- * Manages user-editable configuration in .cdp-tools/config.json
+ * Manages user-editable configuration in .devharness/config.json
  */
 
 import * as fs from 'fs';
 import { dirname, isAbsolute, join, resolve } from 'path';
 import { homedir } from 'os';
-import { getConfigSavePath, getOutputPath, setWorkingDirOverride } from './helpers/paths.js';
+import { getConfigSavePath, getGlobalBase, getOutputPath, setWorkingDirOverride } from './helpers/paths.js';
 import {
   debugLog,
   enableDebugLogging,
@@ -103,7 +103,7 @@ export interface ChromeConfig {
   /**
    * Where named persistent Chrome profiles (`launchChrome({ profile })`) live.
    *
-   * Empty string (the default) means the global root `~/.cdp-tools/profiles`,
+   * Empty string (the default) means the global root `~/.devharness/profiles`,
    * so a profile named "work-google" is shared by every project on this
    * machine. Set it in a project-local config (see `config({action:'useLocal'})`)
    * to give that project its own profile store. Relative paths resolve against
@@ -267,7 +267,7 @@ const DEFAULT_CONFIG: CdpToolsConfig = {
     startingDebugPort: 9222,
     inactivityTimeoutMinutes: 5,
     inactivityPollingMinutes: 2,
-    persistentProfileRoot: '',  // '' = global ~/.cdp-tools/profiles
+    persistentProfileRoot: '',  // '' = global ~/.devharness/profiles
   },
   portMonitoring: {
     portMonitoringFreqMs: {
@@ -313,7 +313,7 @@ const DEFAULT_CONFIG: CdpToolsConfig = {
 
 /**
  * Configuration Manager
- * Loads and saves configuration from .cdp-tools/config.json
+ * Loads and saves configuration from .devharness/config.json
  * Also tracks runtime port state
  */
 export class ConfigManager {
@@ -342,7 +342,7 @@ export class ConfigManager {
    */
   private loadSync(): void {
     const localConfigPath = getOutputPath('config.json');
-    const globalConfigPath = join(homedir(), '.cdp-tools', 'config.json');
+    const globalConfigPath = join(getGlobalBase(), 'config.json');
 
     try {
       if (fs.existsSync(localConfigPath)) {
@@ -437,7 +437,7 @@ export class ConfigManager {
    */
   async load(): Promise<void> {
     const localConfigPath = getOutputPath('config.json');
-    const globalConfigPath = join(homedir(), '.cdp-tools', 'config.json');
+    const globalConfigPath = join(getGlobalBase(), 'config.json');
 
     try {
       // Check if local config exists and has configLocation preference
@@ -519,7 +519,7 @@ export class ConfigManager {
    */
   async reload(): Promise<{ changed: boolean; path: string | null }> {
     const localConfigPath = getOutputPath('config.json');
-    const globalConfigPath = join(homedir(), '.cdp-tools', 'config.json');
+    const globalConfigPath = join(getGlobalBase(), 'config.json');
 
     const previousSnapshot = JSON.stringify(this.config);
     const previousDebug = { ...this.config.debug };
@@ -608,7 +608,7 @@ export class ConfigManager {
 
     const dirsToWatch = new Set<string>([
       dirname(getOutputPath('config.json')),
-      dirname(join(homedir(), '.cdp-tools', 'config.json')),
+      dirname(join(getGlobalBase(), 'config.json')),
     ]);
 
     for (const dir of dirsToWatch) {
@@ -638,7 +638,7 @@ export class ConfigManager {
    *
    * This used to clear and re-arm the timer on every event, which is the
    * textbook debounce - and the wrong shape here. startWatching() watches the
-   * global ~/.cdp-tools directory as well as the project one, and that
+   * global ~/.devharness directory as well as the project one, and that
    * directory is shared by every cdp-tools process on the machine (dashboard
    * locks, downloads, sequences). Under sustained unrelated writes there, the
    * timer was reset before it could ever fire, so an edit to config.json was
@@ -785,7 +785,7 @@ export class ConfigManager {
    * Absolute directory that named persistent Chrome profiles live in
    * (`launchChrome({ profile })`, `config({action:'resetProfile'})`).
    *
-   * Defaults to the global `~/.cdp-tools/profiles` so a named profile is shared
+   * Defaults to the global `~/.devharness/profiles` so a named profile is shared
    * across projects. `chrome.persistentProfileRoot` in a project-local config
    * overrides it; relative values resolve against the working directory and a
    * leading `~/` is expanded.
@@ -793,7 +793,7 @@ export class ConfigManager {
   getPersistentProfileRoot(): string {
     const configured = (this.getChromeConfig().persistentProfileRoot || '').trim();
     if (!configured) {
-      return join(homedir(), '.cdp-tools', 'profiles');
+      return join(getGlobalBase(), 'profiles');
     }
     if (configured === '~') {
       return homedir();
@@ -936,7 +936,7 @@ export class ConfigManager {
     globalExists: boolean;
   } {
     const localPath = getOutputPath('config.json');
-    const globalPath = join(homedir(), '.cdp-tools', 'config.json');
+    const globalPath = join(getGlobalBase(), 'config.json');
     return {
       loadedFrom: this.loadedFromPath,
       isLocal: this.loadedFromPath === localPath,
@@ -962,7 +962,7 @@ export class ConfigManager {
     }
 
     const localPath = getOutputPath('config.json');
-    const globalPath = join(homedir(), '.cdp-tools', 'config.json');
+    const globalPath = join(getGlobalBase(), 'config.json');
     const localDir = dirname(localPath);
 
     // Create directory if needed
@@ -992,7 +992,7 @@ export class ConfigManager {
    */
   async useGlobal(): Promise<{ path: string }> {
     const localPath = getOutputPath('config.json');
-    const globalPath = join(homedir(), '.cdp-tools', 'config.json');
+    const globalPath = join(getGlobalBase(), 'config.json');
     const localDir = dirname(localPath);
     const globalDir = dirname(globalPath);
 
@@ -1048,7 +1048,7 @@ export class ConfigManager {
    * Clone global config to local
    */
   async cloneFromGlobal(): Promise<{ path: string } | { error: string }> {
-    const globalPath = join(homedir(), '.cdp-tools', 'config.json');
+    const globalPath = join(getGlobalBase(), 'config.json');
 
     if (!fs.existsSync(globalPath)) {
       return { error: 'No global config exists to clone from' };

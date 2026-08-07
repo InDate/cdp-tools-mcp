@@ -1,6 +1,6 @@
 /**
  * Simple debug logger for troubleshooting
- * Writes to .cdp-tools/logs/debug.log when enabled
+ * Writes to .devharness/logs/debug.log when enabled
  */
 
 import { promises as fs } from 'fs';

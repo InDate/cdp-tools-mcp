@@ -1,7 +1,7 @@
 /**
  * Ask the mcp-supervisor process managing this server to restart it - the
  * same mechanism `npm run build`'s postbuild hook and a manual
- * `kill -USR2 $(cat .cdp-tools/mcp-supervisor.pid)` use (see
+ * `kill -USR2 $(cat .devharness/mcp-supervisor.pid)` use (see
  * src/mcp-supervisor.ts). Only works when this server is running as the
  * supervisor's child, which is the default for both this repo's .mcp.json
  * and the package's published npx bin entry - a bare `node build/index.js`

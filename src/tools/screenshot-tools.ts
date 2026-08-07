@@ -442,7 +442,7 @@ export function createScreenshotTools(puppeteerManager: PuppeteerManager, cdpMan
       return filepath;
     }
 
-    // Default: save to .cdp-tools/screenshots/YYYY-MM-DD/
+    // Default: save to .devharness/screenshots/YYYY-MM-DD/
     const date = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
     const screenshotDir = getOutputPath('screenshots', date);
 

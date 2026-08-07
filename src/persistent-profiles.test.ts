@@ -494,9 +494,9 @@ describe('ConfigManager.getPersistentProfileRoot', () => {
     (manager.getConfig() as any).chrome.persistentProfileRoot = value;
   }
 
-  it('defaults to the global ~/.cdp-tools/profiles', () => {
+  it('defaults to the global ~/.devharness/profiles', () => {
     expect(manager.getChromeConfig().persistentProfileRoot).toBe('');
-    expect(manager.getPersistentProfileRoot()).toBe(path.join(os.homedir(), '.cdp-tools', 'profiles'));
+    expect(manager.getPersistentProfileRoot()).toBe(path.join(os.homedir(), '.devharness', 'profiles'));
   });
 
   it('honours an absolute per-project override', () => {
@@ -505,8 +505,8 @@ describe('ConfigManager.getPersistentProfileRoot', () => {
   });
 
   it('resolves a relative override against the working directory', () => {
-    withRoot('./.cdp-tools/profiles');
-    expect(manager.getPersistentProfileRoot()).toBe(path.resolve(process.cwd(), '.cdp-tools/profiles'));
+    withRoot('./.devharness/profiles');
+    expect(manager.getPersistentProfileRoot()).toBe(path.resolve(process.cwd(), '.devharness/profiles'));
   });
 
   it('expands a leading ~/', () => {
@@ -515,7 +515,7 @@ describe('ConfigManager.getPersistentProfileRoot', () => {
   });
 
   it('persists the setting through a save/reload round trip', async () => {
-    const configPath = path.join(tempDir, '.cdp-tools', 'config.json');
+    const configPath = path.join(tempDir, '.devharness', 'config.json');
     const onDisk = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     onDisk.chrome.persistentProfileRoot = path.join(tempDir, 'browsers');
     fs.writeFileSync(configPath, JSON.stringify(onDisk, null, 2));

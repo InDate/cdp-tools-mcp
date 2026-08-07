@@ -903,7 +903,7 @@ export function createStorageTools(
           case 'clear': {
             // Log the reason for audit purposes
             const types = args.types || ['cookies', 'localStorage', 'sessionStorage'];
-            console.error(`[cdp-tools] clearStorage called - Reason: ${args.reason}, Types: ${types.join(', ')}, Connection: ${connectionReason || 'default'}`);
+            console.error(`[devharness] clearStorage called - Reason: ${args.reason}, Types: ${types.join(', ')}, Connection: ${connectionReason || 'default'}`);
 
             const result = await executeWithPauseDetection(
               targetCdpManager,

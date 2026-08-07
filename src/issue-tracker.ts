@@ -365,7 +365,7 @@ async function migrateCsvIfNeeded(): Promise<void> {
       await atomicWriteFile(filePath, serializeIssueFile(issue));
     } catch (err) {
       failed++;
-      console.error(`[cdp-tools] Failed to migrate issue #${row.id} from legacy CSV:`, err);
+      console.error(`[devharness] Failed to migrate issue #${row.id} from legacy CSV:`, err);
     }
   }
 
@@ -373,7 +373,7 @@ async function migrateCsvIfNeeded(): Promise<void> {
     try {
       await fs.rename(csvPath, `${csvPath}.bak`);
     } catch (err) {
-      console.error('[cdp-tools] Migrated issues but failed to rename legacy issues.csv to .bak:', err);
+      console.error('[devharness] Migrated issues but failed to rename legacy issues.csv to .bak:', err);
     }
   }
 }
@@ -424,7 +424,7 @@ async function scanIssuesDir(): Promise<Map<number, TrackedIssue>> {
       const issue = parseIssueFile(raw, filePath);
       if (issue) map.set(issue.id, issue);
     } catch (err) {
-      console.error(`[cdp-tools] Failed to parse issue file ${entry}:`, err);
+      console.error(`[devharness] Failed to parse issue file ${entry}:`, err);
     }
   }
 
@@ -445,7 +445,7 @@ async function reloadIndex(): Promise<void> {
     index = fresh;
     recomputeNextIssueId(fresh);
   } catch (err) {
-    console.error('[cdp-tools] Issue index reload failed, keeping previous state:', err);
+    console.error('[devharness] Issue index reload failed, keeping previous state:', err);
   }
 }
 

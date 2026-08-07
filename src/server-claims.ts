@@ -230,7 +230,7 @@ export class ServerClaimsStore {
       // A server with no claim is unprotected against another session's
       // garbage collection, so this is worth being loud about even though it
       // must not fail the start itself.
-      console.error(`[cdp-tools] Could not claim server "${serverId}": ${error}`);
+      console.error(`[devharness] Could not claim server "${serverId}": ${error}`);
       await debugLog('ServerClaims', `Failed to claim ${serverId}: ${error}`);
     }
   }
@@ -300,7 +300,7 @@ export class ServerClaimsStore {
     } catch (error) {
       // Losing our own presence record only risks another session collecting a
       // server we are using, so it is worth saying out loud.
-      console.error(`[cdp-tools] Could not record session presence: ${error}`);
+      console.error(`[devharness] Could not record session presence: ${error}`);
     }
   }
 

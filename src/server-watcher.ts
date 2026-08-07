@@ -1,5 +1,5 @@
 /**
- * Recursive file-change watcher for cdp-tools-managed dev servers.
+ * Recursive file-change watcher for devharness-managed dev servers.
  *
  * Manual recursive fs.watch (one watcher per directory) rather than the
  * `recursive: true` option, which isn't reliably cross-platform - and
@@ -17,7 +17,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 const DEFAULT_EXCLUDE_DIR_NAMES = [
-  'node_modules', '.git', 'dist', 'build', '.cdp-tools',
+  'node_modules', '.git', 'dist', 'build', '.devharness', '.cdp-tools',
   '.next', 'coverage', 'out', '.turbo', 'tmp',
 ];
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // Early stderr logging for debugging startup issues
-console.error(`[cdp-tools] Process starting (PID: ${process.pid})`);
+console.error(`[devharness] Process starting (PID: ${process.pid})`);
 
 // Capture startup time immediately before any imports
 const STARTUP_TIME = performance.now();
@@ -71,7 +71,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { debugLog, enableDebugLogging, disableDebugLogging, isDebugEnabled, enableHistoryLogging, disableHistoryLogging, setStartupMetrics } from './debug-logger.js';
 import { validateReference, requireValidReference, deriveConnectionReference, UNNAMED_CONNECTION, InvalidReferenceError } from './reference-validator.js';
-import { initializePaths, getOutputPath } from './helpers/paths.js';
+import { initializePaths, getOutputPath, resolveStateDir } from './helpers/paths.js';
 import { cleanupStaleTempFiles, cleanupStaleTempFilesSync } from './atomic-write.js';
 import { createSessionDetector, type SessionInfo, type SessionDetector } from './session-detector.js';
 import { serverClaims } from './server-claims.js';
@@ -125,14 +125,14 @@ async function findAvailablePort(startPort: number): Promise<number> {
     // Explicitly bind to IPv4 localhost to match Chrome's behavior
     server.listen(startPort, '127.0.0.1', () => {
       const port = (server.address() as any).port;
-      console.error(`[cdp-tools] findAvailablePort: Port ${port} is available`);
+      console.error(`[devharness] findAvailablePort: Port ${port} is available`);
       server.close(() => resolve(port));
     });
 
     server.on('error', (err: any) => {
       if (err.code === 'EADDRINUSE') {
         // Port in use, try next one
-        console.error(`[cdp-tools] findAvailablePort: Port ${startPort} is in use, trying ${startPort + 1}`);
+        console.error(`[devharness] findAvailablePort: Port ${startPort} is in use, trying ${startPort + 1}`);
         resolve(findAvailablePort(startPort + 1));
       } else {
         reject(err);
@@ -255,7 +255,7 @@ async function loadInstructions(): Promise<string | undefined> {
 
     return instructions + nudge;
   } catch (error) {
-    console.error('[cdp-tools] Failed to load instructions file:', error instanceof Error ? error.message : error);
+    console.error('[devharness] Failed to load instructions file:', error instanceof Error ? error.message : error);
     return undefined;
   }
 }
@@ -264,7 +264,7 @@ async function loadInstructions(): Promise<string | undefined> {
 const sourceMapHandler = new SourceMapHandler();
 const chromeLauncher = new ChromeLauncher({
   // Resolved lazily so a live config reload of chrome.persistentProfileRoot
-  // (global ~/.cdp-tools/profiles by default, or a project-local override)
+  // (global ~/.devharness/profiles by default, or a project-local override)
   // is picked up without restarting the server.
   persistentProfileRoot: () => configManager.getPersistentProfileRoot(),
 });
@@ -427,7 +427,7 @@ const connectionTools = {
       reference: z.string().optional().describe('Connection reference name (3 descriptive words). If not provided, defaults to "unnamed-connection-default". Use this to identify the connection when calling other tools.'),
       width: z.number().optional().describe('Viewport width in CSS px. Sizes the real OS window, not an emulated viewport, so the page keeps tracking window resizes. Bigger than the display is clamped and reported. Headless emulates instead.'),
       height: z.number().optional().describe('Viewport height in CSS px. Sized like `width`.'),
-      profile: z.string().optional().describe('Named persistent Chrome profile, e.g. "device-a". Naming a profile makes it persistent: it maps to a stable user-data-dir under ~/.cdp-tools/profiles (override per project with chrome.persistentProfileRoot) and is never deleted, so cookies, localStorage and IndexedDB - including non-extractable CryptoKeys - survive across runs. Created on first use. Does NOT pin a port; port selection is unchanged. Wipe it with config({action:"resetProfile", profile:"device-a"}). Only one live Chrome may hold a given profile at a time.'),
+      profile: z.string().optional().describe('Named persistent Chrome profile, e.g. "device-a". Naming a profile makes it persistent: it maps to a stable user-data-dir under ~/.devharness/profiles (override per project with chrome.persistentProfileRoot) and is never deleted, so cookies, localStorage and IndexedDB - including non-extractable CryptoKeys - survive across runs. Created on first use. Does NOT pin a port; port selection is unchanged. Wipe it with config({action:"resetProfile", profile:"device-a"}). Only one live Chrome may hold a given profile at a time.'),
       chromeArgs: z.array(z.string()).optional().describe('Extra Chrome command-line flags to pass through at launch, e.g. ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"]. Merged after the managed defaults. The CDP_TOOLS_EXTRA_CHROME_ARGS env var (space-separated) is also always merged. Only applies when this call actually launches Chrome (ignored when an existing instance on the port is reused).'),
     }).strict(),
     async (args) => {
@@ -741,7 +741,7 @@ const connectionTools = {
                   await page.reload({ waitUntil: 'load', timeout: 5000 });
                   await new Promise(resolve => setTimeout(resolve, 500));
                 } catch (reloadError: any) {
-                  console.error(`[cdp-tools] Warning: Page reload failed: ${reloadError.message}`);
+                  console.error(`[devharness] Warning: Page reload failed: ${reloadError.message}`);
                 }
               }
             }
@@ -897,7 +897,7 @@ const connectionTools = {
     }).strict(),
     async (args) => {
       // Log the reason for audit purposes
-      console.error(`[cdp-tools] resetChromeLauncher called - Reason: ${args.reason}`);
+      console.error(`[devharness] resetChromeLauncher called - Reason: ${args.reason}`);
       chromeLauncher.reset();
       return createSuccessResponse('CHROME_LAUNCHER_RESET');
     }
@@ -930,10 +930,10 @@ const connectionTools = {
       if (args.enabled) {
         await enableDebugLogging(); // Now async to log startup metrics
         return createSuccessResponse('DEBUG_LOGGING_ENABLED', {
-          message: 'Debug logging enabled. Logs will be written to .cdp-tools/logs/debug.log'
+          message: 'Debug logging enabled. Logs will be written to .devharness/logs/debug.log'
         }, {
           enabled: true,
-          message: 'Debug logging enabled. Logs will be written to .cdp-tools/logs/debug.log'
+          message: 'Debug logging enabled. Logs will be written to .devharness/logs/debug.log'
         });
       } else {
         disableDebugLogging();
@@ -955,10 +955,10 @@ const connectionTools = {
       return createSuccessResponse('DEBUG_LOGGING_STATUS', {
         status: enabled ? 'enabled' : 'disabled',
         enabled,  // Pass boolean for conditionals
-        logFile: '.cdp-tools/logs/debug.log'
+        logFile: '.devharness/logs/debug.log'
       }, {
         enabled,
-        logFile: '.cdp-tools/logs/debug.log'
+        logFile: '.devharness/logs/debug.log'
       });
     }
   ),
@@ -1070,7 +1070,7 @@ const connectionTools = {
               await new Promise(resolve => setTimeout(resolve, 500));
             } catch (reloadError: any) {
               // Log warning but don't fail - page might already be loaded
-              console.error(`[cdp-tools] Warning: Page reload failed: ${reloadError.message}`);
+              console.error(`[devharness] Warning: Page reload failed: ${reloadError.message}`);
             }
           }
 
@@ -1163,7 +1163,7 @@ const connectionTools = {
     }).strict(),
     async (args) => {
       // Log the reason for audit purposes
-      console.error(`[cdp-tools] disconnectDebugger called - Reason: ${args.reason}, Reference: ${args.reference}`);
+      console.error(`[devharness] disconnectDebugger called - Reason: ${args.reason}, Reference: ${args.reference}`);
 
       // Find connection by reference
       const connection = connectionManager.findConnectionByReference(args.reference);
@@ -1552,7 +1552,7 @@ function registerToolHandlers(server: Server) {
     // Check for tool dependency conflicts (blocks ALL tools except config)
     if (toolName !== 'config' && configManager.hasDependencyConflicts()) {
       const conflicts = configManager.getDependencyConflicts();
-      const configPath = configManager.getStatus().loadedFrom || '.cdp-tools/config.json';
+      const configPath = configManager.getStatus().loadedFrom || '.devharness/config.json';
       return {
         content: [
           {
@@ -1810,7 +1810,7 @@ async function runCliSequence(argv: string[]): Promise<void> {
     } catch {
       attempts++;
       if (attempts >= maxAttempts) {
-        console.error(`[cdp-tools] Failed to reserve a port after ${maxAttempts} attempts`);
+        console.error(`[devharness] Failed to reserve a port after ${maxAttempts} attempts`);
         process.exit(1);
       }
       process.env.MCP_DEBUG_PORT = String(port + 1);
@@ -1860,11 +1860,11 @@ async function main() {
     return;
   }
 
-  console.error(`[cdp-tools] main() called (PID: ${process.pid})`);
+  console.error(`[devharness] main() called (PID: ${process.pid})`);
 
   // Initialize path configuration early (before any file operations)
   const pathConfig = initializePaths();
-  console.error(`[cdp-tools] Path config: global=${pathConfig.globalBase}, workingDir=${pathConfig.workingDirBase ?? 'none (using global fallback)'}`);
+  console.error(`[devharness] Path config: global=${pathConfig.globalBase}, workingDir=${pathConfig.workingDirBase ?? 'none (using global fallback)'}`);
 
   // Clean up stale temp files from previous crashed/killed processes
   // Run in background - don't block startup
@@ -1874,7 +1874,7 @@ async function main() {
   ]).then(([globalResult, localResult]) => {
     const totalCleaned = globalResult.cleaned.length + localResult.cleaned.length;
     if (totalCleaned > 0) {
-      console.error(`[cdp-tools] Cleaned ${totalCleaned} stale temp file(s)`);
+      console.error(`[devharness] Cleaned ${totalCleaned} stale temp file(s)`);
     }
   }).catch(() => {
     // Ignore cleanup errors - best effort only
@@ -1915,7 +1915,7 @@ async function main() {
     if (orchestratorInstance || !sessionDetectorInstance) return;
 
     try {
-      const configDir = join(cwd, '.cdp-tools', 'config');
+      const configDir = join(resolveStateDir(cwd), 'config');
       mkdirSync(join(configDir, 'classifiers'), { recursive: true });
       mkdirSync(join(configDir, 'extractors'), { recursive: true });
       mkdirSync(join(configDir, 'state-machines'), { recursive: true });
@@ -2045,14 +2045,14 @@ async function main() {
     // Reserve the port by binding a socket to it
     try {
       await portReserver.reserve(port);
-      console.error(`[cdp-tools] Reserved debug port: ${port}`);
+      console.error(`[devharness] Reserved debug port: ${port}`);
       reservationSucceeded = true;
     } catch (error) {
       attempts++;
-      console.error(`[cdp-tools] Port ${port} reservation failed (attempt ${attempts}/${maxAttempts}), trying next port...`);
+      console.error(`[devharness] Port ${port} reservation failed (attempt ${attempts}/${maxAttempts}), trying next port...`);
 
       if (attempts >= maxAttempts) {
-        console.error(`[cdp-tools] Failed to reserve a port after ${maxAttempts} attempts`);
+        console.error(`[devharness] Failed to reserve a port after ${maxAttempts} attempts`);
         process.exit(1);
       }
 
@@ -2074,12 +2074,12 @@ async function main() {
   const toolRegistrationTime = performance.now() - toolRegistrationStart;
 
   // Connect to transport
-  console.error(`[cdp-tools] Connecting to transport (PID: ${process.pid})`);
+  console.error(`[devharness] Connecting to transport (PID: ${process.pid})`);
   const transportStart = performance.now();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   const transportTime = performance.now() - transportStart;
-  console.error(`[cdp-tools] Transport connected (PID: ${process.pid})`);
+  console.error(`[devharness] Transport connected (PID: ${process.pid})`);
 
   // Note: Config was already loaded earlier (before orchestrator startup) for debug logging
 
@@ -2092,18 +2092,18 @@ async function main() {
   // Initialize server manager - recover running servers and start auto-run servers
   const serverInitResult = await serverManager.initialize();
   if (serverInitResult.recovered.length > 0) {
-    console.error(`[cdp-tools] Recovered ${serverInitResult.recovered.length} running server(s): ${serverInitResult.recovered.join(', ')}`);
+    console.error(`[devharness] Recovered ${serverInitResult.recovered.length} running server(s): ${serverInitResult.recovered.join(', ')}`);
   }
   if (serverInitResult.started.length > 0) {
-    console.error(`[cdp-tools] Auto-started ${serverInitResult.started.length} server(s): ${serverInitResult.started.join(', ')}`);
+    console.error(`[devharness] Auto-started ${serverInitResult.started.length} server(s): ${serverInitResult.started.join(', ')}`);
   }
   if (serverInitResult.failed.length > 0) {
-    console.error(`[cdp-tools] Failed to auto-start ${serverInitResult.failed.length} server(s): ${serverInitResult.failed.join(', ')}`);
+    console.error(`[devharness] Failed to auto-start ${serverInitResult.failed.length} server(s): ${serverInitResult.failed.join(', ')}`);
   }
 
   // Dashboard is initialized in session detection callback after sessionId is known
 
-  console.error(`[cdp-tools] Server ready (PID: ${process.pid})`);
+  console.error(`[devharness] Server ready (PID: ${process.pid})`);
 
   // Calculate total startup time and store metrics for later logging
   const totalStartupTime = performance.now() - STARTUP_TIME;
@@ -2141,20 +2141,20 @@ async function main() {
       // autoConnect: false and never connected, or orphaned by some other cleanup path).
       const closedCount = await connectionManager.closeInactiveConnections(INACTIVITY_THRESHOLD);
       if (closedCount > 0) {
-        console.error(`[cdp-tools] Closed ${closedCount} inactive connection(s)`);
+        console.error(`[devharness] Closed ${closedCount} inactive connection(s)`);
         await debugLog('index', `Closed ${closedCount} inactive connection(s)`);
       }
 
       for (const port of chromeLauncher.getRunningPorts()) {
         if (!connectionManager.hasBrowser('localhost', port)) {
-          console.error(`[cdp-tools] Killing orphaned Chrome on port ${port} (no tracked connections)`);
+          console.error(`[devharness] Killing orphaned Chrome on port ${port} (no tracked connections)`);
           await debugLog('index', `Killing orphaned Chrome on port ${port} (no tracked connections) due to inactivity`);
           chromeLauncher.setPendingCloseReason(port, 'inactivity');
           await chromeLauncher.kill(port);
         }
       }
     } catch (error) {
-      console.error(`[cdp-tools] Error during cleanup: ${error}`);
+      console.error(`[devharness] Error during cleanup: ${error}`);
       await debugLog('index', `Error during inactivity cleanup: ${error}`);
     }
   }, CLEANUP_INTERVAL) : null;
@@ -2178,7 +2178,7 @@ async function main() {
     }
     isCleaningUp = true;
 
-    console.error(`[cdp-tools] Received ${signal}, cleaning up...`);
+    console.error(`[devharness] Received ${signal}, cleaning up...`);
 
     try {
       if (cleanupInterval) clearInterval(cleanupInterval); // Stop periodic cleanup
@@ -2191,14 +2191,14 @@ async function main() {
         try {
           const { stopped, keptForOthers } = await serverManager.stopOwnedServers();
           if (stopped.length > 0) {
-            console.error(`[cdp-tools] Stopped ${stopped.length} owned dev server(s): ${stopped.join(', ')}`);
+            console.error(`[devharness] Stopped ${stopped.length} owned dev server(s): ${stopped.join(', ')}`);
           }
           if (keptForOthers.length > 0) {
-            console.error(`[cdp-tools] Left ${keptForOthers.length} dev server(s) for other sessions: ${keptForOthers.join(', ')}`);
+            console.error(`[devharness] Left ${keptForOthers.length} dev server(s) for other sessions: ${keptForOthers.join(', ')}`);
           }
           await serverManager.getPortMonitor().stopAll();
         } catch (error) {
-          console.error(`[cdp-tools] Error releasing dev servers: ${error}`);
+          console.error(`[devharness] Error releasing dev servers: ${error}`);
         }
         // This session is over: nothing of ours may keep pinning a server that
         // the next session would otherwise collect.
@@ -2235,12 +2235,12 @@ async function main() {
         : { cleaned: [] };
       const totalCleaned = globalCleaned.cleaned.length + localCleaned.cleaned.length;
       if (totalCleaned > 0) {
-        console.error(`[cdp-tools] Cleaned ${totalCleaned} temp file(s) on shutdown`);
+        console.error(`[devharness] Cleaned ${totalCleaned} temp file(s) on shutdown`);
       }
 
-      console.error('[cdp-tools] Cleanup complete');
+      console.error('[devharness] Cleanup complete');
     } catch (error) {
-      console.error(`[cdp-tools] Cleanup error: ${error}`);
+      console.error(`[devharness] Cleanup error: ${error}`);
     }
 
     process.exit(0);
@@ -2267,7 +2267,7 @@ async function main() {
   // Handle normal exit (catch-all)
   process.on('exit', () => {
     if (!isCleaningUp) {
-      console.error('[cdp-tools] Process exiting');
+      console.error('[devharness] Process exiting');
     }
   });
 
@@ -2291,7 +2291,7 @@ async function main() {
     const msg = (error && (error as Error).message) ? (error as Error).message : String(error);
     if (msg === lastUncaughtMsg && now - lastUncaughtAt < 1000) {
       if (++uncaughtCount > 50) {
-        writeErr('[cdp-tools] Same uncaught exception >50x in <1s — exiting to break the loop.');
+        writeErr('[devharness] Same uncaught exception >50x in <1s — exiting to break the loop.');
         process.exit(1);
       }
       return;
@@ -2299,14 +2299,14 @@ async function main() {
     lastUncaughtMsg = msg;
     lastUncaughtAt = now;
     uncaughtCount = 0;
-    writeErr(`[cdp-tools] UNCAUGHT EXCEPTION (${origin}): ${msg}`);
-    try { const s = (error as Error)?.stack; if (s) writeErr(`[cdp-tools] Stack: ${s}`); } catch { /* stack getter can throw */ }
+    writeErr(`[devharness] UNCAUGHT EXCEPTION (${origin}): ${msg}`);
+    try { const s = (error as Error)?.stack; if (s) writeErr(`[devharness] Stack: ${s}`); } catch { /* stack getter can throw */ }
   });
 
   process.on('unhandledRejection', (reason) => {
     const msg = (reason && (reason as Error).message) ? (reason as Error).message : String(reason);
-    writeErr(`[cdp-tools] UNHANDLED REJECTION: ${msg}`);
-    try { const s = (reason as Error)?.stack; if (s) writeErr(`[cdp-tools] Stack: ${s}`); } catch { /* stack getter can throw */ }
+    writeErr(`[devharness] UNHANDLED REJECTION: ${msg}`);
+    try { const s = (reason as Error)?.stack; if (s) writeErr(`[devharness] Stack: ${s}`); } catch { /* stack getter can throw */ }
   });
 }
 

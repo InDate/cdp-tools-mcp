@@ -15,7 +15,7 @@ next call.
 **Solutions:**
 - Relaunch Chrome (`launchChrome`) and restart the dev server
   (`server({ action: 'start', serverId: '...' })`) - its config is kept.
-- Raise or disable the threshold in `.cdp-tools/config.json`:
+- Raise or disable the threshold in `.devharness/config.json`:
   `{"session": {"idleSuspendMinutes": 0}}`. Read at supervisor startup, so it
   applies from the next reconnect.
 
@@ -238,7 +238,7 @@ running until you reboot.
 
 ```javascript
 setDebugLogging({ enabled: true })
-// Check logs at: .cdp-tools/logs/debug.log
+// Check logs at: .devharness/logs/debug.log
 ```
 
 ### Check connection status

@@ -93,7 +93,7 @@ export class DashboardClient {
           // Hub is shutting down, trigger failover
           if (this.onHubDown && !this.hubDownTriggered) {
             this.hubDownTriggered = true;
-            console.error('[cdp-tools] Hub shutting down, triggering failover');
+            console.error('[devharness] Hub shutting down, triggering failover');
             this.onHubDown();
           }
           break;
@@ -118,7 +118,7 @@ export class DashboardClient {
       // Max reconnect attempts reached, trigger failover
       if (this.onHubDown && !this.hubDownTriggered) {
         this.hubDownTriggered = true;
-        console.error('[cdp-tools] Hub unreachable after reconnect attempts, triggering failover');
+        console.error('[devharness] Hub unreachable after reconnect attempts, triggering failover');
         this.onHubDown();
       }
     }

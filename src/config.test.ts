@@ -30,12 +30,12 @@ afterEach(async () => {
 });
 
 async function readConfigFile(): Promise<any> {
-  const configPath = join(tempDir, '.cdp-tools', 'config.json');
+  const configPath = join(tempDir, '.devharness', 'config.json');
   return JSON.parse(await fsp.readFile(configPath, 'utf-8'));
 }
 
 async function writeConfigFile(config: any): Promise<void> {
-  const configPath = join(tempDir, '.cdp-tools', 'config.json');
+  const configPath = join(tempDir, '.devharness', 'config.json');
   await fsp.writeFile(configPath, JSON.stringify(config, null, 2), 'utf-8');
 }
 
@@ -101,7 +101,7 @@ describe('ConfigManager live reload', () => {
 
   it('still reloads while an unrelated file in the watched directory is being written continuously', async () => {
     // The reload used to be debounced by resetting its timer on every event.
-    // Because startWatching() also watches the shared global ~/.cdp-tools,
+    // Because startWatching() also watches the shared global ~/.devharness,
     // sustained writes by any other cdp-tools process reset that timer forever
     // and live reload silently stopped working. This drives that scenario:
     // a config edit, then a steady stream of unrelated writes in the same
@@ -113,7 +113,7 @@ describe('ConfigManager live reload', () => {
     onDisk.replay.showCursor = expected;
     await writeConfigFile(onDisk);
 
-    const noisePath = join(tempDir, '.cdp-tools', 'unrelated.lock');
+    const noisePath = join(tempDir, '.devharness', 'unrelated.lock');
     let noisy = true;
     const noise = (async () => {
       while (noisy) {

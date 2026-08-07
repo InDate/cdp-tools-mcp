@@ -19,11 +19,11 @@ editing one takes effect immediately — **no rebuild or server restart**.
 
 Loaded from, in order:
 
-1. `./.cdp-tools/parsers/` — project-local (overrides global on name collision)
-2. `~/.cdp-tools/parsers/` — global, shared across projects
+1. `./.devharness/parsers/` — project-local (overrides global on name collision)
+2. `~/.devharness/parsers/` — global, shared across projects
 
 > Note: the MCP server often runs with a neutral working directory, so it
-> resolves to the **global** `~/.cdp-tools/parsers/` by default. Put plugins
+> resolves to the **global** `~/.devharness/parsers/` by default. Put plugins
 > there unless you've pointed the server at a project with
 > `config({ action: 'useLocal', path: '/abs/project' })`.
 
@@ -55,7 +55,7 @@ helpers inside the function body.
 
 ## Worked example: Google AI Overview
 
-Save as `~/.cdp-tools/parsers/ai-overview.mjs`:
+Save as `~/.devharness/parsers/ai-overview.mjs`:
 
 ```js
 export default {

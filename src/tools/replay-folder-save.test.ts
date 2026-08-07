@@ -28,7 +28,7 @@ describe('saveSequenceToDisk folder handling', () => {
 
   beforeEach(async () => {
     dir = await fs.mkdtemp(join(tmpdir(), 'cdp-folder-save-'));
-    seqDir = join(dir, '.cdp-tools', 'sequences');
+    seqDir = join(dir, '.devharness', 'sequences');
     await fs.mkdir(seqDir, { recursive: true });
     setWorkingDirOverride(dir);
     recorder = new CommandRecorder();

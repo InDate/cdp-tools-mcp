@@ -1,5 +1,5 @@
 /**
- * Shared overlay system for cdp-tools
+ * Shared overlay system for devharness
  * Provides consistent UI for issue workflows (workOn, resolve, replay)
  */
 
@@ -449,7 +449,7 @@ export async function showReplayBanner(
       e.stopImmediatePropagation();
       attemptCount++;
 
-      console.log('[cdp-tools] Blocked user interaction during replay:', e.type, 'target:', e.target?.tagName);
+      console.log('[devharness] Blocked user interaction during replay:', e.type, 'target:', e.target?.tagName);
 
       instructions.style.animation = 'none';
       void (instructions as any).offsetWidth;

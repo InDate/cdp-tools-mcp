@@ -548,7 +548,7 @@ export function formatSequenceDetails(sequence: CommandSequence): string {
 /**
  * Format saved sequences on disk listing
  * Categories:
- * - Saved: Regular sequences in .cdp-tools/sequences/
+ * - Saved: Regular sequences in .devharness/sequences/
  * - Issues: Issue sequences that are in_progress (or all if showAll)
  * - Abandoned: Issue sequences without a linked issue (orphaned)
  */

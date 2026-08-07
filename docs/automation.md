@@ -512,7 +512,7 @@ config({ action: 'show' })
 // Switch to project-local config
 config({ action: 'useLocal' })
 
-// Switch to global config (~/.cdp-tools/config.json)
+// Switch to global config (~/.devharness/config.json)
 config({ action: 'useGlobal' })
 
 // Reset config to defaults
@@ -527,8 +527,8 @@ config({ action: 'cloneFromGlobal' })
 
 ### Configuration Locations
 
-- **Local**: `.cdp-tools/config.json` in the working directory
-- **Global**: `~/.cdp-tools/config.json` in your home directory
+- **Local**: `.devharness/config.json` in the working directory
+- **Global**: `~/.devharness/config.json` in your home directory
 
 When a local config doesn't exist, it's automatically seeded from global settings. The `configLocation` setting persists your preference.
 

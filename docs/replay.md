@@ -5,7 +5,7 @@ Record and replay command sequences for testing, automation, and debugging workf
 > **Tip:** Use the `replay-agent` (`.claude/agents/replay-agent.md`) to build sequences through investigation - it records your tool calls automatically.
 >
 > For a condensed, agent-facing version of this material see
-> `skills/cdp-tools/references/sequences.md`. This document is the fuller
+> `skills/devharness/references/sequences.md`. This document is the fuller
 > reference with worked examples.
 
 ## Actions
@@ -139,7 +139,7 @@ Export sequences as Playwright or Puppeteer tests:
 // Export as Playwright test
 replay({ action: 'export', name: 'my-signup-test', format: 'playwright' })
 // Creates: tests/e2e/my-signup-test.spec.ts
-// Also saves: .cdp-tools/sequences/my-signup-test.json
+// Also saves: .devharness/sequences/my-signup-test.json
 
 // Export as Puppeteer test
 replay({ action: 'export', name: 'my-signup-test', format: 'puppeteer' })
@@ -147,7 +147,7 @@ replay({ action: 'export', name: 'my-signup-test', format: 'puppeteer' })
 
 // Export sequence JSON only (default format)
 replay({ action: 'export', name: 'my-signup-test', format: 'sequence' })
-// Creates: .cdp-tools/sequences/my-signup-test.json
+// Creates: .devharness/sequences/my-signup-test.json
 ```
 
 `export` always writes the sequence JSON first, whatever the format. If a target
@@ -159,7 +159,7 @@ and are dropped from the generated test.
 
 ### Configure Export Paths
 
-In `.cdp-tools/config.json`:
+In `.devharness/config.json`:
 
 ```json
 {
@@ -202,7 +202,7 @@ The cursor is only driven for *coordinate* clicks (`input({ action: 'click', x,
 y })`) and for `input({ action: 'press' })`. Selector-based clicks execute
 without a cursor effect.
 
-Configure in `.cdp-tools/config.json`:
+Configure in `.devharness/config.json`:
 
 ```json
 {
@@ -254,7 +254,7 @@ These fields are saved to disk and displayed when listing sequences.
 // Execute commands straight from history without making a sequence
 replay({ action: 'repeat', indices: [12, 13] })
 
-// Execute lines from .cdp-tools/history.log (1-indexed, line 1 = most recent)
+// Execute lines from .devharness/history.log (1-indexed, line 1 = most recent)
 replay({ action: 'runFromLog', lines: [3, 4, 5] })
 ```
 
@@ -304,11 +304,11 @@ replay({ action: 'delete', sequenceId: 'seq-1234567890' })
 ```javascript
 // Export sequence to disk (working directory)
 replay({ action: 'export', sequenceId: 'seq-1234567890', format: 'sequence' })
-// Saves to: .cdp-tools/sequences/<name>.json
+// Saves to: .devharness/sequences/<name>.json
 
 // Export to global location (accessible from any directory)
 replay({ action: 'export', sequenceId: 'seq-1234567890', format: 'sequence', global: true })
-// Saves to: ~/.cdp-tools/sequences/<name>.json
+// Saves to: ~/.devharness/sequences/<name>.json
 
 // List saved sequences on disk (add showAll: true to include completed issues)
 replay({ action: 'listSaved' })
@@ -853,7 +853,7 @@ running too. The run says which it closed:
 #### Declaring the device, not just the browser
 
 `profile` names a persistent Chrome profile (the same ones
-`launchChrome({ profile })` creates, under `~/.cdp-tools/profiles`):
+`launchChrome({ profile })` creates, under `~/.devharness/profiles`):
 
 ```json
 "requiredConnections": [
@@ -1100,7 +1100,7 @@ step counts as a success. A condition that cannot be *evaluated* (bad format,
 unknown type, invalid or over-long regex, tool error) fails the run.
 
 Nesting is capped by `replay.maxConditionalDepth` (default 10) and regexes by
-`replay.maxRegexLength` (default 500); both are `.cdp-tools/config.json`
+`replay.maxRegexLength` (default 500); both are `.devharness/config.json`
 settings. Oscillating chains (A→B→A) are allowed up to the depth limit.
 
 ## forEach Steps
@@ -1316,7 +1316,7 @@ parked on.
 
 ### Configuration
 
-Configure in `.cdp-tools/config.json` (values shown are the defaults):
+Configure in `.devharness/config.json` (values shown are the defaults):
 
 ```json
 {

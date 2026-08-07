@@ -24,7 +24,7 @@ const serverSchema = z.object({
   monitoringLevel: z.enum(['inform', 'error', 'block']).optional(),
   description: z.string().optional(),
   interval: z.number().optional().describe('Check interval ms'),
-  global: z.boolean().optional().describe('Use ~/.cdp-tools/'),
+  global: z.boolean().optional().describe('Use ~/.devharness/'),
   watch: z.boolean().optional().describe('Watch this server\'s files and auto-restart it on change (pause-aware: defers the restart while a breakpoint debugger is paused)'),
   watchPaths: z.array(z.string()).optional().describe('Paths to watch when watch=true (default: [cwd])'),
 }).strict();

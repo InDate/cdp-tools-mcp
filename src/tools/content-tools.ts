@@ -26,13 +26,13 @@ const elementTypes = ['link', 'button', 'text', 'email', 'password', 'number', '
 const verifyCheckTypes = ['handlers', 'viewport', 'touch', 'overflow', 'clickability', 'links', 'scroll'] as const;
 
 const contentSchema = z.object({
-  action: z.enum(['extractText', 'findInteractive', 'verify', 'parse']).describe('Content action: extractText (extract webpage text), findInteractive (find all interactive elements), verify (run UI verification checks), parse (run a page-parser plugin from .cdp-tools/parsers/ against the current page; omit name to list available plugins)'),
+  action: z.enum(['extractText', 'findInteractive', 'verify', 'parse']).describe('Content action: extractText (extract webpage text), findInteractive (find all interactive elements), verify (run UI verification checks), parse (run a page-parser plugin from .devharness/parsers/ against the current page; omit name to list available plugins)'),
   connectionReason: z.string().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 
   // extractText parameters
   mode: z.enum(['outline', 'full', 'section']).optional().describe('Mode: outline (metadata only), full (entire page), section (specific section by heading) - for extractText action'),
   section: z.string().optional().describe('Section heading (for extractText with mode=section)'),
-  save: z.boolean().optional().describe('Save extracted text to disk (.cdp-tools/extracts/) - for extractText action'),
+  save: z.boolean().optional().describe('Save extracted text to disk (.devharness/extracts/) - for extractText action'),
 
   // findInteractive parameters
   types: z.array(z.enum(elementTypes)).optional().describe('Filter by element types (for findInteractive action)'),
@@ -46,7 +46,7 @@ const contentSchema = z.object({
   checks: z.array(z.enum(verifyCheckTypes)).optional().describe('UI checks to run (for verify action): handlers (dead buttons via CDP), viewport (position), touch (target size), overflow (clipping), clickability (z-index blocking - expensive), links (dead hrefs), scroll (horizontal). Default: all except clickability'),
 
   // parse parameters
-  name: z.string().optional().describe('Parser plugin name to run (for parse action). Omit to list available plugins in .cdp-tools/parsers/.'),
+  name: z.string().optional().describe('Parser plugin name to run (for parse action). Omit to list available plugins in .devharness/parsers/.'),
   waitMs: z.number().optional().describe("Max ms to wait for the plugin's waitFor predicate before extracting (for parse action, default: 8000; 0 to skip waiting)"),
 }).strict();
 
@@ -76,7 +76,7 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
    */
   return {
     content: createTool(
-      'Primary tool for page content. Prefer over screenshots. Actions: extractText (extract webpage text with outline/full/section modes), findInteractive (find all interactive elements like links, buttons, inputs with summary or filtered view), verify (run CDP-based UI verification for dead buttons, viewport issues, touch targets, overflow clipping), parse (run a page-parser plugin from .cdp-tools/parsers/ against the current page — omit name to list available plugins)',
+      'Primary tool for page content. Prefer over screenshots. Actions: extractText (extract webpage text with outline/full/section modes), findInteractive (find all interactive elements like links, buttons, inputs with summary or filtered view), verify (run CDP-based UI verification for dead buttons, viewport issues, touch targets, overflow clipping), parse (run a page-parser plugin from .devharness/parsers/ against the current page — omit name to list available plugins)',
       contentSchema,
       // abortSignal (#110): INTERRUPTIBLE AT A CHECKPOINT. The only real wait
       // here is `parse`'s plugin `waitFor` predicate (up to waitMs, default
@@ -330,7 +330,7 @@ export function createContentTools(puppeteerManager: PuppeteerManager, cdpManage
                   content: [{
                     type: 'text',
                     text: 'No parser plugins found.\n\n' +
-                      'Add one at .cdp-tools/parsers/<name>.mjs that default-exports ' +
+                      'Add one at .devharness/parsers/<name>.mjs that default-exports ' +
                       '{ name, description, match?, waitFor?, extract }.\n' +
                       "extract() runs in the page and returns JSON.",
                   }],

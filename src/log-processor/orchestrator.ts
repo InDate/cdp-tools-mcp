@@ -7,7 +7,7 @@
  * reproduces the *interface* inferred from those call sites so the project builds
  * and runs with the log-processor feature inert. Replace with the real engine —
  * a config-driven pipeline of classifiers / extractors / state-machines over live
- * MCP session logs, loaded from `.cdp-tools/config/{classifiers,extractors,
+ * MCP session logs, loaded from `.devharness/config/{classifiers,extractors,
  * state-machines,dashboard}/` — to restore it.
  */
 
@@ -21,7 +21,7 @@ export interface OrchestratorSource {
 
 export interface OrchestratorOptions {
   source: OrchestratorSource;
-  /** Root config dir (`.cdp-tools/config`) holding the plugin subdirectories. */
+  /** Root config dir (`.devharness/config`) holding the plugin subdirectories. */
   configDir: string;
 }
 

@@ -1,0 +1,11 @@
+{
+  "commands": [
+    {
+      "type": "click",
+      "selector": "#submit"
+    }
+  ],
+  "startUrl": "http://localhost:3000/checkout",
+  "name": "bug-001-demo-preview-of-the-new-markdo",
+  "_comment": "Repro sequence for the double-submit bug"
+}

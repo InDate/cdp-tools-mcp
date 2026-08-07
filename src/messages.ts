@@ -1,5 +1,5 @@
 /**
- * Message template system for cdp-tools
+ * Message template system for devharness
  *
  * Loads and formats user-facing messages from docs/messages.md
  */
@@ -39,7 +39,7 @@ class MessageManager {
       this.parseMessages(content);
       this.loaded = true;
     } catch (error) {
-      console.error('[cdp-tools] Warning: Failed to load messages.md, using fallback messages:', error);
+      console.error('[devharness] Warning: Failed to load messages.md, using fallback messages:', error);
       this.loadFallbackMessages();
     }
   }
@@ -195,7 +195,7 @@ class MessageManager {
 
     const template = this.messages.get(id);
     if (!template) {
-      console.error(`[cdp-tools] Warning: Message template '${id}' not found`);
+      console.error(`[devharness] Warning: Message template '${id}' not found`);
       return `Message not found: ${id}`;
     }
 

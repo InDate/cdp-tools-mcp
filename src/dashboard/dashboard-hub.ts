@@ -8,7 +8,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { existsSync, readFileSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { getOutputPath } from '../helpers/paths.js';
+import { getOutputPath, resolveStateDir } from '../helpers/paths.js';
 import { parseIssueFrontmatter } from '../issue-tracker.js';
 import { writeLock, removeLock, DEFAULT_PORT, MAX_PORT_ATTEMPTS } from './hub-lock.js';
 import type {
@@ -35,7 +35,7 @@ export class DashboardHub {
 
   // --- Log-processor integration (STUBS) ---------------------------------------
   // The real wiring fed the Orchestrator's processed output into the hub and
-  // loaded custom dashboard routes from `.cdp-tools/config/dashboard/`. That
+  // loaded custom dashboard routes from `.devharness/config/dashboard/`. That
   // implementation was never committed (see log-processor/orchestrator.ts header);
   // these satisfy index.ts's calls so the build works with the feature inert.
 
@@ -612,7 +612,7 @@ export class DashboardHub {
 
   private getIssuesForProject(cwd: string): { bugs: number; features: number } {
     try {
-      const itemsDir = join(cwd, '.cdp-tools', 'issues', 'items');
+      const itemsDir = join(resolveStateDir(cwd), 'issues', 'items');
       if (!existsSync(itemsDir)) {
         return { bugs: 0, features: 0 };
       }

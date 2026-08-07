@@ -120,9 +120,9 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 - **Missing/invalid parameters**: the error includes a `continuationToken` and `missingParameters` (name/type/description/enum). Retry with just `{ continuationToken, <missing/bad field(s)> }` - don't resend everything. Expires after 5 min.
 - **A validated call gets blocked by a guard** (port failure, dead server, breakpoint pause): the response footer shows `**Repeat:** replay({ action: 'repeat', indices: [N] })`. Acknowledge the guard (e.g. `server({ action: 'acknowledgePort' })`), then use that hint to resume the exact call. Don't reuse a `continuationToken` here - that's for fixing bad input, not for retrying an already-valid call.
 
-## Restarting cdp-tools
+## Restarting devharness
 
-If cdp-tools itself seems stuck or broken (not the target app), restart it yourself rather than asking the user to reconnect: `config({ action: 'restart' })`. Falls back to `kill -USR2 $(cat .cdp-tools/mcp-supervisor.pid)` via Bash if that action reports `CONFIG_RESTART_NOT_SUPERVISED` (e.g. a bare `node build/index.js`, not through the supervisor). Editing devharness's own source and running `npm run build` triggers the same restart automatically via its postbuild hook - `config({ action: 'status' })` reports which build is actually answering (entry file, its timestamp, server and supervisor pids), so a rebuild that signalled the wrong supervisor is visible rather than silent. Either way, this kills any Chrome instances it launched (relaunch with `launchChrome`) but managed dev servers (`server` tool) survive and reattach automatically.
+If devharness itself seems stuck or broken (not the target app), restart it yourself rather than asking the user to reconnect: `config({ action: 'restart' })`. Falls back to `kill -USR2 $(cat .devharness/mcp-supervisor.pid)` via Bash if that action reports `CONFIG_RESTART_NOT_SUPERVISED` (e.g. a bare `node build/index.js`, not through the supervisor). Editing devharness's own source and running `npm run build` triggers the same restart automatically via its postbuild hook - `config({ action: 'status' })` reports which build is actually answering (entry file, its timestamp, server and supervisor pids), so a rebuild that signalled the wrong supervisor is visible rather than silent. Either way, this kills any Chrome instances it launched (relaunch with `launchChrome`) but managed dev servers (`server` tool) survive and reattach automatically.
 
 ## Tool Categories
 
@@ -136,7 +136,7 @@ runs against (see Quick Start).
 **Connection**: `launchChrome`, `killChrome`, `resetChromeLauncher`, `getChromeStatus`, `connectDebugger`, `disconnectDebugger`, `getDebuggerStatus`, `listConnections`, `switchConnection`
 - These are individual tools, not actions
 - `launchChrome` also connects - don't follow it with `connectDebugger`
-- `launchChrome({ profile: 'device-a' })` uses a **named persistent profile**: a stable user-data-dir under `~/.cdp-tools/profiles` (override per project with `chrome.persistentProfileRoot`) that survives across runs, so logins, cookies and IndexedDB persist. Naming it is what makes it persistent - there is no separate flag. It does not pin a port. Only one live Chrome may hold a profile at a time. Unnamed launches stay throwaway and are deleted on exit
+- `launchChrome({ profile: 'device-a' })` uses a **named persistent profile**: a stable user-data-dir under `~/.devharness/profiles` (override per project with `chrome.persistentProfileRoot`) that survives across runs, so logins, cookies and IndexedDB persist. Naming it is what makes it persistent - there is no separate flag. It does not pin a port. Only one live Chrome may hold a profile at a time. Unnamed launches stay throwaway and are deleted on exit
 - `launchChrome({ port, forceNewInstance: true })` honours that exact port and errors if it is already taken, rather than quietly moving to another one
 
 **Tab**: `tab` (actions: list, create, rename, switch, close)
@@ -206,7 +206,7 @@ runs against (see Quick Start).
 - `export`: export a sequence to file - `format: sequence | playwright | puppeteer`
 - `repeat`: instantly re-execute commands by history index - `replay({ action: 'repeat', indices: [0, 1, 2] })`. Each tool response shows its history index in the "Repeat" hint
 - `run`: does not block - returns a `runId` immediately and executes in the background; poll `status({ runId })` for progress and the final result (kept 30 min in memory), `cancel({ runId })` interrupts the step in flight where the tool allows it (`wait` and `request` are genuinely cancelled, `navigate`/`inspect`/`content` stop waiting, `input` stops dispatching further events, the rest stop at the next step boundary - table in `docs/replay.md`). `wait: true` blocks for the full result (pre-0.7 behaviour). `startUrl` overrides the stored start URL for one run; `baseUrl` retargets every absolute URL at another deployment's origin
-- Use `global: true` with `export` to save to ~/.cdp-tools/sequences/ instead of the working directory
+- Use `global: true` with `export` to save to ~/.devharness/sequences/ instead of the working directory
 
 **Dashboard**: `dashboard` (actions: open, status, stop)
 
@@ -214,14 +214,14 @@ runs against (see Quick Start).
 
 **Config**: `config` (actions: status, useLocal, useGlobal, reset, backup, cloneFromGlobal, show, listTools, reload, restart, listProfiles, resetProfile)
 - `status`: Show where config is loaded from (local vs global)
-- `useLocal`: Switch to project-local config (.cdp-tools/config.json)
-- `useGlobal`: Switch to global config (~/.cdp-tools/config.json)
+- `useLocal`: Switch to project-local config (.devharness/config.json)
+- `useGlobal`: Switch to global config (~/.devharness/config.json)
 - `reset`: Reset config to defaults
 - `backup`: Create timestamped backup
 - `cloneFromGlobal`: Copy global config to local project
 - `show`: Display current configuration
 - `listTools`: List all toggleable tools with status and dependency conflicts
 - `reload`: Re-read config.json now (also happens automatically on file edits, ~250ms debounce). Doesn't apply `tools.enabled`/`tools.disabled` - those need `restart`
-- `restart`: Restart cdp-tools itself via the mcp-supervisor (see "Restarting cdp-tools" above) - use when the server seems stuck/broken, or to apply `tools.enabled`/`tools.disabled` changes
+- `restart`: Restart cdp-tools itself via the mcp-supervisor (see "Restarting devharness" above) - use when the server seems stuck/broken, or to apply `tools.enabled`/`tools.disabled` changes
 - `listProfiles`: List named persistent Chrome profiles and the root they live under
 - `resetProfile`: Wipe and recreate a named profile (`config({ action: 'resetProfile', profile: 'device-a' })`). Refused while a live Chrome holds that profile - nothing is deleted in that case

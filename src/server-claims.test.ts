@@ -18,7 +18,7 @@ beforeEach(() => {
   workDir = mkdtempSync(join(tmpdir(), 'cdp-claims-test-'));
   process.chdir(workDir);
   // Point the global scope at the scratch dir too - without this the
-  // global-scope cases write claims into the developer's real ~/.cdp-tools.
+  // global-scope cases write claims into the developer's real ~/.devharness.
   originalGlobalDir = process.env.CDP_TOOLS_DIR;
   process.env.CDP_TOOLS_DIR = join(workDir, 'global');
   initializePaths();
@@ -145,7 +145,7 @@ describe('ServerClaimsStore', () => {
     const store = makeStore(100, live);
     await store.claim('web', '/proj', false);
 
-    const dir = join(workDir, '.cdp-tools', 'server-claims');
+    const dir = join(workDir, '.devharness', 'server-claims');
     writeFileSync(join(dir, 'garbage.json'), '{ not json');
 
     expect(() => store.readAll(false)).not.toThrow();
@@ -166,7 +166,7 @@ describe('ServerClaimsStore', () => {
     await store.claim('team/web', '/proj', false);
 
     // The id must not escape the claims directory.
-    const dir = join(workDir, '.cdp-tools', 'server-claims');
+    const dir = join(workDir, '.devharness', 'server-claims');
     expect(readdirSync(dir)).toHaveLength(1);
     expect(store.hasForeignLiveClaim('team/web', false)).toBe(false);
     expect(store.readAll(false)[0].claim.serverId).toBe('team/web');

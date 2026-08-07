@@ -9,6 +9,7 @@ import * as path from 'path';
 import * as net from 'net';
 import * as fs from 'fs';
 import { randomBytes } from 'crypto';
+import { getGlobalBase } from './helpers/paths.js';
 import { getErrorMessage } from './messages.js';
 import type { PortReserver } from './port-reserver.js';
 import { debugLog } from './debug-logger.js';
@@ -75,8 +76,8 @@ export class ProfileInUseError extends Error {
 
 /**
  * Thrown when a profile is held by a Chrome this process did not launch -
- * typically another cdp-tools session on the same machine, because the default
- * persistent profile root (`~/.cdp-tools/profiles`) is global.
+ * typically another devharness session on the same machine, because the default
+ * persistent profile root (`~/.devharness/profiles`) is global.
  *
  * Detected from the profile's Chrome `SingletonLock`, so we know the holding
  * PID but not which debug port it listens on.
@@ -219,7 +220,7 @@ export interface ChromeLauncherOptions {
   profileRoot?: string;
   /**
    * Directory named persistent profiles (issue 13) live in. Defaults to
-   * `~/.cdp-tools/profiles`. A function is resolved on every use so a live
+   * `~/.devharness/profiles`. A function is resolved on every use so a live
    * config reload (`chrome.persistentProfileRoot`) takes effect immediately.
    */
   persistentProfileRoot?: string | (() => string);
@@ -253,7 +254,7 @@ export class ChromeLauncher {
   constructor(options: ChromeLauncherOptions = {}) {
     this.profileRoot = options.profileRoot ?? os.tmpdir();
     this.persistentProfileRootOption =
-      options.persistentProfileRoot ?? path.join(os.homedir(), '.cdp-tools', 'profiles');
+      options.persistentProfileRoot ?? path.join(getGlobalBase(), 'profiles');
     this.staleProfileMaxAgeMs = options.staleProfileMaxAgeMs ?? 60 * 60 * 1000;
 
     // Sweep profiles left behind by crashed/killed sessions. Fire-and-forget:
@@ -506,7 +507,7 @@ export class ChromeLauncher {
         throw new ProfileInUseError(name, holder);
       }
       // ...and the same profile may be held by a Chrome belonging to ANOTHER
-      // cdp-tools session (the persistent profile root is global by default),
+      // devharness session (the persistent profile root is global by default),
       // which our own maps know nothing about. Without this the launch "works",
       // Chrome hands off to the existing singleton, and the caller gets an
       // unexplained spawn failure. POSIX-only - see ProfileLockedError.
@@ -930,7 +931,7 @@ export class ChromeLauncher {
 
   /**
    * Directory named persistent profiles live under (see
-   * `chrome.persistentProfileRoot`; defaults to `~/.cdp-tools/profiles`).
+   * `chrome.persistentProfileRoot`; defaults to `~/.devharness/profiles`).
    */
   getPersistentProfileRoot(): string {
     return typeof this.persistentProfileRootOption === 'function'
@@ -963,7 +964,7 @@ export class ChromeLauncher {
   /**
    * PID of a live Chrome holding a named persistent profile, if the profile's
    * SingletonLock says so. Unlike findPortForProfile() this sees Chromes we did
-   * NOT launch (other cdp-tools sessions sharing the global profile root, or a
+   * NOT launch (other devharness sessions sharing the global profile root, or a
    * Chrome started by hand on the same user-data-dir).
    *
    * LIMITATION: POSIX-only. It reads the SingletonLock symlink target, which
@@ -1000,8 +1001,8 @@ export class ChromeLauncher {
    * (`killChrome({ port })`) first.
    *
    * Also refuses when the profile's Chrome SingletonLock names a live PID we
-   * did not launch. The default profile root is global (`~/.cdp-tools/profiles`),
-   * so another cdp-tools session may be running this exact profile; without the
+   * did not launch. The default profile root is global (`~/.devharness/profiles`),
+   * so another devharness session may be running this exact profile; without the
    * lock check this call would rm -rf a live browser's user-data-dir and destroy
    * the very identity persistent profiles exist to preserve. That check is
    * POSIX-only (see ProfileLockedError) - on Windows this remains unguarded.

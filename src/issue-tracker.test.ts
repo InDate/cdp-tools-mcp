@@ -64,7 +64,7 @@ describe('issue-tracker', () => {
   });
 
   it('migrates a legacy issues.csv into one .md file per row and renames it to .bak', async () => {
-    const issuesDir = join(tempDir, '.cdp-tools', 'issues');
+    const issuesDir = join(tempDir, '.devharness', 'issues');
     await fsp.mkdir(issuesDir, { recursive: true });
 
     const csvHeader = 'id,type,status,description,sequence_file,start_url,reported_at,acknowledged_at,started_at,resolved_at,recording_name';

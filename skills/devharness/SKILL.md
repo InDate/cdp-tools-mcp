@@ -2,7 +2,7 @@
 name: devharness
 description: Drive and debug a running app via the devharness MCP server - launch or attach to Chrome and Node.js, set breakpoints and logpoints, inspect call stacks and variables, watch console and network, manage dev servers, replay any earlier tool call by its history index, and record reproduction sequences that verify a fix. Use whenever a task involves running or debugging a live app, reproducing or verifying a bug, re-driving setup you already did (relaunching, re-logging in, refilling a form), or the user mentions breakpoints, Chrome DevTools, CDP, replay sequences, or devharness tools (launchChrome, navigate, breakpoint, inspect, replay, server, issues, etc.).
 compatibility: Requires the devharness MCP server to be connected (tools such as launchChrome, breakpoint, inspect, replay, server, issues). Previously published as cdp-tools-mcp.
-version: 0.8.0
+version: 0.9.0
 ---
 
 # devharness
@@ -169,8 +169,8 @@ Note this is only one use of `repeat`. The footer hint is on every response, not
 
 If devharness itself seems stuck or broken (not the target app), restart it yourself rather than asking the user to reconnect - don't wait to be told to.
 
-- **Preferred**: `config({ action: 'restart' })`. Under the hood this reads `.cdp-tools/mcp-supervisor.pid` and sends the running mcp-supervisor process a `SIGUSR2`, the same signal `npm run build`'s postbuild hook sends automatically after a rebuild. The supervisor replays the original MCP `initialize` handshake to the freshly spawned child, so the host session never needs to reconnect.
-- If that returns `CONFIG_RESTART_NOT_SUPERVISED` (this server isn't running through the supervisor - e.g. a bare `node build/index.js`), fall back to Bash: `kill -USR2 $(cat .cdp-tools/mcp-supervisor.pid)`.
+- **Preferred**: `config({ action: 'restart' })`. Under the hood this reads `.devharness/mcp-supervisor.pid` and sends the running mcp-supervisor process a `SIGUSR2`, the same signal `npm run build`'s postbuild hook sends automatically after a rebuild. The supervisor replays the original MCP `initialize` handshake to the freshly spawned child, so the host session never needs to reconnect.
+- If that returns `CONFIG_RESTART_NOT_SUPERVISED` (this server isn't running through the supervisor - e.g. a bare `node build/index.js`), fall back to Bash: `kill -USR2 $(cat .devharness/mcp-supervisor.pid)`.
 - If it returns `CONFIG_RESTART_STALE_PID`, the supervisor died without cleaning up its pidfile - ask the user to run `/mcp` to reconnect.
 
 **Expect the triggering call itself to come back as an error - that's normal, not a failure.** In practice `config({ action: 'restart' })` almost never returns its own `CONFIG_RESTART_REQUESTED` success message: the old process gets torn down before it can flush that response, so the supervisor's restart-coordinator answers with a synthesized `MCP error -32000: MCP server is restarting; this request will not receive a response from the previous process. Please retry.` instead. Just retry the next call - it'll hit the freshly restarted (and by then ready) process. Two things to expect on that next call: it runs against a new PID (visible in tool response footers), and any acknowledged monitored-port failures (`server({ action: 'acknowledgePort' })`) reset and may need re-acknowledging, since that state lived in the process that just got replaced.

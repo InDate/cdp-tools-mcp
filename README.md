@@ -176,6 +176,10 @@ Your MCP server name (`cdp-tools`, or whatever you called it) is yours and keeps
 working. Renaming it is cosmetic — but tools are addressed as
 `mcp__<server-name>__<tool>`, so update project docs if you do.
 
+State moved `.cdp-tools/` → `.devharness/` in 0.9.0. Migrates itself on first
+run; profiles, config, sequences, and issues carry over. `DEVHARNESS_DIR`
+supersedes `CDP_TOOLS_DIR`, which still works.
+
 ## From source
 
 ```bash

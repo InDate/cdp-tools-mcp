@@ -1478,7 +1478,7 @@ Failed to close tab: {{reference}}
 
 {{message}}
 
-Debug logs will be written to `.cdp-tools/logs/debug.log` and visible in the MCP server's stderr output.
+Debug logs will be written to `.devharness/logs/debug.log` and visible in the MCP server's stderr output.
 
 ---
 
@@ -1866,7 +1866,7 @@ No commands recorded yet. All tool calls are automatically recorded.
 
 No sequences saved to disk yet.
 
-Location: `.cdp-tools/sequences/`
+Location: `.devharness/sequences/`
 
 ---
 
@@ -2122,7 +2122,7 @@ No commands matched the provided IDs.
 Sequence exported to disk successfully!
 
 **Filename:** `{{filename}}`
-**Location:** `.cdp-tools/sequences/`
+**Location:** `.devharness/sequences/`
 
 ---
 
@@ -2138,7 +2138,7 @@ Failed to load sequence from disk.
 
 **Suggestions:**
 - Verify the filename is correct
-- Check that the file exists in `.cdp-tools/sequences/`
+- Check that the file exists in `.devharness/sequences/`
 - Use `replay({ action: 'listSaved' })` to see available files
 
 ---
@@ -2903,7 +2903,7 @@ The port will be checked via TCP connection probes. If the port goes down, tool 
 - `error`: Error line prepended to responses
 - `block`: All tools blocked until acknowledged
 
-**Default intervals:** block=1000ms, error=2000ms, inform=5000ms (configurable in `.cdp-tools/config.json`)
+**Default intervals:** block=1000ms, error=2000ms, inform=5000ms (configurable in `.devharness/config.json`)
 
 ---
 

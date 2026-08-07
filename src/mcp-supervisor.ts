@@ -33,7 +33,7 @@
 import * as path from 'path';
 import * as os from 'os';
 import { fileURLToPath } from 'url';
-import { getOutputPath, getConfigPath } from './helpers/paths.js';
+import { getOutputPath, getConfigPath, getGlobalBase } from './helpers/paths.js';
 import { atomicWriteFile } from './atomic-write.js';
 import { ChildManager } from './supervisor/child-manager.js';
 import { RestartCoordinator } from './supervisor/restart-coordinator.js';
@@ -139,7 +139,7 @@ async function main(): Promise<void> {
 
   const sessionConfig = readSupervisorSessionConfig({
     configPath: getConfigPath(),
-    globalConfigPath: path.join(os.homedir(), '.cdp-tools', 'config.json'),
+    globalConfigPath: path.join(getGlobalBase(), 'config.json'),
   });
 
   // Suspend an idle session. The editor window this was launched from is often

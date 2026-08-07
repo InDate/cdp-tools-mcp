@@ -4,7 +4,7 @@
  * The supervisor runs before (and outlives) the real server, and deliberately
  * stays free of the server's module graph - so it cannot use ConfigManager,
  * which loads Zod, the debug logger and everything downstream of them. It
- * reads the same `.cdp-tools/config.json` directly instead, and falls back to
+ * reads the same `.devharness/config.json` directly instead, and falls back to
  * the shipped defaults on anything unreadable.
  *
  * Precedence: env var > config file > default.
@@ -48,7 +48,7 @@ export function idleCheckIntervalMs(idleThresholdMs: number): number {
 export interface ReadSessionConfigDeps {
   /** Path to config.json, as resolved by getConfigPath(). */
   configPath: string;
-  /** Path to ~/.cdp-tools/config.json, followed when the local file defers to it. */
+  /** Path to ~/.devharness/config.json, followed when the local file defers to it. */
   globalConfigPath?: string;
   env?: NodeJS.ProcessEnv;
   readFile?: (path: string) => string;

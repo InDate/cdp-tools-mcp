@@ -57,7 +57,7 @@ export MCP_DEBUG_PORT=9223
 
 ### Config File
 
-Create `.cdp-tools/config.json` to customize settings:
+Create `.devharness/config.json` to customize settings:
 
 ```json
 {
@@ -85,7 +85,7 @@ stop that:
 - **Shared dev servers are protected.** A dev server is only stopped when no
   other live session claims it or is working in its directory, so a window that
   goes idle never takes down a server another window is using. Ownership is
-  tracked in `.cdp-tools/server-claims/`, keyed by the supervisor process that
+  tracked in `.devharness/server-claims/`, keyed by the supervisor process that
   owns each session.
 - **Abandoned dev servers are collected.** A window closed for good used to
   leave its dev servers running until reboot. The next session in that
@@ -119,7 +119,7 @@ setDebugLogging({ enabled: true })
 
 // Check status
 getDebugLoggingStatus()
-// Logs written to: .cdp-tools/logs/debug.log
+// Logs written to: .devharness/logs/debug.log
 ```
 
 ### Password Popup Prevention

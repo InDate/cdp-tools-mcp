@@ -824,7 +824,7 @@ export function createBreakpointTools(
                   await targetCdpManager.removeBreakpoint(breakpoint.breakpointId);
                 } catch (removeError: any) {
                   // Log but continue - state might already be cleaned up
-                  console.error(`[cdp-tools] Warning: Failed to remove invalid logpoint: ${removeError.message}`);
+                  console.error(`[devharness] Warning: Failed to remove invalid logpoint: ${removeError.message}`);
                 }
 
                 // Get code snippet at actual location (3 lines context)

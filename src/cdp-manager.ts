@@ -526,7 +526,7 @@ export class CDPManager {
 
     // Warn if multiple locations (rare but possible)
     if (result.locations.length > 1) {
-      console.error(`[cdp-tools] Warning: Breakpoint matched ${result.locations.length} locations. Using first match.`);
+      console.error(`[devharness] Warning: Breakpoint matched ${result.locations.length} locations. Using first match.`);
     }
 
     // Store breakpoint info

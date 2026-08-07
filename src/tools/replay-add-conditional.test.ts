@@ -208,7 +208,7 @@ describe('replay addConditional', () => {
     const { replay, recorder } = makeReplay({
       sequences: [seq('main'), seq('setup')],
       onDisk: [{ name: 'main', location: 'global' }],
-      saveResult: { success: true, filepath: '/home/u/.cdp-tools/sequences/main.json' },
+      saveResult: { success: true, filepath: '/home/u/.devharness/sequences/main.json' },
     });
 
     const res = await call(replay, {
@@ -220,7 +220,7 @@ describe('replay addConditional', () => {
 
     // global: true, overwrite: true - the file it came from.
     expect(recorder.saveSequenceToDisk).toHaveBeenCalledWith('id-main', true, true);
-    expect(text(res)).toContain('/home/u/.cdp-tools/sequences/main.json');
+    expect(text(res)).toContain('/home/u/.devharness/sequences/main.json');
   });
 
   it('tells the caller to export when the sequence is memory-only', async () => {

@@ -2,8 +2,8 @@
  * Server Manager
  * Manages development servers (any language/framework) - start, stop, restart, and monitor
  * Supports multiple runner types: native (spawn), docker, docker-compose
- * Persists state to .cdp-tools/servers.json for recovery and auto-run
- * Logs to .cdp-tools/logs/<server-id>/ for cross-MCP access (native runner only)
+ * Persists state to .devharness/servers.json for recovery and auto-run
+ * Logs to .devharness/logs/<server-id>/ for cross-MCP access (native runner only)
  */
 
 import * as path from 'path';
@@ -33,7 +33,7 @@ import {
  * debugger on the same process is a known-bad combination: the auto-restart
  * supervisor races with a paused (frozen) process, which can produce
  * EADDRINUSE crash-loops and ambiguous "failed but still listening" states,
- * since the restart happens entirely outside anything cdp-tools tracks.
+ * since the restart happens entirely outside anything devharness tracks.
  */
 const AUTO_RESTART_PATTERNS: Array<{ name: string; regex: RegExp }> = [
   { name: '--watch', regex: /(^|\s)--watch(\b|=)/ },
@@ -124,7 +124,7 @@ export interface StartServerOptions {
   runner?: RunnerType;
   /** If true, auto-add detected port to monitoredPorts with default level 'block' */
   monitorPort?: boolean;
-  /** If true, store server state in global ~/.cdp-tools/ instead of project directory */
+  /** If true, store server state in global ~/.devharness/ instead of project directory */
   global?: boolean;
   /** If true, watch this server's files and auto-restart it (pause-aware) on change instead of relying on --watch/nodemon */
   watch?: boolean;
@@ -143,7 +143,7 @@ interface ManagedServer {
   runner: Runner;
   autoRun: boolean;
   monitorPort?: boolean;
-  global?: boolean; // Whether this server is stored in global ~/.cdp-tools/
+  global?: boolean; // Whether this server is stored in global ~/.devharness/
   watch?: boolean;
   watchPaths?: string[];
   // In-memory only. Owned by the current ManagedServer instance since a
@@ -613,7 +613,7 @@ export class ServerManager {
 
   /**
    * Initialize - load state and recover/start auto-run servers
-   * Loads from both local (project) and global (~/.cdp-tools/) storage
+   * Loads from both local (project) and global (~/.devharness/) storage
    */
   async initialize(): Promise<{ recovered: string[]; started: string[]; failed: string[]; monitoredPorts: number[]; collected: string[] }> {
     const recovered: string[] = [];
@@ -827,7 +827,7 @@ export class ServerManager {
     }
 
     if (collected.length > 0) {
-      console.error(`[cdp-tools] Collected ${collected.length} abandoned dev server(s): ${collected.join(', ')}`);
+      console.error(`[devharness] Collected ${collected.length} abandoned dev server(s): ${collected.join(', ')}`);
     }
 
     await this.saveState();
@@ -955,7 +955,7 @@ export class ServerManager {
       }, null, 2)
     );
 
-    // Save global servers to ~/.cdp-tools/ (atomic write prevents corruption)
+    // Save global servers to ~/.devharness/ (atomic write prevents corruption)
     const globalPath = this.getServersFilePath(true);
     await atomicWriteFile(
       globalPath,
@@ -1223,7 +1223,7 @@ export class ServerManager {
     if (autoRestartMatch && watch) {
       autoRestartWarning = `Command matches "${autoRestartMatch}" AND cdp-tools' own watch mode is also enabled for this server - that's redundant and risky, since both could try to restart the process at once. Recommend removing "${autoRestartMatch}" from the command and relying on cdp-tools' watch mode instead, which already coordinates safely with an attached breakpoint debugger.`;
     } else if (autoRestartMatch) {
-      autoRestartWarning = `Command matches "${autoRestartMatch}", which auto-restarts its own process on file changes. Attaching a CDP debugger and pausing at a breakpoint while this is running is a known-bad combination (can cause EADDRINUSE crash-loops and ambiguous failed-but-still-listening states) - the restart happens entirely outside anything cdp-tools tracks. Prefer disabling auto-restart and using cdp-tools' own watch mode instead (server({ action: 'start', watch: true })), which coordinates safely with a paused debugger, or call server({ action: 'restart' }) explicitly.`;
+      autoRestartWarning = `Command matches "${autoRestartMatch}", which auto-restarts its own process on file changes. Attaching a CDP debugger and pausing at a breakpoint while this is running is a known-bad combination (can cause EADDRINUSE crash-loops and ambiguous failed-but-still-listening states) - the restart happens entirely outside anything devharness tracks. Prefer disabling auto-restart and using cdp-tools' own watch mode instead (server({ action: 'start', watch: true })), which coordinates safely with a paused debugger, or call server({ action: 'restart' }) explicitly.`;
     }
 
     return {

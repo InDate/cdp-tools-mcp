@@ -628,7 +628,7 @@ export class CommandRecorder {
   /**
    * Save a sequence to disk
    * @param sequenceId - ID of the sequence to save
-   * @param global - If true, save to global ~/.cdp-tools/sequences/, otherwise working directory
+   * @param global - If true, save to global ~/.devharness/sequences/, otherwise working directory
    */
   async saveSequenceToDisk(
     sequenceId: string,

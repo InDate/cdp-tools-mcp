@@ -1,17 +1,71 @@
 /**
- * Centralized path configuration for cdp-tools output directories
+ * Centralized path configuration for devharness output directories
  *
- * All data defaults to working directory (<cwd>/.cdp-tools/).
- * Use global: true to save to ~/.cdp-tools/ instead.
+ * All data defaults to working directory (<cwd>/.devharness/).
+ * Use global: true to save to ~/.devharness/ instead.
  * If cwd is invalid (e.g., "/"), falls back to global automatically.
+ *
+ * The directory was `.cdp-tools` before the rename in 0.9.0 and holds things
+ * users would miss: persistent Chrome profiles (logins, IndexedDB), config,
+ * recorded sequences, issues. So this migrates rather than switches - see
+ * resolveStateDir.
  */
 
 import { join } from 'path';
 import { homedir, tmpdir } from 'os';
-import { existsSync, accessSync, constants } from 'fs';
+import { existsSync, accessSync, constants, renameSync } from 'fs';
 import { z } from 'zod';
 
-const OUTPUT_DIR = '.cdp-tools';
+const OUTPUT_DIR = '.devharness';
+const LEGACY_OUTPUT_DIR = '.cdp-tools';
+
+/** Migration is announced once per process, not once per path lookup. */
+let migrationLogged = false;
+
+/**
+ * The state directory under `parent`, migrating a legacy `.cdp-tools` into
+ * place if that is what exists.
+ *
+ * Rename, not copy: it is atomic within a filesystem, so there is no window
+ * where half the profiles are in one directory and half in the other. If it
+ * fails for any reason - cross-device, permissions, a directory held open on
+ * Windows - keep using the legacy directory for this session rather than
+ * starting a fresh empty one. A user whose saved logins silently vanished
+ * would have no way to connect the two events.
+ */
+export function resolveStateDir(parent: string): string {
+  const current = join(parent, OUTPUT_DIR);
+  const legacy = join(parent, LEGACY_OUTPUT_DIR);
+
+  if (existsSync(current)) return current;
+  if (!existsSync(legacy)) return current;
+
+  try {
+    renameSync(legacy, current);
+    if (!migrationLogged) {
+      console.error(`[devharness] migrated ${legacy} -> ${current}`);
+      migrationLogged = true;
+    }
+    return current;
+  } catch (error) {
+    if (!migrationLogged) {
+      console.error(
+        `[devharness] could not migrate ${legacy} to ${current} ` +
+        `(${error instanceof Error ? error.message : String(error)}); ` +
+        `continuing to use ${legacy}`
+      );
+      migrationLogged = true;
+    }
+    return legacy;
+  }
+}
+
+/** Global state directory, migrated if needed. */
+export function getGlobalBase(): string {
+  return process.env.DEVHARNESS_DIR
+    || process.env.CDP_TOOLS_DIR  // pre-0.9.0 name, still honoured
+    || resolveStateDir(homedir());
+}
 
 const pathOptionsSchema = z.object({
   global: z.boolean().optional(),
@@ -48,13 +102,13 @@ function isValidWorkingDirectory(dir: string): boolean {
  * Called automatically on first path request, but can be called explicitly for early initialization.
  */
 export function initializePaths(): PathConfig {
-  const envOverride = process.env.CDP_TOOLS_DIR;
-  const globalBase = envOverride || join(homedir(), OUTPUT_DIR);
+  const globalBase = getGlobalBase();
   const cwd = process.cwd();
   const workingDirBase = isValidWorkingDirectory(cwd)
-    ? join(cwd, OUTPUT_DIR)
+    ? resolveStateDir(cwd)
     : null;
-  const tempBase = join(tmpdir(), 'cdp-tools');
+  // Ephemeral, so it gets the new name outright with nothing to migrate.
+  const tempBase = join(tmpdir(), 'devharness');
 
   pathConfig = { globalBase, workingDirBase, tempBase };
   return pathConfig;
@@ -73,16 +127,16 @@ export function setWorkingDirOverride(dir: string): void {
     throw new Error(`Not a valid, writable directory: ${dir}`);
   }
   if (!pathConfig) initializePaths();
-  pathConfig!.workingDirBase = join(dir, OUTPUT_DIR);
+  pathConfig!.workingDirBase = resolveStateDir(dir);
 }
 
 /**
- * Get path for cdp-tools data.
- * Defaults to working directory, use global: true for ~/.cdp-tools/
+ * Get path for devharness data.
+ * Defaults to working directory, use global: true for ~/.devharness/
  *
  * @param segments - Path segments to join (e.g., 'logs', 'debug.log')
- * @param options - { global: true } to use ~/.cdp-tools/ instead of cwd
- * @returns Full path like /project/.cdp-tools/logs/debug.log
+ * @param options - { global: true } to use ~/.devharness/ instead of cwd
+ * @returns Full path like /project/.devharness/logs/debug.log
  */
 export function getOutputPath(
   ...args: [...string[]] | [...string[], z.infer<typeof pathOptionsSchema>]
@@ -138,7 +192,7 @@ export function getConfigPath(): string {
 /**
  * Get path for saving new config.
  *
- * @param options - { global: true } to save to ~/.cdp-tools/ (default: working directory)
+ * @param options - { global: true } to save to ~/.devharness/ (default: working directory)
  * @returns Path to config.json
  */
 export function getConfigSavePath(options?: { global?: boolean }): string {
@@ -158,7 +212,7 @@ export function getConfigSavePath(options?: { global?: boolean }): string {
  * Uses system temp directory.
  *
  * @param segments - Path segments to join (e.g., 'a4-page.css')
- * @returns Full path like /tmp/cdp-tools/a4-page.css
+ * @returns Full path like /tmp/devharness/a4-page.css
  */
 export function getTempPath(...segments: string[]): string {
   if (!pathConfig) initializePaths();

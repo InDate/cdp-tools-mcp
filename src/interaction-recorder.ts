@@ -398,7 +398,7 @@ export async function startRecording(
           // Merge with existing session events (navigation events)
           session.events = [...session.events, ...adjustedEvents].sort((a, b) => a.timestamp - b.timestamp);
         } catch (e) {
-          console.error('[cdp-tools] Error saving events before navigation:', e);
+          console.error('[devharness] Error saving events before navigation:', e);
         }
       }
     });
@@ -1123,7 +1123,7 @@ export async function startRecording(
           try {
             (globalThis as any).__cdpRecordingComplete(JSON.stringify({ events, pausePeriods }));
           } catch (err) {
-            console.error('[cdp-tools] Failed to send recording to server:', err);
+            console.error('[devharness] Failed to send recording to server:', err);
           }
 
           const panel = overlay.querySelector('.cdp-panel');
@@ -1150,7 +1150,7 @@ export async function startRecording(
           try {
             (globalThis as any).__cdpRecordingCancel('cancel');
           } catch (err) {
-            console.error('[cdp-tools] Failed to send cancel to server:', err);
+            console.error('[devharness] Failed to send cancel to server:', err);
           }
 
           const panel = overlay.querySelector('.cdp-panel');
@@ -2300,7 +2300,7 @@ export async function showReplayOverlay(
       e.stopPropagation();
       attemptCount++;
 
-      console.log('[cdp-tools] Blocked user interaction during replay:', e.type, 'target:', e.target?.tagName);
+      console.log('[devharness] Blocked user interaction during replay:', e.type, 'target:', e.target?.tagName);
 
       // Shake the instructions text
       instructions.style.animation = 'none';
