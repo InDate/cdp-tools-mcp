@@ -24,7 +24,7 @@ const REPO_ROOT = join(__dirname, '..');
  * after tools that do not exist.
  */
 const TOOL_SURFACE_DOCS = [
-  'skills/cdp-tools/references/tool-categories.md',
+  'skills/devharness/references/tool-categories.md',
   'docs/instructions.md',
 ];
 
@@ -104,11 +104,11 @@ function verifyDescribedActions(tools) {
 function verifySkillVersionStamp() {
   try {
     const pkgVersion = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf-8')).version;
-    const skill = readFileSync(join(REPO_ROOT, 'skills/cdp-tools/SKILL.md'), 'utf-8');
+    const skill = readFileSync(join(REPO_ROOT, 'skills/devharness/SKILL.md'), 'utf-8');
     const stamped = skill.match(/^version:\s*(.+)$/m)?.[1].trim();
 
     if (!stamped) {
-      console.error('✗ skills/cdp-tools/SKILL.md has no `version:` in its frontmatter');
+      console.error('✗ skills/devharness/SKILL.md has no `version:` in its frontmatter');
       return false;
     }
     if (stamped !== pkgVersion) {
