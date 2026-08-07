@@ -113,13 +113,13 @@ you installed is what runs until you update it.
 
 ### Skill
 
-Bundled [Agent Skill](https://agentskills.io) at `skills/devharness/`. Same
+Bundled [Agent Skill](https://agentskills.io) at `plugin/skills/devharness/`. Same
 guidance as `docs/instructions.md`, split for progressive disclosure: name and
 description at session start, full catalogue only when debugging starts.
 
 ```bash
 mkdir -p .claude/skills
-ln -s ../../node_modules/devharness/skills/devharness .claude/skills/devharness
+ln -s ../../node_modules/devharness/plugin/skills/devharness .claude/skills/devharness
 ```
 
 Installing as a Claude Code plugin does this for you.

@@ -8,9 +8,10 @@ npm run test:run
 
 ## Running your build
 
-`.mcp.json` in this repo is not a dev config. It is the plugin manifest that ships
-to users, so it points at the published package. Editing it to run your local
-build would ship that to everyone who installs the plugin.
+`plugin/` is what ships to users: the manifest, the skill, and `plugin/.mcp.json`
+pointing at the published package. It deliberately has no `package.json` - a
+plugin directory containing one gets a full `npm install` on every install,
+which cost 175MB of dev dependencies per version before this was split out.
 
 Register your build as a separate server instead:
 
@@ -35,14 +36,14 @@ npm run build:verify  # starts the server, checks the shipped docs match the too
 ```
 
 `build:verify` is the release gate. It fails if `docs/instructions.md` or
-`skills/devharness/references/tool-categories.md` disagree with the tools the
+`plugin/skills/devharness/references/tool-categories.md` disagree with the tools the
 server actually registers, or if the skill's version stamp doesn't match
 `package.json`. Those files ship to users, so drift there is a user-facing bug.
 
 ## Releasing
 
 Version lives in three places that must agree: `package.json`,
-`skills/devharness/SKILL.md` frontmatter, and `.mcp.json`. `build:verify` catches
+`plugin/skills/devharness/SKILL.md` frontmatter, and `plugin/.mcp.json`. `build:verify` catches
 the first two; the third is the version the plugin installs.
 
 ```sh

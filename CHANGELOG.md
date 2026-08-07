@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Plugin content moved to `plugin/`** (`plugin/.claude-plugin/`,
+  `plugin/.mcp.json`, `plugin/skills/`). The Claude Code plugin now pins that
+  subdirectory rather than the whole repository.
+
+  A plugin directory containing a `package.json` gets a full `npm install` on
+  install, dev dependencies included: 175MB per installed version, for a plugin
+  that only needs a manifest and a skill. The subtree has no `package.json`, so
+  nothing runs.
+
+  npm consumers symlinking the skill need the new path:
+  `node_modules/devharness/plugin/skills/devharness`.
+
 - **Renamed from `cdp-tools-mcp` to `devharness`.** Old name described the
   transport. `cdp-tools-mcp` is deprecated on npm and points here. No tool
   names or arguments changed.

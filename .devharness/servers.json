@@ -1,6 +1,6 @@
 {
   "version": 4,
-  "updatedAt": "2026-08-07T07:03:06.513Z",
+  "updatedAt": "2026-08-07T07:34:29.686Z",
   "servers": [
     {
       "type": "native",
@@ -18,10 +18,10 @@
       "id": "archi-html",
       "command": "npm run serve",
       "cwd": "/Users/joshua/Documents/Code/archi-html/model-views",
-      "pid": 27384,
-      "pidStartedAt": "Fri Aug  7 15:03:06 2026",
+      "pid": 95518,
+      "pidStartedAt": "Fri Aug  7 15:34:29 2026",
       "autoRun": true,
-      "startedAt": "2026-08-07T07:03:06.509Z",
+      "startedAt": "2026-08-07T07:34:29.681Z",
       "monitorPort": true,
       "watch": false,
       "watchPaths": [
@@ -44,8 +44,8 @@
   "pendingStartups": [
     {
       "serverId": "archi-html",
-      "startedAt": "2026-08-07T07:03:06.509Z",
-      "timeoutAt": "2026-08-07T07:03:36.509Z",
+      "startedAt": "2026-08-07T07:34:29.682Z",
+      "timeoutAt": "2026-08-07T07:34:59.682Z",
       "acknowledged": false
     }
   ]
