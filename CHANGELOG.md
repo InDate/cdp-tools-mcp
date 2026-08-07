@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The skill is 42% smaller** (13.6k -> 7.9k characters) with no loss of tool
+  names, actions, or exact error strings. It loads into the context of every
+  session that touches debugging, so prose there is a recurring cost: merged the
+  duplicated quick-start and workflow sections, turned the pattern walkthroughs
+  into a table, and cut explanation down to the non-obvious.
+
+- **The skill now checks `.devharness/` is git-ignored** before the first tool
+  that writes there, and asks before touching `.gitignore`. State written into a
+  repo that does not ignore it gets committed, carrying pids, ports, and local
+  paths into what may be a public repository.
+
 ### Fixed
 
 - **The skill setup nudge no longer fires when the skill came from a plugin.**

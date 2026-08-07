@@ -2,194 +2,109 @@
 name: devharness
 description: Drive and debug a running app via the devharness MCP server - launch or attach to Chrome and Node.js, set breakpoints and logpoints, inspect call stacks and variables, watch console and network, manage dev servers, replay any earlier tool call by its history index, and record reproduction sequences that verify a fix. Use whenever a task involves running or debugging a live app, reproducing or verifying a bug, re-driving setup you already did (relaunching, re-logging in, refilling a form), or the user mentions breakpoints, Chrome DevTools, CDP, replay sequences, or devharness tools (launchChrome, navigate, breakpoint, inspect, replay, server, issues, etc.).
 compatibility: Requires the devharness MCP server to be connected (tools such as launchChrome, breakpoint, inspect, replay, server, issues). Previously published as cdp-tools-mcp.
-version: 0.9.2
+version: 0.9.3
 ---
 
 # devharness
 
-Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js, or CDP-compatible environments.
+CDP debugging for JS/TS in Chrome, Node.js, or any CDP target.
 
-## Quick Start
+## Quick start
 
-**Web apps (most common):**
+Every tool takes `connectionReason` — the name you gave the connection.
+
 ```
-1. launchChrome({ reference: "your-descriptive-name" })  # Auto-connects, ready immediately
-2. navigate({ action: 'goto', connectionReason: "your-descriptive-name", url: "..." })
-   # Navigation automatically caches interactive elements (links, buttons, inputs) for the page
-3. content({ action: 'findInteractive', connectionReason: "your-descriptive-name" })
-   # Shows summary of all interactive elements. Use search/types to filter
-4. content({ action: 'extractText', mode: 'outline' })  # Read page content (preferred over screenshot)
-5. Use other tools as needed with connectionReason parameter
+launchChrome({ reference: "app" })              # launches AND connects; do NOT then call connectDebugger
+navigate({ action: 'goto', connectionReason: "app", url })   # caches interactive elements
+content({ action: 'findInteractive' })          # summary; filter with search/types
+content({ action: 'extractText', mode: 'outline' })          # prefer over screenshot
 ```
 
-**Alternative (rename later):**
+Node: `node --inspect=9229 app.js` → `connectDebugger({ reference: "api", port: 9229 })`.
+`connectDebugger` is only for existing Node/remote debuggers.
+
+Launched without a reference? `tab({ action: 'rename', reference: "unnamed-connection-default", newReference: "app" })`.
+
+Paused: `inspect({ action: 'getCallStack' })` → `getVariables` → `evaluateExpression`.
+Watch: `console({ action: 'list' })`, `network({ action: 'list' })` (needs `network({ action: 'enable' })` first).
+
+## `.devharness/` must be git-ignored
+
+State lands in `.devharness/` — config, server claims, logs, sequences, issues. Machine-local; carries pids, ports, and local paths into what may be a public repo.
+
+Before the first tool that writes there (`server`, `replay` record, `issues`, `setDebugLogging`) in a git repo:
+
 ```
-1. launchChrome()                                  # Uses default "unnamed-connection-default"
-2. tab({ action: 'rename', reference: "unnamed-connection-default", newReference: "your-name" })
-3. Use other tools with connectionReason: "your-name"
+git check-ignore -q .devharness && echo ignored || echo NOT ignored
+git ls-files .devharness          # already tracked?
 ```
 
-**Node.js debugging:**
+Not ignored → **ask** before adding it to `.gitignore`. Already tracked → say so; `git rm -r --cached .devharness` untracks, but anything pushed stays in history.
+
+## Repeat instead of retyping
+
+Every response footer carries its own index: `**Repeat:** replay({ action: 'repeat', indices: [58] })`. On every call, not just failures (`replay`'s own calls aren't recorded).
+
+- `indices` takes a list: `[58, 59, 60, 61]` re-runs four steps in order
+- Use it for anything you already did — relaunch, re-login, refilling a form, getting back to the bug. Retyped arguments drift from what actually ran
+- `replay({ action: 'history' })` when indices scrolled away
+- Each call replays on the connection it was recorded with, so pass `connectionReason` explicitly when driving several browsers — implicit calls have no connection to replay against
+- Worth keeping: `replay({ action: 'create', name, indices })`
+
+## Recovering from a failed call
+
+Two mechanisms, two different failure points — don't mix them.
+
+**Validation failed** (`MISSING_PARAMETERS`, `INVALID_PARAMS`) → the error carries a `continuationToken` and `missingParameters`. Resend only what was missing:
 ```
-1. Start app: node --inspect=9229 app.js
-2. connectDebugger({ reference: "my-app-debug", port: 9229 })
-3. breakpoint({ action: 'set', connectionReason: "my-app-debug", ... })
+{ continuationToken: '<token>', <missing field(s)> }
 ```
+Server merges and re-validates. Same token, repeat until it passes. Expires in 5 min.
 
-## Basic Workflow
-
-1. **Connect**:
-   - `launchChrome({ reference: "name" })` - Launches AND auto-connects (ready immediately, don't call connectDebugger)
-   - `connectDebugger({ reference: "name" })` - Only for existing Node.js/remote debuggers
-2. **Navigate & interact**: Use connectionReason in all tool calls
-   - `navigate({ action: 'goto', connectionReason: "name", url: "..." })`
-   - `input({ action: 'click', connectionReason: "name", selector: "..." })`
-3. **Debug**: `breakpoint({ action: 'set', connectionReason: "name", ... })`
-4. **Inspect when paused**: `inspect({ action: 'getCallStack', ... })` → `inspect({ action: 'getVariables', ... })`
-5. **Monitor**: `console({ action: 'list', connectionReason: "name" })`, `network({ action: 'list', connectionReason: "name" })`
-
-## Key Practices
-
-**Breakpoints:**
-- Use conditional: `breakpoint({ action: 'set', condition: "userId === '123'" })`
-- Prefer `breakpoint({ action: 'setLogpoint' })` for loops/high-frequency code
-- Clean up with `breakpoint({ action: 'remove' })` or check `breakpoint({ action: 'list' })`
-
-**DOM/Event/XHR Breakpoints (Chrome only):**
-- `breakpoint({ action: 'setDOMBreakpoint' })`: Pause when element changes
-  - `subtree-modified`: Children added/removed
-  - `attribute-modified`: Attributes changed (class, style, etc.)
-  - `node-removed`: Element deleted from DOM
-- `breakpoint({ action: 'setEventBreakpoint' })`: Pause when events fire (click, submit, input, keydown, etc.)
-- `breakpoint({ action: 'setXHRBreakpoint' })`: Pause when XHR/Fetch URL contains pattern
-- Example: `breakpoint({ action: 'setDOMBreakpoint', selector: '.todo-list', domBreakpointType: 'subtree-modified' })`
-- Note: DOM breakpoints use nodeIds which are invalidated on page reload
-
-**Code search:**
-- `inspect({ action: 'searchCode' })`: Find patterns
-- `inspect({ action: 'searchFunctions' })`: Locate definitions
-- `getSourceCode`: View context
-
-**Modal handling:**
-- Use `handleModals: true` on `input({ action: 'click' | 'type' | 'hover' })`
-- Strategies: `auto` (smart), `accept`, `reject`, `close`, `remove`
-- Example: `input({ action: 'click', selector: '.btn', handleModals: true, dismissStrategy: 'auto' })`
-- Limitation: English-only, no Shadow DOM/iframes
-
-**Multiple connections:**
-- `listConnections` → `switchConnection`
-- Each connection = separate tab/process
-
-**Re-running work you already did:**
-- Every tool response carries its own history index in the footer:
-  `**Repeat:** replay({ action: 'repeat', indices: [58] })`. That is not only
-  for failures - it is on every call, all the time. (The `replay` tool's own
-  responses are the exception: replay calls are not recorded into history)
-- `indices` takes a **list**, so a whole stretch of work replays in one call:
-  `replay({ action: 'repeat', indices: [58, 59, 60, 61] })` re-runs those four
-  steps in order
-- Reach for this whenever you are about to redo something you already did -
-  a browser relaunch, re-logging in, retyping a form, getting back to the
-  screen where a bug appears. Re-issuing the calls by hand is slower, and
-  retyped arguments drift from what actually ran
-- `replay({ action: 'history' })` lists the indices when they have scrolled
-  out of view
-- Each repeated call replays against the connection it was recorded with, so a
-  batch spanning two browsers stays on both. Pass `connectionReason` on every
-  call while driving multiple browsers and this holds; drive one implicitly and
-  those calls have no connection to replay against
-- If the stretch is worth keeping, turn it into a sequence:
-  `replay({ action: 'create', name: '...', indices: [58, 59, 60, 61] })`
-
-## Common Patterns
-
-**Bug debugging:**
-1. `launchChrome` → `navigate({ action: 'goto' })`
-2. `inspect({ action: 'searchCode' | 'searchFunctions' })`
-3. `breakpoint({ action: 'set' | 'setLogpoint' })`
-4. Trigger bug
-5. `inspect({ action: 'getCallStack' })` + `inspect({ action: 'getVariables' })`
-6. `inspect({ action: 'evaluateExpression' })`
-
-**Performance:**
-1. `network({ action: 'enable' })`
-2. `navigate({ action: 'goto' })`
-3. `network({ action: 'search' })` (find slow)
-4. `network({ action: 'get' })` (timing)
-5. `breakpoint({ action: 'setLogpoint' })` in slow paths
-
-**Frontend state:**
-1. `dom({ action: 'querySelector' })` + `dom({ action: 'getProperties' })`
-2. `storage({ action: 'getLocalStorage' })` + `storage({ action: 'getCookies' })`
-3. `inspect({ action: 'evaluateExpression' })`
-4. `dom({ action: 'snapshot' })`
-
-**UI verification:**
-1. `content({ action: 'verify' })` - Run all default checks
-2. Reports: dead buttons, small touch targets, overflow clipping, dead links, viewport issues
-3. Filter checks: `checks: ['handlers', 'touch']` for specific issues
-4. Available checks: `handlers`, `viewport`, `touch`, `overflow`, `clickability`, `links`, `scroll`
-
-## Important Notes
-
-- **After `launchChrome()`**: You are ALREADY connected. Do NOT call `connectDebugger()`. Use the `reference` parameter when launching, or rename later with `tab({ action: 'rename' })`
-- **Interactive elements cache**: Navigation (goto, reload, back, forward) automatically caches all interactive elements. Cache expires after 5 minutes. `findInteractive` shows a summary by default; use `search` or `types` parameters to filter elements
-- **Logpoint limits**: Default 20 executions. Use `breakpoint({ action: 'resetCounter' })` or adjust `maxExecutions`
-- **Expression failures**: Wrapped in try-catch, shows `[Error: message]`. Search: `console({ action: 'search', pattern: "Logpoint Error" })`
-- **CDP line mapping**: May map to nearest valid line. Use `breakpoint({ action: 'validate' })` first
-- **Source maps**: Auto-handled. Use `loadSourceMaps` for manual
-- **File paths**: Full URLs (`http://localhost:3000/app.js`) or `file://`
-- **Network monitoring**: Must enable with `network({ action: 'enable' })`
-- **Working an issue**: `comment` on it as you go - once when you start (what you're about to change and why) and once when you finish (what you actually changed, files touched, tests added, and anything that contradicts the issue as written). The issue is the durable record; someone reviewing later reads the timeline, not your diff
-- **Closing an issue**: `issues({ action: 'resolve' })` waits on a browser overlay only a human can click - don't call it unattended, use `issues({ action: 'comment' })` to record findings instead
-
-## Recovering from a failed tool call
-
-Two different mechanisms fix two different failure points - don't confuse them.
-
-**1. Missing/invalid parameters -> `continuationToken` (fix and resubmit, cheaply)**
-
-If a call fails validation (`code: 'MISSING_PARAMETERS'` or `'INVALID_PARAMS'`), the error includes a `continuationToken` and a `missingParameters` list (name/type/description/enum). Don't resend the whole call - retry with just:
-```
-{ continuationToken: '<token>', <only the missing/bad field(s)> }
-```
-The server merges this with what you already sent and re-validates. Repeat (same token) until it succeeds. The token expires after 5 minutes. This only applies to calls that never passed validation in the first place - it has nothing to do with guard blocks below.
-
-**2. A validated call gets blocked by a guard (port failure, dead server, breakpoint pause, etc.) -> `replay`**
-
-Once a call passes validation, devharness records it (even if a guard then blocks it before the handler runs) and every response footer includes a hint like:
-```
-**Repeat:** `replay({ action: 'repeat', indices: [N] })`
-```
-Acknowledge whatever blocked it (e.g. `server({ action: 'acknowledgePort' })`, `server({ action: 'acknowledgeStartup' })`), then use that `replay` hint to resume the exact same call - do not reconstruct the arguments by hand, and do not try to reuse a `continuationToken` for this case (that mechanism is for fixing bad input, not for retrying a call that was already valid).
-
-Note this is only one use of `repeat`. The footer hint is on every response, not just blocked ones, and `indices` takes a list - see "Re-running work you already did" above.
+**Guard blocked a valid call** (dead port, breakpoint pause) → it was already recorded. Acknowledge (`server({ action: 'acknowledgePort' })`, `acknowledgeStartup`), then use the footer's `replay` hint. Don't rebuild the arguments; don't use a `continuationToken` here.
 
 ## Restarting devharness
 
-If devharness itself seems stuck or broken (not the target app), restart it yourself rather than asking the user to reconnect - don't wait to be told to.
+If devharness itself is stuck (not the target app), restart it — don't wait to be asked.
 
-- **Preferred**: `config({ action: 'restart' })`. Under the hood this reads `.devharness/mcp-supervisor.pid` and sends the running mcp-supervisor process a `SIGUSR2`, the same signal `npm run build`'s postbuild hook sends automatically after a rebuild. The supervisor replays the original MCP `initialize` handshake to the freshly spawned child, so the host session never needs to reconnect.
-- If that returns `CONFIG_RESTART_NOT_SUPERVISED` (this server isn't running through the supervisor - e.g. a bare `node build/index.js`), fall back to Bash: `kill -USR2 $(cat .devharness/mcp-supervisor.pid)`.
-- If it returns `CONFIG_RESTART_STALE_PID`, the supervisor died without cleaning up its pidfile - ask the user to run `/mcp` to reconnect.
+- `config({ action: 'restart' })` — SIGUSR2s the supervisor via `.devharness/mcp-supervisor.pid`; it replays the `initialize` handshake so the host never reconnects
+- `CONFIG_RESTART_NOT_SUPERVISED` → `kill -USR2 $(cat .devharness/mcp-supervisor.pid)`
+- `CONFIG_RESTART_STALE_PID` → supervisor died dirty; ask the user to run `/mcp`
 
-**Expect the triggering call itself to come back as an error - that's normal, not a failure.** In practice `config({ action: 'restart' })` almost never returns its own `CONFIG_RESTART_REQUESTED` success message: the old process gets torn down before it can flush that response, so the supervisor's restart-coordinator answers with a synthesized `MCP error -32000: MCP server is restarting; this request will not receive a response from the previous process. Please retry.` instead. Just retry the next call - it'll hit the freshly restarted (and by then ready) process. Two things to expect on that next call: it runs against a new PID (visible in tool response footers), and any acknowledged monitored-port failures (`server({ action: 'acknowledgePort' })`) reset and may need re-acknowledging, since that state lived in the process that just got replaced.
+**The triggering call returns an error — that's normal.** You get `MCP error -32000: MCP server is restarting...` instead of `CONFIG_RESTART_REQUESTED`, because the old process dies before flushing. Retry; the next call hits the new process. Expect a new PID in footers, and acknowledged port failures to reset.
 
-`config({ action: 'status' })` says which build is answering: the version, the entry file it loaded, that file's timestamp, and the server/supervisor pids. If you have just rebuilt devharness and the behaviour still looks old, check that timestamp before believing the code - a build signals the supervisor named in its own project's pidfile, which is not always the one serving this session.
+`config({ action: 'status' })` reports version, entry file, its timestamp, and pids — check the timestamp before believing a rebuild landed; a build signals the supervisor in its own project's pidfile, not always this session's.
 
-Either way, a restart kills any Chrome instances this session launched (relaunch with `launchChrome`), but managed dev servers (`server` tool) survive and reattach automatically. `config({ action: 'reload' })` is different and lighter-weight - it hot-applies most `config.json` edits without a restart; a restart is only needed for `tools.enabled`/`tools.disabled` changes (the tool list is frozen at server startup) or when the process itself is actually stuck.
+Restart kills Chrome instances this session launched (relaunch with `launchChrome`); managed servers survive and reattach. `config({ action: 'reload' })` hot-applies most config edits — restart is only needed for `tools.enabled`/`tools.disabled` or a genuinely stuck process.
 
-## Tool Categories
+## Practices
 
-The full list of tools grouped by category (connection, tab, breakpoint, execution, inspection, source, console, network, page, DOM, content, screenshot, input, modal, storage, HTTP/assertions, issues, server, replay, dashboard, config) is not needed for most tasks. Load it only when you need to look up a specific tool name or action:
+**Breakpoints** — conditional: `condition: "userId === '123'"`. Loops/hot paths: `setLogpoint` (20 executions default; `resetCounter` or `maxExecutions`). Clean up with `remove`, audit with `list`. CDP may snap to the nearest line — `validate` first. Source maps auto-load; `loadSourceMaps` to force. Paths are full URLs (`http://localhost:3000/app.js`) or `file://`.
 
-[references/tool-categories.md](references/tool-categories.md)
+**DOM/Event/XHR breakpoints** (Chrome only) — `setDOMBreakpoint` (`subtree-modified`, `attribute-modified`, `node-removed`), `setEventBreakpoint` (click, submit, input, keydown…), `setXHRBreakpoint` (URL substring). Example: `breakpoint({ action: 'setDOMBreakpoint', selector: '.todo-list', domBreakpointType: 'subtree-modified' })`. nodeIds die on reload.
 
-## Replay Sequences
+**Expressions** — wrapped in try-catch, surface as `[Error: message]`. Find them: `console({ action: 'search', pattern: "Logpoint Error" })`.
 
-Recording or replaying a sequence - to build a repro, a regression test, or a
-multi-device flow - has its own workflow: capturing values mid-run with
-`saveAs`, per-step `connectionReason`, conditionals, and verifying an issue's
-fix. Load it when the task involves sequences:
+**Element cache** — populated by goto/reload/back/forward, expires after 5 min.
 
-[references/sequences.md](references/sequences.md)
+**Modals** — `handleModals: true` on `input` click/type/hover, `dismissStrategy`: `auto` | `accept` | `reject` | `close` | `remove`. English-only, no Shadow DOM or iframes.
+
+**Code search** — `inspect({ action: 'searchCode' | 'searchFunctions' })`, then `getSourceCode`.
+
+**Connections** — `listConnections` → `switchConnection`. One connection per tab/process.
+
+**Issues** — `comment` when you start (what you're changing, why) and when you finish (what changed, files, tests, anything contradicting the issue). The timeline is the durable record, not your diff. `resolve` waits on a browser overlay only a human can click — never call it unattended; `comment` instead.
+
+## Patterns
+
+| Task | Sequence |
+|---|---|
+| Bug | `launchChrome` → `goto` → `searchCode`/`searchFunctions` → `set`/`setLogpoint` → trigger → `getCallStack` + `getVariables` → `evaluateExpression` |
+| Performance | `network enable` → `goto` → `network search` → `network get` (timing) → `setLogpoint` in slow paths |
+| Frontend state | `dom querySelector` + `getProperties` → `storage getLocalStorage`/`getCookies` → `evaluateExpression` → `dom snapshot` |
+| UI audit | `content({ action: 'verify' })` — dead buttons, touch targets, overflow, dead links, viewport. Filter: `checks: ['handlers','touch']` from `handlers`, `viewport`, `touch`, `overflow`, `clickability`, `links`, `scroll` |
+
+## Load on demand
+
+- Full tool/action catalogue: [references/tool-categories.md](references/tool-categories.md)
+- Recording/replaying sequences — `saveAs`, per-step `connectionReason`, conditionals, verifying an issue fix: [references/sequences.md](references/sequences.md)
