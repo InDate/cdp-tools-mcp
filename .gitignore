@@ -6,6 +6,7 @@ build/
 *.tsbuildinfo
 */__pycache__/*
 dev-notes/*
+.devharness/*
 .cdp-tools/*
 .claude/commands/commit.md
 

@@ -28,6 +28,28 @@ against the other.
 usually enough. If behaviour still looks stale, `config({ action: 'status' })`
 reports which entry file is actually answering and when it was built.
 
+### The plugin's own server fails inside this repo
+
+If you have the Claude Code plugin installed, its server won't start while your
+working directory is this repository:
+
+```
+sh: devharness: command not found
+MCP error -32000: Connection closed
+```
+
+Expected, and only here. The plugin runs `npx -y devharness@<version>`. `npm exec`
+reads this repo's `package.json`, sees the same name and version, decides the
+spec is already satisfied, and skips the install — then looks for a `devharness`
+bin in `node_modules/.bin`, which npm never links for a package's own bin. From
+any other directory npx fetches from the registry and it works.
+
+Use `devharness-dev` here; that is what it is for. Do **not** fix it by linking
+`node_modules/.bin/devharness` to your build. It works, but it makes the plugin
+run your working tree while claiming to run a pinned published version — which is
+the exact thing the version pin exists to prevent, and you would be debugging
+against code no user has.
+
 ## Before a PR
 
 ```sh
