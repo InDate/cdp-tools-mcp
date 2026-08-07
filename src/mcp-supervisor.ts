@@ -3,7 +3,7 @@
  * Dependency-free MCP hot-reload supervisor.
  *
  * This is the package's `bin` entry point - both this repo's own .mcp.json
- * and every other project's `npx cdp-tools-mcp@latest` launch THIS process
+ * and every other project's `npx devharness@latest` launch THIS process
  * instead of the real server directly. This process keeps that stdio
  * connection alive forever and manages the real server (index.js, resolved
  * next to this file - see below) as a restartable child, so:

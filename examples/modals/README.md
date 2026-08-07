@@ -1,6 +1,6 @@
 # Examples
 
-This directory contains an example file for testing and demonstrating cdp-tools-mcp.
+This directory contains an example file for testing and demonstrating devharness.
 
 ## Files
 

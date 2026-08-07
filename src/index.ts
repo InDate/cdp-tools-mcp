@@ -7,7 +7,7 @@ console.error(`[cdp-tools] Process starting (PID: ${process.pid})`);
 const STARTUP_TIME = performance.now();
 
 /**
- * cdp-tools-mcp
+ * devharness
  * MCP server providing Chrome DevTools Protocol debugging capabilities to AI assistants
  */
 
@@ -229,7 +229,7 @@ function getSkillInstallState(): SkillInstallState {
  * reference): many MCP clients inject this field into the model's context
  * unconditionally at session start, so it shouldn't carry the full tool
  * catalog. The full reference is instead shipped as a progressive-disclosure
- * Agent Skill (skills/cdp-tools/) that skills-aware clients load on demand.
+ * Agent Skill (skills/devharness/) that skills-aware clients load on demand.
  *
  * If that skill isn't installed anywhere a client would scan for it - or an
  * installed copy is stamped with an older version of this package - append a
@@ -247,7 +247,7 @@ async function loadInstructions(): Promise<string | undefined> {
     }
 
     const skillSourcePath = join(__dirname, '..', 'skills', 'cdp-tools');
-    const install = `\`\`\`bash\nmkdir -p .claude/skills\nrm -rf .claude/skills/cdp-tools\nln -s "${skillSourcePath}" .claude/skills/cdp-tools\n\`\`\``;
+    const install = `\`\`\`bash\nmkdir -p .claude/skills\nrm -rf .claude/skills/devharness\nln -s "${skillSourcePath}" .claude/skills/devharness\n\`\`\``;
 
     const nudge = skillState.status === 'absent'
       ? `\n\n---\n\n**Setup nudge (one-time):** No cdp-tools Agent Skill was found in this project or your home directory (checked \`.claude/skills/\`, \`.agents/skills/\`). Ask the user if they'd like it installed - if they agree, run:\n\n${install}\n\nDo not create the symlink without asking first. This message stops appearing once the skill is installed anywhere it would be scanned.\n`
@@ -1766,7 +1766,7 @@ Edit ${configPath} to resolve, then restart the MCP server.`,
 
 // Start the server
 /**
- * CLI mode: `cdp-tools-mcp run <sequenceName> [--connectionReason=X] [--headed] [--keep-chrome]`
+ * CLI mode: `devharness run <sequenceName> [--connectionReason=X] [--headed] [--keep-chrome]`
  * Runs a saved sequence directly from the shell, no MCP client needed.
  * Pre-launches Chrome itself (headless by default, forceNewInstance) so
  * replay run's own auto-launch (always headed) never triggers.
@@ -1774,7 +1774,7 @@ Edit ${configPath} to resolve, then restart the MCP server.`,
 async function runCliSequence(argv: string[]): Promise<void> {
   const sequenceName = argv[0];
   if (!sequenceName || sequenceName.startsWith('--')) {
-    console.error('Usage: cdp-tools-mcp run <sequenceName> [--connectionReason=X] [--headed] [--keep-chrome]');
+    console.error('Usage: devharness run <sequenceName> [--connectionReason=X] [--headed] [--keep-chrome]');
     process.exit(1);
   }
 

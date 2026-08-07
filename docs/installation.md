@@ -3,7 +3,7 @@
 ## Claude Code CLI
 
 ```bash
-claude mcp add cdp-tools -- npx -y cdp-tools-mcp
+claude mcp add cdp-tools -- npx -y devharness
 ```
 
 ## Claude Desktop
@@ -19,7 +19,7 @@ Add to your config file:
   "mcpServers": {
     "cdp-tools": {
       "command": "npx",
-      "args": ["-y", "cdp-tools-mcp"]
+      "args": ["-y", "devharness"]
     }
   }
 }
@@ -30,8 +30,8 @@ Restart and ask Claude to debug your application.
 ## From Source
 
 ```bash
-git clone https://github.com/InDate/cdp-tools-mcp.git
-cd cdp-tools-mcp
+git clone https://github.com/InDate/devharness.git
+cd devharness
 npm install
 npm run build
 npm start

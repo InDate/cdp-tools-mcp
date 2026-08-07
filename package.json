@@ -1,11 +1,11 @@
 {
-  "name": "cdp-tools-mcp",
-  "version": "0.7.3",
+  "name": "devharness",
+  "version": "0.8.0",
   "description": "MCP server that connects AI assistants to Chrome DevTools Protocol for runtime debugging - set breakpoints, inspect variables, monitor network traffic, and automate browser interactions",
   "type": "module",
   "main": "build/index.js",
   "bin": {
-    "cdp-tools-mcp": "build/mcp-supervisor.js"
+    "devharness": "build/mcp-supervisor.js"
   },
   "scripts": {
     "build": "tsc && npm run build:dashboard",
@@ -44,12 +44,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/InDate/cdp-tools-mcp.git"
+    "url": "git+https://github.com/InDate/devharness.git"
   },
   "bugs": {
-    "url": "https://github.com/InDate/cdp-tools-mcp/issues"
+    "url": "https://github.com/InDate/devharness/issues"
   },
-  "homepage": "https://github.com/InDate/cdp-tools-mcp#readme",
+  "homepage": "https://github.com/InDate/devharness#readme",
   "engines": {
     "node": ">=18.0.0"
   },

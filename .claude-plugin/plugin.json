@@ -1,0 +1,10 @@
+{
+  "name": "devharness",
+  "description": "Run and debug a live app from inside Claude Code: breakpoints and variable inspection in Chrome and Node.js, managed dev servers, and replayable call history so setup is never re-driven by hand.",
+  "author": {
+    "name": "InDate",
+    "url": "https://github.com/InDate"
+  },
+  "homepage": "https://github.com/InDate/devharness",
+  "license": "MIT"
+}

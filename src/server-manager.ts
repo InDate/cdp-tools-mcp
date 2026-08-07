@@ -687,7 +687,7 @@ export class ServerManager {
         this.servers.set(server.id, managed);
 
         // The process survived, but any watcher was tied to the previous
-        // ServerManager instance (e.g. before cdp-tools-mcp's own supervisor
+        // ServerManager instance (e.g. before devharness's own supervisor
         // restarted it) - re-establish it now.
         if (server.watch) {
           this.startWatcher(managed, server.watchPaths && server.watchPaths.length > 0 ? server.watchPaths : [server.cwd]);

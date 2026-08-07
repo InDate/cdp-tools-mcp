@@ -1,6 +1,6 @@
-# cdp-tools-mcp Test Application
+# devharness Test Application
 
-This is a test application with intentional bugs designed to validate cdp-tools-mcp's debugging capabilities.
+This is a test application with intentional bugs designed to validate devharness's debugging capabilities.
 
 ## Setup
 
