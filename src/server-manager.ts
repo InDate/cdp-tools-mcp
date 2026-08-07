@@ -1380,6 +1380,17 @@ export class ServerManager {
     await this.saveState();
     await debugLog('ServerManager', `Acknowledged pending startup: ${serverId}`);
 
+    // A server that is already dead has nothing left to watch: the health
+    // check would just re-create the same block on its next tick, so the
+    // acknowledgement could never stick. Only arm it for a live server, where
+    // it can still find the port (or catch a later death).
+    const managed = this.servers.get(serverId);
+    const isRunning = managed ? await managed.runner.isRunning() : false;
+    if (!isRunning) {
+      await debugLog('ServerManager', `Server ${serverId} is not running - skipping health monitor after acknowledgment`);
+      return true;
+    }
+
     // Start background health monitoring
     // This will detect port (and set up monitoring) or detect server death (and re-block)
     this.monitorServerHealth(serverId);
@@ -1518,11 +1529,13 @@ export class ServerManager {
 
     const isRunning = await managed.runner.isRunning();
     if (!isRunning) {
+      await this.stopMonitoringForServer(serverId);
       await this.saveState();
       return;
     }
 
     await debugLog('ServerManager', `Stopping server ${serverId}`);
+    await this.stopMonitoringForServer(serverId);
     await managed.runner.stop();
     this.claims.release(serverId, managed.global ?? false);
     await this.saveState();
@@ -1962,9 +1975,50 @@ export class ServerManager {
       this.stopWatcher(managed);
     }
 
+    // stopServer() already drops this server's port monitors when it runs, but
+    // removal has to cover the not-running path too - an orphaned block-level
+    // monitor on a port nobody owns any more gates every later tool call.
+    await this.stopMonitoringForServer(serverId);
+
     this.servers.delete(serverId);
     await this.saveState();
     await debugLog('ServerManager', `Server ${serverId} removed from config`);
+  }
+
+  /**
+   * Stop monitoring every port that belongs to a server.
+   *
+   * Ports are matched by the `Server: <id>` description the manager stamps on
+   * them at startMonitoring() time, plus the runner's currently reported port,
+   * so a monitor survives neither a stop nor a remove.
+   */
+  private async stopMonitoringForServer(serverId: string): Promise<void> {
+    const portMonitor = this.getPortMonitor();
+    const ports = new Set<number>();
+
+    for (const monitored of portMonitor.getStatus()) {
+      if (monitored.description === `Server: ${serverId}`) {
+        ports.add(monitored.port);
+      }
+    }
+
+    const managed = this.servers.get(serverId);
+    if (managed) {
+      try {
+        const status = await managed.runner.getStatus();
+        if (status.port) {
+          ports.add(status.port);
+        }
+      } catch {
+        // Runner can't report a port (already gone) - description match stands.
+      }
+    }
+
+    for (const port of ports) {
+      if (await portMonitor.stopMonitoring(port)) {
+        await debugLog('ServerManager', `Stopped monitoring port ${port} (owned by ${serverId})`);
+      }
+    }
   }
 
   /**
