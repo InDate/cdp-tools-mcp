@@ -57,7 +57,7 @@ import { createIssuesTools } from './tools/issues-tools.js';
 import { createDashboardTools, setDashboardInstance, getDashboardInstance, setSessionInfo, getDuplicateSessionInfo } from './tools/dashboard-tools.js';
 import { initializeDashboard, shutdownDashboard, type DashboardInstance, type ConnectionInfo as DashboardConnectionInfo } from './dashboard/index.js';
 import { Orchestrator } from './log-processor/orchestrator.js';
-import { mkdirSync, existsSync, readFileSync, statSync } from 'fs';
+import { mkdirSync, existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { ServerManager, detectAutoRestartCommand } from './server-manager.js';
 import { configManager } from './config.js';
@@ -162,17 +162,46 @@ async function findStartingPort(): Promise<number> {
 
 /**
  * Locations a skills-aware client (Claude Code and others following the
- * agentskills.io convention) would scan for the bundled cdp-tools skill.
+ * agentskills.io convention) would scan for the bundled devharness skill.
  * Checked at both project- and user-level, and both the client-native
  * `.claude/skills/` path and the cross-client `.agents/skills/` convention.
  */
 function findSkillInstallCandidates(): string[] {
-  return [
-    join(process.cwd(), '.claude', 'skills', 'cdp-tools'),
-    join(process.cwd(), '.agents', 'skills', 'cdp-tools'),
-    join(homedir(), '.claude', 'skills', 'cdp-tools'),
-    join(homedir(), '.agents', 'skills', 'cdp-tools'),
+  const scanned = [
+    join(process.cwd(), '.claude', 'skills', 'devharness'),
+    join(process.cwd(), '.agents', 'skills', 'devharness'),
+    join(homedir(), '.claude', 'skills', 'devharness'),
+    join(homedir(), '.agents', 'skills', 'devharness'),
   ];
+  return [...scanned, ...findPluginSkillDirs()];
+}
+
+/**
+ * Skill directories belonging to an installed Claude Code plugin.
+ *
+ * A plugin ships the skill itself, so the client already has a current copy and
+ * the nudge would be telling the user to hand-install something they have.
+ * These live at ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/skills/
+ * which is not a path this package controls, so it is discovered rather than
+ * assumed, and any failure just yields no candidates.
+ */
+function findPluginSkillDirs(): string[] {
+  const root = join(homedir(), '.claude', 'plugins', 'cache');
+  const found: string[] = [];
+  try {
+    for (const marketplace of readdirSync(root, { withFileTypes: true })) {
+      if (!marketplace.isDirectory()) continue;
+      const pluginDir = join(root, marketplace.name, 'devharness');
+      if (!existsSync(pluginDir)) continue;
+      for (const version of readdirSync(pluginDir, { withFileTypes: true })) {
+        if (!version.isDirectory()) continue;
+        found.push(join(pluginDir, version.name, 'skills', 'devharness'));
+      }
+    }
+  } catch {
+    // No plugin cache, or unreadable: nothing to add.
+  }
+  return found;
 }
 
 /** Version stamped into a SKILL.md frontmatter, if it has one. */
@@ -246,12 +275,12 @@ async function loadInstructions(): Promise<string | undefined> {
       return instructions;
     }
 
-    const skillSourcePath = join(__dirname, '..', 'skills', 'cdp-tools');
+    const skillSourcePath = join(__dirname, '..', 'plugin', 'skills', 'devharness');
     const install = `\`\`\`bash\nmkdir -p .claude/skills\nrm -rf .claude/skills/devharness\nln -s "${skillSourcePath}" .claude/skills/devharness\n\`\`\``;
 
     const nudge = skillState.status === 'absent'
-      ? `\n\n---\n\n**Setup nudge (one-time):** No cdp-tools Agent Skill was found in this project or your home directory (checked \`.claude/skills/\`, \`.agents/skills/\`). Ask the user if they'd like it installed - if they agree, run:\n\n${install}\n\nDo not create the symlink without asking first. This message stops appearing once the skill is installed anywhere it would be scanned.\n`
-      : `\n\n---\n\n**Stale skill:** The cdp-tools Agent Skill at \`${skillState.path}\` is from version ${skillState.installedVersion ?? 'an unstamped release'}, but this server is ${SERVER_VERSION}. It was copied rather than symlinked, so it no longer tracks upgrades and may describe tools or actions that have since changed. Ask the user whether to replace it with a symlink that stays current:\n\n${install}\n\nDo not delete or replace their file without asking first - and note the skill is read by the client at session start, so it only takes effect in a new session.\n`;
+      ? `\n\n---\n\n**Setup nudge (one-time):** No devharness Agent Skill was found in this project or your home directory (checked \`.claude/skills/\`, \`.agents/skills/\`, and installed plugins). Ask the user if they'd like it installed - if they agree, run:\n\n${install}\n\nDo not create the symlink without asking first. This message stops appearing once the skill is installed anywhere it would be scanned.\n`
+      : `\n\n---\n\n**Stale skill:** The devharness Agent Skill at \`${skillState.path}\` is from version ${skillState.installedVersion ?? 'an unstamped release'}, but this server is ${SERVER_VERSION}. It was copied rather than symlinked, so it no longer tracks upgrades and may describe tools or actions that have since changed. Ask the user whether to replace it with a symlink that stays current:\n\n${install}\n\nDo not delete or replace their file without asking first - and note the skill is read by the client at session start, so it only takes effect in a new session.\n`;
 
     return instructions + nudge;
   } catch (error) {

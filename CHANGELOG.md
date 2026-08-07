@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The skill setup nudge no longer fires when the skill came from a plugin.**
+  It only looked in `.claude/skills/` and `.agents/skills/`, so a plugin install
+  - which ships the skill itself - still got told to go and install one. It now
+  also checks the plugin cache, and looks for `devharness` rather than the old
+  `cdp-tools` directory name.
+
 ### Changed
 
 - **Plugin content moved to `plugin/`** (`plugin/.claude-plugin/`,
