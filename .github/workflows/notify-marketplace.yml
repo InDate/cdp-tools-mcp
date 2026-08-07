@@ -1,0 +1,30 @@
+name: Notify marketplace
+
+# A v* tag is the release decision. This tells the marketplace a new pin is
+# available; the marketplace opens a PR rather than repinning itself, so the
+# tag publishing to npm and the tag reaching plugin users stay separate steps.
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dispatch pin request
+        env:
+          # Fine-grained PAT, contents+pull-requests write on InDate/indate-tools
+          # only. GITHUB_TOKEN cannot reach another repository.
+          GH_TOKEN: ${{ secrets.MARKETPLACE_DISPATCH_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh api repos/InDate/indate-tools/dispatches \
+            -f event_type=plugin-release \
+            -F client_payload[name]=devharness \
+            -F client_payload[version]="$VERSION" \
+            -F client_payload[sha]="$GITHUB_SHA" \
+            -F client_payload[ref]="$GITHUB_REF_NAME"
+          echo "Requested pin: devharness $VERSION @ ${GITHUB_SHA:0:8}"
