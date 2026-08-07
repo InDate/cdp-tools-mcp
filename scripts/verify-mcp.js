@@ -142,6 +142,65 @@ function verifySkillVersionStamp() {
   }
 }
 
+/**
+ * Docs that show tool calls in prose rather than enumerating the surface.
+ * These are not checked for coverage - a guide has no duty to mention every
+ * action - but every call they *do* show must be real.
+ */
+const CALL_EXAMPLE_DOCS = [
+  'plugin/skills/devharness/references/sequences.md',
+  'plugin/skills/devharness/SKILL.md',
+];
+
+/**
+ * Fail on a documented `tool({ action: 'x' })` whose action does not exist.
+ *
+ * The enumerating catalogs are already gated, but the guides were not, and
+ * they carry the most call examples - sequences.md alone is 31KB of them.
+ * A wrong action in a guide is worse than a stale catalog: an agent copies
+ * the call verbatim and it fails at runtime.
+ */
+function verifyDocumentedCalls(tools) {
+  const actionsByTool = new Map();
+  for (const tool of tools) {
+    const actions = tool.inputSchema?.properties?.action?.enum;
+    if (Array.isArray(actions)) actionsByTool.set(tool.name, new Set(actions));
+  }
+
+  let ok = true;
+
+  for (const relPath of CALL_EXAMPLE_DOCS) {
+    let markdown;
+    try {
+      markdown = readFileSync(join(REPO_ROOT, relPath), 'utf-8');
+    } catch (error) {
+      console.error(`✗ Cannot read ${relPath}: ${error.message}`);
+      ok = false;
+      continue;
+    }
+
+    const bad = [];
+    let checked = 0;
+    // `tool({ action: 'name' ...` - the shape every call example uses.
+    for (const [, tool, action] of markdown.matchAll(/(\w+)\(\{\s*action:\s*['"]([A-Za-z][A-Za-z0-9]*)['"]/g)) {
+      const known = actionsByTool.get(tool);
+      if (!known) continue;   // not a grouped tool of ours; nothing to check
+      checked++;
+      if (!known.has(action)) bad.push(`${tool}({ action: '${action}' })`);
+    }
+
+    if (bad.length > 0) {
+      const unique = [...new Set(bad)];
+      console.error(`✗ ${relPath} shows ${unique.length} call(s) with actions that do not exist: ${unique.join(', ')}`);
+      ok = false;
+    } else {
+      console.log(`✓ ${relPath} - all ${checked} documented calls use real actions`);
+    }
+  }
+
+  return ok;
+}
+
 function verifyDocumentedToolSurface(liveToolNames) {
   let ok = verifySkillVersionStamp();
 
@@ -264,7 +323,8 @@ serverProcess.stdout.on('data', (data) => {
         // Shipped catalogs must match the real surface (see comment above).
         const surfaceOk = verifyDocumentedToolSurface(toolNames);
         const actionsOk = verifyDescribedActions(tools);
-        if (!surfaceOk || !actionsOk) {
+        const callsOk = verifyDocumentedCalls(tools);
+        if (!surfaceOk || !actionsOk || !callsOk) {
           console.error('');
           console.error('✗ Shipped tool documentation is out of sync with the registered tools.');
           console.error('  Update the files listed above, then re-run. These ship to users.');
