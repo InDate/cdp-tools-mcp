@@ -43,12 +43,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (capped at 30s so a hung port or Docker check cannot wedge the session;
   `config` stays exempt so `config({ action: 'restart' })` is still reachable).
 
-- **`npm version` works again.** Its `version` lifecycle hook stamps the skill's
-  frontmatter, but still looked for it at `skills/cdp-tools/SKILL.md` - a path
-  from before the skill moved into `plugin/`. Every release attempt died on an
-  ENOENT stack with package.json already bumped and no commit or tag made. It
-  now points at `plugin/skills/devharness/SKILL.md` and says which path is
-  missing instead of throwing.
+- **`npm version` works again, and bumps all three places the version lives.**
+  Its lifecycle hook stamps the skill frontmatter, but still looked for it at
+  `skills/cdp-tools/SKILL.md` - a path from before the skill moved into
+  `plugin/` - so every release attempt died on an ENOENT stack with
+  package.json already bumped and no commit or tag made. It now resolves
+  `plugin/skills/devharness/SKILL.md`, and also bumps the `devharness@<version>`
+  pin in `plugin/.mcp.json`. That pin was left to whoever remembered: forget it
+  and the failure lands late and loud, with the tag already public, `publish.yml`
+  failing its verify step, and `notify-marketplace` having meanwhile opened a PR
+  pinning a version npm never received.
 
 - **`npm run build` hot-reloads the live server again.** Its postbuild hook
   still looked for the supervisor pidfile under the pre-0.9.0 `.cdp-tools/`,

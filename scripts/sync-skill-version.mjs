@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Sync the Agent Skill's version stamp to package.json.
+ * Sync the version into the two other places it lives: the Agent Skill's
+ * frontmatter stamp and the version `plugin/.mcp.json` installs.
  *
  * Runs from the npm `version` lifecycle, which fires AFTER package.json is
  * bumped and BEFORE the version commit is made - so staging the file here
@@ -51,3 +52,33 @@ if (updated === skill) {
 
 // Stage it either way: on a re-run the file may already be correct but unstaged.
 execFileSync('git', ['add', skillPath], { cwd: repoRoot });
+
+/**
+ * The third place the version lives: what the plugin actually installs. Left
+ * to a human it gets forgotten, and the failure is late and loud - the tag is
+ * already public, publish.yml fails its verify step, and notify-marketplace
+ * has meanwhile opened a PR pinning a version npm never got.
+ */
+const pinPath = join(repoRoot, 'plugin', '.mcp.json');
+
+if (!existsSync(pinPath)) {
+  console.error(`[sync-skill-version] No plugin manifest at ${pinPath} - update this script if it moved.`);
+  process.exit(1);
+}
+
+const pinSource = readFileSync(pinPath, 'utf-8');
+const pinned = /"devharness@([^"]+)"/.exec(pinSource);
+
+if (!pinned) {
+  console.error(`[sync-skill-version] No "devharness@<version>" arg in ${pinPath} - cannot bump the pin.`);
+  process.exit(1);
+}
+
+if (pinned[1] === version) {
+  console.log(`[sync-skill-version] plugin/.mcp.json already pins ${version}`);
+} else {
+  writeFileSync(pinPath, pinSource.replace(/"devharness@[^"]+"/, `"devharness@${version}"`));
+  console.log(`[sync-skill-version] plugin/.mcp.json pinned ${pinned[1]} -> ${version}`);
+}
+
+execFileSync('git', ['add', pinPath], { cwd: repoRoot });
