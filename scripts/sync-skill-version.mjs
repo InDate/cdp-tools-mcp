@@ -16,13 +16,21 @@
  * getSkillInstallState in src/index.ts.
  */
 
-import { readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
-const skillPath = join(repoRoot, 'skills', 'cdp-tools', 'SKILL.md');
+const skillPath = join(repoRoot, 'plugin', 'skills', 'devharness', 'SKILL.md');
+
+if (!existsSync(skillPath)) {
+  // A raw ENOENT stack out of the npm `version` lifecycle reads as "release is
+  // broken" rather than "this path moved" - which is exactly what happened when
+  // the skill moved out of skills/cdp-tools/.
+  console.error(`[sync-skill-version] No SKILL.md at ${skillPath} - update this script if the skill moved.`);
+  process.exit(1);
+}
 
 const { version } = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf-8'));
 const skill = readFileSync(skillPath, 'utf-8');
