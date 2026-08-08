@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Guard blocks now push, instead of only surfacing on the next tool call.**
+  Every new block appends one JSON line to `.devharness/logs/blocks.jsonl`
+  (`{ts, guard, tool, detail, resolve}`) covering all five guards: `port`,
+  `breakpoint`, `pendingStartup`, `bug`, `duplicateSession`. Until now a dev
+  server that died while the agent was editing files stayed invisible until the
+  agent happened to call devharness again. The skill and `docs/instructions.md`
+  show the Claude Code `Monitor` command that tails it, so the block arrives as
+  a notification. Lines are deduplicated per block, not per blocked call - the
+  same block re-firing stays quiet until a call clears every guard.
+
 - **The skill is 42% smaller** (13.6k -> 7.9k characters) with no loss of tool
   names, actions, or exact error strings. It loads into the context of every
   session that touches debugging, so prose there is a recurring cost: merged the
@@ -21,6 +31,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   paths into what may be a public repository.
 
 ### Fixed
+
+- **Tool calls no longer run before state recovery finishes.** The transport
+  started serving at `server.connect()`, but managed servers, monitored ports
+  and pending startup failures were only restored several steps later - so the
+  opening calls of a session were answered against an empty world. A dev server
+  that had died in the previous session did not block, and an
+  `acknowledgeStartup` issued in that window acknowledged a failure that had not
+  been restored yet: it reported success, the next call went through, and then
+  the block reappeared as recovery landed. Calls now wait on a startup gate
+  (capped at 30s so a hung port or Docker check cannot wedge the session;
+  `config` stays exempt so `config({ action: 'restart' })` is still reachable).
+
+- **`npm run build` hot-reloads the live server again.** Its postbuild hook
+  still looked for the supervisor pidfile under the pre-0.9.0 `.cdp-tools/`,
+  so every build silently found nothing and left the running server on stale
+  code while the build looked successful. It now checks `.devharness/` first
+  and falls back to `.cdp-tools/`.
 
 - **The skill setup nudge no longer fires when the skill came from a plugin.**
   It only looked in `.claude/skills/` and `.agents/skills/`, so a plugin install

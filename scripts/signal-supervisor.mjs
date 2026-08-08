@@ -14,15 +14,28 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-const pidFilePath = join(process.cwd(), '.cdp-tools', 'mcp-supervisor.pid');
+// Mirrors resolveStateDir in src/helpers/paths.ts: `.cdp-tools` is the pre-0.9.0
+// name, kept as a fallback for a checkout the server has not migrated yet.
+const candidatePidFiles = ['.devharness', '.cdp-tools'].map(
+  (dir) => join(process.cwd(), dir, 'mcp-supervisor.pid')
+);
 const note = (message) => console.error(`[signal-supervisor] ${message}`);
 const RECONNECT_HINT = 'run /mcp in Claude Code to pick up this build';
 
 let pid;
-try {
-  pid = parseInt(readFileSync(pidFilePath, 'utf-8').trim(), 10);
-} catch {
-  note(`No pidfile at ${pidFilePath} - nothing to reload (${RECONNECT_HINT}).`);
+let pidFilePath;
+for (const candidate of candidatePidFiles) {
+  try {
+    pid = parseInt(readFileSync(candidate, 'utf-8').trim(), 10);
+    pidFilePath = candidate;
+    break;
+  } catch {
+    // Try the next location
+  }
+}
+
+if (pidFilePath === undefined) {
+  note(`No pidfile at ${candidatePidFiles.join(' or ')} - nothing to reload (${RECONNECT_HINT}).`);
   process.exit(0);
 }
 

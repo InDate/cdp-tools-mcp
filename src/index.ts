@@ -63,6 +63,8 @@ import { ServerManager, detectAutoRestartCommand } from './server-manager.js';
 import { configManager } from './config.js';
 import { ToolError } from './tool-error.js';
 import { checkPortFailures, checkBreakpointPause, checkBugBlocking, checkPendingStartups, checkDuplicateSession, prependToResponse, appendToResponse, buildStatusSuffix, type StatusLineItem } from './tool-response.js';
+import { recordBlockEvent, clearBlockEvents } from './block-events.js';
+import { createStartupGate } from './startup-gate.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock, getMessage, getFormattedResponse } from './messages.js';
 import { setChromeLauncher } from './error-helpers.js';
 import { createServer } from 'net';
@@ -92,6 +94,13 @@ const SERVER_VERSION: string = (() => {
     return '0.0.0';
   }
 })();
+
+/** Tool calls wait on this until serverManager.initialize() has restored state. */
+const startupGate = createStartupGate({
+  timeoutMs: 30_000,
+  onTimeout: (ms) =>
+    console.error(`[devharness] Startup recovery still running after ${ms}ms - serving tools anyway`),
+});
 
 /**
  * Which build is actually answering, so a session can tell whether the code it
@@ -1578,6 +1587,16 @@ function registerToolHandlers(server: Server) {
       };
     }
 
+    // The transport starts serving before serverManager.initialize() has
+    // restored state, so a call landing in that window sees an empty world: a
+    // dead server's guard silently passes, and `acknowledgeStartup` in there
+    // acknowledges nothing and reverts as soon as recovery lands. Wait for it.
+    // `config` is exempt: it reads no server state, and `config restart` is the
+    // escape hatch you want available precisely when recovery is what's stuck.
+    if (toolName !== 'config') {
+      await startupGate.wait();
+    }
+
     // Check for tool dependency conflicts (blocks ALL tools except config)
     if (toolName !== 'config' && configManager.hasDependencyConflicts()) {
       const conflicts = configManager.getDependencyConflicts();
@@ -1630,6 +1649,7 @@ Edit ${configPath} to resolve, then restart the MCP server.`,
     const portCheck = checkPortFailures(failedPorts, toolName);
 
     if (portCheck.blocked) {
+      await recordBlockEvent(portCheck.block, toolName);
       return portCheck.response;
     }
 
@@ -1643,6 +1663,7 @@ Edit ${configPath} to resolve, then restart the MCP server.`,
     );
 
     if (breakpointCheck.blocked) {
+      await recordBlockEvent(breakpointCheck.block, toolName);
       return breakpointCheck.response;
     }
 
@@ -1651,12 +1672,14 @@ Edit ${configPath} to resolve, then restart the MCP server.`,
     const pendingStartupCheck = checkPendingStartups(pendingStartupFailures, toolName);
 
     if (pendingStartupCheck.blocked) {
+      await recordBlockEvent(pendingStartupCheck.block, toolName);
       return pendingStartupCheck.response;
     }
 
     // Check for blocking bugs from recordings
     const bugCheck = await checkBugBlocking(toolName, validation.data as Record<string, unknown>);
     if (bugCheck.blocked) {
+      await recordBlockEvent(bugCheck.block, toolName);
       return bugCheck.response;
     }
 
@@ -1664,8 +1687,12 @@ Edit ${configPath} to resolve, then restart the MCP server.`,
     const duplicateInfo = getDuplicateSessionInfo();
     const duplicateCheck = checkDuplicateSession(duplicateInfo, toolName);
     if (duplicateCheck.blocked) {
+      await recordBlockEvent(duplicateCheck.block, toolName);
       return duplicateCheck.response;
     }
+
+    // Every guard passed - a block that recurs later is a new event
+    clearBlockEvents();
 
     // Pass validated data to handler
     try {
@@ -2118,8 +2145,15 @@ async function main() {
   serverClaims.collectDeadSessions();
   await serverClaims.registerSession(process.cwd());
 
-  // Initialize server manager - recover running servers and start auto-run servers
-  const serverInitResult = await serverManager.initialize();
+  // Initialize server manager - recover running servers and start auto-run servers.
+  // Tool calls queue behind this (see waitForStartupRecovery); release the gate
+  // even if recovery throws, or every later call would wait out the timeout.
+  let serverInitResult: Awaited<ReturnType<typeof serverManager.initialize>>;
+  try {
+    serverInitResult = await serverManager.initialize();
+  } finally {
+    startupGate.markComplete();
+  }
   if (serverInitResult.recovered.length > 0) {
     console.error(`[devharness] Recovered ${serverInitResult.recovered.length} running server(s): ${serverInitResult.recovered.join(', ')}`);
   }

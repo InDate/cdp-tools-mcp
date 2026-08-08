@@ -63,6 +63,23 @@ Server merges and re-validates. Same token, repeat until it passes. Expires in 5
 
 **Guard blocked a valid call** (dead port, breakpoint pause) → it was already recorded. Acknowledge (`server({ action: 'acknowledgePort' })`, `acknowledgeStartup`), then use the footer's `replay` hint. Don't rebuild the arguments; don't use a `continuationToken` here.
 
+## Get told the moment a guard blocks
+
+Guards only surface on your *next* devharness call, so a server that dies while you're editing files stays invisible until you happen to call back. Every new block also appends one JSON line to `.devharness/logs/blocks.jsonl` — `{ts, guard, tool, detail, resolve}`, one of `port`, `breakpoint`, `pendingStartup`, `bug`, `duplicateSession`.
+
+Arm a Claude Code Monitor once, right after `launchChrome`/`server start`:
+
+```
+Monitor({
+  command: "mkdir -p .devharness/logs && touch .devharness/logs/blocks.jsonl && tail -f -n0 .devharness/logs/blocks.jsonl",
+  description: "devharness guard blocks",
+  persistent: true,
+  timeout_ms: 3600000
+})
+```
+
+`-n0` skips history — you only want blocks from now on. One line per *new* block, not per blocked call; the same block re-firing stays quiet until a call gets through all guards and it recurs. Act on the event's `resolve` field.
+
 ## Restarting devharness
 
 If devharness itself is stuck (not the target app), restart it — don't wait to be asked.

@@ -7,6 +7,7 @@ import type { PortFailureInfo, PendingStartupFailureInfo, PendingRestartInfo } f
 import type { Connection } from './connection-manager.js';
 import { hasPendingBugs, getPendingBugs } from './issue-tracker.js';
 import { createErrorResponse } from './messages.js';
+import type { BlockEventInfo } from './block-events.js';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -252,6 +253,8 @@ export interface ToolResponse {
 export interface BlockingResponse {
   blocked: true;
   response: ToolResponse;
+  /** Identity/summary for the blocks.jsonl event stream. */
+  block?: BlockEventInfo;
 }
 
 /**
@@ -298,6 +301,12 @@ export function checkPortFailures(
           },
         ],
         isError: true
+      },
+      block: {
+        guard: 'port',
+        key: blockingPorts.map(p => p.port).sort((a, b) => a - b).join(','),
+        detail: `Monitored port(s) down: ${blockingPorts.map(p => p.description ? `${p.port} (${p.description})` : `${p.port}`).join(', ')}`,
+        resolve: `server({ action: 'acknowledgePort', port: ${blockingPorts[0].port} })`,
       }
     };
   }
@@ -353,7 +362,13 @@ export async function checkBugBlocking(toolName: string, toolArgs?: Record<strin
 
   return {
     blocked: true,
-    response: createErrorResponse('BUGS_BLOCKING', { bugList })
+    response: createErrorResponse('BUGS_BLOCKING', { bugList }),
+    block: {
+      guard: 'bug',
+      key: pendingBugs.map(b => b.id).sort((a, b) => a - b).join(','),
+      detail: `Pending bug(s): ${pendingBugs.map(b => `#${b.id} "${b.title}"`).join(', ')}`,
+      resolve: `issues({ action: 'acknowledge', id: ${pendingBugs[0].id} })`,
+    }
   };
 }
 
@@ -494,6 +509,18 @@ Other tools are blocked until execution is resumed or acknowledged.`,
         },
       ],
       isError: true
+    },
+    block: {
+      guard: 'breakpoint',
+      key: pausedConnections.map(p => {
+        const loc = p.location ? `@${p.location.url}:${p.location.lineNumber}` : '';
+        return `${p.reference}${loc}`;
+      }).sort().join(','),
+      detail: `Paused at breakpoint: ${pausedConnections.map(p => {
+        const loc = p.location ? ` at ${p.location.url}:${p.location.lineNumber}` : '';
+        return `"${p.reference}"${loc}`;
+      }).join(', ')}`,
+      resolve: `execution({ action: 'resume' }) or execution({ action: 'acknowledge' })`,
     }
   };
 }
@@ -572,6 +599,15 @@ export function checkPendingStartups(
         },
       ],
       isError: true
+    },
+    block: {
+      guard: 'pendingStartup',
+      key: failures.map(f => `${f.serverId}:${f.reason}`).sort().join(','),
+      detail: [
+        timeoutFailures.length > 0 ? `startup timeout: ${timeoutFailures.map(f => `"${f.serverId}"`).join(', ')}` : '',
+        diedFailures.length > 0 ? `died before port detected: ${diedFailures.map(f => `"${f.serverId}"`).join(', ')}` : '',
+      ].filter(Boolean).join('; '),
+      resolve: `server({ action: 'acknowledgeStartup', serverId: '${failures[0].serverId}' })`,
     }
   };
 }
@@ -630,6 +666,12 @@ Another Claude session has connected with the same session ID:
           },
         ],
         isError: true
+      },
+      block: {
+        guard: 'duplicateSession',
+        key: `original:${info.sessionId}`,
+        detail: `Duplicate MCP session for ${info.shortId} - this session is the original, duplicate Claude PID(s) ${duplicatePpids.join(', ') || duplicatePids.join(', ')}`,
+        resolve: `kill ${duplicatePpids.length > 0 ? duplicatePpids.join(' ') : duplicatePids.join(' ')}`,
       }
     };
   } else {
@@ -657,6 +699,12 @@ Another Claude session is already running with this session ID:
           },
         ],
         isError: true
+      },
+      block: {
+        guard: 'duplicateSession',
+        key: `duplicate:${info.sessionId}`,
+        detail: `Duplicate MCP session for ${info.shortId} - this session is the duplicate, original Claude PID ${firstPpid}`,
+        resolve: `claude --resume ${info.sessionId} --fork-session`,
       }
     };
   }

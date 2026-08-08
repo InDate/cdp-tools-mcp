@@ -120,6 +120,29 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 - **Missing/invalid parameters**: the error includes a `continuationToken` and `missingParameters` (name/type/description/enum). Retry with just `{ continuationToken, <missing/bad field(s)> }` - don't resend everything. Expires after 5 min.
 - **A validated call gets blocked by a guard** (port failure, dead server, breakpoint pause): the response footer shows `**Repeat:** replay({ action: 'repeat', indices: [N] })`. Acknowledge the guard (e.g. `server({ action: 'acknowledgePort' })`), then use that hint to resume the exact call. Don't reuse a `continuationToken` here - that's for fixing bad input, not for retrying an already-valid call.
 
+## Getting notified when a guard blocks
+
+Guards only surface on the *next* tool call, so a server that dies while you're editing files stays invisible until you call back into devharness. Every new block also appends one JSON line to `.devharness/logs/blocks.jsonl`:
+
+```json
+{"ts":"2026-08-08T03:21:45.588Z","guard":"pendingStartup","tool":"navigate","detail":"died before port detected: \"web\"","resolve":"server({ action: 'acknowledgeStartup', serverId: 'web' })"}
+```
+
+`guard` is one of `port`, `breakpoint`, `pendingStartup`, `bug`, `duplicateSession`. Lines are deduplicated: one per *new* block, not one per blocked call. The same block re-firing on later calls stays quiet until a call clears every guard and the block recurs.
+
+In Claude Code, tail it with a persistent Monitor so blocks arrive as notifications while you work on something else:
+
+```
+Monitor({
+  command: "mkdir -p .devharness/logs && touch .devharness/logs/blocks.jsonl && tail -f -n0 .devharness/logs/blocks.jsonl",
+  description: "devharness guard blocks",
+  persistent: true,
+  timeout_ms: 3600000
+})
+```
+
+Any other client can watch the same file. `-n0` skips existing history so you only see blocks from that point on.
+
 ## Restarting devharness
 
 If devharness itself seems stuck or broken (not the target app), restart it yourself rather than asking the user to reconnect: `config({ action: 'restart' })`. Falls back to `kill -USR2 $(cat .devharness/mcp-supervisor.pid)` via Bash if that action reports `CONFIG_RESTART_NOT_SUPERVISED` (e.g. a bare `node build/index.js`, not through the supervisor). Editing devharness's own source and running `npm run build` triggers the same restart automatically via its postbuild hook - `config({ action: 'status' })` reports which build is actually answering (entry file, its timestamp, server and supervisor pids), so a rebuild that signalled the wrong supervisor is visible rather than silent. Either way, this kills any Chrome instances it launched (relaunch with `launchChrome`) but managed dev servers (`server` tool) survive and reattach automatically.
