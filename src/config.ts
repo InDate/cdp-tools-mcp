@@ -251,6 +251,16 @@ export interface CdpToolsConfig {
   clickValidation: ClickValidationConfig;
   debug: DebugConfig;
   tools: ToolsConfig;
+  github: GithubConfig;
+}
+
+export interface GithubConfig {
+  /** Off switch for publish/sync/import/link/pullSequence, editable by hand
+   *  so it does not depend on an agent to reach. */
+  enabled: boolean;
+  /** owner/name. '' lets gh infer it from the project's git remote. */
+  repo: string;
+  timeoutMs: number;
 }
 
 /**
@@ -308,6 +318,11 @@ const DEFAULT_CONFIG: CdpToolsConfig = {
   tools: {
     enabled: ['issues'],  // All tools enabled by default
     disabled: [],
+  },
+  github: {
+    enabled: true,
+    repo: '',  // '' = let gh infer it from the git remote
+    timeoutMs: 20000,
   },
 };
 
@@ -713,6 +728,11 @@ export class ConfigManager {
       tools: {
         enabled: loaded.tools?.enabled ?? defaults.tools.enabled,
         disabled: loaded.tools?.disabled ?? defaults.tools.disabled,
+      },
+      github: {
+        enabled: loaded.github?.enabled ?? defaults.github.enabled,
+        repo: loaded.github?.repo ?? defaults.github.repo,
+        timeoutMs: loaded.github?.timeoutMs ?? defaults.github.timeoutMs,
       },
     };
   }

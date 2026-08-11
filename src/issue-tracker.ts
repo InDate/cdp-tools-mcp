@@ -20,6 +20,25 @@ import { atomicWriteFile } from './atomic-write.js';
 export type IssueType = 'bug' | 'feature';
 export type IssueStatus = 'pending' | 'acknowledged' | 'in_progress' | 'fixed' | 'implemented';
 
+/** GitHub's `stateReason` for a closed issue, copied verbatim (lowercased).
+ *  Kept out of IssueStatus: the dashboard hub reads issue files written by
+ *  other projects' devharness versions, and a status token an older reader
+ *  doesn't know counts a closed issue as active. */
+export type IssueClosedReason = 'completed' | 'not_planned' | 'duplicate';
+
+const CLOSED_REASONS: ReadonlySet<string> = new Set(['completed', 'not_planned', 'duplicate']);
+const COMPLETED_STATUSES: ReadonlySet<string> = new Set(['fixed', 'implemented']);
+
+/** Whether a status means the issue is closed, whatever the reason. */
+export function isCompletedStatus(status: unknown): boolean {
+  return typeof status === 'string' && COMPLETED_STATUSES.has(status);
+}
+
+/** The closed status for a type - the one open/closed mapping devharness owns. */
+export function completedStatusFor(type: IssueType): IssueStatus {
+  return type === 'bug' ? 'fixed' : 'implemented';
+}
+
 export interface IssueComment {
   timestamp: Date;
   text: string;
@@ -40,6 +59,17 @@ export interface TrackedIssue {
   startedAt?: Date;
   resolvedAt?: Date;
   recordingName: string;
+  /** Upstream issue number. Its absence is what makes an issue unpublished. */
+  github?: number;
+  githubRepo?: string;
+  closedReason?: IssueClosedReason;
+  /** When both sides last agreed - compared against GitHub's updatedAt. */
+  githubSyncedAt?: Date;
+  /** sha256 of the body at that moment, to detect a local edit since. */
+  githubBodyHash?: string;
+  /** Frontmatter keys this version doesn't know, re-emitted verbatim so a
+   *  newer field (or a hand-edit) survives a rewrite by an older build. */
+  extraFrontmatter?: Record<string, string>;
   /** Absolute path to the issue's .md file on disk. */
   filePath: string;
 }
@@ -163,6 +193,29 @@ function parseBodyAndComments(rest: string): { body: string; comments: IssueComm
   return { body, comments };
 }
 
+/** Keys this version owns. Anything else is preserved verbatim rather than
+ *  dropped - the files are hand-editable and may be written by a newer build. */
+const KNOWN_FRONTMATTER_KEYS: ReadonlySet<string> = new Set([
+  'github', 'id', 'type', 'status', 'title', 'labels', 'sequenceFile', 'startUrl',
+  'recordingName', 'githubRepo', 'closedReason', 'reportedAt', 'acknowledgedAt',
+  'startedAt', 'resolvedAt', 'githubSyncedAt', 'githubBodyHash',
+]);
+
+/** Raw (unparsed) values for keys we don't know, so re-emission is lossless. */
+function collectExtraFrontmatter(block: string): Record<string, string> | undefined {
+  const extra: Record<string, string> = {};
+  for (const line of block.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const idx = line.indexOf(':');
+    if (idx === -1) continue;
+    const key = line.slice(0, idx).trim();
+    const rawValue = line.slice(idx + 1).trim();
+    if (!rawValue || KNOWN_FRONTMATTER_KEYS.has(key)) continue;
+    extra[key] = rawValue;
+  }
+  return Object.keys(extra).length > 0 ? extra : undefined;
+}
+
 function parseIssueFile(raw: string, filePath: string): TrackedIssue | null {
   const match = raw.match(FRONTMATTER_RE);
   if (!match) return null;
@@ -175,6 +228,14 @@ function parseIssueFile(raw: string, filePath: string): TrackedIssue | null {
 
   return {
     id,
+    github: typeof fm.github === 'number' ? fm.github : undefined,
+    githubRepo: typeof fm.githubRepo === 'string' ? fm.githubRepo : undefined,
+    // Stricter than status, which is cast straight through below: this field
+    // gates network writes, so an unrecognised token must not survive.
+    closedReason: CLOSED_REASONS.has(fm.closedReason) ? fm.closedReason as IssueClosedReason : undefined,
+    githubSyncedAt: parseDate(fm.githubSyncedAt),
+    githubBodyHash: typeof fm.githubBodyHash === 'string' ? fm.githubBodyHash : undefined,
+    extraFrontmatter: collectExtraFrontmatter(match[1]),
     type: fm.type as IssueType,
     status: fm.status as IssueStatus,
     title: typeof fm.title === 'string' ? fm.title : '',
@@ -194,6 +255,9 @@ function parseIssueFile(raw: string, filePath: string): TrackedIssue | null {
 
 function serializeIssueFile(issue: TrackedIssue): string {
   const fm: string[] = ['---'];
+  // First, matching the stamps already on disk, so stamped files round-trip
+  // byte-identically.
+  if (issue.github !== undefined) fm.push(`github: ${issue.github}`);
   fm.push(`id: ${issue.id}`);
   fm.push(`type: ${issue.type}`);
   fm.push(`status: ${issue.status}`);
@@ -202,10 +266,17 @@ function serializeIssueFile(issue: TrackedIssue): string {
   if (issue.sequenceFile) fm.push(`sequenceFile: ${yamlQuote(issue.sequenceFile)}`);
   if (issue.startUrl) fm.push(`startUrl: ${yamlQuote(issue.startUrl)}`);
   if (issue.recordingName) fm.push(`recordingName: ${yamlQuote(issue.recordingName)}`);
+  if (issue.githubRepo) fm.push(`githubRepo: ${yamlQuote(issue.githubRepo)}`);
+  if (issue.closedReason) fm.push(`closedReason: ${issue.closedReason}`);
   fm.push(`reportedAt: ${issue.reportedAt.toISOString()}`);
   if (issue.acknowledgedAt) fm.push(`acknowledgedAt: ${issue.acknowledgedAt.toISOString()}`);
   if (issue.startedAt) fm.push(`startedAt: ${issue.startedAt.toISOString()}`);
   if (issue.resolvedAt) fm.push(`resolvedAt: ${issue.resolvedAt.toISOString()}`);
+  if (issue.githubSyncedAt) fm.push(`githubSyncedAt: ${issue.githubSyncedAt.toISOString()}`);
+  if (issue.githubBodyHash) fm.push(`githubBodyHash: ${yamlQuote(issue.githubBodyHash)}`);
+  for (const [key, rawValue] of Object.entries(issue.extraFrontmatter ?? {})) {
+    fm.push(`${key}: ${rawValue}`);
+  }
   fm.push('---');
 
   const bodySections = [issue.body.trim()];
@@ -534,7 +605,7 @@ export async function getIssues(filter?: IssueFilter): Promise<TrackedIssue[]> {
   let result = Array.from(index!.values());
 
   if (!filter?.includeCompleted) {
-    result = result.filter(i => i.status !== 'fixed' && i.status !== 'implemented');
+    result = result.filter(i => !isCompletedStatus(i.status));
   }
   if (filter?.type) {
     result = result.filter(i => i.type === filter.type);
@@ -580,6 +651,33 @@ export async function updateIssueStatus(id: number, status: IssueStatus): Promis
   return writeAndCacheIssue(issue);
 }
 
+/** Fields sync may write. Kept separate from updateIssueStatus because sync
+ *  has to set a status AND clear resolvedAt on reopen, which that function's
+ *  timestamp switch cannot express. */
+export type IssueFieldPatch = Partial<Pick<TrackedIssue,
+  'status' | 'title' | 'body' | 'labels' | 'closedReason' | 'resolvedAt' |
+  'github' | 'githubRepo' | 'githubSyncedAt' | 'githubBodyHash'>>;
+
+export async function updateIssueFields(id: number, patch: IssueFieldPatch): Promise<TrackedIssue | undefined> {
+  await ensureIndexLoaded();
+  const issue = index!.get(id);
+  if (!issue) return undefined;
+
+  Object.assign(issue, patch);
+  return writeAndCacheIssue(issue);
+}
+
+/** The local issue linked to an upstream number, if any. */
+export async function findIssueByGithub(github: number, repo?: string): Promise<TrackedIssue | undefined> {
+  await ensureIndexLoaded();
+  for (const issue of index!.values()) {
+    if (issue.github !== github) continue;
+    if (repo && issue.githubRepo && issue.githubRepo !== repo) continue;
+    return issue;
+  }
+  return undefined;
+}
+
 export async function updateIssueSequenceFile(id: number, sequenceFile: string): Promise<TrackedIssue | undefined> {
   await ensureIndexLoaded();
   const issue = index!.get(id);
@@ -599,6 +697,22 @@ export async function addIssueComment(id: number, text: string): Promise<Tracked
   if (!trimmed) return issue;
 
   issue.comments.push({ timestamp: new Date(), text: trimmed });
+  return writeAndCacheIssue(issue);
+}
+
+/** Rewrite one comment's text in place, found by its timestamp (e.g. to stamp
+ *  the GitHub id a push just created for it). */
+export async function updateIssueCommentText(
+  id: number, timestamp: Date, text: string
+): Promise<TrackedIssue | undefined> {
+  await ensureIndexLoaded();
+  const issue = index!.get(id);
+  if (!issue) return undefined;
+
+  const comment = issue.comments.find(c => c.timestamp.getTime() === timestamp.getTime());
+  if (!comment) return issue;
+
+  comment.text = text;
   return writeAndCacheIssue(issue);
 }
 

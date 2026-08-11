@@ -11,7 +11,7 @@
  * resolveStateDir.
  */
 
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { homedir, tmpdir } from 'os';
 import { existsSync, accessSync, constants, renameSync } from 'fs';
 import { z } from 'zod';
@@ -166,6 +166,16 @@ export function getOutputPath(
   }
 
   return join(base, ...segments);
+}
+
+/**
+ * The project directory holding .devharness - the cwd for subprocesses that
+ * resolve their own context from it (`gh` reading the git remote). Falls back
+ * to the home dir when there is no working-dir storage, where `gh` then fails
+ * with a clear "no repository" rather than acting on the wrong one.
+ */
+export function getProjectDir(): string {
+  return dirname(getOutputPath());
 }
 
 /**

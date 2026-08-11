@@ -30,13 +30,29 @@ import {
   getPendingBugs,
   getIssueSequencesDir,
   generateSequenceFilename,
+  completedStatusFor,
   type TrackedIssue,
   type IssueType,
   type IssueStatus,
 } from '../issue-tracker.js';
 import { checkUrlPort } from '../utils/port-check.js';
+import {
+  handlePublish, handleSync, handleImport, handleLink, handlePullSequence,
+} from '../github/issue-actions.js';
+import { configManager } from '../config.js';
+
+/** GitHub actions can be switched off in config - the override path a user
+ *  can reach without going through an agent. */
+function isGithubEnabled(): boolean {
+  try {
+    return configManager.getConfig().github?.enabled !== false;
+  } catch {
+    return true;
+  }
+}
 const issuesSchema = z.object({
-  action: z.enum(['list', 'create', 'workOn', 'resolve', 'acknowledge', 'comment'])
+  action: z.enum(['list', 'create', 'workOn', 'resolve', 'acknowledge', 'comment',
+    'publish', 'sync', 'import', 'link', 'pullSequence'])
     .describe('Issue action: list (list all issues), create (create new issue), workOn (start working on issue), resolve (opens an interactive browser verification flow and waits for a PERSON to click Fixed/Not Fixed - a human must physically confirm before the issue is marked fixed/implemented, so an agent cannot close an issue this way and should use `comment` to record findings instead), acknowledge (acknowledge pending bugs), comment (append a comment to an issue)'),
   id: z.number().optional()
     .describe('Issue ID (for workOn, resolve, comment actions)'),
@@ -68,6 +84,18 @@ const issuesSchema = z.object({
     .describe('Include fixed/implemented issues in list (default: false, only shows active issues)'),
   includeSequence: z.boolean().optional()
     .describe('Include sequence recording for issue (default: true). When false, no sequence is created and Chrome does not open.'),
+  confirm: z.boolean().optional()
+    .describe('publish/sync: actually write to GitHub (default false - publish only drafts, sync only reports upstream closes)'),
+  github: z.number().int().positive().optional()
+    .describe('Upstream GitHub issue number (import, link)'),
+  repo: z.string().optional()
+    .describe('owner/name override; default is the repo gh infers from the project directory'),
+  take: z.enum(['local', 'remote']).optional()
+    .describe('sync: resolve a conflict on one issue by declaring a winner'),
+  fromComment: z.number().int().positive().optional()
+    .describe('pullSequence: 1-based comment index to read the sequence from (default: the issue body)'),
+  allowPrivilegedSteps: z.boolean().optional()
+    .describe('pullSequence: allow a remote sequence that runs code, writes files, or starts processes'),
 }).strict();
 
 type IssuesArgs = z.infer<typeof issuesSchema>;
@@ -218,11 +246,12 @@ function formatCommentTimeline(issue: TrackedIssue): string {
 export function createIssuesTools(
   executeToolCall: ExecuteToolCall,
   getSequencePath?: (name: string) => Promise<string | null>,
-  getPageForConnection?: (connectionReason: string) => Promise<any>
+  getPageForConnection?: (connectionReason: string) => Promise<any>,
+  getKnownToolNames?: () => string[]
 ) {
   return {
     issues: createTool(
-      'Track and manage bugs and features as Markdown issues (title, Markdown body, labels, comments). Actions: list (show all issues with optional filters), create (create new issue with title/body/labels, optionally linking a sequence), workOn (start working on issue with auto-replay), resolve (HUMAN-ONLY interactive verification: opens a browser overlay and waits for a person to confirm the fix before marking fixed/implemented - agents are refused immediately, use `comment` instead), acknowledge (acknowledge pending bugs to unblock tools), comment (append a Markdown comment to an issue)',
+      'Track and manage bugs and features as Markdown issues (title, Markdown body, labels, comments). Actions: list (show all issues with optional filters), create (create new issue with title/body/labels, optionally linking a sequence), workOn (start working on issue with auto-replay), resolve (HUMAN-ONLY interactive verification: opens a browser overlay and waits for a person to confirm the fix before marking fixed/implemented - agents are refused immediately, use `comment` instead), acknowledge (acknowledge pending bugs to unblock tools), comment (append a Markdown comment to an issue), publish/sync/import/link/pullSequence (GitHub, via the gh CLI; only publish and sync use the network)',
       issuesSchema,
       async (args, abortSignal) => {
         // Initialize tracker on first use
@@ -856,7 +885,7 @@ export function createIssuesTools(
 
             if (verification.resolved) {
               // User confirmed resolution
-              const newStatus: IssueStatus = issue.type === 'bug' ? 'fixed' : 'implemented';
+              const newStatus: IssueStatus = completedStatusFor(issue.type);
               await updateIssueStatus(args.id, newStatus);
 
               return createSuccessResponse('ISSUES_RESOLVED', {
@@ -927,6 +956,29 @@ export function createIssuesTools(
               commentCount: updated?.comments.length ?? issue.comments.length,
               timeline: formatCommentTimeline(updated ?? issue),
             });
+          }
+
+          case 'publish':
+          case 'sync':
+          case 'import':
+          case 'link':
+          case 'pullSequence': {
+            if (!isGithubEnabled()) return createErrorResponse('ISSUES_GITHUB_DISABLED');
+
+            const githubArgs = {
+              id: args.id, github: args.github,
+              repo: args.repo ?? (configManager.getConfig().github?.repo || undefined),
+              confirm: args.confirm,
+              take: args.take, fromComment: args.fromComment,
+              allowPrivilegedSteps: args.allowPrivilegedSteps, type: args.type,
+            };
+            const deps = { runOpts: { signal: abortSignal }, knownTools: getKnownToolNames };
+
+            if (args.action === 'publish') return handlePublish(githubArgs, deps);
+            if (args.action === 'sync') return handleSync(githubArgs, deps);
+            if (args.action === 'import') return handleImport(githubArgs, deps);
+            if (args.action === 'link') return handleLink(githubArgs);
+            return handlePullSequence(githubArgs, deps);
           }
 
           default: {

@@ -220,6 +220,11 @@ export class CommandRecorder {
     this.sequenceWatcher.start();
   }
 
+  /** Directories the sequence watcher is currently attached to. */
+  getWatchedDirs(): string[] {
+    return [...this.watchedDirs];
+  }
+
   /** Stop watching (tests, shutdown). */
   stopSequenceWatch(): void {
     this.sequenceWatcher?.stop();

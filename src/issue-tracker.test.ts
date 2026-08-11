@@ -10,6 +10,9 @@ import {
   getIssues,
   addIssueComment,
   getIssueItemsDir,
+  updateIssueFields,
+  findIssueByGithub,
+  isCompletedStatus,
 } from './issue-tracker.js';
 
 let tempDir: string;
@@ -84,6 +87,96 @@ describe('issue-tracker', () => {
 
     await expect(fsp.access(join(issuesDir, 'issues.csv.bak'))).resolves.toBeUndefined();
     await expect(fsp.access(join(issuesDir, 'issues.csv'))).rejects.toThrow();
+  });
+
+  it('keeps the github stamp and unknown keys across a rewrite (bug 020)', async () => {
+    // A file as it exists on disk today: hand-added `github:` on line 2, plus
+    // a key no version of the serializer knows about.
+    await getIssues();
+    const itemsDir = getIssueItemsDir();
+    await fsp.mkdir(itemsDir, { recursive: true });
+    const file = join(itemsDir, 'bug-042-stamped.md');
+    await fsp.writeFile(file, [
+      '---',
+      'github: 93',
+      'id: 42',
+      'type: bug',
+      'status: acknowledged',
+      'title: "Stamped issue"',
+      'reportedAt: 2026-01-01T00:00:00.000Z',
+      'somethingNewerWrote: "keep me"',
+      '---',
+      '',
+      'Body.',
+      '',
+    ].join('\n'), 'utf-8');
+    // Re-read from disk rather than waiting on fs.watch, which the OS does
+    // not guarantee to fire; watcher pickup has its own test below.
+    __resetForTests();
+
+    // A comment rewrites the whole file - the path that used to drop the stamp.
+    await addIssueComment(42, 'A comment.');
+    __resetForTests();
+
+    const reloaded = await getIssue(42);
+    expect(reloaded!.github).toBe(93);
+    expect(reloaded!.extraFrontmatter).toEqual({ somethingNewerWrote: '"keep me"' });
+    expect(reloaded!.comments).toHaveLength(1);
+
+    const raw = await fsp.readFile(file, 'utf-8');
+    expect(raw.split('\n')[1]).toBe('github: 93');
+    expect(raw).toContain('somethingNewerWrote: "keep me"');
+  });
+
+  it('round-trips the sync fields and rejects an unknown closedReason', async () => {
+    const created = await addIssue({ type: 'bug', title: 'Closed upstream' });
+    await updateIssueFields(created.id, {
+      status: 'fixed',
+      github: 108,
+      githubRepo: 'InDate/devharness',
+      closedReason: 'not_planned',
+      githubSyncedAt: new Date('2026-08-11T04:12:07.918Z'),
+      githubBodyHash: 'abc123',
+    });
+    __resetForTests();
+
+    const reloaded = await getIssue(created.id);
+    expect(reloaded!.github).toBe(108);
+    expect(reloaded!.githubRepo).toBe('InDate/devharness');
+    expect(reloaded!.closedReason).toBe('not_planned');
+    expect(reloaded!.githubSyncedAt?.toISOString()).toBe('2026-08-11T04:12:07.918Z');
+    expect(reloaded!.githubBodyHash).toBe('abc123');
+    // Closed by a reason with no local status of its own, so it still filters out.
+    expect(await getIssues()).toHaveLength(0);
+    expect(isCompletedStatus(reloaded!.status)).toBe(true);
+
+    // A token we don't recognise gates network writes, so it must not survive.
+    await fsp.writeFile(
+      reloaded!.filePath,
+      (await fsp.readFile(reloaded!.filePath, 'utf-8')).replace('closedReason: not_planned', 'closedReason: wontfix'),
+      'utf-8'
+    );
+    __resetForTests();
+    expect((await getIssue(created.id))!.closedReason).toBeUndefined();
+  });
+
+  it('leaves an unstamped file free of github keys', async () => {
+    const created = await addIssue({ type: 'feature', title: 'Never published' });
+    await addIssueComment(created.id, 'Local only.');
+
+    const raw = await fsp.readFile(created.filePath, 'utf-8');
+    expect(raw).not.toContain('github');
+    expect(raw).not.toContain('closedReason');
+  });
+
+  it('finds an issue by its upstream number', async () => {
+    const created = await addIssue({ type: 'bug', title: 'Linked' });
+    await updateIssueFields(created.id, { github: 97, githubRepo: 'InDate/devharness' });
+
+    expect((await findIssueByGithub(97))!.id).toBe(created.id);
+    expect((await findIssueByGithub(97, 'InDate/devharness'))!.id).toBe(created.id);
+    expect(await findIssueByGithub(97, 'someone/else')).toBeUndefined();
+    expect(await findIssueByGithub(999)).toBeUndefined();
   });
 
   it('picks up an externally-written issue file after the debounce window', async () => {

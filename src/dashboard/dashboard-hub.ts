@@ -9,7 +9,7 @@ import { existsSync, readFileSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { getOutputPath, resolveStateDir } from '../helpers/paths.js';
-import { parseIssueFrontmatter } from '../issue-tracker.js';
+import { parseIssueFrontmatter, isCompletedStatus } from '../issue-tracker.js';
 import { writeLock, removeLock, DEFAULT_PORT, MAX_PORT_ATTEMPTS } from './hub-lock.js';
 import type {
   SessionInfo,
@@ -628,7 +628,7 @@ export class DashboardHub {
         if (!fm) continue;
 
         // Only count active issues
-        if (fm.status === 'fixed' || fm.status === 'implemented') continue;
+        if (isCompletedStatus(fm.status)) continue;
 
         if (fm.type === 'bug') bugs++;
         else if (fm.type === 'feature') features++;

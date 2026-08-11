@@ -2363,6 +2363,17 @@ Timed out after {{timeoutSeconds}}s waiting for a human to respond to the verifi
 
 ---
 
+## ISSUES_LOCALHOST_NOT_ACTIVE
+
+**Type:** error
+**Code:** ISSUES_LOCALHOST_NOT_ACTIVE
+
+No server listening at {{startUrl}}
+
+{{message}}
+
+---
+
 ## ISSUES_WORK_STARTED
 
 **Type:** success
@@ -2575,6 +2586,244 @@ Failed to copy sequence "{{sequenceName}}"
 
 **Comments ({{commentCount}}):**
 {{timeline}}
+
+---
+
+## ISSUES_PUBLISH_DRAFT
+
+**Type:** success
+**Summary:** Draft for {{type}} #{{id}} - nothing posted yet
+
+**Draft for {{type}} #{{id}}** → {{repo}}
+
+Nothing has been posted. This is exactly what will go up:
+
+**Title:** {{title}}
+{{#labelsToCreate}}
+**Labels to create on {{repo}}:** {{labelsToCreate}}
+{{/labelsToCreate}}
+**Labels:** {{labels}}
+
+---
+
+{{draftBody}}
+
+---
+
+To post it: `issues({ action: 'publish', id: {{id}}, confirm: true })`
+
+## ISSUES_PUBLISHED
+
+**Type:** success
+**Summary:** {{type}} #{{id}} published as #{{number}}
+
+**Published {{type}} #{{id}}** → {{url}}
+{{#labelsCreated}}
+Created on {{repo}}: {{labelsCreated}}
+{{/labelsCreated}}
+{{#commentsPushed}}
+Pushed {{commentsPushed}} local comment(s).
+{{/commentsPushed}}
+
+## ISSUES_PUBLISH_ALREADY_LINKED
+
+**Type:** error
+**Code:** ISSUES_PUBLISH_ALREADY_LINKED
+
+{{type}} #{{id}} is already linked to {{repo}}#{{number}}
+
+Publishing again would create a duplicate. Use `issues({ action: 'sync', id: {{id}} })` to reconcile the two instead.
+
+## ISSUES_PUBLISH_STAMP_FAILED
+
+**Type:** error
+**Code:** ISSUES_PUBLISH_STAMP_FAILED
+
+The GitHub issue was created, but the local link could not be written
+
+**{{url}} exists.** Local {{type}} #{{id}} does not know about it, so the next `publish` would create a duplicate.
+
+Recover with: `issues({ action: 'link', id: {{id}}, github: {{number}} })`
+
+Cause: {{reason}}
+
+## ISSUES_PUBLISH_TOO_LARGE
+
+**Type:** error
+**Code:** ISSUES_PUBLISH_TOO_LARGE
+
+Body is {{bodyLength}} characters, over GitHub's {{limit}} limit
+
+{{#sequenceLength}}
+The sequence block accounts for {{sequenceLength}} of that. Shorten the repro, or publish without it.
+{{/sequenceLength}}
+
+## ISSUES_SYNC_RESULT
+
+**Type:** success
+**Summary:** Synced {{checked}} linked issue(s)
+
+**Sync: {{repo}}**
+
+{{results}}
+{{#conflictCount}}
+
+**{{conflictCount}} conflict(s)** - both sides changed since the last sync, so nothing was written for those. Resolve with `issues({ action: 'sync', id: <id>, take: 'local' })` or `take: 'remote'`.
+{{/conflictCount}}
+{{#pendingConfirm}}
+
+**Needs confirmation:** {{pendingConfirm}}
+Re-run with `confirm: true` to apply.
+{{/pendingConfirm}}
+
+## ISSUES_SYNC_NOTHING_LINKED
+
+**Type:** success
+**Summary:** No linked issues
+
+No local issue is linked to a GitHub issue yet.
+
+Publish one with `issues({ action: 'publish', id: <id> })`, or adopt an existing upstream issue with `issues({ action: 'link', id: <id>, github: <number> })`.
+
+## ISSUES_IMPORTED
+
+**Type:** success
+**Summary:** Imported {{repo}}#{{number}} as {{type}} #{{id}}
+
+**Imported {{repo}}#{{number}}** as local {{type}} #{{id}} ({{status}})
+
+{{title}}
+
+{{#sequenceFound}}
+The issue carries a sequence. It has not been written to disk - `issues({ action: 'pullSequence', id: {{id}} })` when you want to run it.
+{{/sequenceFound}}
+
+## ISSUES_IMPORT_EXISTS
+
+**Type:** success
+**Summary:** {{repo}}#{{number}} is already local {{type}} #{{id}}
+
+{{repo}}#{{number}} is already tracked as {{type}} #{{id}} ({{status}})
+
+Nothing imported. Use `issues({ action: 'sync', id: {{id}} })` to bring it up to date.
+
+## ISSUES_LINKED
+
+**Type:** success
+**Summary:** {{type}} #{{id}} linked to {{repo}}#{{number}}
+
+**Linked {{type}} #{{id}}** ↔ {{repo}}#{{number}}
+
+No network call was made. Run `issues({ action: 'sync', id: {{id}} })` to reconcile the two.
+
+## ISSUES_SEQUENCE_PULLED
+
+**Type:** success
+**Summary:** Sequence pulled into {{type}} #{{id}}
+
+**Sequence written to `{{sequenceFile}}`** (from {{source}})
+
+{{steps}} steps, using: {{tools}}
+{{#privileged}}
+
+**Privileged steps:** {{privileged}}. These do more than drive a page - read the sequence before running it.
+{{/privileged}}
+
+Run it with `issues({ action: 'workOn', id: {{id}} })`.
+
+## ISSUES_SEQUENCE_NOT_IN_ISSUE
+
+**Type:** error
+**Code:** ISSUES_SEQUENCE_NOT_IN_ISSUE
+
+No sequence block found in {{source}}
+
+A sequence travels as a fenced block tagged `json devharness-sequence`.
+{{#candidates}}
+Comments that do carry one: {{candidates}}. Pass `fromComment: <n>` to pick one.
+{{/candidates}}
+
+## ISSUES_SEQUENCE_INVALID
+
+**Type:** error
+**Code:** ISSUES_SEQUENCE_INVALID
+
+The sequence in {{source}} is not usable
+
+{{reason}}
+
+Nothing was written to disk.
+
+## ISSUES_SEQUENCE_PRIVILEGED_BLOCKED
+
+**Type:** error
+**Code:** ISSUES_SEQUENCE_PRIVILEGED_BLOCKED
+
+This sequence uses privileged tools: {{privileged}}
+
+A sequence from a GitHub issue is a script, not a macro - these steps can run arbitrary code, write files, or start processes:
+
+{{stepList}}
+
+Nothing was written. Read the sequence, then pass `allowPrivilegedSteps: true` if it is what you expect.
+
+## ISSUES_GH_NOT_INSTALLED
+
+**Type:** error
+**Code:** ISSUES_GH_NOT_INSTALLED
+
+The `gh` CLI is not installed
+
+devharness uses `gh` so it never handles your GitHub token. Install it from https://cli.github.com, then `gh auth login`.
+
+Everything else keeps working - only `publish` and `sync` need the network.
+
+## ISSUES_GH_NOT_AUTHENTICATED
+
+**Type:** error
+**Code:** ISSUES_GH_NOT_AUTHENTICATED
+
+`gh` is installed but not authenticated
+
+Run `gh auth login`, then retry. Nothing was changed.
+
+## ISSUES_GH_NO_REPO
+
+**Type:** error
+**Code:** ISSUES_GH_NO_REPO
+
+No GitHub repository for this directory
+
+`gh` could not work out which repository to use from `{{cwd}}`.
+
+Pass `repo: "owner/name"`, or set `github.repo` in the devharness config.
+
+## ISSUES_GH_TIMEOUT
+
+**Type:** error
+**Code:** ISSUES_GH_TIMEOUT
+
+`gh {{command}}` did not finish within {{timeoutSeconds}}s and was cancelled
+
+Nothing was changed locally. If you are offline, everything except `publish` and `sync` still works.
+
+## ISSUES_GH_FAILED
+
+**Type:** error
+**Code:** ISSUES_GH_FAILED
+
+`gh {{command}}` failed
+
+{{detail}}
+
+## ISSUES_GITHUB_DISABLED
+
+**Type:** error
+**Code:** ISSUES_GITHUB_DISABLED
+
+GitHub actions are disabled
+
+Set `github.enabled` to `true` in the devharness config to use `publish`, `sync`, `import` and `pullSequence`.
 
 ---
 

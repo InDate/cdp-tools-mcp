@@ -1546,7 +1546,10 @@ const allTools = {
       const resolved = await resolveConnectionFromReason(connectionReason);
       if (!resolved?.puppeteerManager) return null;
       return resolved.puppeteerManager.getPage();
-    }
+    },
+    // Lazy: allTools is defined below. Lets a pulled sequence be checked
+    // against the live tool list before it is written to disk.
+    (): string[] => Object.keys(allTools)
   ) : {}),
   // Dashboard tools (lazy-initialized in main())
   ...(configManager.isToolEnabled('dashboard') ? createDashboardTools() : {}),

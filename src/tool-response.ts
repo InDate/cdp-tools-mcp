@@ -235,6 +235,22 @@ export interface ToolResponseMeta {
   wait?: WaitToolMeta;
   storage?: StorageToolMeta;
   replay?: ReplayRunMeta;
+  github?: GithubToolMeta;
+}
+
+/** Structured result of a GitHub action on the issues tool. Behaviour reads
+ *  this, never the rendered text. */
+export interface GithubToolMeta {
+  action: 'publish' | 'sync' | 'import' | 'link' | 'pullSequence';
+  repo?: string;
+  /** Upstream issue number, once one exists. */
+  number?: number;
+  url?: string;
+  /** publish: false for a draft, true once it is really on GitHub. */
+  posted?: boolean;
+  changed?: Array<{ id: number; number: number; action: string }>;
+  conflicts?: Array<{ id: number; number: number }>;
+  sequence?: { steps: number; tools: string[]; privileged: string[] };
 }
 
 /**
