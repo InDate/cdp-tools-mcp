@@ -13,7 +13,7 @@ import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import { GhError, ghDetail, type RunGhOptions } from './gh-cli.js';
 import {
   ghRepoName, ghExistingLabels, ghCreateLabel, ghCreateIssue, ghViewIssue, ghListIssues,
-  ghEditBody, ghAddComment, ghCloseIssue,
+  ghEditBody, ghAddComment, ghCloseIssue, ghCurrentUser,
   markComment, commentGithubId, stripCommentMarker, stripLocalMarker,
   bodyHash, classifySync, resolveStatus, unionLabels, closedReasonFrom,
   type RemoteIssue, type RemoteIssueSummary,
@@ -391,6 +391,33 @@ async function applyPull(issue: TrackedIssue, remote: RemoteIssue, now: Date): P
   return `pulled ${bits.join(', ')}`;
 }
 
+/** Push unstamped local comments up, claiming any that are already upstream
+ *  first (a previous push may have posted one and died before its id was
+ *  stored). Returns how many were actually posted. */
+async function pushComments(
+  issueId: number, github: number, repo: string | undefined, opts?: RunGhOptions
+): Promise<number> {
+  const before = (await getIssue(issueId))!;
+  if (!before.comments.some(c => commentGithubId(c.text) === null)) return 0;
+
+  const remote = await ghViewIssue(github, repo, opts);
+  await reconcileComments(issueId, remote.comments);
+
+  let pushed = 0;
+  for (const comment of (await getIssue(issueId))!.comments) {
+    if (commentGithubId(comment.text)) continue;
+    await ghAddComment(github, comment.text, repo, opts);
+    pushed++;
+  }
+  if (pushed > 0) {
+    // gh does not return the new comment ids; re-read the issue so the
+    // pushed comments get stamped and are never pushed twice.
+    const refreshed = await ghViewIssue(github, repo, opts);
+    await reconcileComments(issueId, refreshed.comments);
+  }
+  return pushed;
+}
+
 async function applyPush(
   issue: TrackedIssue, repo: string | undefined, now: Date, opts?: RunGhOptions
 ): Promise<string> {
@@ -399,25 +426,7 @@ async function applyPush(
 
   await ghEditBody(issue.github!, buildPublishBody(issue, sequence), repo, opts);
 
-  if (issue.comments.some(c => commentGithubId(c.text) === null)) {
-    // A previous push may have posted a comment and died before its id was
-    // stored: claim anything already upstream before posting it again.
-    const remote = await ghViewIssue(issue.github!, repo, opts);
-    await reconcileComments(issue.id, remote.comments);
-  }
-
-  let pushed = 0;
-  for (const comment of (await getIssue(issue.id))!.comments) {
-    if (commentGithubId(comment.text)) continue;
-    await ghAddComment(issue.github!, comment.text, repo, opts);
-    pushed++;
-  }
-  if (pushed > 0) {
-    // gh does not return the new comment ids; re-read the issue so the
-    // pushed comments get stamped and are never pushed twice.
-    const refreshed = await ghViewIssue(issue.github!, repo, opts);
-    await reconcileComments(issue.id, refreshed.comments);
-  }
+  const pushed = await pushComments(issue.id, issue.github!, repo, opts);
 
   await updateIssueFields(issue.id, { githubSyncedAt: now, githubBodyHash: bodyHash(prose) });
 
@@ -490,6 +499,14 @@ export async function handleSync(args: GithubActionArgs, deps: GithubActionDeps 
         }
       }
 
+      // Comments are timeline additions, not part of the body hash, so a new
+      // local comment must push even when the body classifies as unchanged
+      // (push already sent them; pull only claimed or imported).
+      if (action !== 'push') {
+        const pushed = await pushComments(issue.id, issue.github!, args.repo, deps.runOpts);
+        if (pushed > 0) details.push(`pushed ${pushed} comment(s)`);
+      }
+
       outcomes.push({
         id: issue.id, number: issue.github!,
         action: details.length > 0 ? details.join(', ') : 'up to date',
@@ -555,6 +572,22 @@ export async function handlePullSequence(
 
     const parsed = parseRemoteSequence(block.content);
     if (!parsed.ok) return createErrorResponse('ISSUES_SEQUENCE_INVALID', { source, reason: parsed.reason });
+
+    // A sequence written by someone else is third-party code that will drive
+    // this machine. Only the account gh is logged in as vouches for itself;
+    // anything else needs a human to read the sequence and confirm once.
+    const author = args.fromComment !== undefined
+      ? remote.comments[args.fromComment - 1]?.author ?? ''
+      : remote.author;
+    if (args.confirm !== true) {
+      const viewer = await ghCurrentUser(deps.runOpts);
+      if (!author || author !== viewer) {
+        return createErrorResponse('ISSUES_SEQUENCE_FOREIGN_AUTHOR', {
+          author: author || 'an unknown account', viewer, source,
+          repo: args.repo ?? issue.githubRepo ?? 'GitHub', number: issue.github,
+        });
+      }
+    }
 
     const audit = auditSequence(parsed.sequence);
 

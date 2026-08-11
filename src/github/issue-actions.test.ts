@@ -13,6 +13,7 @@ import {
   getIssueSequencesDir,
 } from '../issue-tracker.js';
 import { emitSequenceBlock } from './issue-body.js';
+import { bodyHash } from './gh-issues.js';
 
 let tempDir: string;
 /** Every gh invocation, in order, as argv arrays. */
@@ -33,6 +34,7 @@ function installFakeGh() {
     ['repo view', JSON.stringify({ nameWithOwner: 'InDate/devharness' })],
     ['label list', JSON.stringify([{ name: 'bug' }, { name: 'enhancement' }])],
     ['issue list', JSON.stringify([])],
+    ['api user', 'InDate\n'],
   ]);
 
   setGhSpawnForTests(((_cmd: string, args: string[]) => {
@@ -454,6 +456,28 @@ describe('sync', () => {
     expect((await getIssue(issue.id))!.comments).toHaveLength(1);
   });
 
+  it('pushes a new local comment even when the body is unchanged', async () => {
+    const issue = await linkedIssue({ githubBodyHash: bodyHash('Original body') });
+    await addIssueComment(issue.id, 'Late note');
+    const view = (comments: any[]) => JSON.stringify({
+      number: 92, title: 'Linked', body: 'Original body', state: 'OPEN', stateReason: null,
+      labels: [], updatedAt: '2026-07-01T00:00:00.000Z', url: 'u', comments,
+    });
+    responses.set('issue list', JSON.stringify([
+      { number: 92, state: 'OPEN', stateReason: null, labels: [], updatedAt: '2026-07-01T00:00:00.000Z', url: 'u' },
+    ]));
+    responses.set('issue view', [
+      view([]),
+      view([{ id: 'IC_11', body: 'Late note', createdAt: '2026-08-10T00:00:00.000Z' }]),
+    ]);
+
+    await handleSync({});
+
+    expect(ran('issue edit')).toBe(false);  // body classified as unchanged
+    expect(calls.filter(a => key(a) === 'issue comment')).toHaveLength(1);
+    expect((await getIssue(issue.id))!.comments[0].text).toContain('<!-- gh: IC_11 -->');
+  });
+
   it('claims an unstamped comment that already exists upstream instead of re-posting it', async () => {
     // A push that died after `gh issue comment` but before the id was stored.
     const issue = await linkedIssue({ githubBodyHash: 'stale' });
@@ -515,11 +539,12 @@ describe('sync', () => {
 });
 
 describe('pullSequence', () => {
-  async function issueWithRemoteSequence(sequence: unknown) {
+  async function issueWithRemoteSequence(sequence: unknown, author = 'InDate') {
     const issue = await addIssue({ type: 'bug', title: 'Repro me' });
     await updateIssueFields(issue.id, { github: 97, githubRepo: 'InDate/devharness' });
     responses.set('issue view', JSON.stringify({
       number: 97, title: 'Repro me', state: 'OPEN', stateReason: null, labels: [],
+      author: { login: author },
       updatedAt: '2026-08-10T00:00:00.000Z', url: 'u', comments: [],
       body: `Prose\n\n${emitSequenceBlock(sequence)}`,
     }));
@@ -538,6 +563,56 @@ describe('pullSequence', () => {
     // same-named one in memory, so a hostile name could delete the user's.
     expect(written.name).toBe('bug-001-repro-me');
     expect(response._meta.github.sequence).toMatchObject({ steps: 1, tools: ['navigate'] });
+  });
+
+  it('refuses a sequence written by another account, writing nothing', async () => {
+    const issue = await issueWithRemoteSequence(
+      { commands: [{ tool: 'navigate', params: { url: 'http://x' } }] }, 'someone-else'
+    );
+
+    const response = await handlePullSequence({ id: issue.id }, { knownTools: () => ['navigate'] });
+
+    expect(response.isError).toBe(true);
+    expect(text(response)).toContain('someone-else');
+    expect(text(response)).toContain('stop here');
+    expect((await getIssue(issue.id))!.sequenceFile).toBe('');
+    await expect(
+      fsp.readdir(getIssueSequencesDir()).catch(() => [])
+    ).resolves.toEqual([]);  // nothing on disk
+  });
+
+  it('accepts a foreign sequence once a person has confirmed', async () => {
+    const issue = await issueWithRemoteSequence(
+      { commands: [{ tool: 'navigate', params: { url: 'http://x' } }] }, 'someone-else'
+    );
+
+    const response = await handlePullSequence(
+      { id: issue.id, confirm: true }, { knownTools: () => ['navigate'] }
+    );
+
+    expect(response.isError).toBeUndefined();
+    expect((await getIssue(issue.id))!.sequenceFile).toBe('bug-001-repro-me.json');
+  });
+
+  it('gates a comment sequence on the comment author, not the issue author', async () => {
+    const issue = await addIssue({ type: 'bug', title: 'Repro me' });
+    await updateIssueFields(issue.id, { github: 97, githubRepo: 'InDate/devharness' });
+    responses.set('issue view', JSON.stringify({
+      number: 97, title: 'Repro me', state: 'OPEN', stateReason: null, labels: [],
+      author: { login: 'InDate' }, body: 'Prose only',
+      updatedAt: '2026-08-10T00:00:00.000Z', url: 'u',
+      comments: [{
+        id: 'IC_1', author: { login: 'driveby' }, createdAt: '2026-08-10T00:00:00.000Z',
+        body: emitSequenceBlock({ commands: [{ tool: 'navigate', params: { url: 'http://x' } }] }),
+      }],
+    }));
+
+    const response = await handlePullSequence(
+      { id: issue.id, fromComment: 1 }, { knownTools: () => ['navigate'] }
+    );
+
+    expect(response.isError).toBe(true);
+    expect(text(response)).toContain('driveby');
   });
 
   it('refuses a sequence with privileged steps unless allowed', async () => {
@@ -606,8 +681,9 @@ describe('pullSequence', () => {
     responses.set('issue view', JSON.stringify({
       number: 97, title: 'x', state: 'OPEN', stateReason: null, labels: [],
       updatedAt: '2026-08-10T00:00:00.000Z', url: 'u',
+      author: { login: 'InDate' },
       body: emitSequenceBlock({ name: 'body-one', commands: [{ tool: 'navigate' }] }),
-      comments: [{ id: 'IC_1', body: emitSequenceBlock({ name: 'comment-one', commands: [{ tool: 'input' }] }), createdAt: '' }],
+      comments: [{ id: 'IC_1', author: { login: 'InDate' }, body: emitSequenceBlock({ name: 'comment-one', commands: [{ tool: 'input' }] }), createdAt: '' }],
     }));
 
     await handlePullSequence({ id: issue.id, fromComment: 1 }, { knownTools: () => ['navigate', 'input'] });

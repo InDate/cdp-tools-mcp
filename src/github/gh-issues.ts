@@ -17,6 +17,7 @@ import {
 export interface RemoteComment {
   id: string;
   body: string;
+  author: string;
   createdAt: string;
 }
 
@@ -24,6 +25,7 @@ export interface RemoteIssue {
   number: number;
   title: string;
   body: string;
+  author: string;
   state: 'OPEN' | 'CLOSED';
   stateReason?: string | null;
   labels: string[];
@@ -33,7 +35,7 @@ export interface RemoteIssue {
 }
 
 /** The subset `gh issue list` returns - no body, no comments. */
-export type RemoteIssueSummary = Omit<RemoteIssue, 'body' | 'title' | 'comments'>;
+export type RemoteIssueSummary = Omit<RemoteIssue, 'body' | 'title' | 'comments' | 'author'>;
 
 function repoArgs(repo?: string): string[] {
   return repo ? ['--repo', repo] : [];
@@ -82,7 +84,7 @@ export async function ghCreateIssue(
 export async function ghViewIssue(number: number, repo?: string, opts?: RunGhOptions): Promise<RemoteIssue> {
   const raw = await runGhJson<any>([
     'issue', 'view', String(number),
-    '--json', 'number,title,body,state,stateReason,labels,updatedAt,url,comments',
+    '--json', 'number,title,body,author,state,stateReason,labels,updatedAt,url,comments',
     ...repoArgs(repo),
   ], opts);
 
@@ -90,6 +92,7 @@ export async function ghViewIssue(number: number, repo?: string, opts?: RunGhOpt
     number: raw.number,
     title: raw.title ?? '',
     body: raw.body ?? '',
+    author: raw.author?.login ?? '',
     state: raw.state === 'CLOSED' ? 'CLOSED' : 'OPEN',
     stateReason: raw.stateReason ?? null,
     labels: normaliseLabels(raw.labels),
@@ -98,9 +101,17 @@ export async function ghViewIssue(number: number, repo?: string, opts?: RunGhOpt
     comments: (raw.comments ?? []).map((c: any) => ({
       id: String(c.id ?? c.url ?? ''),
       body: c.body ?? '',
+      author: c.author?.login ?? '',
       createdAt: c.createdAt ?? '',
     })),
   };
+}
+
+/** The login gh is authenticated as - the yardstick for "did someone else
+ *  write this". */
+export async function ghCurrentUser(opts?: RunGhOptions): Promise<string> {
+  const out = await runGh(['api', 'user', '--jq', '.login'], opts);
+  return out.trim();
 }
 
 export async function ghListIssues(repo?: string, opts?: RunGhOptions): Promise<RemoteIssueSummary[]> {

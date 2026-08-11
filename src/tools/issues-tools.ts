@@ -85,7 +85,7 @@ const issuesSchema = z.object({
   includeSequence: z.boolean().optional()
     .describe('Include sequence recording for issue (default: true). When false, no sequence is created and Chrome does not open.'),
   confirm: z.boolean().optional()
-    .describe('publish/sync: actually write to GitHub (default false - publish only drafts, sync only reports upstream closes)'),
+    .describe('publish/sync: actually write to GitHub (default false - publish only drafts, sync only reports upstream closes). pullSequence: accept a sequence authored by another GitHub account - only after a person has read it'),
   github: z.number().int().positive().optional()
     .describe('Upstream GitHub issue number (import, link)'),
   repo: z.string().optional()
