@@ -142,7 +142,7 @@ async function reconcileComments(
 // =============================================================================
 
 export async function handlePublish(args: GithubActionArgs, deps: GithubActionDeps = {}): Promise<any> {
-  if (args.id === undefined) return createErrorResponse('MISSING_PARAMETER', { parameter: 'id', action: 'publish' });
+  if (args.id === undefined) return createErrorResponse('MISSING_PARAMETER', { missing: 'id', action: 'publish' });
 
   const issue = await getIssue(args.id);
   if (!issue) return createErrorResponse('ISSUES_NOT_FOUND', { id: args.id, message: 'Nothing to publish.' });
@@ -245,8 +245,8 @@ export async function handlePublish(args: GithubActionArgs, deps: GithubActionDe
 // =============================================================================
 
 export async function handleLink(args: GithubActionArgs): Promise<any> {
-  if (args.id === undefined) return createErrorResponse('MISSING_PARAMETER', { parameter: 'id', action: 'link' });
-  if (args.github === undefined) return createErrorResponse('MISSING_PARAMETER', { parameter: 'github', action: 'link' });
+  if (args.id === undefined) return createErrorResponse('MISSING_PARAMETER', { missing: 'id', action: 'link' });
+  if (args.github === undefined) return createErrorResponse('MISSING_PARAMETER', { missing: 'github', action: 'link' });
 
   const issue = await getIssue(args.id);
   if (!issue) return createErrorResponse('ISSUES_NOT_FOUND', { id: args.id, message: 'Nothing to link.' });
@@ -272,7 +272,7 @@ function inferType(labels: string[]): IssueType {
 }
 
 export async function handleImport(args: GithubActionArgs, deps: GithubActionDeps = {}): Promise<any> {
-  if (args.github === undefined) return createErrorResponse('MISSING_PARAMETER', { parameter: 'github', action: 'import' });
+  if (args.github === undefined) return createErrorResponse('MISSING_PARAMETER', { missing: 'github', action: 'import' });
 
   try {
     const repo = await ghRepoName(args.repo, deps.runOpts);
@@ -542,7 +542,7 @@ export async function handlePullSequence(
   args: GithubActionArgs,
   deps: GithubActionDeps & { knownTools?: () => string[] } = {}
 ): Promise<any> {
-  if (args.id === undefined) return createErrorResponse('MISSING_PARAMETER', { parameter: 'id', action: 'pullSequence' });
+  if (args.id === undefined) return createErrorResponse('MISSING_PARAMETER', { missing: 'id', action: 'pullSequence' });
 
   const issue = await getIssue(args.id);
   if (!issue) return createErrorResponse('ISSUES_NOT_FOUND', { id: args.id, message: 'Nothing to pull into.' });

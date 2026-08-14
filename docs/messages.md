@@ -31,6 +31,33 @@ These templates should not be removed - they represent potential error condition
 
 ## Connection Messages
 
+## CHROME_NOT_RUNNING
+
+**Type:** error
+**Code:** CHROME_NOT_RUNNING
+
+{{#message}}{{message}}{{/message}}{{^message}}Chrome is not running on port {{port}}. Use `launchChrome` to start a browser.{{/message}}
+
+---
+
+## CHROME_LAUNCH_TIMEOUT
+
+**Type:** error
+**Code:** CHROME_LAUNCH_TIMEOUT
+
+Chrome did not become ready on port {{port}} within {{timeout}}s.
+
+---
+
+## CHROME_KILL_FAILED
+
+**Type:** error
+**Code:** CHROME_KILL_FAILED
+
+Failed to kill Chrome: {{error}}
+
+---
+
 ## CHROME_ALREADY_RUNNING
 
 **Type:** error
@@ -1734,6 +1761,71 @@ Error: {{error}}
 
 ## Replay Messages
 
+## CREATE_FAILED
+
+**Type:** error
+**Code:** CREATE_FAILED
+
+{{#message}}{{message}}{{/message}}{{^message}}Failed to create sequence.{{/message}}
+
+---
+
+## DELETE_FAILED
+
+**Type:** error
+**Code:** DELETE_FAILED
+
+{{#message}}{{message}}{{/message}}{{^message}}Failed to delete "{{filename}}".{{/message}}
+
+---
+
+## INVALID_LINES
+
+**Type:** error
+**Code:** INVALID_LINES
+
+{{#message}}{{message}}{{/message}}{{^message}}One or more requested lines could not be read from {{file}}.{{/message}}
+
+---
+
+## INVALID_START_FROM
+
+**Type:** error
+**Code:** INVALID_START_FROM
+
+{{#message}}{{message}}{{/message}}{{^message}}Invalid startFrom.{{/message}}
+
+---
+
+## LAUNCH_FAILED
+
+**Type:** error
+**Code:** LAUNCH_FAILED
+
+{{#message}}{{message}}{{/message}}{{^message}}Failed to launch a connection for this sequence.{{/message}}
+
+{{#suggestion}}**Suggestion:** {{suggestion}}{{/suggestion}}
+
+---
+
+## NOT_SUPPORTED
+
+**Type:** error
+**Code:** NOT_SUPPORTED
+
+{{#message}}{{message}}{{/message}}{{^message}}This action is not supported in this context.{{/message}}
+
+---
+
+## RECORDING_FAILED
+
+**Type:** error
+**Code:** RECORDING_FAILED
+
+{{#message}}{{message}}{{/message}}{{^message}}Recording failed.{{/message}}
+
+---
+
 ## INVALID_INDICES
 
 **Type:** error
@@ -2095,6 +2187,15 @@ No commands were recorded in this session.
 
 ---
 
+## NO_ACTIVE_SEQUENCE
+
+**Type:** error
+**Code:** NO_ACTIVE_SEQUENCE
+
+{{#message}}{{message}}{{/message}}{{^message}}No active sequence. Use `replay({ action: 'run', stepTo: N })` first to pause one.{{/message}}
+
+---
+
 ## SEQUENCE_NOT_FOUND
 
 **Type:** error
@@ -2265,6 +2366,15 @@ Use `issues({ action: 'acknowledge' })` to acknowledge.
 ---
 
 ## Issues Messages
+
+## ISSUES_INVALID_START_URL
+
+**Type:** error
+**Code:** ISSUES_INVALID_START_URL
+
+{{#message}}{{message}}{{/message}}{{^message}}Invalid startUrl.{{/message}}
+
+---
 
 ## ISSUES_LIST
 
@@ -2863,7 +2973,7 @@ Set `github.enabled` to `true` in the devharness config to use `publish`, `sync`
 Missing required parameter: {{missing}}
 
 **Action:** {{action}}
-**Message:** {{message}}
+{{#message}}**Message:** {{message}}{{/message}}
 
 ---
 
@@ -3325,6 +3435,15 @@ If the server died, use `server({ action: 'restart', serverId: '{{serverId}}' })
 
 ## Config Messages
 
+## UNKNOWN_ACTION
+
+**Type:** error
+**Code:** UNKNOWN_ACTION
+
+Unknown action: "{{action}}".
+
+---
+
 ## CONFIG_PROFILE_LIST
 
 **Type:** list
@@ -3573,6 +3692,24 @@ Navigation failed: {{message}}
 
 ## Dashboard Messages
 
+## DASHBOARD_INITIALIZING
+
+**Type:** success
+**Code:** DASHBOARD_INITIALIZING
+
+Dashboard is still starting up (pid {{pid}}, session {{shortId}}). Try again shortly.
+
+---
+
+## DASHBOARD_UNKNOWN_ACTION
+
+**Type:** error
+**Code:** DASHBOARD_UNKNOWN_ACTION
+
+Unknown dashboard action: "{{action}}".
+
+---
+
 ## DASHBOARD_OPEN
 
 **Type:** success
@@ -3739,6 +3876,56 @@ Cannot wait for {{condition}}: the debugger on "{{connectionReason}}" is paused 
 **Code:** CONFIG_USE_LOCAL_FAILED
 
 Failed to switch to local config: {{error}}
+
+---
+
+## Common Tool Errors
+
+Shared across multiple tools rather than owned by one - reused wherever the
+message fits as-is instead of each tool defining its own copy.
+
+## INVALID_PARAMS
+
+**Type:** error
+**Code:** INVALID_PARAMS
+
+{{#message}}{{message}}{{/message}}{{^message}}Invalid parameters.{{/message}}
+
+---
+
+## NOT_FOUND
+
+**Type:** error
+**Code:** NOT_FOUND
+
+{{#message}}{{message}}{{/message}}{{^message}}Not found.{{/message}}
+
+---
+
+## INVALID_PATTERN
+
+**Type:** error
+**Code:** INVALID_PATTERN
+
+{{#message}}{{message}}{{/message}}{{^message}}Invalid regex pattern.{{/message}}
+
+---
+
+## EXTRACTION_FAILED
+
+**Type:** error
+**Code:** EXTRACTION_FAILED
+
+Content extraction failed - no result was produced.
+
+---
+
+## SECTION_NOT_FOUND
+
+**Type:** error
+**Code:** SECTION_NOT_FOUND
+
+Section "{{section}}" was not found in the page content.
 
 ---
 
