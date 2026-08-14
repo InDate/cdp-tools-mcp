@@ -1849,6 +1849,26 @@ export interface PreClickState {
   consoleTotalCount: number;
   networkRequestCount: number;
   url: string;
+  /** ids of the most-recent console errors seen before the click (bounded by
+   *  CLICK_VALIDATION_ERROR_SAMPLE), to identify which post-click errors are
+   *  actually new rather than just diffing a count. */
+  errorIdsBeforeClick: Set<string>;
+}
+
+/** How many of the most recent console errors to sample around a click - enough
+ *  to identify every genuinely new one in the common case, without pulling the
+ *  whole console history for a check that runs after every click. */
+const CLICK_VALIDATION_ERROR_SAMPLE = 10;
+
+/** Browser-initiated noise a click didn't cause and can't prevent - a missing
+ *  favicon 404s on nearly every page load, unrelated to what was clicked. */
+function isNoiseConsoleUrl(url: string | undefined): boolean {
+  if (!url) return false;
+  try {
+    return /\/favicon\.ico$/i.test(new URL(url).pathname);
+  } catch {
+    return false;
+  }
 }
 
 export interface ClickValidationResult {
@@ -1869,15 +1889,18 @@ export async function capturePreClickState(ctx: ExecutionContext): Promise<PreCl
   let consoleTotalCount = 0;
   let networkRequestCount = 0;
   let url = '';
+  let errorIdsBeforeClick = new Set<string>();
 
   try {
-    // Get console counts via _meta
+    // Get console counts via _meta, plus the most recent errors' ids so a
+    // post-click diff can tell which ones are actually new.
     const consoleResult = await executeToolCall('console', {
-      action: 'list', limit: 1, connectionReason
+      action: 'recent', type: 'error', count: CLICK_VALIDATION_ERROR_SAMPLE, connectionReason
     });
     consoleErrorCount = consoleResult?._meta?.console?.errorCount || 0;
     consoleWarnCount = consoleResult?._meta?.console?.warnCount || 0;
     consoleTotalCount = consoleResult?._meta?.console?.totalCount || 0;
+    errorIdsBeforeClick = new Set((consoleResult?._meta?.console?.entries || []).map((e: { id: string }) => e.id));
   } catch {
     debugLog(logPrefix, 'Warning: Could not get pre-click console state');
   }
@@ -1902,7 +1925,7 @@ export async function capturePreClickState(ctx: ExecutionContext): Promise<PreCl
     debugLog(logPrefix, 'Warning: Could not get pre-click URL');
   }
 
-  return { consoleErrorCount, consoleWarnCount, consoleTotalCount, networkRequestCount, url };
+  return { consoleErrorCount, consoleWarnCount, consoleTotalCount, networkRequestCount, url, errorIdsBeforeClick };
 }
 
 /**
@@ -1950,20 +1973,29 @@ export async function validateClickAction(
   // 3. Check for new console messages
   try {
     const consoleResult = await executeToolCall('console', {
-      action: 'list', limit: 1, connectionReason
+      action: 'recent', type: 'error', count: CLICK_VALIDATION_ERROR_SAMPLE, connectionReason
     });
     const newErrorCount = consoleResult?._meta?.console?.errorCount || 0;
     const newWarnCount = consoleResult?._meta?.console?.warnCount || 0;
     const newTotalCount = consoleResult?._meta?.console?.totalCount || 0;
 
-    // Report new errors (respecting failOnConsoleErrors config)
+    // Report new errors (respecting failOnConsoleErrors config), excluding ones
+    // identifiable as browser noise unrelated to the click (e.g. a favicon 404).
     if (config.failOnConsoleErrors && newErrorCount > preState.consoleErrorCount) {
       const diff = newErrorCount - preState.consoleErrorCount;
-      const msg = `${diff} new console error(s) after click`;
-      if (config.consoleErrorsFailMode === 'error') {
-        errors.push(msg);
+      const newEntries: Array<{ id: string; url?: string }> = consoleResult?._meta?.console?.entries || [];
+      const genuinelyNew = newEntries.filter(e => !preState.errorIdsBeforeClick.has(e.id));
+      const actionable = genuinelyNew.filter(e => !isNoiseConsoleUrl(e.url));
+
+      if (genuinelyNew.length === 0 || actionable.length > 0) {
+        const msg = `${diff} new console error(s) after click`;
+        if (config.consoleErrorsFailMode === 'error') {
+          errors.push(msg);
+        } else {
+          warnings.push(msg);
+        }
       } else {
-        warnings.push(msg);
+        info.push(`${diff} new console error(s) after click, all identified as unrelated browser noise (e.g. favicon) - ignored`);
       }
     }
 

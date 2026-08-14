@@ -85,6 +85,10 @@ export interface ConsoleToolMeta {
   truncatedCount?: number;
   /** Total estimated tokens for all full messages */
   totalTokens?: number;
+  /** id/type/origin URL of each message in this response, for callers that need
+   *  to identify WHICH messages are new (e.g. click validation diffing against
+   *  a pre-click snapshot) rather than just a count. */
+  entries?: Array<{ id: string; type: string; url?: string }>;
 }
 
 /**

@@ -129,6 +129,7 @@ function buildListResponse(
         warnCount: monitor.getCount('warn'),
         truncatedCount,
         totalTokens,
+        entries: messages.map(m => ({ id: m.id, type: m.type, ...(m.location?.url && { url: m.location.url }) })),
       },
     },
   };
