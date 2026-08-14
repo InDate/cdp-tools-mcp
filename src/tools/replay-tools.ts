@@ -2491,11 +2491,12 @@ async function handleInsert(args: ReplayArgs, recorder: CommandRecorder) {
     return { content: [{ type: 'text', text: errorMsg }], isError: true };
   }
 
-  // Get commands to insert
-  const commandsToInsert = validIndices
-    .map(idx => commandsSincePause.find(cmd => cmd.index === idx))
-    .filter((cmd): cmd is NonNullable<typeof cmd> => cmd !== undefined)
-    .map(cmd => ({ tool: cmd.tool, params: cmd.params }));
+  // Get commands to insert, templatizing any literal that matches an earlier
+  // inserted step's saveAs capture (same rewrite `create` does).
+  const commandsToInsert = recorder.buildCommandsFromHistory(validIndices);
+  if (!commandsToInsert) {
+    return createErrorResponse('CREATE_FAILED', { message: 'One or more insertIndices no longer exist in history' });
+  }
 
   // Determine insert position
   const insertAfter = args.insertAfterStep !== undefined ? args.insertAfterStep : activeSeq.currentStep;

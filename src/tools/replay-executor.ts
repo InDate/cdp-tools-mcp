@@ -2695,7 +2695,8 @@ export async function executeSteps(options: ExecuteStepsOptions): Promise<Execut
       if (record) {
         commandRecorder.recordCommand(cmd.tool, params, {
           delay: cmd.delay,
-          comment: cmd.comment
+          comment: cmd.comment,
+          result: execResult.result
         });
       }
 

@@ -14,6 +14,17 @@ import { sanitizeReference } from './reference-validator.js';
 import { getOutputPath } from './helpers/paths.js';
 import { atomicWriteFile } from './atomic-write.js';
 import { getIssueSequencesDir, getIssuesBySequenceFile } from './issue-tracker.js';
+import { captureVariable } from './tools/replay-executor.js';
+import { substituteCapturedValues, type CaptureEntry } from './tools/interpolation-reverse.js';
+
+/** JSON round-trip clone, tolerant of a result that isn't JSON-safe (drops it rather than throwing). */
+function safeClone(value: any): any {
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return undefined;
+  }
+}
 
 export interface RecordedCommand {
   tool: string;
@@ -128,6 +139,13 @@ export interface CommandSequence {
 interface HistoryCommand extends RecordedCommand {
   index: number;
   timestamp: number;
+  /**
+   * The tool's response, when known - never persisted onto a sequence
+   * (RecordedCommand has no such field). Lets `create`/`insert` reconstruct
+   * what a `saveAs` on this step would have captured, so a later step's
+   * matching literal can be rewritten to `{{var:...}}` instead of copied.
+   */
+  result?: any;
 }
 
 // Active sequence state for step-through debugging
@@ -366,7 +384,7 @@ export class CommandRecorder {
   /**
    * Record a command (always-on, automatic)
    */
-  async recordCommand(tool: string, params: Record<string, any>, options?: { delay?: number; comment?: string }): Promise<void> {
+  async recordCommand(tool: string, params: Record<string, any>, options?: { delay?: number; comment?: string; result?: any }): Promise<void> {
     // Reset history viewed flag when any command is recorded
     // (user must view history again before inserting)
     this.historyViewedWhilePaused = false;
@@ -407,6 +425,7 @@ export class CommandRecorder {
       params: paramsClone,
       ...(options?.delay !== undefined && { delay: options.delay }),
       ...(options?.comment && { comment: options.comment }),
+      ...(options?.result !== undefined && { result: safeClone(options.result) }),
     };
 
     this.history.push(command);
@@ -440,6 +459,51 @@ export class CommandRecorder {
   }
 
   /**
+   * Attach a tool's response to an already-recorded history entry. Recording
+   * happens before the handler runs (so a failed call is still in history for
+   * `getHistory`/repeat), so the result can only be filled in afterward.
+   */
+  attachResult(index: number, result: any): void {
+    const cmd = this.history.find(c => c.index === index);
+    if (cmd) cmd.result = safeClone(result);
+  }
+
+  /**
+   * Build RecordedCommand[] from history indices, in order, substituting any
+   * step's literal value that matches an EARLIER included step's `saveAs`
+   * capture with a `{{var:name.path}}` reference - the templatization a
+   * sequence needs to be portable beyond the run it was recorded from (see
+   * references/sequences.md). Returns null if any index doesn't exist.
+   */
+  buildCommandsFromHistory(commandIndices: number[]): RecordedCommand[] | null {
+    const captures: CaptureEntry[] = [];
+    const commands: RecordedCommand[] = [];
+    for (const idx of commandIndices) {
+      const cmd = this.getCommand(idx);
+      if (!cmd) return null;
+
+      // params is DEEP-CLONED: the sequence is edited after creation (hoisting a
+      // uniform connectionReason off the steps, rebasing URLs), and sharing the
+      // object with the history entry made those edits silently rewrite history.
+      const paramsClone = JSON.parse(JSON.stringify(cmd.params));
+      commands.push({
+        tool: cmd.tool,
+        params: substituteCapturedValues(paramsClone, captures),
+        ...(cmd.delay !== undefined && { delay: cmd.delay }),
+        ...(cmd.comment && { comment: cmd.comment }),
+      });
+
+      if (cmd.params.saveAs && cmd.result !== undefined) {
+        const captured = captureVariable(cmd.tool, cmd.params, cmd.result);
+        if (captured.ok) {
+          captures.push({ name: cmd.params.saveAs, value: captured.value });
+        }
+      }
+    }
+    return commands;
+  }
+
+  /**
    * Create a sequence from command indices
    */
   async createSequence(
@@ -459,24 +523,12 @@ export class CommandRecorder {
       validate?: (candidate: CommandSequence) => boolean;
     }
   ): Promise<CommandSequence | null> {
-    // Validate all indices exist and get commands
-    const commands: RecordedCommand[] = [];
-    for (const idx of commandIndices) {
-      const cmd = this.getCommand(idx);
-      if (!cmd) {
-        await debugLog('command-recorder', `Invalid command index: ${idx}`);
-        return null;
-      }
-      // Strip index and timestamp for the sequence, but keep delay and comment.
-      // params is DEEP-CLONED: the sequence is edited after creation (hoisting a
-      // uniform connectionReason off the steps, rebasing URLs), and sharing the
-      // object with the history entry made those edits silently rewrite history.
-      commands.push({
-        tool: cmd.tool,
-        params: JSON.parse(JSON.stringify(cmd.params)),
-        ...(cmd.delay !== undefined && { delay: cmd.delay }),
-        ...(cmd.comment && { comment: cmd.comment }),
-      });
+    // Validate all indices exist, build commands, and templatize literals
+    // that match an earlier included step's saveAs capture.
+    const commands = this.buildCommandsFromHistory(commandIndices);
+    if (!commands) {
+      await debugLog('command-recorder', `Invalid command index in [${commandIndices.join(', ')}]`);
+      return null;
     }
 
     // Extract startUrl from commands if not explicitly provided

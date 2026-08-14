@@ -1701,6 +1701,10 @@ Edit ${configPath} to resolve, then restart the MCP server.`,
     try {
       const result = await tool.handler(validation.data, extra?.signal);
 
+      if (commandIndex !== null) {
+        commandRecorder.attachResult(commandIndex, result);
+      }
+
       // Prepend port failure prefix if any
       if (portCheck.prefix) {
         prependToResponse(result, portCheck.prefix);

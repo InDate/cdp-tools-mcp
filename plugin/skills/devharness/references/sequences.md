@@ -55,7 +55,12 @@ slash command. They are here, once, rather than restated by each of those.
   Hand-edited JSON skips the validation the tools apply and does not port.
   The things that cannot be recorded have their own actions rather than being
   an exception to this: `addConditional` for a guarded branch, `declare` for
-  the browsers and sockets a sequence needs.
+  the browsers and sockets a sequence needs. This covers a value you just
+  minted or looked up (a created link's URL, a row's id) too: `create` and
+  `insert` compare each step's literal against every earlier included step's
+  `saveAs` capture and rewrite an exact match to `{{var:name.path}}`
+  automatically - `saveAs` a step whose result you'll reuse and the later
+  literal gets templatized for you, no manual edit needed.
 - **Do the work with the tools; don't describe it.** Every call you make is
   recorded, and the sequence is assembled from that history afterwards.
 - **Pass `connectionReason` on every browser call** - including the connection
