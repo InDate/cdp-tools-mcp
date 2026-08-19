@@ -34,11 +34,10 @@ import * as path from 'path';
 import * as os from 'os';
 import { fileURLToPath } from 'url';
 import { getOutputPath, getConfigPath, getGlobalBase } from './helpers/paths.js';
-import { atomicWriteFile } from './atomic-write.js';
 import { ChildManager } from './supervisor/child-manager.js';
 import { RestartCoordinator } from './supervisor/restart-coordinator.js';
 import { NdjsonReader } from './supervisor/ndjson-reader.js';
-import { removeOwnPidFile } from './supervisor/pidfile.js';
+import { recordOwnSupervisor, removeOwnPidFile } from './supervisor/pidfile.js';
 import { ClientWatcher } from './supervisor/client-watcher.js';
 import { readSupervisorSessionConfig, idleCheckIntervalMs } from './supervisor/idle-config.js';
 
@@ -56,7 +55,9 @@ async function main(): Promise<void> {
   const extraArgs = process.argv.slice(2);
 
   const pidFilePath = getOutputPath('mcp-supervisor.pid');
-  await atomicWriteFile(pidFilePath, String(process.pid));
+  // __filename, not scriptPath: the entry a rebuild of THIS tree changes is
+  // the supervisor's own file, and that is what postbuild matches on.
+  await recordOwnSupervisor(pidFilePath, { pid: process.pid, script: __filename });
 
   // Overridable so the stress harness can watch the escalation path without
   // sitting out the full grace period (scripts/stress-suspend.mjs).

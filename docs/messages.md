@@ -3648,6 +3648,17 @@ No mcp-supervisor pidfile found - this session isn't running through the hot-rel
 
 ---
 
+## CONFIG_RESTART_FOREIGN_SUPERVISOR
+
+**Type:** error
+
+Every supervisor holding this project directory (PID {{pids}}) runs a different install, so none of them serves this session and signalling one would restart somebody else's server.
+
+**Suggestions:**
+- Ask the user to run `/mcp` to reconnect instead
+
+---
+
 ## CONFIG_RESTART_STALE_PID
 
 **Type:** error

@@ -1,18 +1,27 @@
 #!/usr/bin/env node
 
 /**
- * postbuild hook: signals a running mcp-supervisor (if any) to restart the
- * real MCP server child, so `npm run build` hot-reloads a live Claude Code
- * connection instead of requiring a manual /mcp reconnect.
+ * postbuild hook: signals every running mcp-supervisor that serves THIS
+ * checkout, so `npm run build` hot-reloads a live Claude Code connection
+ * instead of requiring a manual /mcp reconnect.
  *
- * A no-op if no supervisor is running (e.g. CI, or a plain build with no live
- * session attached) - this must never fail the build. It does SAY so, though:
- * a silent no-op is indistinguishable from a successful reload, so a build that
- * never reached the running server looks exactly like one that did, and you
- * debug stale code believing it is current.
+ * A no-op if no such supervisor is running (e.g. CI, or a plain build with no
+ * live session attached) - this must never fail the build. It does SAY so,
+ * though: a silent no-op is indistinguishable from a successful reload, so a
+ * build that never reached the running server looks exactly like one that did,
+ * and you debug stale code believing it is current.
+ *
+ * A supervisor recorded against this project directory but running another
+ * install - the npx-installed package is the usual one - is named and left
+ * alone. Rebuilding this tree cannot change the code it runs, and signalling
+ * it restarts a session this build has nothing to do with.
  */
 import { readFileSync } from 'fs';
-import { join } from 'path';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
+
+const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const ownSupervisorScript = join(repoRoot, 'build', 'mcp-supervisor.js');
 
 // Mirrors resolveStateDir in src/helpers/paths.ts: `.cdp-tools` is the pre-0.9.0
 // name, kept as a fallback for a checkout the server has not migrated yet.
@@ -22,11 +31,31 @@ const candidatePidFiles = ['.devharness', '.cdp-tools'].map(
 const note = (message) => console.error(`[signal-supervisor] ${message}`);
 const RECONNECT_HINT = 'run /mcp in Claude Code to pick up this build';
 
-let pid;
+// Mirrors parseSupervisorRecords in src/supervisor/pidfile.ts. A bare integer
+// is the pre-multi-record format and carries no script.
+function parseRecords(contents) {
+  const trimmed = contents.trim();
+  if (trimmed.length === 0) return [];
+  if (/^\d+$/.test(trimmed)) {
+    const pid = parseInt(trimmed, 10);
+    return pid > 0 ? [{ pid, script: null }] : [];
+  }
+  try {
+    const parsed = JSON.parse(trimmed);
+    const entries = Array.isArray(parsed?.supervisors) ? parsed.supervisors : [];
+    return entries
+      .map((entry) => ({ pid: parseInt(entry?.pid, 10), script: typeof entry?.script === 'string' ? entry.script : null }))
+      .filter((record) => Number.isInteger(record.pid) && record.pid > 0);
+  } catch {
+    return [];
+  }
+}
+
+let records = null;
 let pidFilePath;
 for (const candidate of candidatePidFiles) {
   try {
-    pid = parseInt(readFileSync(candidate, 'utf-8').trim(), 10);
+    records = parseRecords(readFileSync(candidate, 'utf-8'));
     pidFilePath = candidate;
     break;
   } catch {
@@ -39,18 +68,33 @@ if (pidFilePath === undefined) {
   process.exit(0);
 }
 
-if (!Number.isInteger(pid) || pid <= 0) {
-  note(`Pidfile holds "${pid}", which is not a pid - nothing to reload (${RECONNECT_HINT}).`);
+if (records.length === 0) {
+  note(`Pidfile ${pidFilePath} holds no supervisor record - nothing to reload (${RECONNECT_HINT}).`);
   process.exit(0);
 }
 
-try {
-  process.kill(pid, 'SIGUSR2');
-  note(`Sent SIGUSR2 to mcp-supervisor (PID ${pid})`);
-} catch (err) {
-  note(
-    err?.code === 'ESRCH'
-      ? `Supervisor PID ${pid} is no longer running - nothing to reload (${RECONNECT_HINT}).`
-      : `Could not signal supervisor PID ${pid}: ${err?.message ?? err} (${RECONNECT_HINT}).`
-  );
+// A record with no script comes from a supervisor that predates this format;
+// it is the only one recorded, so it is the one this build reaches.
+const mine = records.filter((record) => record.script === ownSupervisorScript || record.script === null);
+const foreign = records.filter((record) => !mine.includes(record));
+
+for (const record of mine) {
+  try {
+    process.kill(record.pid, 'SIGUSR2');
+    note(`Sent SIGUSR2 to mcp-supervisor (PID ${record.pid})`);
+  } catch (err) {
+    note(
+      err?.code === 'ESRCH'
+        ? `Supervisor PID ${record.pid} is no longer running - nothing to reload (${RECONNECT_HINT}).`
+        : `Could not signal supervisor PID ${record.pid}: ${err?.message ?? err} (${RECONNECT_HINT}).`
+    );
+  }
+}
+
+if (mine.length === 0) {
+  note(`No supervisor running ${ownSupervisorScript} - this build reaches nothing (${RECONNECT_HINT}).`);
+}
+
+for (const record of foreign) {
+  note(`Left PID ${record.pid} alone: it runs ${record.script}, which this build does not change.`);
 }

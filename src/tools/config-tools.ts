@@ -136,6 +136,11 @@ export function createConfigTools(profileStore?: ProfileStore, serverIdentity?: 
               if (result.reason === 'not-supervised') {
                 return createErrorResponse('CONFIG_RESTART_NOT_SUPERVISED', {});
               }
+              if (result.reason === 'foreign-supervisor') {
+                return createErrorResponse('CONFIG_RESTART_FOREIGN_SUPERVISOR', {
+                  pids: (result.otherPids ?? []).join(', '),
+                });
+              }
               return createErrorResponse('CONFIG_RESTART_STALE_PID', {
                 pid: String(result.pid),
                 error: result.error ?? 'unknown error',

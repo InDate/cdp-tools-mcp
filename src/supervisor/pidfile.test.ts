@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { removeOwnPidFile } from './pidfile.js';
+import { parseSupervisorRecords, readSupervisorRecords, recordOwnSupervisor, removeOwnPidFile } from './pidfile.js';
 
 let dir: string;
 let pidFile: string;
@@ -51,5 +51,52 @@ describe('removeOwnPidFile', () => {
     await fs.writeFile(pidFile, 'not-a-pid');
     expect(await removeOwnPidFile(pidFile, 4242)).toBe(false);
     expect(await exists()).toBe(true);
+  });
+});
+
+describe('recordOwnSupervisor', () => {
+  it('keeps a live supervisor already holding the root, so both stay reachable', async () => {
+    await recordOwnSupervisor(pidFile, { pid: 111, script: '/npx/build/mcp-supervisor.js' }, () => true);
+    await recordOwnSupervisor(pidFile, { pid: 222, script: '/tree/build/mcp-supervisor.js' }, () => true);
+
+    expect(await readSupervisorRecords(pidFile)).toEqual([
+      { pid: 111, script: '/npx/build/mcp-supervisor.js' },
+      { pid: 222, script: '/tree/build/mcp-supervisor.js' },
+    ]);
+  });
+
+  it('drops a dead pid rather than carrying it to whatever recycles it', async () => {
+    await recordOwnSupervisor(pidFile, { pid: 111, script: '/npx/build/mcp-supervisor.js' }, () => true);
+    await recordOwnSupervisor(pidFile, { pid: 222, script: '/tree/build/mcp-supervisor.js' }, pid => pid !== 111);
+
+    expect(await readSupervisorRecords(pidFile)).toEqual([{ pid: 222, script: '/tree/build/mcp-supervisor.js' }]);
+  });
+
+  it('replaces its own earlier record instead of listing itself twice', async () => {
+    await recordOwnSupervisor(pidFile, { pid: 222, script: '/tree/build/mcp-supervisor.js' }, () => true);
+    await recordOwnSupervisor(pidFile, { pid: 222, script: '/tree/build/mcp-supervisor.js' }, () => true);
+
+    expect(await readSupervisorRecords(pidFile)).toEqual([{ pid: 222, script: '/tree/build/mcp-supervisor.js' }]);
+  });
+
+  it('reads a bare pid written by an older supervisor', async () => {
+    expect(parseSupervisorRecords('4242\n')).toEqual([{ pid: 4242, script: null }]);
+  });
+});
+
+describe('removeOwnPidFile with several supervisors recorded', () => {
+  it('removes only its own record and leaves the file for the others', async () => {
+    await recordOwnSupervisor(pidFile, { pid: 111, script: '/npx/build/mcp-supervisor.js' }, () => true);
+    await recordOwnSupervisor(pidFile, { pid: 222, script: '/tree/build/mcp-supervisor.js' }, () => true);
+
+    expect(await removeOwnPidFile(pidFile, 222)).toBe(true);
+    expect(await readSupervisorRecords(pidFile)).toEqual([{ pid: 111, script: '/npx/build/mcp-supervisor.js' }]);
+  });
+
+  it('leaves a record it does not own', async () => {
+    await recordOwnSupervisor(pidFile, { pid: 111, script: '/npx/build/mcp-supervisor.js' }, () => true);
+
+    expect(await removeOwnPidFile(pidFile, 222)).toBe(false);
+    expect(await readSupervisorRecords(pidFile)).toEqual([{ pid: 111, script: '/npx/build/mcp-supervisor.js' }]);
   });
 });
