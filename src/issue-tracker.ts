@@ -10,7 +10,7 @@
 
 import { promises as fs, watch as fsWatch, type FSWatcher } from 'fs';
 import { join } from 'path';
-import { getOutputPath } from './helpers/paths.js';
+import { getOutputPath, registerRootBound } from './helpers/paths.js';
 import { atomicWriteFile } from './atomic-write.js';
 
 // =============================================================================
@@ -460,10 +460,12 @@ let reloadTimer: ReturnType<typeof setTimeout> | null = null;
 const RELOAD_DEBOUNCE_MS = 250;
 
 /**
- * Test-only: resets in-memory state (closing any active watcher) so the next
- * ensureIndexLoaded() re-scans from disk. Not part of the tool-facing API.
+ * Close the watcher, drop the pending debounced reload, and clear the index
+ * so the next read misses the one-shot `if (index) return` gate in
+ * ensureIndexLoaded() and rescans from disk instead of continuing to serve
+ * whatever directory was current when the index was first primed.
  */
-export function __resetForTests(): void {
+function resetIndexState(): void {
   if (watcher) {
     watcher.close();
     watcher = null;
@@ -475,6 +477,22 @@ export function __resetForTests(): void {
   index = null;
   nextIssueId = 1;
 }
+
+/**
+ * Test-only: resets in-memory state (closing any active watcher) so the next
+ * ensureIndexLoaded() re-scans from disk. Not part of the tool-facing API.
+ */
+export function __resetForTests(): void {
+  resetIndexState();
+}
+
+// A root relocation moves getItemsDir()'s target directory (it derives from
+// getOutputPath()); without this, the index and watcher opened against the
+// old root would keep serving it, silently, for the rest of the process.
+registerRootBound({
+  name: 'issue-tracker',
+  rebind: () => resetIndexState(),
+});
 
 async function scanIssuesDir(): Promise<Map<number, TrackedIssue>> {
   const dir = getItemsDir();

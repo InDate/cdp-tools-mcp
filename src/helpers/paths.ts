@@ -237,6 +237,70 @@ export function hasWorkingDirStorage(): boolean {
   return pathConfig!.workingDirBase !== null;
 }
 
+// =============================================================================
+// Root relocation: dependents bound to the state root, and the transaction
+// that moves it while the process keeps running
+// =============================================================================
+
+/**
+ * A subsystem whose storage derives from the state root and so must react
+ * when `relocateRoot` moves it - a watcher left bound to the old root serves
+ * stale data forever, since nothing else invalidates it.
+ */
+export interface RootBoundResource {
+  name: string;
+  rebind(root: string): void | Promise<void>;
+  /**
+   * A non-null string blocks relocation and becomes the rejection's message.
+   * Not `canRebind(): boolean` - a truthy `true` and a truthy refusal string
+   * both pass `if (resource.canRebind())`, so a boolean-returning predicate
+   * silently loses its veto. `null` (or omitting `veto`) is the only "no
+   * objection" value.
+   */
+  veto?(): string | null;
+}
+
+const rootBoundRegistry = new Map<string, RootBoundResource>();
+
+/**
+ * Register (or replace) a root-bound resource. A second registration under a
+ * name already held replaces the first - two entries for the same name would
+ * leave the earlier one still veto-checked and rebound after the caller
+ * that registered it has moved on, with no way to tell which one applies.
+ */
+export function registerRootBound(resource: RootBoundResource): void {
+  rootBoundRegistry.set(resource.name, resource);
+}
+
+/** Drop a resource from the registry - it stops receiving future rebind/veto calls. */
+export function unregisterRootBound(name: string): void {
+  rootBoundRegistry.delete(name);
+}
+
+/**
+ * Move the state root live, in-process. Every registered resource's `veto()`
+ * runs first; a non-null string from any of them stops the transaction
+ * before the root or any resource is touched, so a partial relocation never
+ * leaves one resource pointed at the new root while another still holds the
+ * old one. With no veto, the root updates, then every resource's `rebind`
+ * runs in registration order with the new root.
+ */
+export async function relocateRoot(dir: string): Promise<void> {
+  for (const resource of rootBoundRegistry.values()) {
+    const reason = resource.veto?.();
+    if (reason) {
+      throw new Error(`relocateRoot: '${resource.name}' vetoed the relocation: ${reason}`);
+    }
+  }
+
+  setWorkingDirOverride(dir);
+  const root = getOutputPath();
+
+  for (const resource of rootBoundRegistry.values()) {
+    await resource.rebind(root);
+  }
+}
+
 // Deprecated aliases for backwards compatibility
 /** @deprecated Use getOutputPath() */
 export function getWorkingDirPath(...segments: string[]): string {

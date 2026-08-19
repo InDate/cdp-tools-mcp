@@ -10,7 +10,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as net from 'net';
 import { debugLog } from './debug-logger.js';
-import { getOutputPath } from './helpers/paths.js';
+import { getOutputPath, registerRootBound, unregisterRootBound } from './helpers/paths.js';
 import { atomicWriteFile } from './atomic-write.js';
 import { configManager } from './config.js';
 import { ServerFileWatcher } from './server-watcher.js';
@@ -685,6 +685,7 @@ export class ServerManager {
           watchPaths: server.watchPaths,
         };
         this.servers.set(server.id, managed);
+        this.registerRunningServerVeto(server.id);
 
         // The process survived, but any watcher was tied to the previous
         // ServerManager instance (e.g. before devharness's own supervisor
@@ -1128,6 +1129,22 @@ export class ServerManager {
   }
 
   /**
+   * A running NativeRunner has already opened its stdout/stderr file
+   * descriptors against the current root (NativeRunner.start()) - an
+   * OS-level fact no relocation can redirect. Registering this for as long
+   * as the server is tracked as running turns a relocation attempt into a
+   * rejection instead of a server silently logging into a directory nothing
+   * else points at any more.
+   */
+  private registerRunningServerVeto(serverId: string): void {
+    registerRootBound({
+      name: serverId,
+      rebind: () => {}, // unreachable: this resource's own veto blocks every relocation while registered
+      veto: () => `managed server "${serverId}" is running and its log files cannot follow a relocated root`,
+    });
+  }
+
+  /**
    * Start a server
    */
   async startServer(options: StartServerOptions): Promise<{ id: string; pid: number; runnerType: RunnerType; containerId?: string; autoRestartWarning?: string }> {
@@ -1187,6 +1204,7 @@ export class ServerManager {
       watchPaths: resolvedWatchPaths,
     };
     this.servers.set(serverId, managed);
+    this.registerRunningServerVeto(serverId);
 
     if (watch) {
       this.startWatcher(managed, resolvedWatchPaths);
@@ -1518,6 +1536,9 @@ export class ServerManager {
     if (!managed) {
       throw new Error(`Server "${serverId}" not found. Use list action to see servers.`);
     }
+
+    // Once stopped, its log fds are closed - nothing left to block a relocation.
+    unregisterRootBound(serverId);
 
     // Clean up pending startup state
     this.removePendingStartup(serverId);
@@ -1969,10 +1990,11 @@ export class ServerManager {
     if (isRunning) {
       await this.stopServer(serverId);
     } else {
-      // stopServer() (which also closes the watcher) is only called above
-      // when running - make sure a leaked watcher/pending state can't
-      // outlive removal either way.
+      // stopServer() (which also closes the watcher and drops the relocation
+      // veto) is only called above when running - make sure a leaked
+      // watcher/veto/pending state can't outlive removal either way.
       this.stopWatcher(managed);
+      unregisterRootBound(serverId);
     }
 
     // stopServer() already drops this server's port monitors when it runs, but

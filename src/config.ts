@@ -6,7 +6,7 @@
 import * as fs from 'fs';
 import { dirname, isAbsolute, join, resolve } from 'path';
 import { homedir } from 'os';
-import { getConfigSavePath, getGlobalBase, getOutputPath, setWorkingDirOverride } from './helpers/paths.js';
+import { getConfigSavePath, getGlobalBase, getOutputPath, relocateRoot } from './helpers/paths.js';
 import {
   debugLog,
   enableDebugLogging,
@@ -978,7 +978,10 @@ export class ConfigManager {
    */
   async useLocal(seedFromGlobal: boolean = true, projectPath?: string): Promise<{ path: string; seeded: boolean }> {
     if (projectPath) {
-      setWorkingDirOverride(projectPath);
+      // relocateRoot (not setWorkingDirOverride) so a server holding open log
+      // file descriptors against the old root - or any other registered
+      // resource - can veto instead of relocating out from under it.
+      await relocateRoot(projectPath);
     }
 
     const localPath = getOutputPath('config.json');

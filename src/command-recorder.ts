@@ -11,7 +11,7 @@ import { ServerFileWatcher } from './server-watcher.js';
 import { join, dirname } from 'path';
 import { debugLog, isHistoryLogEnabled, logToHistoryFile } from './debug-logger.js';
 import { sanitizeReference } from './reference-validator.js';
-import { getOutputPath } from './helpers/paths.js';
+import { getOutputPath, registerRootBound } from './helpers/paths.js';
 import { atomicWriteFile } from './atomic-write.js';
 import { getIssueSequencesDir, getIssuesBySequenceFile } from './issue-tracker.js';
 import { captureVariable } from './tools/replay-executor.js';
@@ -193,6 +193,25 @@ export class CommandRecorder {
   private sequenceSources: Map<string, { path: string; mtimeMs: number }> = new Map();
   private sequenceWatcher: ServerFileWatcher | null = null;
   private watchedDirs: Set<string> = new Set();
+
+  constructor() {
+    // A root relocation changes what getSequencesDir() resolves to; without
+    // re-running startSequenceWatch() afterward, the watcher started here
+    // stays bound to the directories under the old root. registerRootBound
+    // is last-write-wins per name, so only the most recently constructed
+    // recorder's rebind fires - the one that can still be live.
+    registerRootBound({
+      name: 'command-recorder',
+      rebind: async () => {
+        // startSequenceWatch() only attaches to directories that already
+        // exist (a later save/load starts it otherwise) - a relocation target
+        // with no sequences saved there yet would otherwise go unwatched
+        // until something happened to write to it.
+        await fs.mkdir(this.getSequencesDir(false), { recursive: true });
+        this.startSequenceWatch();
+      },
+    });
+  }
 
   /**
    * Get the sequences directory for a specific scope
