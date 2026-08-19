@@ -569,6 +569,16 @@ export class PortMonitor {
 // Server Manager
 // ============================================================================
 
+/**
+ * Registry key for a running server's veto. The `server:` prefix keeps a
+ * server id from landing on the manager's own `server-manager` entry, which
+ * a bare id would replace - the registry is last-write-wins per name, so the
+ * collision would drop the rebind with nothing reported.
+ */
+function rootBoundServerName(serverId: string): string {
+  return `server:${serverId}`;
+}
+
 export class ServerManager {
   private servers: Map<string, ManagedServer> = new Map();
   private portMonitor: PortMonitor | null = null;
@@ -584,6 +594,14 @@ export class ServerManager {
 
   constructor(claimsStore: ServerClaimsStore = serverClaims) {
     this.claims = claimsStore;
+    // Local server records derive from the state root, so a relocation leaves
+    // this map describing the previous root. registerRootBound is
+    // last-write-wins per name, so the rebind belongs to the most recently
+    // constructed manager - the one a tool call reaches.
+    registerRootBound({
+      name: 'server-manager',
+      rebind: () => this.rebindToRoot(),
+    });
   }
 
   /**
@@ -1138,10 +1156,71 @@ export class ServerManager {
    */
   private registerRunningServerVeto(serverId: string): void {
     registerRootBound({
-      name: serverId,
+      name: rootBoundServerName(serverId),
       rebind: () => {}, // unreachable: this resource's own veto blocks every relocation while registered
       veto: () => `managed server "${serverId}" is running and its log files cannot follow a relocated root`,
     });
+  }
+
+  /**
+   * Re-read local server records from the relocated root. `getServersFilePath`
+   * resolves through `getOutputPath`, so the map built at startup describes
+   * the previous root once the root moves; a list served from it names servers
+   * belonging to a directory nothing points at any more, and the next
+   * `saveState` writes those records into the new root's file. Every running
+   * server vetoes the relocation, so no local entry dropped here owns a live
+   * process. Global records live under ~/.devharness and stay put.
+   */
+  private async rebindToRoot(): Promise<void> {
+    for (const [serverId, managed] of [...this.servers]) {
+      if (managed.global) continue;
+      this.stopWatcher(managed);
+      unregisterRootBound(rootBoundServerName(serverId));
+      this.pendingStartups.delete(serverId);
+      this.servers.delete(serverId);
+    }
+
+    // Monitored ports are local-scope state (doSaveState writes them to the
+    // local file only), so they belong to the root that just went away.
+    await this.getPortMonitor().stopAll();
+
+    const persisted = await this.loadState(false);
+
+    for (const server of persisted.servers) {
+      const runner = createRunner(server.type || 'native', server.id);
+      runner.restore(server);
+      this.servers.set(server.id, {
+        id: server.id,
+        runner,
+        autoRun: server.autoRun,
+        monitorPort: server.monitorPort,
+        global: false,
+        watch: server.watch,
+        watchPaths: server.watchPaths,
+      });
+
+      // A record under this root can name a process another session started
+      // and left running; its log fds pin this root exactly as a server
+      // started here does, so it takes the same veto.
+      if (await runner.isRunning()) {
+        this.registerRunningServerVeto(server.id);
+      }
+    }
+
+    for (const pending of persisted.pendingStartups) {
+      if (!this.servers.has(pending.serverId)) continue;
+      this.pendingStartups.set(pending.serverId, {
+        serverId: pending.serverId,
+        startedAt: new Date(pending.startedAt),
+        timeoutAt: new Date(pending.timeoutAt),
+        acknowledged: pending.acknowledged,
+        reason: pending.reason,
+      });
+    }
+
+    if (persisted.monitoredPorts.length > 0) {
+      await this.getPortMonitor().restoreFromState(persisted.monitoredPorts);
+    }
   }
 
   /**
@@ -1538,7 +1617,7 @@ export class ServerManager {
     }
 
     // Once stopped, its log fds are closed - nothing left to block a relocation.
-    unregisterRootBound(serverId);
+    unregisterRootBound(rootBoundServerName(serverId));
 
     // Clean up pending startup state
     this.removePendingStartup(serverId);
@@ -1994,7 +2073,7 @@ export class ServerManager {
       // veto) is only called above when running - make sure a leaked
       // watcher/veto/pending state can't outlive removal either way.
       this.stopWatcher(managed);
-      unregisterRootBound(serverId);
+      unregisterRootBound(rootBoundServerName(serverId));
     }
 
     // stopServer() already drops this server's port monitors when it runs, but
@@ -2104,6 +2183,7 @@ export class ServerManager {
           watch: server.watch,
           watchPaths: server.watchPaths,
         });
+        this.registerRunningServerVeto(server.id);
         await this.claims.claim(server.id, server.cwd, server.global);
         await debugLog('ServerManager', `Adopted server started elsewhere: ${server.id}`);
       } catch (error) {

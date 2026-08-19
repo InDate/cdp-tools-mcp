@@ -16,6 +16,10 @@ import {
   MODAL_PATTERNS,
 } from './modal-detection-core.js';
 
+// setupMockGlobals() below replaces globalThis.document with a stub, so the
+// real happy-dom document is taken at module scope, before any test runs.
+const domDocument = (globalThis as any).document;
+
 // Mock DOM environment
 class MockElement {
   tagName: string;
@@ -507,29 +511,34 @@ describe('Modal Detection Core - Classification', () => {
       expect(strategies).toContain('accept');
     });
 
-    // Note: The following tests are skipped because getDismissStrategies runs in browser context
-    // and has complex querySelector/matches logic that's difficult to fully mock.
-    // These will be covered by Puppeteer integration tests instead.
-    it.skip('should detect reject button (tested in integration tests)', () => {
-      const el = new MockElement('div');
-      const rejectBtn = new MockElement('button', {
-        textContent: 'Decline All Cookies',
-        className: 'btn',
-      });
-      el.children.push(rejectBtn);
+    // These two cases reach getDismissStrategies' querySelectorAll and matches
+    // calls, which MockElement does not carry. The suite already runs on
+    // happy-dom (vitest.config.ts), so they build a real element and exercise
+    // the selector matching itself rather than a second implementation of it.
+    function domElementFrom(html: string): any {
+      const host = domDocument.createElement('div');
+      host.innerHTML = html;
+      return host;
+    }
+
+    it('should detect reject button', () => {
+      const el = domElementFrom('<button class="btn">Decline All Cookies</button>');
 
       const strategies = getDismissStrategies(el, 'cookie-consent');
 
       expect(strategies).toContain('reject');
     });
 
-    it.skip('should detect close button (tested in integration tests)', () => {
-      const el = new MockElement('div');
-      const closeBtn = new MockElement('button', {
-        textContent: '×',
-        className: 'btn',
-      });
-      el.children.push(closeBtn);
+    it('should detect reject from an id no text or class repeats', () => {
+      const el = domElementFrom('<button id="btn-Reject">continue</button>');
+
+      const strategies = getDismissStrategies(el, 'cookie-consent');
+
+      expect(strategies).toContain('reject');
+    });
+
+    it('should detect close button', () => {
+      const el = domElementFrom('<button class="btn">×</button>');
 
       const strategies = getDismissStrategies(el, 'newsletter-popup');
 
