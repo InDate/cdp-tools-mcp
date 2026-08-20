@@ -155,26 +155,22 @@ export class NetworkMonitor {
       // emits nothing on the page session, so each worker needs its own session
       // with Network enabled. waitForDebuggerOnStart holds the worker before its
       // first line runs - otherwise a socket opened at worker boot is missed.
-      client.on('Target.attachedToTarget', async (e: any) => {
+      client.on('Target.attachedToTarget', (e: any) => {
+        // The child session is created before this event is dispatched, so no
+        // session here means the connection is gone and nothing can be sent.
         const child = client.connection?.()?.session(e.sessionId);
-        try {
-          if (child) {
-            await child.send('Network.enable');
-            this.liveSessions.add(e.sessionId);
-            this.bindSocketEvents(child, String(e.targetInfo?.type || 'worker'), e.sessionId);
-          }
-        } catch {
-          // Target went away mid-attach; nothing to unwind.
-        } finally {
-          // Must run on EVERY path, including no child session. The target is
-          // held before its first line, so failing to resume it does not lose
-          // monitoring - it stops the worker existing, and an app whose sync
-          // lives in that worker simply never starts.
-          if (e.waitingForDebugger) {
-            const resume = child ?? client;
-            await resume.send('Runtime.runIfWaitingForDebugger', child ? undefined : { sessionId: e.sessionId })
-              .catch(() => {});
-          }
+        if (!child) return;
+        // Listeners bind before either command below, both of which only
+        // register handlers. An event landing between enable and bind is lost.
+        this.liveSessions.add(e.sessionId);
+        this.bindSocketEvents(child, String(e.targetInfo?.type || 'worker'), e.sessionId);
+        // Both commands go out in one turn. CDP holds per-session order, so
+        // Network is on before the target's first line runs. Awaiting the enable
+        // deadlocks a service worker: its response arrives only once the target
+        // runs, and the target runs only on the resume below.
+        void child.send('Network.enable').catch(() => {});
+        if (e.waitingForDebugger) {
+          void child.send('Runtime.runIfWaitingForDebugger').catch(() => {});
         }
       });
 

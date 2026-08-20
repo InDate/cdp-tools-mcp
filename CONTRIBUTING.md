@@ -97,6 +97,16 @@ whenever `src/supervisor/` or `src/server-claims.ts` changes — `release` and
 `shared` pin the dev-server ownership rule, and a regression there kills a
 server someone else is using.
 
+`npm run check:targets` attaches the built `NetworkMonitor` to a real Chrome and
+checks that a target held by auto-attach is released: a service worker
+registers, a registration for a missing script rejects with its 404, and a
+dedicated worker runs. Needs a build first, takes seconds, outside `npm test`
+because the vitest suite never spawns Chrome. Run it whenever the
+`Target.attachedToTarget` handler in `src/network-monitor.ts` changes — a resume
+that waits on a pending CDP send leaves the target held, and every service
+worker registration in a devharness-driven Chrome then hangs. `--headful` shows
+the window; `CHECK_PORT` moves the fixture server off 45901.
+
 When you add, rename, or change a tool, update `docs/instructions.md`,
 `docs/mcp-instructions.md` (if it affects the quick-start),
 `plugin/skills/devharness/SKILL.md` and `references/tool-categories.md`, and
