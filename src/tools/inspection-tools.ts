@@ -9,6 +9,12 @@ import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse, formatCodeBlock } from '../messages.js';
 import type { ToolResponseMeta } from '../tool-response.js';
 import { isAbortError, raceAbort, throwIfAborted } from '../utils/abort.js';
+import {
+  getWorkerTargetRegistry,
+  WorkerTargetAmbiguousError,
+  WorkerTargetNotFoundError,
+  WorkerEvaluateError,
+} from '../worker-targets.js';
 
 /**
  * Reverse CDPManager.formatValue()'s display shaping so a machine-readable
@@ -211,10 +217,70 @@ function extractSourceFromFullEvalLine(
   return null; // Pattern not found in inner content
 }
 
+
+/**
+ * A worker runs its own script in its own target, so evaluation there goes over
+ * that target's own client rather than the page's debugger.
+ */
+async function evaluateInWorker(
+  cdpManager: CDPManager,
+  target: string,
+  expression: string,
+  awaitPromise: boolean
+) {
+  const endpoint = cdpManager.getEndpoint();
+  if (!endpoint) return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+  const registry = getWorkerTargetRegistry(endpoint.host, endpoint.port);
+  try {
+    const value = await registry.evaluate(target, expression, awaitPromise);
+    const rendered = value === undefined ? 'undefined' : JSON.stringify(value);
+    const meta: ToolResponseMeta = {
+      tool: 'inspect',
+      action: 'evaluateExpression',
+      timestamp: Date.now(),
+      inspect: {
+        expression,
+        value,
+        valueType: value === null ? 'null' : typeof value,
+        valueSource: 'exact',
+        workerTarget: target,
+      },
+    };
+    return {
+      ...createSuccessResponse('WORKER_EVALUATED', {
+        target,
+        result: formatCodeBlock(rendered),
+      }),
+      _meta: meta,
+    };
+  } catch (error) {
+    return workerErrorResponse(error, target);
+  }
+}
+
+function workerErrorResponse(error: unknown, target: string) {
+  if (error instanceof WorkerTargetNotFoundError) {
+    return createErrorResponse('WORKER_TARGET_NOT_FOUND', {
+      target,
+      available: error.available.map((t) => `${t.type} ${t.url}`).join(', ') || 'none',
+    });
+  }
+  if (error instanceof WorkerTargetAmbiguousError) {
+    return createErrorResponse('WORKER_TARGET_AMBIGUOUS', {
+      target,
+      matches: error.matches.map((t) => `${t.targetId} ${t.url}`).join(', '),
+    });
+  }
+  if (error instanceof WorkerEvaluateError) {
+    return createErrorResponse('WORKER_EVALUATE_FAILED', { target, error: error.message });
+  }
+  return createErrorResponse('WORKER_EVALUATE_FAILED', { target, error: `${error}` });
+}
+
 // Consolidated inspection tool schema
 const inspectionToolSchema = z.object({
-  action: z.enum(['getCallStack', 'getVariables', 'evaluateExpression', 'searchCode', 'searchFunctions'])
-    .describe('Inspection action: getCallStack (get call stack when paused), getVariables (get variables in call frame), evaluateExpression (evaluate JavaScript), searchCode (search code by pattern), searchFunctions (find function definitions)'),
+  action: z.enum(['getCallStack', 'getVariables', 'evaluateExpression', 'searchCode', 'searchFunctions', 'listTargets'])
+    .describe('Inspection action: getCallStack (get call stack when paused), getVariables (get variables in call frame), evaluateExpression (evaluate JavaScript), searchCode (search code by pattern), searchFunctions (find function definitions), listTargets (list worker targets)'),
   connectionReason: z.string().optional().describe('Connection reference (use the reference from launchChrome output, e.g., "unnamed-connection-default" or your renamed tab)'),
 
   // getVariables and evaluateExpression parameters
@@ -228,6 +294,7 @@ const inspectionToolSchema = z.object({
   // evaluateExpression parameters
   expression: z.string().optional().describe('JavaScript expression (required for evaluateExpression action). A returned Promise is awaited by default, so async IIFEs like (async () => await fetch(...))() resolve to their settled value'),
   awaitPromise: z.boolean().optional().describe('Await a Promise returned by the expression and use its settled value (for evaluateExpression action, default: true). Pass false to inspect the Promise object itself. While paused at a breakpoint, only already-settled promises can be resolved (the event loop is stopped); a pending one fails fast'),
+  target: z.string().optional().describe('Worker target to evaluate inside - a target id from listTargets, or a substring of its URL. Omit to evaluate in the page'),
   saveAs: z.string().optional().describe('Sequence step only (evaluateExpression): captures the evaluated value into the run\'s variable store under this name, for later {{var:name}} / {{var:name.path}} use'),
 
   // searchCode parameters
@@ -254,7 +321,7 @@ export function createInspectionTools(
 ) {
   return {
     inspect: createTool(
-      'Inspect and debug code. Actions: getCallStack (get call stack when paused), getVariables (get variables in call frame), evaluateExpression (evaluate JavaScript), searchCode (search code by pattern), searchFunctions (find function definitions)',
+      'Inspect and debug code. Actions: getCallStack (get call stack when paused), getVariables (get variables in call frame), evaluateExpression (evaluate JavaScript, in the page or inside a worker via `target`), searchCode (search code by pattern), searchFunctions (find function definitions), listTargets (list service/dedicated/shared worker targets)',
       inspectionToolSchema,
       // abortSignal (#110): INTERRUPTIBLE AT A CHECKPOINT, not genuinely
       // cancellable. `evaluateExpression` is the only action with a real wait
@@ -410,6 +477,10 @@ export function createInspectionTools(
                 missing: 'expression',
                 message: 'Provide a JavaScript expression to evaluate'
               });
+            }
+
+            if (args.target) {
+              return await evaluateInWorker(targetCdpManager, args.target, expression, awaitPromise);
             }
 
             try {
@@ -602,6 +673,28 @@ export function createInspectionTools(
             } catch (error) {
               return createErrorResponse('SOURCE_CODE_FAILED', { error: `${error}` });
             }
+          }
+
+          case 'listTargets': {
+            const endpoint = targetCdpManager.getEndpoint();
+            if (!endpoint) return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+            const targets = await getWorkerTargetRegistry(endpoint.host, endpoint.port).list();
+            const rows = targets.length
+              ? targets.map((t) => `${t.type}\t${t.url}\t${t.targetId}`).join('\n')
+              : 'none';
+            const listMeta: ToolResponseMeta = {
+              tool: 'inspect',
+              action: 'listTargets',
+              timestamp: Date.now(),
+              workerTargets: targets,
+            };
+            return {
+              ...createSuccessResponse('WORKER_TARGETS_LISTED', {
+                count: targets.length.toString(),
+                targets: formatCodeBlock(rows),
+              }),
+              _meta: listMeta,
+            };
           }
 
           case 'searchFunctions': {

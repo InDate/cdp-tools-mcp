@@ -96,6 +96,9 @@ function truncateExpression(expression: string, maxLength: number = 200): string
 }
 
 export class CDPManager {
+  /** Where this manager connected; empty until connect() succeeds. */
+  private endpoint: { host: string; port: number } | null = null;
+
   private client: any = null;
   private state: DebuggerState = {
     connected: false,
@@ -240,6 +243,9 @@ export class CDPManager {
         cdpOptions.target = targetId;
       }
       this.client = await CDP(cdpOptions);
+      // Held so a tool can reach sibling targets on the same browser - a worker
+      // has its own target and its own websocket, and only host+port locates it.
+      this.endpoint = { host, port };
 
       const { Debugger, Runtime, DOM } = this.client;
 
@@ -1077,6 +1083,11 @@ export class CDPManager {
    *    the runaway script themselves and return exceptionDetails cleanly
    *    (case 1) rather than relying solely on our client-side timer.
    */
+  /** The browser this manager is connected to, for reaching sibling targets. */
+  getEndpoint(): { host: string; port: number } | null {
+    return this.endpoint;
+  }
+
   async evaluateExpression(
     expression: string,
     callFrameId?: string,

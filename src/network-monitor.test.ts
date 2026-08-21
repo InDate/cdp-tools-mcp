@@ -17,6 +17,8 @@ interface FakeSession {
   emit(event: string, payload: any): void;
   send(method: string, params?: unknown): Promise<unknown>;
   on(event: string, handler: (e: any) => void): void;
+  detached: boolean;
+  detach(): Promise<void>;
 }
 
 /** `hangOn` never settles, standing in for a held target's Network.enable. */
@@ -34,6 +36,11 @@ function fakeSession(hangOn?: string): FakeSession {
     },
     on(event, handler) {
       session.handlers.set(event, handler);
+    },
+    detached: false,
+    detach() {
+      session.detached = true;
+      return Promise.resolve();
     },
   };
   return session;
@@ -120,5 +127,60 @@ describe('NetworkMonitor auto-attach resume', () => {
     pageSession.emit('Target.attachedToTarget', attachEvent('w-1', 'worker', false));
 
     expect(child.sent.map((c) => c.method)).toEqual(['Network.enable']);
+  });
+});
+
+describe('NetworkMonitor.stopMonitoring', () => {
+  async function monitored() {
+    const pageSession = fakeSession();
+    const child = fakeSession('Network.enable');
+    const monitor = new NetworkMonitor();
+    const page = fakePage(pageSession, new Map([['sw-1', child]]));
+    monitor.startMonitoring(page as any);
+    await flush();
+    pageSession.emit('Target.attachedToTarget', attachEvent('sw-1', 'service_worker', true));
+    return { monitor, page, pageSession, child };
+  }
+
+  it('disarms the auto-attach, which releases every held target with it', async () => {
+    const { monitor, page, pageSession } = await monitored();
+
+    await monitor.stopMonitoring(page as any);
+
+    const disarm = pageSession.sent.filter((c) => c.method === 'Target.setAutoAttach').pop();
+    expect(disarm?.params).toMatchObject({ autoAttach: false });
+    expect(pageSession.detached).toBe(true);
+  });
+
+  // Chrome detaches every auto-attached child as the disarm lands, so the
+  // detach events arrive DURING the teardown - which is the only window where
+  // the guard is reachable.
+  it('leaves a socket recorded before the stop reading as open', async () => {
+    const { monitor, page, pageSession, child } = await monitored();
+    child.emit('Network.webSocketCreated', { requestId: '1', url: 'wss://example.test/sync' });
+    const send = pageSession.send;
+    pageSession.send = (method, params) => {
+      const result = send(method, params);
+      if (method === 'Target.setAutoAttach' && (params as any)?.autoAttach === false) {
+        pageSession.emit('Target.detachedFromTarget', { sessionId: 'sw-1' });
+      }
+      return result;
+    };
+
+    await monitor.stopMonitoring(page as any);
+
+    expect(monitor.getSockets()[0].closedAt).toBeUndefined();
+  });
+
+  it('arms a fresh session when monitoring is turned back on', async () => {
+    const { monitor, page, pageSession } = await monitored();
+    await monitor.stopMonitoring(page as any);
+    pageSession.sent.length = 0;
+
+    monitor.startMonitoring(page as any);
+    await flush();
+
+    const rearm = pageSession.sent.filter((c) => c.method === 'Target.setAutoAttach').pop();
+    expect(rearm?.params).toMatchObject({ autoAttach: true });
   });
 });

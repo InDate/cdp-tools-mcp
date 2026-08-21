@@ -9,6 +9,7 @@ import { ConsoleMonitor } from './console-monitor.js';
 import { NetworkMonitor } from './network-monitor.js';
 import type { RuntimeType } from './types.js';
 import type { ChromeLauncher } from './chrome-launcher.js';
+import { disposeWorkerTargetRegistry } from './worker-targets.js';
 
 export interface Connection {
   id: string;
@@ -262,6 +263,9 @@ export class ConnectionManager {
       browser.connectionIds = browser.connectionIds.filter(connId => connId !== connectionId);
       if (browser.connectionIds.length === 0) {
         this.browsers.delete(browserKey);
+        // A worker client left open holds its worker alive past the browser
+        // that owned it.
+        void disposeWorkerTargetRegistry(connection.host, connection.port);
       }
     }
 
@@ -359,7 +363,7 @@ export class ConnectionManager {
     if (connection.puppeteerManager?.isConnected()) {
       const page = connection.puppeteerManager.getPage();
       connection.consoleMonitor?.stopMonitoring(page);
-      connection.networkMonitor?.stopMonitoring(page);
+      await connection.networkMonitor?.stopMonitoring(page);
 
       // Close the page/tab
       try {
@@ -388,6 +392,7 @@ export class ConnectionManager {
       // If no more connections, remove browser entry and kill Chrome
       if (browser.connectionIds.length === 0) {
         this.browsers.delete(browserKey);
+        void disposeWorkerTargetRegistry(connection.host, connection.port);
 
         // Kill Chrome instance if this was the last connection to it
         if (this.chromeLauncher && connection.type === 'chrome') {

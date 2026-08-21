@@ -309,7 +309,7 @@ export function createNetworkTools(
               return createSuccessResponse('NETWORK_MONITORING_ENABLED');
             }
 
-            targetNetworkMonitor.stopMonitoring(page);
+            await targetNetworkMonitor.stopMonitoring(page);
             return createSuccessResponse('NETWORK_MONITORING_DISABLED');
           }
 

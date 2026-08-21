@@ -20,10 +20,56 @@ import {
   formatSummaryAsToon,
   formatMessageDetailAsToon,
 } from '../formatters/console-formatter.js';
+import { formatCodeBlock } from '../messages.js';
+import {
+  getWorkerTargetRegistry,
+  WorkerTargetAmbiguousError,
+  WorkerTargetNotFoundError,
+} from '../worker-targets.js';
 
 // =============================================================================
 // Schema
 // =============================================================================
+
+
+/**
+ * Console output recorded from a worker's own target. The page's listeners
+ * never see it - a worker's console reaches no page context.
+ */
+async function handleWorkerConsole(connection: any, args: ConsoleArgs) {
+  const target = args.target!;
+  const host = connection?.host;
+  const port = connection?.port;
+  if (!host || !port) return createErrorResponse('DEBUGGER_NOT_CONNECTED');
+  try {
+    const all = await getWorkerTargetRegistry(host, port).messages(target);
+    const limit = args.limit ?? (args.action === 'recent' ? 50 : 100);
+    const filtered = args.type ? all.filter((m) => m.type === args.type) : all;
+    const shown = filtered.slice(-limit);
+    const rows = shown.length
+      ? shown.map((m) => `${m.type}\t${m.text}`).join('\n')
+      : 'none';
+    return createSuccessResponse('WORKER_CONSOLE_LISTED', {
+      target,
+      count: shown.length.toString(),
+      messages: formatCodeBlock(rows),
+    });
+  } catch (error) {
+    if (error instanceof WorkerTargetNotFoundError) {
+      return createErrorResponse('WORKER_TARGET_NOT_FOUND', {
+        target,
+        available: error.available.map((t) => `${t.type} ${t.url}`).join(', ') || 'none',
+      });
+    }
+    if (error instanceof WorkerTargetAmbiguousError) {
+      return createErrorResponse('WORKER_TARGET_AMBIGUOUS', {
+        target,
+        matches: error.matches.map((t) => `${t.targetId} ${t.url}`).join(', '),
+      });
+    }
+    return createErrorResponse('WORKER_EVALUATE_FAILED', { target, error: `${error}` });
+  }
+}
 
 const consoleSchema = z.object({
   action: z.enum(['list', 'get', 'recent', 'search', 'clear', 'setObjectDepth'])
@@ -36,6 +82,9 @@ const consoleSchema = z.object({
     .describe('Message type filter (log, error, warn, etc.)'),
   limit: z.number().optional()
     .describe('Max messages to return (default: 100 for list, 50 for search/recent)'),
+
+  target: z.string().optional()
+    .describe('Worker target whose console to read - a target id from inspect({action:"listTargets"}), or a substring of its URL. Recording starts at first attach, so output emitted before that is not held'),
 
   // list-specific
   offset: z.number().optional()
@@ -282,7 +331,7 @@ export function createConsoleTools(
 ) {
   return {
     console: createTool(
-      'Monitor and manage console messages. Actions: list, get, recent, search, clear, setObjectDepth',
+      'Monitor and manage console messages, from the page or from a worker via `target`. Actions: list, get, recent, search, clear, setObjectDepth',
       consoleSchema,
       async (args: ConsoleArgs) => {
         // Validate required params
@@ -299,6 +348,17 @@ export function createConsoleTools(
 
         const monitor = resolved.consoleMonitor || consoleMonitor;
         const manager = resolved.puppeteerManager || puppeteerManager;
+
+        // A worker's console belongs to its own target and reaches no page
+        // listener, so it comes from that target's own client.
+        if (args.target) {
+          if (args.action !== 'list' && args.action !== 'recent') {
+            return createErrorResponse('INVALID_ACTION', {
+              action: `${args.action} with target`,
+            });
+          }
+          return await handleWorkerConsole(resolved.connection, args);
+        }
 
         // Dispatch
         switch (args.action) {

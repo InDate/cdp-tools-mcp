@@ -107,6 +107,13 @@ that waits on a pending CDP send leaves the target held, and every service
 worker registration in a devharness-driven Chrome then hangs. `--headful` shows
 the window; `CHECK_PORT` moves the fixture server off 45901.
 
+`npm run check:workers` registers a service worker in a real Chrome and drives
+`WorkerTargetRegistry` against it: the target is listed, an expression
+evaluates inside `ServiceWorkerGlobalScope`, its console output is recorded,
+and a reference matching nothing is refused. Needs a build first, outside
+`npm test` for the same reason. Run it whenever `src/worker-targets.ts` or the
+`target` parameter on `inspect`/`console` changes.
+
 When you add, rename, or change a tool, update `docs/instructions.md`,
 `docs/mcp-instructions.md` (if it affects the quick-start),
 `plugin/skills/devharness/SKILL.md` and `references/tool-categories.md`, and

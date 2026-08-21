@@ -78,6 +78,11 @@ export class NetworkMonitor {
    * looks self-inflicted when its worker was actually being torn down.
    */
   private liveSessions: Set<string> = new Set();
+  /**
+   * A teardown is detaching the sessions. Detaches it produces carry nothing
+   * about the sockets' transports, so they must not stamp a close on them.
+   */
+  private stoppingMonitoring = false;
   private wsClient: any = null;
   /** The page wsClient belongs to, so re-entry can tell "again" from "elsewhere". */
   private wsPage: any = null;
@@ -179,6 +184,7 @@ export class NetworkMonitor {
       // socket would otherwise read as open forever.
       client.on('Target.detachedFromTarget', (e: any) => {
         this.liveSessions.delete(e.sessionId);
+        if (this.stoppingMonitoring) return;
         for (const sock of this.sockets.values()) {
           if (sock.sessionId === e.sessionId && !sock.closedAt) {
             sock.closedAt = Date.now();
@@ -252,13 +258,42 @@ export class NetworkMonitor {
   }
 
   /**
-   * Stop monitoring
+   * Stop monitoring, page events and CDP session both.
+   *
+   * Disarming the auto-attach detaches every child session with it, which
+   * releases any target Chrome holds before its first line - measured: a
+   * registration pending on a held worker completes the moment the disarm
+   * lands. Leaving it armed made "monitoring off" read as a control that rules
+   * devharness out while every target stayed held.
    */
-  stopMonitoring(page: Page): void {
+  async stopMonitoring(page: Page): Promise<void> {
     page.removeAllListeners('request');
     page.removeAllListeners('response');
     page.removeAllListeners('requestfailed');
     this.isMonitoring = false;
+
+    const client = this.wsClient;
+    // Cleared before the awaits: startSocketMonitoring reads wsClient to decide
+    // whether a page is already monitored, and a re-enable landing mid-teardown
+    // has to arm a fresh session rather than adopt the one being detached.
+    this.wsClient = null;
+    this.wsPage = null;
+    if (!client) {
+      this.liveSessions.clear();
+      return;
+    }
+    this.stoppingMonitoring = true;
+    try {
+      await client.send('Target.setAutoAttach', {
+        autoAttach: false,
+        waitForDebuggerOnStart: false,
+        flatten: true,
+      }).catch(() => {});
+      await client.detach().catch(() => {});
+    } finally {
+      this.stoppingMonitoring = false;
+      this.liveSessions.clear();
+    }
   }
 
   /**
