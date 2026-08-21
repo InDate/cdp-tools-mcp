@@ -143,6 +143,8 @@ export interface InspectToolMeta {
   valueSource?: 'exact' | 'display';
   /** Set when the expression was evaluated against a paused call frame */
   callFrameId?: string;
+  /** Set when the expression was evaluated inside a worker target */
+  workerTarget?: string;
 }
 
 /**
@@ -223,10 +225,20 @@ export interface ReplayRunMeta {
  * This provides structured data for programmatic use (validation, replay)
  * while keeping text content free to evolve for human/LLM display
  */
+/** One worker target: service worker, dedicated worker, or shared worker. */
+export interface WorkerTargetMeta {
+  targetId: string;
+  type: string;
+  url: string;
+  attached: boolean;
+}
+
 export interface ToolResponseMeta {
   tool: string;
   action?: string;
   timestamp: number;
+  /** Worker targets on this browser, from inspect({ action: 'listTargets' }). */
+  workerTargets?: WorkerTargetMeta[];
   // Action-specific structured data
   click?: ClickActionMeta;
   type?: TypeActionMeta;

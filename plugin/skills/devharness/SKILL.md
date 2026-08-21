@@ -27,6 +27,7 @@ Launched without a reference? `tab({ action: 'rename', reference: "unnamed-conne
 
 Paused: `inspect({ action: 'getCallStack' })` → `getVariables` → `evaluateExpression`.
 Watch: `console({ action: 'list' })`, `network({ action: 'list' })` (needs `network({ action: 'enable' })` first).
+Inside a worker: `inspect({ action: 'listTargets' })` → `evaluateExpression({ target, expression })`, and `console({ action: 'list', target })` — a service worker's console reaches no page listener.
 
 ## `.devharness/` must be git-ignored
 
