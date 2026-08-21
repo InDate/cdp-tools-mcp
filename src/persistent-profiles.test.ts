@@ -250,7 +250,7 @@ describe('one live Chrome per named profile', () => {
   });
 
   posixOnly('launch() refuses a profile another PROCESS\'s Chrome holds', async () => {
-    // The default profile root is global, so a second cdp-tools session can be
+    // The default profile root is global, so a second devharness session can be
     // running this exact profile - invisible to our profileDirs/chromeProcesses.
     const launcher = newLauncher();
     writeSingletonLock(path.join(persistentRoot, 'device-a'));
@@ -391,7 +391,7 @@ describe('resetPersistentProfile', () => {
   });
 
   posixOnly('refuses while ANOTHER process\'s Chrome holds the profile', async () => {
-    // Session A launched device-a; session B - a different cdp-tools process,
+    // Session A launched device-a; session B - a different devharness process,
     // sharing the global profile root - must not rm -rf it out from under A.
     const launcher = newLauncher();
     const dir = path.join(persistentRoot, 'device-a');

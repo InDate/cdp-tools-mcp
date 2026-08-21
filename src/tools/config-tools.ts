@@ -1,6 +1,6 @@
 /**
  * Config Tools
- * MCP tools for managing cdp-tools configuration
+ * MCP tools for managing devharness configuration
  */
 
 import { z } from 'zod';
@@ -12,13 +12,13 @@ import { InvalidProfileNameError, ProfileInUseError } from '../chrome-launcher.j
 
 const configSchema = z.object({
   action: z.enum(['status', 'useLocal', 'useGlobal', 'reset', 'backup', 'cloneFromGlobal', 'show', 'listTools', 'reload', 'restart', 'listProfiles', 'resetProfile'])
-    .describe('Config action: status (show config location info), useLocal (switch to project config), useGlobal (switch to global config), reset (reset to defaults), backup (backup current config), cloneFromGlobal (copy global to local), show (display current config), listTools (list all toggleable tools with status and dependencies), reload (re-read config.json from disk now - also happens automatically on file edits), restart (restart cdp-tools itself if stuck or broken), listProfiles (list named persistent Chrome profiles), resetProfile (wipe and recreate the named persistent Chrome profile given in `profile`)'),
+    .describe('Config action: status (show config location info), useLocal (switch to project config), useGlobal (switch to global config), reset (reset to defaults), backup (backup current config), cloneFromGlobal (copy global to local), show (display current config), listTools (list all toggleable tools with status and dependencies), reload (re-read config.json from disk now - also happens automatically on file edits), restart (restart devharness itself if stuck or broken), listProfiles (list named persistent Chrome profiles), resetProfile (wipe and recreate the named persistent Chrome profile given in `profile`)'),
   seedFromGlobal: z.boolean().optional()
     .describe('For useLocal action: if true (default), seeds new local config from global if it exists'),
   path: z.string().optional()
     .describe('useLocal: explicit project dir to use as "local" (overrides server cwd)'),
   profile: z.string().optional()
-    .describe('resetProfile: name of the persistent Chrome profile (as passed to launchChrome({ profile })) to wipe and recreate empty. Refused while a Chrome launched by cdp-tools still holds that profile - kill it first.'),
+    .describe('resetProfile: name of the persistent Chrome profile (as passed to launchChrome({ profile })) to wipe and recreate empty. Refused while a Chrome launched by devharness still holds that profile - kill it first.'),
 }).strict();
 
 type ConfigArgs = z.infer<typeof configSchema>;
@@ -43,7 +43,7 @@ export interface ServerIdentity {
 export function createConfigTools(profileStore?: ProfileStore, serverIdentity?: ServerIdentity) {
   return {
     config: createTool(
-      'Manage cdp-tools configuration. Actions: status (show where config is loaded from), useLocal (switch to project-local config), useGlobal (switch to global ~/.devharness config), reset (reset to defaults), backup (create timestamped backup), cloneFromGlobal (copy global config to local), show (display current settings), listTools (list all toggleable tools with their status and dependencies), reload (re-read config.json now; edits also hot-reload automatically within ~250ms), restart (restart cdp-tools itself if stuck or broken), listProfiles (list named persistent Chrome profiles and where they live), resetProfile (wipe and recreate a named persistent Chrome profile, clearing its cookies/localStorage/IndexedDB)',
+      'Manage devharness configuration. Actions: status (show where config is loaded from), useLocal (switch to project-local config), useGlobal (switch to global ~/.devharness config), reset (reset to defaults), backup (create timestamped backup), cloneFromGlobal (copy global config to local), show (display current settings), listTools (list all toggleable tools with their status and dependencies), reload (re-read config.json now; edits also hot-reload automatically within ~250ms), restart (restart devharness itself if stuck or broken), listProfiles (list named persistent Chrome profiles and where they live), resetProfile (wipe and recreate a named persistent Chrome profile, clearing its cookies/localStorage/IndexedDB)',
       configSchema,
       async (args: ConfigArgs) => {
         switch (args.action) {

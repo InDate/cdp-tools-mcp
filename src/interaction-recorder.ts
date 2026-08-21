@@ -488,11 +488,11 @@ export async function startRecording(
           }
         }
 
-        // 6. Text-based selector using :has-text() (cdp-tools extended selector)
+        // 6. Text-based selector using :has-text() (devharness extended selector)
         const text = el.textContent?.trim();
         if (text && text.length > 0 && text.length <= 30) {
           const escapedText = text.replace(/"/g, '\\"');
-          // :has-text is supported by cdp-tools selector resolver
+          // :has-text is supported by devharness selector resolver
           return `${tag}:has-text("${escapedText}")`;
         }
 

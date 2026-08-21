@@ -1183,7 +1183,7 @@ rendered in their own section — never merged into `results` or the
 successful/failed counts. A broken cleanup must not turn a passing run red, nor
 make a failing one look like it failed somewhere it did not.
 
-Teardown is best-effort by construction: a killed cdp-tools process takes any
+Teardown is best-effort by construction: a killed devharness process takes any
 pending teardown with it. It reduces accumulation; it cannot guarantee a clean
 world, so assertions that depend on absence remain order-dependent regardless.
 

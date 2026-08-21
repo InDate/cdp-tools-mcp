@@ -18,7 +18,7 @@ import {
 let tempDir: string;
 
 beforeEach(async () => {
-  tempDir = await fsp.mkdtemp(join(tmpdir(), 'cdp-tools-issue-test-'));
+  tempDir = await fsp.mkdtemp(join(tmpdir(), 'devharness-issue-test-'));
   setWorkingDirOverride(tempDir);
   __resetForTests();
 });

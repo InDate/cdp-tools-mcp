@@ -373,7 +373,7 @@ async function createMCPServer(): Promise<Server> {
 
   return new Server(
     {
-      name: 'cdp-tools-debugger',
+      name: 'devharness-debugger',
       version: SERVER_VERSION,
     },
     {
@@ -535,7 +535,7 @@ const connectionTools = {
           return createErrorResponse('CHROME_PROFILE_PORT_MISMATCH', {
             profile: profileName,
             port: decision.port.toString(),
-            actualProfile: decision.actualProfile ?? 'unknown (Chrome not launched by cdp-tools)',
+            actualProfile: decision.actualProfile ?? 'unknown (Chrome not launched by devharness)',
           });
         }
         return null;
@@ -1071,7 +1071,7 @@ const connectionTools = {
         await cdpManager.connect(host, port);
         const runtimeType = cdpManager.getRuntimeType();
 
-        // If this port belongs to a server cdp-tools is managing, and its start
+        // If this port belongs to a server devharness is managing, and its start
         // command looks auto-restarting (--watch, nodemon, etc.), warn: pausing
         // at a breakpoint on that process while it can self-restart on file
         // changes is a known-bad combination.

@@ -90,7 +90,7 @@ export class DockerRunner implements Runner {
   constructor(id: string) {
     this.id = sanitizeForDocker(id);
     // Use sanitized server ID as container name for easy reference
-    this.containerName = `cdp-tools-${this.id}`;
+    this.containerName = `devharness-${this.id}`;
   }
 
   /**

@@ -117,7 +117,7 @@ export class DockerComposeRunner implements Runner {
   constructor(id: string) {
     this.id = sanitizeForDocker(id);
     // Use sanitized server ID as project name for isolation
-    this.projectName = `cdp-tools-${this.id}`;
+    this.projectName = `devharness-${this.id}`;
   }
 
   /**

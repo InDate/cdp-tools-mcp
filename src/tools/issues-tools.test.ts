@@ -29,7 +29,7 @@ vi.mock('../interaction-recorder.js', () => ({
 let tempDir: string;
 
 beforeEach(async () => {
-  tempDir = await fsp.mkdtemp(join(tmpdir(), 'cdp-tools-issues-tools-test-'));
+  tempDir = await fsp.mkdtemp(join(tmpdir(), 'devharness-issues-tools-test-'));
   setWorkingDirOverride(tempDir);
   __resetForTests();
   showTestReadyOverlay.mockReset();

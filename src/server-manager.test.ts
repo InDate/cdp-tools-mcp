@@ -1,7 +1,7 @@
 /**
  * Unit tests for:
  * - detectAutoRestartCommand: identifying dev commands that self-restart on
- *   file changes (--watch, nodemon, etc.), so cdp-tools can warn about
+ *   file changes (--watch, nodemon, etc.), so devharness can warn about
  *   pairing them with an attached breakpoint debugger.
  * - extractInspectorPort: parsing a command's --inspect/--inspect-brk port,
  *   used to correlate a managed server with the CDP connection actually

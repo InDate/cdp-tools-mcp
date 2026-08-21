@@ -196,7 +196,7 @@ describe('recorded pid honesty', () => {
     const manager = new ServerManager(storeFor(OWN_SUPERVISOR));
     const pid = await startServer(manager, 'crashed');
 
-    process.kill(pid, 'SIGKILL'); // died outside cdp-tools; stop() never ran
+    process.kill(pid, 'SIGKILL'); // died outside devharness; stop() never ran
     expect(await waitForExit(pid)).toBe(true);
 
     // Reading status is what notices the process is gone; saving is what makes
@@ -212,7 +212,7 @@ describe('recorded pid honesty', () => {
     const manager = new ServerManager(storeFor(OWN_SUPERVISOR));
     await startServer(manager, 'recycled');
 
-    // Rewrite persisted state as an older cdp-tools would leave it after a
+    // Rewrite persisted state as an older devharness would leave it after a
     // crash: a pid that now belongs to something else entirely.
     const statePath = join(workDir, '.devharness', 'servers.json');
     const state = JSON.parse(readFileSync(statePath, 'utf-8'));

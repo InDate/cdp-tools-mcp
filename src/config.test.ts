@@ -15,7 +15,7 @@ let tempDir: string;
 let manager: ConfigManager;
 
 beforeEach(async () => {
-  tempDir = await fsp.mkdtemp(join(tmpdir(), 'cdp-tools-config-test-'));
+  tempDir = await fsp.mkdtemp(join(tmpdir(), 'devharness-config-test-'));
   setWorkingDirOverride(tempDir);
   // A fresh instance (not the shared singleton) so this test's cwd override
   // is the only thing that ever influences it.
@@ -102,7 +102,7 @@ describe('ConfigManager live reload', () => {
   it('still reloads while an unrelated file in the watched directory is being written continuously', async () => {
     // The reload used to be debounced by resetting its timer on every event.
     // Because startWatching() also watches the shared global ~/.devharness,
-    // sustained writes by any other cdp-tools process reset that timer forever
+    // sustained writes by any other devharness process reset that timer forever
     // and live reload silently stopped working. This drives that scenario:
     // a config edit, then a steady stream of unrelated writes in the same
     // directory. Against the old resetting debounce this times out.

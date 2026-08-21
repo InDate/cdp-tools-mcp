@@ -1,6 +1,6 @@
-# cdp-tools Message Templates
+# devharness Message Templates
 
-This file contains all user-facing messages for the cdp-tools debugger. Messages use markdown formatting and support variable interpolation using `{{variable}}` syntax.
+This file contains all user-facing messages for the devharness debugger. Messages use markdown formatting and support variable interpolation using `{{variable}}` syntax.
 
 ## Template Usage Status
 
@@ -3631,7 +3631,7 @@ Note: `tools.enabled`/`tools.disabled` changes still require an MCP server resta
 **Type:** success
 **Summary:** Restart requested
 
-Sent a restart signal to the cdp-tools supervisor (PID {{pid}}). The server restarts shortly - no reconnect needed.
+Sent a restart signal to the devharness supervisor (PID {{pid}}). The server restarts shortly - no reconnect needed.
 
 Note: any Chrome instances this session launched will be killed (call `launchChrome` again). Managed dev servers (the `server` tool) survive and reattach automatically.
 
@@ -3890,7 +3890,7 @@ This session is `{{self}}`. Its mailbox: `{{mailboxPath}}`
 
 {{sessionList}}
 
-**Note:** To receive a message while doing other work, arm a Monitor on this session's mailbox file - it appends one JSON line per message, so a `tail -f` style watch fires the moment one lands. Without a Monitor, messages surface only when `message({ action: 'read' })` runs.
+**Note:** An arriving message announces itself on this session's event stream, `{{eventStreamPath}}`, which is also where guard blocks land - one watch covers both. The plugin's SessionStart hook prints that path and the `Monitor` call at the start of every session. Without a watch, messages surface only when `message({ action: 'read' })` runs. Nothing watches the mailbox file; it holds the conversation and the read cursor.
 
 ---
 

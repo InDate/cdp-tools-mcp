@@ -2,7 +2,7 @@
 
 `content({ action: 'parse' })` runs small, user-written parser plugins against
 the current page and returns their JSON output. Plugins are **not** shipped with
-cdp-tools — you write the ones you need.
+devharness — you write the ones you need.
 
 ## Usage
 

@@ -500,7 +500,7 @@ server({ action: 'stop', serverId: 'my-app', global: true })
 
 ## Configuration Management
 
-Manage cdp-tools configuration across projects:
+Manage devharness configuration across projects:
 
 ```javascript
 // Check where config is loaded from

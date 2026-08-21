@@ -1,6 +1,6 @@
 # Replay Sequences
 
-A sequence is an ordered list of tool calls you can re-run. It's how cdp-tools
+A sequence is an ordered list of tool calls you can re-run. It's how devharness
 turns "I clicked around and hit the bug" into something repeatable - a
 regression test, a repro attached to an issue, or a multi-step automation.
 
@@ -590,7 +590,7 @@ A failing teardown step never changes the run's verdict; it is reported in its
 own section. Otherwise a broken cleanup would mask the failure it was cleaning up
 after.
 
-**Teardown is always best-effort.** A killed cdp-tools process takes any pending
+**Teardown is always best-effort.** A killed devharness process takes any pending
 teardown with it, so it reduces accumulation and cannot guarantee a clean world.
 An assertion that depends on nothing being left over ("No assets yet") stays
 order-dependent whether or not teardown exists - mint your own fixture and assert

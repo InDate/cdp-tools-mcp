@@ -655,7 +655,7 @@ export class ConfigManager {
    * This used to clear and re-arm the timer on every event, which is the
    * textbook debounce - and the wrong shape here. startWatching() watches the
    * global ~/.devharness directory as well as the project one, and that
-   * directory is shared by every cdp-tools process on the machine (dashboard
+   * directory is shared by every devharness process on the machine (dashboard
    * locks, downloads, sequences). Under sustained unrelated writes there, the
    * timer was reset before it could ever fire, so an edit to config.json was
    * postponed indefinitely - live reload silently stopped working, and stayed

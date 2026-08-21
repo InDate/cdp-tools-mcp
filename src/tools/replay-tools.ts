@@ -3197,7 +3197,7 @@ function generatedCodeHeader(pages: ReturnType<typeof buildPageVars>): string[] 
 function generatePuppeteerCode(commands: Array<{ tool: string; params: Record<string, any> }>, startUrl?: string): string {
   const pages = buildPageVars(commands);
   const lines: string[] = [
-    '// Generated from cdp-tools interaction recording',
+    '// Generated from devharness interaction recording',
     ...generatedCodeHeader(pages),
     'const puppeteer = require(\'puppeteer\');',
     '',
@@ -3296,7 +3296,7 @@ function generatePuppeteerCode(commands: Array<{ tool: string; params: Record<st
 function generatePlaywrightCode(commands: Array<{ tool: string; params: Record<string, any>; delay?: number; comment?: string }>, startUrl?: string): string {
   const pages = buildPageVars(commands);
   const lines: string[] = [
-    '// Generated from cdp-tools interaction recording',
+    '// Generated from devharness interaction recording',
     ...generatedCodeHeader(pages),
     "import { test, expect } from '@playwright/test';",
     '',
@@ -3437,7 +3437,7 @@ function ungeneratedTestGuard(generatedSteps: number, totalSteps: number, hasSta
   if (generatedSteps > 0 || hasStartUrl) return [];
   return [
     '',
-    `  throw new Error('cdp-tools: none of the ${totalSteps} recorded step(s) have a generated equivalent`
+    `  throw new Error('devharness: none of the ${totalSteps} recorded step(s) have a generated equivalent`
       + ` (see the "[not generated]" comments above) - this exported test would otherwise pass without doing anything.`
       + ` Run it with replay({ action: "run" }) instead.');`,
   ];

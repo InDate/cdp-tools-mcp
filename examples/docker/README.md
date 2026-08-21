@@ -14,13 +14,13 @@ This directory contains examples for testing the Docker and Docker Compose runne
 
 ```bash
 # Build the image
-docker build -t cdp-tools-example .
+docker build -t devharness-example .
 
-# Start via cdp-tools (auto-detected as docker runner)
+# Start via devharness (auto-detected as docker runner)
 server({
   action: "start",
   id: "my-docker-app",
-  command: "docker run -p 3001:3000 cdp-tools-example",
+  command: "docker run -p 3001:3000 devharness-example",
   cwd: "/path/to/examples/docker"
 })
 
@@ -28,7 +28,7 @@ server({
 server({
   action: "start",
   id: "my-docker-app",
-  command: "docker run -p 3001:3000 cdp-tools-env-test",
+  command: "docker run -p 3001:3000 devharness-env-test",
   cwd: "/path/to/examples/docker",
   env: { MY_VAR: "hello", ANOTHER_VAR: "world" }
 })
@@ -37,7 +37,7 @@ server({
 ### Docker Compose Runner
 
 ```bash
-# Start via cdp-tools (auto-detected as docker-compose runner)
+# Start via devharness (auto-detected as docker-compose runner)
 server({
   action: "start",
   id: "my-compose-stack",
@@ -80,12 +80,12 @@ Similarly, `docker compose logs` returns logs from all services interleaved. The
 
 Build and run the env test:
 ```bash
-docker build -f Dockerfile.env-test -t cdp-tools-env-test .
+docker build -f Dockerfile.env-test -t devharness-env-test .
 
 server({
   action: "start",
   id: "env-test",
-  command: "docker run -p 3002:3000 cdp-tools-env-test",
+  command: "docker run -p 3002:3000 devharness-env-test",
   cwd: "/path/to/examples/docker",
   env: { MY_VAR: "test-value", ANOTHER_VAR: "another-value" }
 })

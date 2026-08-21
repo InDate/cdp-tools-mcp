@@ -14,7 +14,7 @@ import { getProjectDir } from '../helpers/paths.js';
 import { getSessionInfo } from './dashboard-tools.js';
 import { listSessionRecords } from '../session-endpoint.js';
 import { resolveSessionName } from '../session-identity.js';
-import { appendEvent } from '../session-events.js';
+import { appendEvent, getEventStreamPath } from '../session-events.js';
 import type { ToolResponseMeta, MessageToolMeta } from '../tool-response.js';
 import {
   isValidMailboxId,
@@ -109,6 +109,7 @@ export function createMessageTools() {
               self,
               mailboxPath: getMailboxPath(self),
               messagesDir: getMessagesDir(),
+              eventStreamPath: getEventStreamPath(self),
               sessionList: rows
                 .map(r => `- ${r.id}${r.self ? ' (this session)' : ''} - ${r.live ? 'live' : 'no process'}${r.cwd ? ` - ${r.cwd}` : ''}`)
                 .join('\n'),

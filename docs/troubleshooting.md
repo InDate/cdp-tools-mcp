@@ -8,7 +8,7 @@
 dev server has stopped - but the MCP connection still works.
 
 **Cause:** The session was suspended. With no request from the client for
-`session.idleSuspendMinutes` (default 120), cdp-tools releases what it holds
+`session.idleSuspendMinutes` (default 120), devharness releases what it holds
 and exits; the supervisor stays connected and started a fresh server for your
 next call.
 
@@ -24,7 +24,7 @@ released when no other live session claims it or is working in its directory.
 
 ### A dev server stopped when I opened a new session
 
-**Problem:** Starting cdp-tools in a project stopped a dev server that was
+**Problem:** Starting devharness in a project stopped a dev server that was
 already running.
 
 **Cause:** Every session that had claimed it was gone, so it was collected as
@@ -34,7 +34,7 @@ running until you reboot.
 **Solutions:**
 - Restart it (`server({ action: 'start', serverId: '...' })`).
 - To keep a server outside this lifecycle, run it yourself rather than through
-  the `server` tool; cdp-tools only collects servers it manages, and only ones
+  the `server` tool; devharness only collects servers it manages, and only ones
   it can prove nobody is left to use.
 
 ## Chrome Connection Issues

@@ -187,7 +187,7 @@ repo, and skill renamed.
 +"args": ["-y", "devharness@latest"]
 ```
 
-Your MCP server name (`cdp-tools`, or whatever you called it) is yours and keeps
+Your MCP server name (`devharness`, or whatever you called it) is yours and keeps
 working. Renaming it is cosmetic — but tools are addressed as
 `mcp__<server-name>__<tool>`, so update project docs if you do.
 

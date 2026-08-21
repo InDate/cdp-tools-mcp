@@ -1318,9 +1318,9 @@ export class ServerManager {
 
     let autoRestartWarning: string | undefined;
     if (autoRestartMatch && watch) {
-      autoRestartWarning = `Command matches "${autoRestartMatch}" AND cdp-tools' own watch mode is also enabled for this server - that's redundant and risky, since both could try to restart the process at once. Recommend removing "${autoRestartMatch}" from the command and relying on cdp-tools' watch mode instead, which already coordinates safely with an attached breakpoint debugger.`;
+      autoRestartWarning = `Command matches "${autoRestartMatch}" AND devharness' own watch mode is also enabled for this server - that's redundant and risky, since both could try to restart the process at once. Recommend removing "${autoRestartMatch}" from the command and relying on devharness' watch mode instead, which already coordinates safely with an attached breakpoint debugger.`;
     } else if (autoRestartMatch) {
-      autoRestartWarning = `Command matches "${autoRestartMatch}", which auto-restarts its own process on file changes. Attaching a CDP debugger and pausing at a breakpoint while this is running is a known-bad combination (can cause EADDRINUSE crash-loops and ambiguous failed-but-still-listening states) - the restart happens entirely outside anything devharness tracks. Prefer disabling auto-restart and using cdp-tools' own watch mode instead (server({ action: 'start', watch: true })), which coordinates safely with a paused debugger, or call server({ action: 'restart' }) explicitly.`;
+      autoRestartWarning = `Command matches "${autoRestartMatch}", which auto-restarts its own process on file changes. Attaching a CDP debugger and pausing at a breakpoint while this is running is a known-bad combination (can cause EADDRINUSE crash-loops and ambiguous failed-but-still-listening states) - the restart happens entirely outside anything devharness tracks. Prefer disabling auto-restart and using devharness' own watch mode instead (server({ action: 'start', watch: true })), which coordinates safely with a paused debugger, or call server({ action: 'restart' }) explicitly.`;
     }
 
     return {
@@ -2026,7 +2026,7 @@ export class ServerManager {
    * ever collected.
    *
    * A server with no claim file at all is absent from this: it predates
-   * claims, or was started outside cdp-tools, and neither is ours to kill.
+   * claims, or was started outside devharness, and neither is ours to kill.
    */
   private findAbandonedServerIds(): Map<boolean, Set<string>> {
     const byScope = new Map<boolean, Set<string>>();

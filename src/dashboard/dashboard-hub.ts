@@ -469,7 +469,7 @@ export class DashboardHub {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>cdp-tools Dashboard</title>
+  <title>devharness Dashboard</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -562,7 +562,7 @@ export class DashboardHub {
 </head>
 <body>
   <div id="app">
-    <h1>cdp-tools Dashboard <span class="connected-badge" id="status-badge"></span></h1>
+    <h1>devharness Dashboard <span class="connected-badge" id="status-badge"></span></h1>
     <div id="content"></div>
   </div>
   <script src="/static/bundle.js"></script>

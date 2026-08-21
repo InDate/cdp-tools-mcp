@@ -15,7 +15,7 @@ let dir: string;
 let pidFile: string;
 
 beforeEach(async () => {
-  dir = await fs.mkdtemp(join(tmpdir(), 'cdp-tools-pidfile-'));
+  dir = await fs.mkdtemp(join(tmpdir(), 'devharness-pidfile-'));
   pidFile = join(dir, 'mcp-supervisor.pid');
 });
 

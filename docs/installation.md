@@ -3,7 +3,7 @@
 ## Claude Code CLI
 
 ```bash
-claude mcp add cdp-tools -- npx -y devharness
+claude mcp add devharness -- npx -y devharness
 ```
 
 ## Claude Desktop
@@ -17,7 +17,7 @@ Add to your config file:
 ```json
 {
   "mcpServers": {
-    "cdp-tools": {
+    "devharness": {
       "command": "npx",
       "args": ["-y", "devharness"]
     }
@@ -71,7 +71,7 @@ The `defaultDebugPort` sets the starting port for Chrome debugging. If the port 
 
 ### Idle Sessions
 
-An editor window left open for days keeps its cdp-tools server alive, holding
+An editor window left open for days keeps its devharness server alive, holding
 Chrome instances, dev servers and monitor buffers nobody is using. Two things
 stop that:
 
@@ -90,7 +90,7 @@ stop that:
 - **Abandoned dev servers are collected.** A window closed for good used to
   leave its dev servers running until reboot. The next session in that
   directory now stops any whose owning sessions are all gone.
-- **Orphan reaping.** When the client that launched cdp-tools is gone, the
+- **Orphan reaping.** When the client that launched devharness is gone, the
   server tree shuts itself down, rather than waiting for a stdin EOF that never
   arrives when an `npm exec` wrapper is holding the pipe open.
 

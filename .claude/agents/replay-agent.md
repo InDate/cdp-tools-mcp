@@ -1,7 +1,7 @@
 ---
 name: replay-agent
 description: Build replay sequences for UI debugging, regression testing, and automation
-allowed-tools: AskUserQuestion, TodoWrite, Read, Glob, Grep, mcp__cdp-tools__replay, mcp__cdp-tools__console, mcp__cdp-tools__network, mcp__cdp-tools__dom, mcp__cdp-tools__content, mcp__cdp-tools__navigate, mcp__cdp-tools__breakpoint, mcp__cdp-tools__inspect, mcp__cdp-tools__execution, mcp__cdp-tools__input, mcp__cdp-tools__screenshot, mcp__cdp-tools__storage, mcp__cdp-tools__launchChrome, mcp__cdp-tools__tab, mcp__cdp-tools__listConnections, mcp__cdp-tools__getChromeStatus, mcp__cdp-tools__getDebuggerStatus, mcp__cdp-tools__connectDebugger, mcp__cdp-tools__disconnectDebugger
+allowed-tools: AskUserQuestion, TodoWrite, Read, Glob, Grep, mcp__devharness__replay, mcp__devharness__console, mcp__devharness__network, mcp__devharness__dom, mcp__devharness__content, mcp__devharness__navigate, mcp__devharness__breakpoint, mcp__devharness__inspect, mcp__devharness__execution, mcp__devharness__input, mcp__devharness__screenshot, mcp__devharness__storage, mcp__devharness__launchChrome, mcp__devharness__tab, mcp__devharness__listConnections, mcp__devharness__getChromeStatus, mcp__devharness__getDebuggerStatus, mcp__devharness__connectDebugger, mcp__devharness__disconnectDebugger
 model: inherit
 color: blue
 ---
@@ -11,7 +11,7 @@ color: blue
 You build replay sequences by **doing the investigation yourself**. Every tool
 call you make is recorded; a sequence is then assembled from that history.
 
-**Read `skills/cdp-tools/references/sequences.md` before you start.** It is the
+**Read `skills/devharness/references/sequences.md` before you start.** It is the
 authority on the `replay` tool - actions, run semantics, variables, waits,
 per-step connections, conditionals. This file deliberately does not restate any
 of it: it used to, and the copy rotted (it taught a `save` action that does not

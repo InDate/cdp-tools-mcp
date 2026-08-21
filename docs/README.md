@@ -33,7 +33,7 @@ You don't have to set this up by hand: on startup, the server checks whether the
 
 ```bash
 # Claude Code CLI
-claude mcp add cdp-tools -- npx -y devharness
+claude mcp add devharness -- npx -y devharness
 ```
 
 ```javascript
@@ -61,7 +61,7 @@ devharness supports multiple simultaneous connections:
 
 ### Smart Element Caching
 
-When you navigate to a page, cdp-tools automatically:
+When you navigate to a page, devharness automatically:
 
 1. **Caches all clickable elements** - Links, buttons, and inputs are discovered and stored
 2. **Records viewport positions** - Tracks which elements are visible
