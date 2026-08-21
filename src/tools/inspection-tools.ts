@@ -11,6 +11,7 @@ import type { ToolResponseMeta } from '../tool-response.js';
 import { isAbortError, raceAbort, throwIfAborted } from '../utils/abort.js';
 import {
   getWorkerTargetRegistry,
+  WorkerTargetRegistry,
   WorkerTargetAmbiguousError,
   WorkerTargetNotFoundError,
   WorkerEvaluateError,
@@ -218,6 +219,9 @@ function extractSourceFromFullEvalLine(
 }
 
 
+/** Which registry serves a browser. Injected so a test can supply its own. */
+export type WorkerRegistryResolver = (host: string, port: number) => WorkerTargetRegistry;
+
 /**
  * A worker runs its own script in its own target, so evaluation there goes over
  * that target's own client rather than the page's debugger.
@@ -226,11 +230,12 @@ async function evaluateInWorker(
   cdpManager: CDPManager,
   target: string,
   expression: string,
-  awaitPromise: boolean
+  awaitPromise: boolean,
+  resolveRegistry: WorkerRegistryResolver
 ) {
   const endpoint = cdpManager.getEndpoint();
   if (!endpoint) return createErrorResponse('DEBUGGER_NOT_CONNECTED');
-  const registry = getWorkerTargetRegistry(endpoint.host, endpoint.port);
+  const registry = resolveRegistry(endpoint.host, endpoint.port);
   try {
     const value = await registry.evaluate(target, expression, awaitPromise);
     const rendered = value === undefined ? 'undefined' : JSON.stringify(value);
@@ -317,7 +322,8 @@ export function createInspectionTools(
     puppeteerManager: any;
     consoleMonitor: any;
     networkMonitor: any;
-  } | null>
+  } | null>,
+  resolveWorkerRegistry: WorkerRegistryResolver = getWorkerTargetRegistry
 ) {
   return {
     inspect: createTool(
@@ -480,7 +486,9 @@ export function createInspectionTools(
             }
 
             if (args.target) {
-              return await evaluateInWorker(targetCdpManager, args.target, expression, awaitPromise);
+              return await evaluateInWorker(
+                targetCdpManager, args.target, expression, awaitPromise, resolveWorkerRegistry
+              );
             }
 
             try {
@@ -678,7 +686,7 @@ export function createInspectionTools(
           case 'listTargets': {
             const endpoint = targetCdpManager.getEndpoint();
             if (!endpoint) return createErrorResponse('DEBUGGER_NOT_CONNECTED');
-            const targets = await getWorkerTargetRegistry(endpoint.host, endpoint.port).list();
+            const targets = await resolveWorkerRegistry(endpoint.host, endpoint.port).list();
             const rows = targets.length
               ? targets.map((t) => `${t.type}\t${t.url}\t${t.targetId}`).join('\n')
               : 'none';
