@@ -3899,7 +3899,7 @@ This session is `{{self}}`. Its mailbox: `{{mailboxPath}}`
 **Type:** success
 **Summary:** Sent to {{to}}
 
-Message `{{shortId}}` appended to `{{mailboxPath}}`. The recipient sees it on `message({ action: 'read' })`, or immediately if it has a Monitor armed on that file.
+Message `{{shortId}}` appended to `{{mailboxPath}}`. The recipient sees it on `message({ action: 'read' })`, or immediately if it has a Monitor armed on its event stream.{{deliveryNote}}
 
 **Suggestions:**
 - To hold this call open until the other session answers: `message({ action: 'send', to: '{{to}}', text: '...', waitForReplyMs: 120000 })`
@@ -3911,7 +3911,7 @@ Message `{{shortId}}` appended to `{{mailboxPath}}`. The recipient sees it on `m
 **Type:** success
 **Summary:** {{count}} message(s) after {{elapsedMs}}ms
 
-{{messageList}}
+{{messageList}}{{repeatNote}}
 
 **Suggestions:**
 - Answer with `message({ action: 'reply', replyTo: '<id>', text: '...' })`

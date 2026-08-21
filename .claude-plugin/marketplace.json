@@ -1,0 +1,18 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "devharness-local",
+  "description": "This checkout as a marketplace, so the plugin's hooks and manifest can be exercised before a release rather than after one.",
+  "owner": {
+    "name": "InDate",
+    "url": "https://github.com/InDate"
+  },
+  "plugins": [
+    {
+      "name": "devharness",
+      "description": "Run and debug a live app from inside Claude Code. Installed from the working tree: the plugin manifest, its skill and its hooks are whatever is on disk right now.",
+      "category": "development",
+      "source": "./plugin",
+      "homepage": "https://github.com/InDate/devharness"
+    }
+  ]
+}

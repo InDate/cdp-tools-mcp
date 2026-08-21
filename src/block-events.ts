@@ -1,20 +1,18 @@
 /**
- * Block event stream - one JSON line per new guard block, appended to
- * .devharness/logs/blocks.jsonl.
+ * Block events - one line per new guard block on the session's event stream.
  *
  * Guards only surface on the *next* tool call, so a session doing unrelated
  * work never learns its dev server died until it happens to call a devharness
- * tool again. This file is the push side of that: a Claude Code Monitor can
- * `tail -f` it and get notified the moment a block appears.
+ * tool again. This is the push side of that: a Monitor tailing the stream is
+ * notified the moment a block appears.
  *
  * Deduplicated by key - a block that keeps firing on every subsequent tool call
  * writes one line, not one per call. The active set clears once a call gets
  * through all guards.
  */
 
-import { promises as fs } from 'fs';
-import { join } from 'path';
-import { getOutputPath } from './helpers/paths.js';
+import { appendEvent } from './session-events.js';
+import { resolveSessionName } from './session-identity.js';
 
 export type BlockGuard =
   | 'port'
@@ -41,10 +39,6 @@ export interface BlockEventInfo {
 // passes every guard.
 const activeKeys = new Set<string>();
 
-function getBlockFile(): string {
-  return join(getOutputPath('logs'), 'blocks.jsonl');
-}
-
 /**
  * Append a block event if this block is new. No-op for a block already logged.
  */
@@ -60,22 +54,12 @@ export async function recordBlockEvent(
   }
   activeKeys.add(dedupeKey);
 
-  const line = JSON.stringify({
-    ts: new Date().toISOString(),
+  await appendEvent(resolveSessionName(), 'block', {
     guard: info.guard,
     tool,
     detail: info.detail,
     resolve: info.resolve,
   });
-
-  try {
-    const dir = getOutputPath('logs');
-    await fs.mkdir(dir, { recursive: true });
-    await fs.appendFile(getBlockFile(), line + '\n');
-  } catch (error) {
-    // Never let the event stream break the block itself
-    console.error(`[BlockEvents] Failed to write block event: ${error}`);
-  }
 }
 
 /**
@@ -91,8 +75,4 @@ export function clearBlockEvents(): void {
  */
 export function getActiveBlockKeys(): string[] {
   return [...activeKeys];
-}
-
-export function getBlockEventFilePath(): string {
-  return getBlockFile();
 }

@@ -123,28 +123,31 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 - **Missing/invalid parameters**: the error includes a `continuationToken` and `missingParameters` (name/type/description/enum). Retry with just `{ continuationToken, <missing/bad field(s)> }` - don't resend everything. Expires after 5 min.
 - **A validated call gets blocked by a guard** (port failure, dead server, breakpoint pause): the response footer shows `**Repeat:** replay({ action: 'repeat', indices: [N] })`. Acknowledge the guard (e.g. `server({ action: 'acknowledgePort' })`), then use that hint to resume the exact call. Don't reuse a `continuationToken` here - that's for fixing bad input, not for retrying an already-valid call.
 
-## Getting notified when a guard blocks
+## The event stream
 
-Guards only surface on the *next* tool call, so a server that dies while you're editing files stays invisible until you call back into devharness. Every new block also appends one JSON line to `.devharness/logs/blocks.jsonl`:
+Everything devharness pushes - a guard block, a message from another session - appends one JSON line to `~/.devharness/events/<sessionId>.jsonl`. One file per session, so one watch covers every kind, including kinds added later.
 
-```json
-{"ts":"2026-08-08T03:21:45.588Z","guard":"pendingStartup","tool":"navigate","detail":"died before port detected: \"web\"","resolve":"server({ action: 'acknowledgeStartup', serverId: 'web' })"}
-```
-
-`guard` is one of `port`, `breakpoint`, `pendingStartup`, `bug`, `duplicateSession`. Lines are deduplicated: one per *new* block, not one per blocked call. The same block re-firing on later calls stays quiet until a call clears every guard and the block recurs.
-
-In Claude Code, tail it with a persistent Monitor so blocks arrive as notifications while you work on something else:
+Installed as a plugin, a `SessionStart` hook (`plugin/hooks/session-start.mjs`) creates that file and prints the `Monitor` call as session context before the first turn. In Claude Code, arm it:
 
 ```
 Monitor({
-  command: "mkdir -p .devharness/logs && touch .devharness/logs/blocks.jsonl && tail -f -n0 .devharness/logs/blocks.jsonl",
-  description: "devharness guard blocks",
+  command: "mkdir -p ~/.devharness/events && touch <streamPath> && tail -f -n0 <streamPath>",
+  description: "devharness events",
   persistent: true,
   timeout_ms: 3600000
 })
 ```
 
-Any other client can watch the same file. `-n0` skips existing history so you only see blocks from that point on.
+Nothing is lost without a watch - blocks and messages still surface on the next tool call. The watch is what makes them arrive while the session is doing something else.
+
+Line kinds:
+
+```json
+{"ts":"...","kind":"block","guard":"pendingStartup","tool":"navigate","detail":"died before port detected: \"web\"","resolve":"server({ action: 'acknowledgeStartup', serverId: 'web' })"}
+{"ts":"...","kind":"message","from":"66ba2d65","id":"d94924a8-...","detail":"Message from 66ba2d65: ...","resolve":"message({ action: 'read' })"}
+```
+
+`guard` is one of `port`, `breakpoint`, `pendingStartup`, `bug`, `duplicateSession`. Blocks are deduplicated: one line per *new* block, not one per blocked call. Any client can tail the file.
 
 ## Restarting devharness
 

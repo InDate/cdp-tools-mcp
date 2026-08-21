@@ -12,6 +12,9 @@
  */
 
 import { connect, type Socket } from 'net';
+import { readFileSync } from 'fs';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 import { initializePaths } from '../helpers/paths.js';
 import { listSessionRecords, type SessionRecord, type EndpointReply } from '../session-endpoint.js';
 import { readParentMap } from './process-tree.js';
@@ -28,6 +31,27 @@ export function isCliCommand(word: string | undefined): boolean {
   return word !== undefined && (CLI_COMMANDS as readonly string[]).includes(word);
 }
 
+export function isVersionFlag(word: string | undefined): boolean {
+  return word === '--version' || word === '-v';
+}
+
+/**
+ * The installed version, printed by `devharness --version`.
+ *
+ * The plugin's SessionStart hook compares this against the version its
+ * `.mcp.json` pins, so a global install that has drifted from the plugin is
+ * reported at the start of a session rather than discovered through behaviour
+ * that does not match the docs.
+ */
+export function readPackageVersion(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  try {
+    return JSON.parse(readFileSync(join(here, '..', '..', 'package.json'), 'utf-8')).version ?? 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
 interface ParsedArgs {
   command: string;
   positional: string[];
@@ -37,20 +61,34 @@ interface ParsedArgs {
   waitMs?: number;
 }
 
+/** Slack over the server's own wait, so the socket outlives the work it asked
+ *  for. A socket that gives up first aborts a reply the server has already
+ *  received and marked read. */
+const WAIT_SOCKET_MARGIN_MS = 15000;
+
 function parseArgs(argv: string[]): ParsedArgs {
   const positional: string[] = [];
   let session: string | undefined;
   let json = false;
-  let timeoutMs = DEFAULT_TIMEOUT_MS;
+  let explicitTimeoutMs: number | undefined;
   let waitMs: number | undefined;
+  // Everything after `--` is text, not flags: message bodies contain `--json`
+  // and the like, and stripping them silently rewrote what was sent.
+  let flagsEnded = false;
 
   for (const arg of argv.slice(1)) {
-    if (arg === '--json') { json = true; continue; }
-    if (arg.startsWith('--session=')) { session = arg.slice('--session='.length); continue; }
-    if (arg.startsWith('--timeout=')) { timeoutMs = Number(arg.slice('--timeout='.length)) || DEFAULT_TIMEOUT_MS; continue; }
-    if (arg.startsWith('--wait=')) { waitMs = Number(arg.slice('--wait='.length)) || undefined; continue; }
+    if (!flagsEnded) {
+      if (arg === '--') { flagsEnded = true; continue; }
+      if (arg === '--json') { json = true; continue; }
+      if (arg.startsWith('--session=')) { session = arg.slice('--session='.length); continue; }
+      if (arg.startsWith('--timeout=')) { explicitTimeoutMs = Number(arg.slice('--timeout='.length)) || undefined; continue; }
+      if (arg.startsWith('--wait=')) { waitMs = Number(arg.slice('--wait='.length)) || undefined; continue; }
+    }
     positional.push(arg);
   }
+
+  const timeoutMs = explicitTimeoutMs
+    ?? (waitMs ? waitMs + WAIT_SOCKET_MARGIN_MS : DEFAULT_TIMEOUT_MS);
 
   return { command: argv[0], positional, session, json, timeoutMs, waitMs };
 }
@@ -207,16 +245,33 @@ export async function runCli(argv: string[]): Promise<number> {
     }
     const result = matchByAncestry(listed, process.pid, parents);
     if (result.ambiguous.length > 1) {
-      console.error('Two sessions are the same distance up the process tree. Name one with --session=<id>:');
-      for (const match of result.ambiguous) console.error(`  ${describeRecord(match.record)}`);
-      return 1;
-    }
-    if (!result.matched) {
+      // Several servers can serve one session - a dev build beside the
+      // plugin's. The mailbox and its cursor are per session, not per server,
+      // so any of them answers a message verb identically. `call` reaches a
+      // particular server's browser and dev servers, so there the tie is real.
+      const ids = new Set(result.ambiguous.map(m => m.record.shortId ?? `pid-${m.record.pid}`));
+      if (ids.size === 1 && MESSAGE_VERBS.has(parsed.command)) {
+        target = result.ambiguous[0].record;
+      } else {
+        // A short id resolves to the first record, so with two servers under
+        // one id `--session=<shortId>` picks one silently. Only the pid names
+        // a single server, and the listing has to say which to use.
+        const distinct = new Set(result.ambiguous.map(m => m.record.shortId ?? `pid-${m.record.pid}`)).size > 1;
+        console.error(
+          distinct
+            ? 'Two sessions are the same distance up the process tree. Name one with --session=<id>:'
+            : 'One session is served by two devharness servers, and this command reaches a particular one. Name it by pid with --session=<pid>:'
+        );
+        for (const match of result.ambiguous) console.error(`  ${describeRecord(match.record)}`);
+        return 1;
+      }
+    } else if (!result.matched) {
       console.error('This shell does not descend from any devharness session. Name one with --session=<id>:');
       for (const record of records) console.error(`  ${describeRecord(record)}`);
       return 1;
+    } else {
+      target = result.matched;
     }
-    target = result.matched;
   }
 
   if (parsed.command === 'which') {

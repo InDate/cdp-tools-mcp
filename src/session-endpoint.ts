@@ -113,12 +113,23 @@ export function listSessionRecords(): SessionRecord[] {
     records.push(record);
   }
 
-  return records.sort((a, b) => b.startedAt - a.startedAt);
+  // A rebuild restarts every child at once, so startedAt ties are the norm
+  // rather than the exception; without the pid the order is readdir's, and
+  // `--session=<shortId>` would resolve to a different server run to run.
+  return records.sort((a, b) => b.startedAt - a.startedAt || a.pid - b.pid);
 }
 
 export interface StartSessionEndpointOptions {
-  executeToolCall: (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
+  executeToolCall: (
+    toolName: string,
+    args: Record<string, unknown>,
+    abortSignal?: AbortSignal
+  ) => Promise<unknown>;
   identity: Omit<SessionRecord, 'address' | 'startedAt'>;
+  /** Resolves once the server has finished recovering managed state. A call
+   *  arriving before that would run against a half-initialised server manager,
+   *  which the MCP request handler already waits out. */
+  awaitReady?: () => Promise<void>;
 }
 
 /**
@@ -143,7 +154,7 @@ export async function startSessionEndpoint(
   }
 
   const server: Server = createServer((socket: Socket) => {
-    handleConnection(socket, options.executeToolCall);
+    handleConnection(socket, options);
   });
 
   const bound = await new Promise<boolean>((resolve) => {
@@ -197,15 +208,19 @@ async function writeRecord(path: string, record: SessionRecord): Promise<void> {
  * then close. A tool response carries no framing of its own, so the newline is
  * what tells the caller the reply is complete.
  */
-function handleConnection(
-  socket: Socket,
-  executeToolCall: StartSessionEndpointOptions['executeToolCall']
-): void {
+function handleConnection(socket: Socket, options: StartSessionEndpointOptions): void {
   let buffer = '';
   let handled = false;
 
+  // A caller that gives up - its own timeout, or a Ctrl-C - takes the work with
+  // it. Without this a `message send` holding for a reply keeps waiting after
+  // the CLI has gone, receives the reply, marks it read and answers nobody.
+  const controller = new AbortController();
+  const abandon = () => controller.abort();
+
   socket.setEncoding('utf-8');
-  socket.on('error', () => { /* the caller went away mid-call */ });
+  socket.on('error', abandon);
+  socket.on('close', abandon);
 
   socket.on('data', (chunk: string) => {
     if (handled) return;
@@ -215,14 +230,15 @@ function handleConnection(
     handled = true;
 
     const line = buffer.slice(0, newline);
-    void respond(socket, line, executeToolCall);
+    void respond(socket, line, options, controller.signal);
   });
 }
 
 async function respond(
   socket: Socket,
   line: string,
-  executeToolCall: StartSessionEndpointOptions['executeToolCall']
+  options: StartSessionEndpointOptions,
+  abortSignal: AbortSignal
 ): Promise<void> {
   const send = (reply: EndpointReply) => {
     socket.end(JSON.stringify(reply) + '\n');
@@ -242,7 +258,8 @@ async function respond(
   }
 
   try {
-    const response = await executeToolCall(request.tool, request.args ?? {});
+    if (options.awaitReady) await options.awaitReady();
+    const response = await options.executeToolCall(request.tool, request.args ?? {}, abortSignal);
     send({ ok: true, response });
   } catch (error: any) {
     // executeToolCall throws ToolError for an isError response; its payload is

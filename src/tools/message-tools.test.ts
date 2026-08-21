@@ -218,6 +218,47 @@ describe('message send with waitForReplyMs', () => {
     expect(inbox._meta.message.received.map((m: any) => m.text)).toEqual(['earlier']);
   });
 
+  it('keeps an unread backlog readable when the wait succeeds', async () => {
+    await sendMessage({ from: 'bbbbbbbb', to: 'aaaaaaaa', text: 'earlier-unread' });
+
+    const pending = message.handler({
+      action: 'send', to: 'bbbbbbbb', text: 'ping', waitForReplyMs: 5000, pollIntervalMs: 25,
+    });
+    setTimeout(() => { void sendMessage({ from: 'bbbbbbbb', to: 'aaaaaaaa', text: 'pong' }); }, 50);
+    expect((await pending).isError).toBeFalsy();
+
+    // The backlog is what must survive; the waited message repeating is the
+    // price of a cursor that cannot express a hole.
+    const inbox = await message.handler({ action: 'read' });
+    expect(inbox._meta.message.received.map((m: any) => m.text)).toEqual(['earlier-unread', 'pong']);
+
+    // Exactly once - a second read is empty, not another repeat.
+    const again = await message.handler({ action: 'read' });
+    expect(again._meta.message.received).toEqual([]);
+  });
+
+  it('says in the response that the waited message will come back once', async () => {
+    await sendMessage({ from: 'bbbbbbbb', to: 'aaaaaaaa', text: 'earlier-unread' });
+
+    const pending = message.handler({
+      action: 'send', to: 'bbbbbbbb', text: 'ping', waitForReplyMs: 5000, pollIntervalMs: 25,
+    });
+    setTimeout(() => { void sendMessage({ from: 'bbbbbbbb', to: 'aaaaaaaa', text: 'pong' }); }, 50);
+
+    const res = await pending;
+    expect(res.content[0].text).toContain('repeats the message');
+  });
+
+  it('says nothing about repeats when the mailbox was already caught up', async () => {
+    const pending = message.handler({
+      action: 'send', to: 'bbbbbbbb', text: 'ping', waitForReplyMs: 5000, pollIntervalMs: 25,
+    });
+    setTimeout(() => { void sendMessage({ from: 'bbbbbbbb', to: 'aaaaaaaa', text: 'pong' }); }, 50);
+
+    const res = await pending;
+    expect(res.content[0].text).not.toContain('repeats the message');
+  });
+
   it('advances the cursor past what the wait returned', async () => {
     const pending = message.handler({
       action: 'send', to: 'bbbbbbbb', text: 'ping', waitForReplyMs: 5000, pollIntervalMs: 25,
@@ -228,6 +269,19 @@ describe('message send with waitForReplyMs', () => {
     expect(await readCursor('aaaaaaaa')).toBe(1);
     const inbox = await message.handler({ action: 'read' });
     expect(inbox._meta.message.received).toEqual([]);
+  });
+});
+
+describe('waitForReplyMs shorter than one poll interval', () => {
+  it('still polls, rather than timing out before the first check', async () => {
+    const pending = message.handler({
+      action: 'send', to: 'bbbbbbbb', text: 'ping', waitForReplyMs: 400, pollIntervalMs: 500,
+    });
+    setTimeout(() => { void sendMessage({ from: 'bbbbbbbb', to: 'aaaaaaaa', text: 'pong' }); }, 100);
+
+    const res = await pending;
+    expect(res.isError).toBeFalsy();
+    expect(res._meta.message.received.map((m: any) => m.text)).toEqual(['pong']);
   });
 });
 

@@ -30,3 +30,17 @@ export function getClaudeSessionId(): string | undefined {
 export function getClaudeShortId(): string | undefined {
   return getClaudeSessionId()?.slice(0, 8);
 }
+
+/**
+ * The name this session is known by on disk - its mailbox filename, its event
+ * stream filename, its presence record.
+ *
+ * The environment comes first: it is present from the first instruction and
+ * unchanged when the supervisor replaces the child. The detector's short id is
+ * next, for a client that exports no session id. The pid form is last, and
+ * changes on every restart, which is why it is the fallback rather than the
+ * default.
+ */
+export function resolveSessionName(detectedShortId?: string): string {
+  return getClaudeShortId() ?? detectedShortId ?? `pid-${process.pid}`;
+}

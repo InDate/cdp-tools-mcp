@@ -1,9 +1,9 @@
 /**
- * blocks.jsonl is what a Claude Code Monitor tails, so a notification storm is
- * the failure mode that matters: guards re-fire on every subsequent tool call,
- * and a naive append would emit one line per blocked call instead of one per
- * block. These cover the dedupe, the clear-on-unblocked reset, and that each
- * guard actually attaches the info the line is built from.
+ * The session event stream is what a Claude Code Monitor tails, so a
+ * notification storm is the failure mode that matters: guards re-fire on every
+ * subsequent tool call, and a naive append would emit one line per blocked call
+ * instead of one per block. These cover the dedupe, the clear-on-unblocked
+ * reset, and that each guard attaches the info the line is built from.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, existsSync, readFileSync } from 'fs';
@@ -13,9 +13,10 @@ import { initializePaths } from './helpers/paths.js';
 import {
   recordBlockEvent,
   clearBlockEvents,
-  getBlockEventFilePath,
   type BlockEventInfo,
 } from './block-events.js';
+import { getEventStreamPath } from './session-events.js';
+import { resolveSessionName } from './session-identity.js';
 import {
   checkPortFailures,
   checkPendingStartups,
@@ -35,7 +36,7 @@ const portBlock: BlockEventInfo = {
 };
 
 function lines(): Record<string, string>[] {
-  const path = getBlockEventFilePath();
+  const path = getEventStreamPath(resolveSessionName());
   if (!existsSync(path)) return [];
   return readFileSync(path, 'utf-8')
     .split('\n')
@@ -70,6 +71,7 @@ describe('block event stream', () => {
 
     expect(lines()).toHaveLength(1);
     expect(lines()[0]).toMatchObject({
+      kind: 'block',
       guard: 'port',
       tool: 'navigate',
       detail: 'Monitored port(s) down: 3000 (web)',

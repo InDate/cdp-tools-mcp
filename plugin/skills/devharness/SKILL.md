@@ -1,7 +1,7 @@
 ---
 name: devharness
 description: Drive and debug a running app via the devharness MCP server - launch or attach to Chrome and Node.js, set breakpoints and logpoints, inspect call stacks and variables, watch console and network, manage dev servers, replay any earlier tool call by its history index, and record reproduction sequences that verify a fix. Use whenever a task involves running or debugging a live app, reproducing or verifying a bug, re-driving setup you already did (relaunching, re-logging in, refilling a form), or the user mentions breakpoints, Chrome DevTools, CDP, replay sequences, or devharness tools (launchChrome, navigate, breakpoint, inspect, replay, server, issues, etc.).
-compatibility: Requires the devharness MCP server to be connected (tools such as launchChrome, breakpoint, inspect, replay, server, issues). Previously published as cdp-tools-mcp.
+compatibility: Requires the devharness MCP server to be connected (tools such as launchChrome, breakpoint, inspect, replay, server, issues). The shell commands need `devharness` on PATH (`npm i -g devharness`); without it use `npx -y devharness@<version> <command>`. Previously published as cdp-tools-mcp.
 version: 0.9.8
 ---
 
@@ -64,22 +64,24 @@ Server merges and re-validates. Same token, repeat until it passes. Expires in 5
 
 **Guard blocked a valid call** (dead port, breakpoint pause) → it was already recorded. Acknowledge (`server({ action: 'acknowledgePort' })`, `acknowledgeStartup`), then use the footer's `replay` hint. Don't rebuild the arguments; don't use a `continuationToken` here.
 
-## Get told the moment a guard blocks
+## The event stream
 
-Guards only surface on your *next* devharness call, so a server that dies while you're editing files stays invisible until you happen to call back. Every new block also appends one JSON line to `.devharness/logs/blocks.jsonl` — `{ts, guard, tool, detail, resolve}`, one of `port`, `breakpoint`, `pendingStartup`, `bug`, `duplicateSession`.
+Everything devharness pushes at you - a guard block, a message from another session - appends one JSON line to `~/.devharness/events/<sessionId>.jsonl`. One file, one watch, and any kind added later arrives on the same watch.
 
-Arm a Claude Code Monitor once, right after `launchChrome`/`server start`:
+Installed as a plugin, a `SessionStart` hook prints that path and the `Monitor` call at the top of every session. Arm it when you see it:
 
 ```
 Monitor({
-  command: "mkdir -p .devharness/logs && touch .devharness/logs/blocks.jsonl && tail -f -n0 .devharness/logs/blocks.jsonl",
-  description: "devharness guard blocks",
+  command: "mkdir -p ~/.devharness/events && touch <streamPath> && tail -f -n0 <streamPath>",
+  description: "devharness events",
   persistent: true,
   timeout_ms: 3600000
 })
 ```
 
-`-n0` skips history — you only want blocks from now on. One line per *new* block, not per blocked call; the same block re-firing stays quiet until a call gets through all guards and it recurs. Act on the event's `resolve` field.
+Nothing is lost without it: blocks and messages still surface on your next devharness call. The watch is what makes them arrive while you are doing something else, which for a dev server that died an hour ago is the difference that matters.
+
+Each line carries `kind` and, where there is one, `resolve` - the call that clears it. `kind: "block"` also carries `guard`, one of `port`, `breakpoint`, `pendingStartup`, `bug`, `duplicateSession`; blocks are deduplicated, one line per *new* block rather than one per blocked call. `kind: "message"` carries `from` and the message id.
 
 ## Talking to another devharness session
 
@@ -93,22 +95,11 @@ message({ action: 'send', to: 'a1b2c3d4', text: 'Repro: ...', waitForReplyMs: 12
 
 That holds the call open until something lands in this session's mailbox, then returns it; answer with `message({ action: 'reply', replyTo: '<id>', text: '...' })`. The wait returns on ANY arrival, not only a tagged reply - two sessions blocking at the same moment both release instead of both timing out.
 
-To be reachable while doing other work, arm a Monitor on your own mailbox - same shape as the blocks watch above, one JSON line per message:
-
-```
-Monitor({
-  command: "mkdir -p ~/.devharness/messages && touch ~/.devharness/messages/<yourId>.jsonl && tail -f -n0 ~/.devharness/messages/<yourId>.jsonl",
-  description: "devharness session messages",
-  persistent: true,
-  timeout_ms: 3600000
-})
-```
-
-Without a Monitor, a message surfaces only on your next `message({ action: 'read' })`, which is whenever you happen to call back.
+An arriving message announces itself on the event stream, so the watch above covers it and there is no second watch to arm. `message({ action: 'read' })` is what takes them, advancing a cursor so each is returned once; the full history stays in the mailbox file.
 
 ## Running a tool from the shell
 
-`devharness <command>` typed in a session's shell runs that tool **inside that session**, against the connections it already holds. The session is found by walking up the process tree, so `! devharness screenshot` uses the browser this session opened, not a new one.
+`devharness <command>` typed in a session's shell runs that tool **inside that session**, against the connections it already holds. The plugin does not put `devharness` on PATH - `npm i -g devharness` does, or run it as `npx -y devharness@<version> <command>`. The SessionStart hook reports which of those applies here. The session is found by walking up the process tree, so `! devharness screenshot` uses the browser this session opened, not a new one.
 
 - `devharness which` - which session this shell resolves to
 - `devharness call <tool> '<json>'` - any tool: `devharness call config '{"action":"status"}'`

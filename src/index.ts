@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 // Early stderr logging for debugging startup issues
-// A CLI invocation prints its own output and nothing else - this line would
-// land in the middle of a shell command's output.
-if (process.argv[2] === undefined || process.argv[2].startsWith('-')) {
+// Any argument means a CLI invocation, which prints its own output and
+// nothing else - this line would land in the middle of it.
+if (process.argv[2] === undefined) {
   console.error(`[devharness] Process starting (PID: ${process.pid})`);
 }
 
@@ -60,9 +60,9 @@ import { createPluginTools } from './tools/plugin-tools.js';
 import { createIssuesTools } from './tools/issues-tools.js';
 import { createMessageTools } from './tools/message-tools.js';
 import { startSessionEndpoint, type SessionEndpoint } from './session-endpoint.js';
-import { runCli, isCliCommand } from './cli/index.js';
-import { getClaudeSessionId, getClaudeShortId } from './session-identity.js';
-import { createDashboardTools, setDashboardInstance, getDashboardInstance, setSessionInfo, getDuplicateSessionInfo } from './tools/dashboard-tools.js';
+import { runCli, isCliCommand, isVersionFlag, readPackageVersion } from './cli/index.js';
+import { getClaudeSessionId, resolveSessionName } from './session-identity.js';
+import { createDashboardTools, setDashboardInstance, getDashboardInstance, setSessionInfo, getSessionInfo, getDuplicateSessionInfo } from './tools/dashboard-tools.js';
 import { initializeDashboard, shutdownDashboard, type DashboardInstance, type ConnectionInfo as DashboardConnectionInfo } from './dashboard/index.js';
 import { Orchestrator } from './log-processor/orchestrator.js';
 import { mkdirSync, existsSync, readFileSync, readdirSync, statSync } from 'fs';
@@ -1933,6 +1933,11 @@ async function main() {
     return;
   }
 
+  if (isVersionFlag(process.argv[2])) {
+    console.log(readPackageVersion());
+    return;
+  }
+
   // The other CLI shape: run a tool inside an already-running session, reached
   // over that session's socket rather than started here.
   if (isCliCommand(process.argv[2])) {
@@ -2032,7 +2037,7 @@ async function main() {
       sessionStartTime,
       getConnectionsForDashboard,
       currentSession?.sessionId || getClaudeSessionId() || `pid-${process.pid}`,
-      currentSession?.shortId || getClaudeShortId() || `pid-${process.pid}`,
+      currentSession?.shortId || resolveSessionName(),
       handleHubDown  // Pass callback again for the new client
     );
     if (newInstance) {
@@ -2053,12 +2058,11 @@ async function main() {
       process.cwd(),
       sessionStartTime,
       getConnectionsForDashboard,
-      // The environment names the session before the detector does; the pid
-      // form is left for a client that exports no session id. A hub entry
-      // keyed on the pid would list this session a second time, beside the
-      // one its mailbox is named after.
-      getClaudeSessionId() || `pid-${process.pid}`,
-      getClaudeShortId() || `pid-${process.pid}`,
+      // Named before the detector runs. A hub entry keyed on the pid would
+      // list this session a second time, beside the one its mailbox is named
+      // after.
+      resolveSessionName(),
+      resolveSessionName(),
       handleHubDown
     );
 
@@ -2076,12 +2080,13 @@ async function main() {
     detectedSessionInfo = sessionInfo;
     setSessionInfo(sessionInfo);
 
-    // The presence record is what a CLI matches --session against, so it
-    // carries the ids only once they exist.
+    // The presence record is what a CLI matches --session against. It takes
+    // the same name the mailbox and the event stream take, or a peer would
+    // address a record whose mailbox this session never reads.
     if (sessionEndpoint) {
       await sessionEndpoint.refresh({
-        sessionId: sessionInfo.sessionId,
-        shortId: sessionInfo.shortId,
+        sessionId: getClaudeSessionId() ?? sessionInfo.sessionId,
+        shortId: resolveSessionName(sessionInfo.shortId),
       });
     }
 
@@ -2178,6 +2183,7 @@ async function main() {
   // Reachable by CLI only once the tools can actually run.
   sessionEndpoint = await startSessionEndpoint({
     executeToolCall,
+    awaitReady: () => startupGate.wait(),
     identity: {
       pid: process.pid,
       ppid: process.ppid,
@@ -2185,7 +2191,7 @@ async function main() {
       // Named before the detector runs, so `--session=<shortId>` resolves on
       // the first CLI call after a restart rather than the second.
       sessionId: getClaudeSessionId(),
-      shortId: getClaudeShortId(),
+      shortId: resolveSessionName(),
     },
   });
   if (sessionEndpoint) {

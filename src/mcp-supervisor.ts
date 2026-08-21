@@ -31,6 +31,7 @@
  * Usage: node build/mcp-supervisor.js [...extraChildArgs]
  */
 import * as path from 'path';
+import { spawn } from 'child_process';
 import * as os from 'os';
 import { fileURLToPath } from 'url';
 import { getOutputPath, getConfigPath, getGlobalBase } from './helpers/paths.js';
@@ -40,7 +41,7 @@ import { NdjsonReader } from './supervisor/ndjson-reader.js';
 import { recordOwnSupervisor, removeOwnPidFile } from './supervisor/pidfile.js';
 import { ClientWatcher } from './supervisor/client-watcher.js';
 import { readSupervisorSessionConfig, idleCheckIntervalMs } from './supervisor/idle-config.js';
-import { runCli, isCliCommand } from './cli/index.js';
+import { runCli, isCliCommand, isVersionFlag, readPackageVersion, CLI_COMMANDS } from './cli/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -55,8 +56,46 @@ async function main(): Promise<void> {
   // the moment stdin closed, so the command's output would never reach the
   // terminal - and a pidfile entry would be left behind for a process that
   // serves no session.
+  if (isVersionFlag(process.argv[2])) {
+    console.log(readPackageVersion());
+    process.exit(0);
+  }
+
   if (isCliCommand(process.argv[2])) {
     process.exit(await runCli(process.argv.slice(2)));
+  }
+
+  // `run` replays a saved sequence in a one-shot child that launches its own
+  // Chrome. Supervising it forwards the child's stdout into the MCP frame
+  // reader and ends the run when stdin closes, so on a terminal it produced no
+  // output and hung. Spawned directly with inherited stdio, the child's own
+  // output and exit code reach the caller.
+  if (process.argv[2] === 'run') {
+    const scriptPath = process.env.MCP_SUPERVISOR_CHILD_SCRIPT
+      ? path.resolve(process.cwd(), process.env.MCP_SUPERVISOR_CHILD_SCRIPT)
+      : path.join(__dirname, 'index.js');
+    const child = spawn(process.execPath, [scriptPath, ...process.argv.slice(2)], {
+      stdio: 'inherit',
+    });
+    child.on('exit', (code, signal) => process.exit(signal ? 1 : code ?? 1));
+    return;
+  }
+
+  // A word that is neither a flag nor a known command is a mistyped command,
+  // not a server launch. Spawning a supervisor for it produces no output and
+  // waits on a stdin no MCP client is holding, which on a terminal is a hang.
+  //
+  // Only when stdin is a terminal. Every other argv is passed straight through
+  // to the child - the stress harness drives the supervisor with child modes
+  // that way - and an MCP client holds a pipe, not a tty.
+  const firstArg = process.argv[2];
+  if (process.stdin.isTTY && firstArg !== undefined && !firstArg.startsWith('-')) {
+    process.stderr.write(
+      `devharness: unknown command "${firstArg}"\n` +
+      `Commands: ${CLI_COMMANDS.join(', ')}, run, --version\n` +
+      `To call any tool: devharness call <tool> '<json>'\n`
+    );
+    process.exit(1);
   }
 
   const scriptPath = process.env.MCP_SUPERVISOR_CHILD_SCRIPT

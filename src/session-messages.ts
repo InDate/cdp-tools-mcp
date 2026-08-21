@@ -7,9 +7,9 @@
  * is scoped to a project root, so two sessions in different roots share no
  * process, and only the home directory is reachable from both.
  *
- * One line per message matches `blocks.jsonl`, so a Claude Code Monitor
- * tailing the file delivers a message as soon as it lands and the receiving
- * session runs no poll of its own.
+ * The mailbox holds the conversation and the read cursor. An arrival is
+ * announced separately on the session's event stream, which is the one file a
+ * Monitor tails, so no watch is armed on a mailbox.
  */
 
 import { promises as fs } from 'fs';
@@ -175,10 +175,13 @@ export async function waitForMailbox(
       return messages.slice(fromLine);
     }
 
-    const elapsed = Date.now() - start;
-    if (elapsed + options.pollIntervalMs > options.timeoutMs) {
+    // Time remaining, not time remaining after a full interval: the old form
+    // returned before sleeping at all whenever the timeout was shorter than one
+    // interval, so any wait under the default 500ms never waited.
+    const remaining = options.timeoutMs - (Date.now() - start);
+    if (remaining <= 0) {
       return [];
     }
-    await abortableSleep(options.pollIntervalMs, options.abortSignal);
+    await abortableSleep(Math.min(options.pollIntervalMs, remaining), options.abortSignal);
   }
 }

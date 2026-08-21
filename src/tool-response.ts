@@ -272,6 +272,9 @@ export interface MessageToolMeta {
   }>;
   /** send/reply: the message appended to the recipient's mailbox. */
   sent?: SessionMessage;
+  /** send: whether a session was listening under that id at the time. False
+   *  for a suspended peer and for a mistyped id alike. */
+  targetListening?: boolean;
   /** send/reply/read: messages taken from this session's own mailbox. */
   received?: SessionMessage[];
   /** send/reply with waitForReplyMs: true when the wait returned nothing. */
@@ -311,7 +314,7 @@ export interface ToolResponse {
 export interface BlockingResponse {
   blocked: true;
   response: ToolResponse;
-  /** Identity/summary for the blocks.jsonl event stream. */
+  /** Identity/summary for the session's event stream. */
   block?: BlockEventInfo;
 }
 
@@ -429,6 +432,7 @@ export async function checkBugBlocking(toolName: string, toolArgs?: Record<strin
     }
   };
 }
+
 
 /**
  * Information about a paused breakpoint

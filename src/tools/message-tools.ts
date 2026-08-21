@@ -13,7 +13,8 @@ import { createSuccessResponse, createErrorResponse } from '../messages.js';
 import { getProjectDir } from '../helpers/paths.js';
 import { getSessionInfo } from './dashboard-tools.js';
 import { listSessionRecords } from '../session-endpoint.js';
-import { getClaudeShortId } from '../session-identity.js';
+import { resolveSessionName } from '../session-identity.js';
+import { appendEvent } from '../session-events.js';
 import type { ToolResponseMeta, MessageToolMeta } from '../tool-response.js';
 import {
   isValidMailboxId,
@@ -47,19 +48,6 @@ type MessageArgs = z.infer<typeof messageSchema>;
 
 const DEFAULT_POLL_INTERVAL_MS = 500;
 
-/**
- * The mailbox id this process is reachable at.
- *
- * The environment carries the session id from the first instruction and holds
- * it across a rebuild, so it comes first: the detector's result arrives only
- * after a tool response has been written and matched, and the child pid
- * changes every time the supervisor replaces the child, which would orphan a
- * mailbox someone had already addressed.
- */
-function resolveSelfMailboxId(): string {
-  return getClaudeShortId() ?? getSessionInfo()?.shortId ?? `pid-${process.pid}`;
-}
-
 function buildMeta(action: MessageArgs['action'], self: string, extra: Partial<MessageToolMeta>): ToolResponseMeta {
   return {
     tool: 'message',
@@ -82,7 +70,7 @@ export function createMessageTools() {
       'Text between two devharness sessions on this machine. Actions: sessions (who is reachable), send (write to another session, optionally holding the call open for a reply), read (take new messages), reply (answer a message by id).',
       messageSchema,
       async (args: MessageArgs, abortSignal?: AbortSignal) => {
-        const self = resolveSelfMailboxId();
+        const self = resolveSessionName(getSessionInfo()?.shortId);
         const pollIntervalMs = args.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
 
         switch (args.action) {
@@ -184,6 +172,9 @@ export function createMessageTools() {
             // between the append and the first poll sits past this offset and
             // is returned, rather than being counted as already-read.
             const fromLine = args.waitForReplyMs ? (await readMailbox(self)).length : 0;
+            // Where `read` had got to. A mailbox with unread lines sits behind
+            // fromLine, and advancing the cursor past them would drop them.
+            const cursorBefore = args.waitForReplyMs ? await readCursor(self) : 0;
 
             const sent = await sendMessage({
               from: self,
@@ -193,14 +184,34 @@ export function createMessageTools() {
               ...(replyTo ? { replyTo } : {}),
             });
 
+            // The recipient's Monitor watches its event stream, not its
+            // mailbox, so the arrival is announced there.
+            await appendEvent(target, 'message', {
+              from: self,
+              id: sent.id,
+              detail: `Message from ${self}: ${args.text.slice(0, 120)}`,
+              resolve: "message({ action: 'read' })",
+            });
+
+            // A typo mints a mailbox nothing ever reads, and nothing removes
+            // one, so the sessions listing grows a fictional peer per slip.
+            // Refusing would block a genuine first message to a session whose
+            // server is suspended, which has neither record nor mailbox, so the
+            // state is reported rather than enforced.
+            const targetListening = listSessionRecords()
+              .some(r => (r.shortId ?? `pid-${r.pid}`) === target);
+
             if (!args.waitForReplyMs) {
               const response = createSuccessResponse('MESSAGE_SENT', {
                 to: target,
                 id: sent.id,
                 shortId: sent.id.slice(0, 8),
                 mailboxPath: getMailboxPath(target),
+                deliveryNote: targetListening
+                  ? ''
+                  : `\n\n**No session is listening as \`${target}\` right now.** It reads this when it next starts, or the id is a typo and nothing ever will - check \`message({ action: 'sessions' })\`.`,
               });
-              return { ...response, _meta: buildMeta(args.action, self, { sent }) };
+              return { ...response, _meta: buildMeta(args.action, self, { sent, targetListening }) };
             }
 
             const waitStart = Date.now();
@@ -225,14 +236,28 @@ export function createMessageTools() {
             }
 
             // The wait consumed these lines, so the cursor moves past them and
-            // a later `read` does not hand back the same messages.
-            await writeCursor(self, fromLine + received.length);
+            // a later `read` does not hand back the same messages - but only
+            // when `read` had already caught up. With unread lines behind
+            // fromLine there is no cursor value that means "those unread, these
+            // read", so the cursor stays put and `read` returns the backlog
+            // together with what the wait already showed. Repeating a message
+            // is recoverable; losing one is not.
+            if (cursorBefore >= fromLine) {
+              await writeCursor(self, fromLine + received.length);
+            }
 
             const response = createSuccessResponse('MESSAGE_REPLY_RECEIVED', {
               to: target,
               count: received.length,
               elapsedMs: waitElapsedMs,
               messageList: formatMessages(received),
+              // A cursor cannot express "those unread, these read", so with a
+              // backlog behind fromLine it stays put and `read` hands these
+              // back a second time. Acting on them twice is the failure that
+              // silence here would cause.
+              repeatNote: cursorBefore < fromLine
+                ? `\n\n**Unread messages sit behind these**, so the cursor did not move: \`message({ action: 'read' })\` returns the backlog AND repeats the message(s) above once. Treat a repeat as already handled.`
+                : '',
             });
             return {
               ...response,

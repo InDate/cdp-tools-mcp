@@ -8,38 +8,81 @@ npm run test:run
 
 ## Running your build
 
-`plugin/` is what ships to users: the manifest, the skill, and `plugin/.mcp.json`
-pointing at the published package. It deliberately has no `package.json` - a
-plugin directory containing one gets a full `npm install` on every install,
-which cost 175MB of dev dependencies per version before this was split out.
-
-Register your build as a separate server instead:
+Two things ship: an MCP server published to npm, and a plugin served from
+`plugin/` by the marketplace. They are tested separately because they install
+separately. Set up both once:
 
 ```sh
+npm install
 npm run build
+
+# the server, as a second MCP server beside the published one
 claude mcp add devharness-dev -- node build/mcp-supervisor.js
+
+# the plugin - its hooks, manifest and skill - from this checkout
+claude plugin marketplace add ./
+claude plugin install devharness@devharness-local
 ```
 
-Both load at once — `mcp__devharness__*` from the published package,
-`mcp__devharness-dev__*` from your build — which makes it easy to check one
-against the other.
+`plugin/` deliberately has no `package.json`: a plugin directory containing one
+gets a full `npm install` on every install, which cost 175MB of dev
+dependencies per version before this was split out. So the plugin carries the
+manifest, the skill and the hooks, and `plugin/.mcp.json` points its server at
+the *published* package.
+
+That split decides what each half of the setup covers.
+
+| Change | What picks it up |
+| :--- | :--- |
+| Anything under `src/` | `npm run build` - postbuild signals the supervisor, which restarts the child |
+| `plugin/hooks/`, `plugin/.claude-plugin/`, `plugin/skills/` | `claude plugin marketplace update devharness-local`, then a new session for a `SessionStart` hook |
+| The CLI (`devharness call`, `which`, …) | `node build/mcp-supervisor.js <command>` - the checkout is not on PATH |
+
+Plugin ids are `name@marketplace`, so `devharness@devharness-local` installs
+beside the published `devharness@indate-tools` rather than over it. Nothing
+claims to be a released version, which is what separates this from linking
+`node_modules/.bin/devharness` at your build. Do **not** do that: it works, but
+it makes the plugin run your working tree while claiming to run a pinned
+published version, which is the exact thing the version pin exists to prevent,
+and you would be debugging against code no user has.
+
+Check the marketplace manifest with `claude plugin validate .`. It warns that
+`plugin/.claude-plugin/plugin.json` carries no `version`, which is true of the
+published manifest too.
+
+### Two errors that are expected here
+
+`sh: devharness: command not found` from either plugin's `.mcp.json`, inside
+this repo only. The plugin runs `npx -y devharness@<version>`; `npm exec` reads
+this repo's `package.json`, sees the same name and version, decides the spec is
+already satisfied, and skips the install - then looks for a `devharness` bin in
+`node_modules/.bin`, which npm never links for a package's own bin. From any
+other directory npx fetches from the registry and it works. Use `devharness-dev`
+here; that is what it is for.
+
+The SessionStart hook reporting that the `devharness` CLI is not on PATH. It
+isn't - the plugin never installs one, and neither does npx. `npm i -g
+devharness` fetches the *published* build, which is a different thing from your
+checkout.
 
 ### Hot reload
 
 `mcp-supervisor.js` is the `bin` entrypoint; it supervises `build/index.js` as a
-child. On SIGUSR2 — from the postbuild hook, `kill -USR2 $(cat
-.devharness/mcp-supervisor.pid)`, or the `config({ action: 'restart' })` tool —
+child. On SIGUSR2 - from the postbuild hook, `kill -USR2 $(cat
+.devharness/mcp-supervisor.pid)`, or the `config({ action: 'restart' })` tool -
 it restarts that child and sends `notifications/tools/list_changed`. So a
 rebuild is usually enough; no `/mcp` reconnect.
 
-- Chrome instances the old child launched are killed — call `launchChrome` again.
+- Chrome instances the old child launched are killed - call `launchChrome` again.
 - Managed dev servers survive and reattach; they live outside the child's lifetime.
+- The **supervisor** keeps running its own older code until the client
+  reconnects. A change under `src/supervisor/` needs `/mcp`, not a rebuild.
 - `config({ action: 'restart' })` is itself in the frozen tool list, so testing a
   change to the restart mechanism runs the *old* tool until the restart completes.
 
 The build reports `Sent SIGUSR2 to mcp-supervisor (PID n)` or `No pidfile ...
 nothing to reload`. Read that line before reading code when behaviour
-contradicts your source — but it is a claim about a pid, not proof your session
+contradicts your source - but it is a claim about a pid, not proof your session
 reloaded. The build signals whoever is named in *this repo's* pidfile, which is
 someone else's supervisor when your session is supervised from another
 directory. Ask the running server instead:
@@ -51,36 +94,28 @@ config({ action: 'status' })
 `Built:` is the mtime of the `build/index.js` the process actually loaded;
 `Running:` is which file that is. Older than the build you just ran means you
 are talking to previous code. Check this before concluding your source is wrong
-— hours have gone into debugging a fix that already worked.
-
-### The plugin's own server fails inside this repo
-
-If you have the Claude Code plugin installed, its server won't start while your
-working directory is this repository:
-
-```
-sh: devharness: command not found
-MCP error -32000: Connection closed
-```
-
-Expected, and only here. The plugin runs `npx -y devharness@<version>`. `npm exec`
-reads this repo's `package.json`, sees the same name and version, decides the
-spec is already satisfied, and skips the install — then looks for a `devharness`
-bin in `node_modules/.bin`, which npm never links for a package's own bin. From
-any other directory npx fetches from the registry and it works.
-
-Use `devharness-dev` here; that is what it is for. Do **not** fix it by linking
-`node_modules/.bin/devharness` to your build. It works, but it makes the plugin
-run your working tree while claiming to run a pinned published version — which is
-the exact thing the version pin exists to prevent, and you would be debugging
-against code no user has.
+- hours have gone into debugging a fix that already worked.
 
 ## Before a PR
+
+Two always, then whichever rows of the table your change touches:
 
 ```sh
 npm run test:run      # vitest, ~15s; tests are colocated as *.test.ts
 npm run build:verify  # starts the server, checks the shipped docs match the tools
 ```
+
+| If you changed | Also run |
+| :--- | :--- |
+| `src/supervisor/`, `src/server-claims.ts` | `npm run stress:suspend` |
+| the `Target.attachedToTarget` handler in `src/network-monitor.ts` | `npm run check:targets` |
+| `src/worker-targets.ts`, or `target` on `inspect`/`console` | `npm run check:workers` |
+| `plugin/hooks/` | start a new session and read what the hook printed |
+| a tool's name, actions or responses | the doc-sync list at the end of this section |
+
+The three `check:`/`stress:` scripts need a build first and are deliberately
+outside `npm test`: they spawn real processes and a real Chrome, which the
+vitest suite never does.
 
 `build:verify` is the release gate. It fails if `docs/instructions.md` or
 `plugin/skills/devharness/references/tool-categories.md` disagree with the tools the
