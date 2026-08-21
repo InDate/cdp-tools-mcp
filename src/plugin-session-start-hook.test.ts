@@ -9,7 +9,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, existsSync, readdirSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, chmodSync, rmSync, existsSync, readdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, dirname } from 'path';
 import { initializePaths } from './helpers/paths.js';
@@ -141,6 +141,36 @@ describe('session-start hook - what it leaves behind', () => {
   it('creates exactly one file, named for the session', () => {
     runHook(JSON.stringify({ session_id: SESSION_ID }));
     expect(readdirSync(join(dir, 'events'))).toEqual(['2e9119bf.jsonl']);
+  });
+});
+
+describe('session-start hook - recording the current conversation', () => {
+  const SOCKET = { CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/cc-socks/61220.sock' };
+
+  function recorded(): any {
+    return JSON.parse(readFileSync(join(dir, 'clients', '61220.json'), 'utf-8'));
+  }
+
+  it('writes the conversation id where the server reads it', () => {
+    runHook(JSON.stringify({ session_id: SESSION_ID }), SOCKET);
+    expect(recorded().sessionId).toBe(SESSION_ID);
+  });
+
+  it('overwrites it when a clear brings a new conversation', () => {
+    runHook(JSON.stringify({ session_id: SESSION_ID }), SOCKET);
+    runHook(JSON.stringify({ session_id: 'bbbbbbbb-9999-0000-1111-222222222222' }), SOCKET);
+    expect(recorded().sessionId).toBe('bbbbbbbb-9999-0000-1111-222222222222');
+  });
+
+  it('writes the record owner-only', () => {
+    runHook(JSON.stringify({ session_id: SESSION_ID }), SOCKET);
+    expect(statSync(join(dir, 'clients', '61220.json')).mode & 0o777).toBe(0o600);
+  });
+
+  it('still names the stream when no socket identifies the client', () => {
+    const output = runHook(JSON.stringify({ session_id: SESSION_ID }), { CLAUDE_CODE_MESSAGING_SOCKET: '' });
+    expect(output).toContain('2e9119bf.jsonl');
+    expect(existsSync(join(dir, 'clients'))).toBe(false);
   });
 });
 

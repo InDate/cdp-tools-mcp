@@ -16,10 +16,10 @@
  * more than the nudge is worth.
  */
 
-import { existsSync, mkdirSync, appendFileSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, appendFileSync, readFileSync, writeFileSync, renameSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { homedir } from 'os';
-import { join } from 'path';
+import { join, basename } from 'path';
 
 /** Ids become filenames; anything else is left alone rather than sanitised. */
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -44,6 +44,41 @@ function globalBase() {
   const legacy = join(homedir(), '.cdp-tools');
   if (!existsSync(current) && existsSync(legacy)) return legacy;
   return current;
+}
+
+/**
+ * The Claude process this hook was spawned by, from the messaging socket's
+ * filename. The server derives the same pid the same way, which is what lets
+ * the two agree on a name.
+ */
+function clientPid() {
+  const socket = process.env.CLAUDE_CODE_MESSAGING_SOCKET;
+  if (!socket) return null;
+  const pid = Number(basename(socket).replace(/\.sock$/, ''));
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+/**
+ * Record the conversation this client is on now.
+ *
+ * The server reads `CLAUDE_CODE_SESSION_ID` once, when it is spawned, and
+ * `/clear` gives the conversation a new id without restarting it. This hook
+ * runs on every start reason including `clear`, so this file is what carries
+ * the change across to a process whose environment cannot.
+ */
+function recordCurrentSession(sessionId) {
+  const pid = clientPid();
+  if (pid === null) return;
+  const dir = join(globalBase(), 'clients');
+  const path = join(dir, `${pid}.json`);
+  try {
+    mkdirSync(dir, { recursive: true });
+    const temp = `${path}.${process.pid}.tmp`;
+    writeFileSync(temp, JSON.stringify({ sessionId, at: new Date().toISOString() }), { mode: 0o600 });
+    renameSync(temp, path);
+  } catch {
+    // The nudge below is still worth printing without it.
+  }
 }
 
 /** The version this plugin's server runs, read from the pin in its .mcp.json. */
@@ -114,6 +149,8 @@ try {
   process.exit(0);
 }
 if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) process.exit(0);
+
+recordCurrentSession(sessionId);
 
 const eventsDir = join(globalBase(), 'events');
 const streamPath = join(eventsDir, `${sessionId.slice(0, 8)}.jsonl`);
