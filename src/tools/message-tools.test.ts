@@ -24,6 +24,7 @@ import {
 
 let dir: string;
 let previousDir: string | undefined;
+let previousSessionId: string | undefined;
 
 function asSession(shortId: string): void {
   setSessionInfo({
@@ -38,8 +39,12 @@ const { message } = createMessageTools();
 
 beforeEach(() => {
   previousDir = process.env.DEVHARNESS_DIR;
+  previousSessionId = process.env.CLAUDE_CODE_SESSION_ID;
   dir = mkdtempSync(join(tmpdir(), 'devharness-messages-'));
   process.env.DEVHARNESS_DIR = dir;
+  // The real value on the machine running the suite would otherwise decide
+  // every mailbox id below.
+  process.env.CLAUDE_CODE_SESSION_ID = 'aaaaaaaa-1111-2222-3333-444444444444';
   initializePaths();
   asSession('aaaaaaaa');
 });
@@ -48,6 +53,8 @@ afterEach(() => {
   setSessionInfo(null);
   if (previousDir === undefined) delete process.env.DEVHARNESS_DIR;
   else process.env.DEVHARNESS_DIR = previousDir;
+  if (previousSessionId === undefined) delete process.env.CLAUDE_CODE_SESSION_ID;
+  else process.env.CLAUDE_CODE_SESSION_ID = previousSessionId;
   initializePaths();
   rmSync(dir, { recursive: true, force: true });
 });
@@ -299,8 +306,43 @@ describe('message sessions', () => {
   });
 });
 
-describe('mailbox identity before session detection', () => {
-  it('falls back to the pid form when no short id has been detected', async () => {
+describe('mailbox identity', () => {
+  it('uses the session id from the environment, with no detection needed', async () => {
+    setSessionInfo(null);
+    const res = await message.handler({ action: 'read' });
+    expect(res._meta.message.self).toBe('aaaaaaaa');
+  });
+
+  it('keeps the same id when the child pid changes, which a rebuild does', async () => {
+    const before = (await message.handler({ action: 'read' }))._meta.message.self;
+    setSessionInfo(null);   // the detector's result is lost with the old child
+    const after = (await message.handler({ action: 'read' }))._meta.message.self;
+    expect(after).toBe(before);
+    expect(after).not.toContain(String(process.pid));
+  });
+
+  it('prefers the environment over a detector result that disagrees', async () => {
+    asSession('zzzzzzzz');
+    const res = await message.handler({ action: 'read' });
+    expect(res._meta.message.self).toBe('aaaaaaaa');
+  });
+
+  it('falls back to the detector when the environment carries no session id', async () => {
+    delete process.env.CLAUDE_CODE_SESSION_ID;
+    asSession('zzzzzzzz');
+    const res = await message.handler({ action: 'read' });
+    expect(res._meta.message.self).toBe('zzzzzzzz');
+  });
+
+  it('falls back to the pid form when neither source has an id', async () => {
+    delete process.env.CLAUDE_CODE_SESSION_ID;
+    setSessionInfo(null);
+    const res = await message.handler({ action: 'read' });
+    expect(res._meta.message.self).toBe(`pid-${process.pid}`);
+  });
+
+  it('ignores an environment value that could escape the messages directory', async () => {
+    process.env.CLAUDE_CODE_SESSION_ID = '../../escape';
     setSessionInfo(null);
     const res = await message.handler({ action: 'read' });
     expect(res._meta.message.self).toBe(`pid-${process.pid}`);

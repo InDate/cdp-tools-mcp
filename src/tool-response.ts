@@ -267,7 +267,6 @@ export interface MessageToolMeta {
     id: string;
     pid?: number;
     cwd?: string;
-    lastHeartbeatAgeMs?: number;
     live: boolean;
     self: boolean;
   }>;

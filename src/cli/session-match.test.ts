@@ -16,7 +16,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { collectAncestors, collectChain } from './process-tree.js';
-import { matchByAncestry, findSessionByName } from './session-match.js';
+import { matchByAncestry, findSessionByName, filterToListedProcesses } from './session-match.js';
 import type { SessionRecord } from '../session-endpoint.js';
 
 const PARENTS = new Map<number, number>([
@@ -97,6 +97,19 @@ describe('matchByAncestry', () => {
   it('matches nothing when the process listing is empty', () => {
     const result = matchByAncestry([SESSION_A, SESSION_B], 821, new Map());
     expect(result.matched).toBeNull();
+  });
+});
+
+describe('filterToListedProcesses', () => {
+  it('drops a record whose process is no longer in the listing', () => {
+    const gone = record(811, 'aaaaaaaa');
+    const parents = new Map(PARENTS);
+    parents.delete(811);
+    expect(filterToListedProcesses([gone, SESSION_B], parents)).toEqual([SESSION_B]);
+  });
+
+  it('keeps every record when the process listing failed', () => {
+    expect(filterToListedProcesses([SESSION_A, SESSION_B], new Map())).toEqual([SESSION_A, SESSION_B]);
   });
 });
 

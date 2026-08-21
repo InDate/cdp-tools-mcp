@@ -56,6 +56,23 @@ export function matchByAncestry(
   return { candidates, matched: candidates[0].record, ambiguous: [] };
 }
 
+/**
+ * Records whose process is in the listing.
+ *
+ * A record survives its process by the moment it takes the supervisor to
+ * replace a child, and one absent from the process listing has no chain to
+ * walk - it would report as "no shared ancestor", which reads as the caller
+ * being in the wrong shell rather than the session being mid-restart. An
+ * empty listing means the walk failed entirely, so nothing is filtered.
+ */
+export function filterToListedProcesses(
+  records: SessionRecord[],
+  parents: Map<number, number>
+): SessionRecord[] {
+  if (parents.size === 0) return records;
+  return records.filter(record => parents.has(record.pid));
+}
+
 /** The session a caller named explicitly: short id, session id, or pid. */
 export function findSessionByName(records: SessionRecord[], name: string): SessionRecord | null {
   const asPid = Number(name);

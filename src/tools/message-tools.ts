@@ -10,12 +10,11 @@
 import { z } from 'zod';
 import { createTool } from '../validation-helpers.js';
 import { createSuccessResponse, createErrorResponse } from '../messages.js';
-import { isProcessAlive } from '../helpers/process-liveness.js';
-import { readLock } from '../dashboard/hub-lock.js';
 import { getProjectDir } from '../helpers/paths.js';
 import { getSessionInfo } from './dashboard-tools.js';
+import { listSessionRecords } from '../session-endpoint.js';
+import { getClaudeShortId } from '../session-identity.js';
 import type { ToolResponseMeta, MessageToolMeta } from '../tool-response.js';
-import type { SessionInfo as DashboardSessionInfo } from '../dashboard/types.js';
 import {
   isValidMailboxId,
   getMailboxPath,
@@ -47,19 +46,18 @@ const messageSchema = z.object({
 type MessageArgs = z.infer<typeof messageSchema>;
 
 const DEFAULT_POLL_INTERVAL_MS = 500;
-const HUB_FETCH_TIMEOUT_MS = 1500;
 
 /**
  * The mailbox id this process is reachable at.
  *
- * The short id arrives once the session detector has matched this pid to a
- * Claude Code session file, which takes one tool call. Before that the pid
- * form is the only stable identity, and `sessions` reports whichever form is
- * current so a sender addresses what is live now.
+ * The environment carries the session id from the first instruction and holds
+ * it across a rebuild, so it comes first: the detector's result arrives only
+ * after a tool response has been written and matched, and the child pid
+ * changes every time the supervisor replaces the child, which would orphan a
+ * mailbox someone had already addressed.
  */
 function resolveSelfMailboxId(): string {
-  const info = getSessionInfo();
-  return info?.shortId ?? `pid-${process.pid}`;
+  return getClaudeShortId() ?? getSessionInfo()?.shortId ?? `pid-${process.pid}`;
 }
 
 function buildMeta(action: MessageArgs['action'], self: string, extra: Partial<MessageToolMeta>): ToolResponseMeta {
@@ -69,26 +67,6 @@ function buildMeta(action: MessageArgs['action'], self: string, extra: Partial<M
     timestamp: Date.now(),
     message: { action, self, ...extra },
   };
-}
-
-/** Sessions the dashboard hub currently holds, or null when it is unreachable. */
-async function fetchHubSessions(): Promise<DashboardSessionInfo[] | null> {
-  const lock = readLock();
-  if (!lock?.port) return null;
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), HUB_FETCH_TIMEOUT_MS);
-  try {
-    const res = await fetch(`http://localhost:${lock.port}/api/sessions`, {
-      signal: controller.signal,
-    });
-    if (!res.ok) return null;
-    return (await res.json()) as DashboardSessionInfo[];
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 /** One line per message, newest last, for the rendered response. */
@@ -110,29 +88,25 @@ export function createMessageTools() {
         switch (args.action) {
           // ---- sessions ------------------------------------------------------
           case 'sessions': {
-            const hubSessions = await fetchHubSessions();
+            // The endpoint records are written by the live child and swept by
+            // a pid check, so they carry both identity and liveness. The
+            // dashboard hub holds the same sessions but prunes only on a clean
+            // socket close, which reports a replaced child as still running.
+            const records = listSessionRecords();
             const mailboxIds = await listMailboxIds();
 
             const rows: NonNullable<MessageToolMeta['sessions']> = [];
             const seen = new Set<string>();
-            const now = Date.now();
 
-            for (const session of hubSessions ?? []) {
-              const id = session.shortId ?? `pid-${session.pid}`;
+            for (const record of records) {
+              const id = record.shortId ?? `pid-${record.pid}`;
               if (seen.has(id)) continue;
               seen.add(id);
-              rows.push({
-                id,
-                pid: session.pid,
-                cwd: session.cwd,
-                lastHeartbeatAgeMs: session.lastHeartbeat ? now - session.lastHeartbeat : undefined,
-                live: isProcessAlive(session.pid),
-                self: id === self,
-              });
+              rows.push({ id, pid: record.pid, cwd: record.cwd, live: true, self: id === self });
             }
 
-            // A mailbox with no hub entry is a session that has exited. Listing
-            // it keeps a reply to a dead session visible instead of silent.
+            // A mailbox with no session behind it is one that has exited.
+            // Listing it keeps a reply to a dead session visible, not silent.
             for (const id of mailboxIds) {
               if (seen.has(id)) continue;
               seen.add(id);
@@ -147,9 +121,6 @@ export function createMessageTools() {
               self,
               mailboxPath: getMailboxPath(self),
               messagesDir: getMessagesDir(),
-              hubNote: hubSessions === null
-                ? 'The dashboard hub is not reachable, so this list comes from mailbox files on disk and liveness is unknown.'
-                : '',
               sessionList: rows
                 .map(r => `- ${r.id}${r.self ? ' (this session)' : ''} - ${r.live ? 'live' : 'no process'}${r.cwd ? ` - ${r.cwd}` : ''}`)
                 .join('\n'),

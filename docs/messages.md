@@ -3890,8 +3890,6 @@ This session is `{{self}}`. Its mailbox: `{{mailboxPath}}`
 
 {{sessionList}}
 
-{{hubNote}}
-
 **Note:** To receive a message while doing other work, arm a Monitor on this session's mailbox file - it appends one JSON line per message, so a `tail -f` style watch fires the moment one lands. Without a Monitor, messages surface only when `message({ action: 'read' })` runs.
 
 ---

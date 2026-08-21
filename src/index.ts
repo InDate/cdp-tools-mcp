@@ -61,6 +61,7 @@ import { createIssuesTools } from './tools/issues-tools.js';
 import { createMessageTools } from './tools/message-tools.js';
 import { startSessionEndpoint, type SessionEndpoint } from './session-endpoint.js';
 import { runCli, isCliCommand } from './cli/index.js';
+import { getClaudeSessionId, getClaudeShortId } from './session-identity.js';
 import { createDashboardTools, setDashboardInstance, getDashboardInstance, setSessionInfo, getDuplicateSessionInfo } from './tools/dashboard-tools.js';
 import { initializeDashboard, shutdownDashboard, type DashboardInstance, type ConnectionInfo as DashboardConnectionInfo } from './dashboard/index.js';
 import { Orchestrator } from './log-processor/orchestrator.js';
@@ -2030,8 +2031,8 @@ async function main() {
       process.cwd(),
       sessionStartTime,
       getConnectionsForDashboard,
-      currentSession?.sessionId || `pid-${process.pid}`,
-      currentSession?.shortId || `pid-${process.pid}`,
+      currentSession?.sessionId || getClaudeSessionId() || `pid-${process.pid}`,
+      currentSession?.shortId || getClaudeShortId() || `pid-${process.pid}`,
       handleHubDown  // Pass callback again for the new client
     );
     if (newInstance) {
@@ -2052,8 +2053,12 @@ async function main() {
       process.cwd(),
       sessionStartTime,
       getConnectionsForDashboard,
-      `pid-${process.pid}`,  // Placeholder until session detected
-      `pid-${process.pid}`,
+      // The environment names the session before the detector does; the pid
+      // form is left for a client that exports no session id. A hub entry
+      // keyed on the pid would list this session a second time, beside the
+      // one its mailbox is named after.
+      getClaudeSessionId() || `pid-${process.pid}`,
+      getClaudeShortId() || `pid-${process.pid}`,
       handleHubDown
     );
 
@@ -2173,7 +2178,15 @@ async function main() {
   // Reachable by CLI only once the tools can actually run.
   sessionEndpoint = await startSessionEndpoint({
     executeToolCall,
-    identity: { pid: process.pid, ppid: process.ppid, cwd: process.cwd() },
+    identity: {
+      pid: process.pid,
+      ppid: process.ppid,
+      cwd: process.cwd(),
+      // Named before the detector runs, so `--session=<shortId>` resolves on
+      // the first CLI call after a restart rather than the second.
+      sessionId: getClaudeSessionId(),
+      shortId: getClaudeShortId(),
+    },
   });
   if (sessionEndpoint) {
     console.error(`[devharness] Session endpoint listening on ${sessionEndpoint.address}`);

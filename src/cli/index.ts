@@ -15,7 +15,7 @@ import { connect, type Socket } from 'net';
 import { initializePaths } from '../helpers/paths.js';
 import { listSessionRecords, type SessionRecord, type EndpointReply } from '../session-endpoint.js';
 import { readParentMap } from './process-tree.js';
-import { matchByAncestry, findSessionByName } from './session-match.js';
+import { matchByAncestry, findSessionByName, filterToListedProcesses } from './session-match.js';
 
 const DEFAULT_TIMEOUT_MS = 120000;
 
@@ -199,7 +199,13 @@ export async function runCli(argv: string[]): Promise<number> {
       return 1;
     }
   } else {
-    const result = matchByAncestry(records, process.pid, readParentMap());
+    const parents = readParentMap();
+    const listed = filterToListedProcesses(records, parents);
+    if (listed.length === 0) {
+      console.error('Every session on record has already exited - the server is restarting. Try again in a moment.');
+      return 1;
+    }
+    const result = matchByAncestry(listed, process.pid, parents);
     if (result.ambiguous.length > 1) {
       console.error('Two sessions are the same distance up the process tree. Name one with --session=<id>:');
       for (const match of result.ambiguous) console.error(`  ${describeRecord(match.record)}`);
