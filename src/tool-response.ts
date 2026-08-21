@@ -8,6 +8,7 @@ import type { Connection } from './connection-manager.js';
 import { hasPendingBugs, getPendingBugs } from './issue-tracker.js';
 import { createErrorResponse } from './messages.js';
 import type { BlockEventInfo } from './block-events.js';
+import type { SessionMessage } from './session-messages.js';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -240,6 +241,32 @@ export interface ToolResponseMeta {
   storage?: StorageToolMeta;
   replay?: ReplayRunMeta;
   github?: GithubToolMeta;
+  message?: MessageToolMeta;
+}
+
+/** Structured result of a cross-session message action. Behaviour reads this,
+ *  never the rendered text. */
+export interface MessageToolMeta {
+  action: 'sessions' | 'send' | 'read' | 'reply';
+  /** Mailbox id this session is reachable at. */
+  self: string;
+  /** sessions: every mailbox known, with hub liveness where the hub is up. */
+  sessions?: Array<{
+    id: string;
+    pid?: number;
+    cwd?: string;
+    lastHeartbeatAgeMs?: number;
+    live: boolean;
+    self: boolean;
+  }>;
+  /** send/reply: the message appended to the recipient's mailbox. */
+  sent?: SessionMessage;
+  /** send/reply/read: messages taken from this session's own mailbox. */
+  received?: SessionMessage[];
+  /** send/reply with waitForReplyMs: true when the wait returned nothing. */
+  waitTimedOut?: boolean;
+  /** send/reply with waitForReplyMs: milliseconds spent inside the wait. */
+  waitElapsedMs?: number;
 }
 
 /** Structured result of a GitHub action on the issues tool. Behaviour reads

@@ -3881,6 +3881,99 @@ Cannot wait for {{condition}}: the debugger on "{{connectionReason}}" is paused 
 
 ---
 
+## MESSAGE_SESSIONS
+
+**Type:** success
+**Summary:** {{count}} session(s) reachable
+
+This session is `{{self}}`. Its mailbox: `{{mailboxPath}}`
+
+{{sessionList}}
+
+{{hubNote}}
+
+**Note:** To receive a message while doing other work, arm a Monitor on this session's mailbox file - it appends one JSON line per message, so a `tail -f` style watch fires the moment one lands. Without a Monitor, messages surface only when `message({ action: 'read' })` runs.
+
+---
+
+## MESSAGE_SENT
+
+**Type:** success
+**Summary:** Sent to {{to}}
+
+Message `{{shortId}}` appended to `{{mailboxPath}}`. The recipient sees it on `message({ action: 'read' })`, or immediately if it has a Monitor armed on that file.
+
+**Suggestions:**
+- To hold this call open until the other session answers: `message({ action: 'send', to: '{{to}}', text: '...', waitForReplyMs: 120000 })`
+
+---
+
+## MESSAGE_REPLY_RECEIVED
+
+**Type:** success
+**Summary:** {{count}} message(s) after {{elapsedMs}}ms
+
+{{messageList}}
+
+**Suggestions:**
+- Answer with `message({ action: 'reply', replyTo: '<id>', text: '...' })`
+
+---
+
+## MESSAGE_INBOX
+
+**Type:** success
+**Summary:** {{count}} new of {{total}} in {{self}}
+
+{{messageList}}
+
+**Note:** Read advances a cursor, so the same message is returned once. The full history stays in `{{mailboxPath}}`.
+
+---
+
+## MESSAGE_REPLY_TIMEOUT
+
+**Type:** error
+**Code:** MESSAGE_REPLY_TIMEOUT
+
+Message `{{id}}` reached {{to}}, and nothing arrived in `{{self}}`'s mailbox within {{timeoutMs}}ms.
+
+**Suggestions:**
+- The other session is alive but was not calling devharness - it sees the message on its next `message({ action: 'read' })`
+- Check it is running: `message({ action: 'sessions' })`
+- Wait again without resending: `message({ action: 'read' })`, or send a follow-up with a longer `waitForReplyMs` (max 300000)
+- Its mailbox is `{{mailboxPath}}` - a Monitor on that file removes the need to poll
+
+---
+
+## MESSAGE_TARGET_UNKNOWN
+
+**Type:** error
+**Code:** MESSAGE_TARGET_UNKNOWN
+
+Cannot address "{{target}}": {{reason}}. This session is `{{self}}`.
+
+**Suggestions:**
+- List who is reachable: `message({ action: 'sessions' })`
+- A reply needs the id of a message in this session's own mailbox: `message({ action: 'read' })`
+
+---
+
+## MESSAGE_INVALID_ARGS
+
+**Type:** error
+**Code:** MESSAGE_INVALID_ARGS
+
+{{message}}
+
+**Suggestions:**
+- `message({ action: 'sessions' })` - who is reachable, and this session's mailbox path
+- `message({ action: 'send', to, text })` - write to another session
+- `message({ action: 'read' })` - take new messages
+- `message({ action: 'reply', replyTo, text })` - answer a message by id
+
+---
+
 ## CONFIG_USE_LOCAL_FAILED
 
 **Type:** error
@@ -3940,3 +4033,62 @@ Section "{{section}}" was not found in the page content.
 
 ---
 
+## WORKER_TARGETS_LISTED
+
+**Type:** success
+**Code:** WORKER_TARGETS_LISTED
+
+{{count}} worker target(s). Pass a target id, or a substring of its URL, as `target`.
+
+{{targets}}
+
+---
+
+## WORKER_EVALUATED
+
+**Type:** success
+**Code:** WORKER_EVALUATED
+
+Evaluated inside worker target "{{target}}".
+
+{{result}}
+
+---
+
+## WORKER_TARGET_NOT_FOUND
+
+**Type:** error
+**Code:** WORKER_TARGET_NOT_FOUND
+
+No worker target matches "{{target}}". Available: {{available}}
+
+---
+
+## WORKER_TARGET_AMBIGUOUS
+
+**Type:** error
+**Code:** WORKER_TARGET_AMBIGUOUS
+
+"{{target}}" matches more than one worker target: {{matches}}. Pass a target id instead.
+
+---
+
+## WORKER_EVALUATE_FAILED
+
+**Type:** error
+**Code:** WORKER_EVALUATE_FAILED
+
+Evaluating inside worker target "{{target}}" failed: {{error}}
+
+---
+
+## WORKER_CONSOLE_LISTED
+
+**Type:** success
+**Code:** WORKER_CONSOLE_LISTED
+
+{{count}} console message(s) from worker target "{{target}}".
+
+{{messages}}
+
+---

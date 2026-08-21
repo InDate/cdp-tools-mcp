@@ -54,6 +54,7 @@ import { createServerTools } from './tools/server-tools.js';
 import { createConfigTools } from './tools/config-tools.js';
 import { createPluginTools } from './tools/plugin-tools.js';
 import { createIssuesTools } from './tools/issues-tools.js';
+import { createMessageTools } from './tools/message-tools.js';
 import { createDashboardTools, setDashboardInstance, getDashboardInstance, setSessionInfo, getDuplicateSessionInfo } from './tools/dashboard-tools.js';
 import { initializeDashboard, shutdownDashboard, type DashboardInstance, type ConnectionInfo as DashboardConnectionInfo } from './dashboard/index.js';
 import { Orchestrator } from './log-processor/orchestrator.js';
@@ -1553,6 +1554,8 @@ const allTools = {
   ) : {}),
   // Dashboard tools (lazy-initialized in main())
   ...(configManager.isToolEnabled('dashboard') ? createDashboardTools() : {}),
+  // Cross-session message tools
+  ...(configManager.isToolEnabled('message') ? createMessageTools() : {}),
 };
 
 /**

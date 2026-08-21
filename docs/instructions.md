@@ -59,6 +59,9 @@ Chrome DevTools Protocol debugging for JavaScript/TypeScript in Chrome, Node.js,
 - Note: DOM breakpoints use nodeIds which are invalidated on page reload
 
 **Code search:**
+- `inspect({ action: 'listTargets' })`: List worker targets (service, dedicated, shared)
+- `inspect({ action: 'evaluateExpression', target })`: Evaluate inside a worker, addressed by target id or a URL substring
+- `console({ action: 'list', target })`: Read a worker's console, which reaches no page listener
 - `inspect({ action: 'searchCode' })`: Find patterns
 - `inspect({ action: 'searchFunctions' })`: Locate definitions
 - `getSourceCode`: View context
@@ -217,6 +220,11 @@ runs against (see Quick Start).
 - `acknowledge`: acknowledge pending bugs to unblock other tools
 - **GitHub** (via the `gh` CLI; only `publish` and `sync` use the network): `publish` shows a draft and posts nothing until `confirm: true`; `sync` reconciles both ways and reports a conflict rather than overwriting when both sides changed; `import` materialises a GitHub-only issue locally; `link` stamps an existing number with no network call; `pullSequence` writes a sequence out of an issue body to disk (one authored by another GitHub account needs a person to read it and pass `confirm: true`)
 - A sequence pulled from an issue is **never run automatically**, and one using `execution`, `saveToDisk`, `server`, `request` or `download` is refused unless you pass `allowPrivilegedSteps: true`. Read it first
+
+**Messages**: `message` (actions: sessions, send, read, reply)
+- Text between two devharness sessions on this machine - a session hitting a devharness bug talking to the session working on devharness itself. `sessions` lists reachable mailboxes and this session's own mailbox path
+- `send({ to, text, waitForReplyMs })` holds the call open until something lands in this session's mailbox (max 300000ms) and returns it; without `waitForReplyMs` it returns as soon as the line is written. `reply({ replyTo, text })` routes back to the sender of that message. The wait returns on ANY arrival, not only a tagged reply, so two sessions blocking at the same moment both release
+- Transport is one append-only JSONL file per session under `~/.devharness/messages/`, which is what makes it work across project roots. A busy session needs a Monitor armed on its mailbox file to be interrupted; otherwise messages surface on its next `message({ action: 'read' })`
 
 **Server**: `server` (actions: start, stop, restart, list, logs, stopAll, setAutoRun, clearLogs, remove, monitorPort, unmonitorPort, listMonitored, acknowledgePort, acknowledgeStartup, extendStartup, cancelPendingRestart)
 - Use `global: true` to access servers started from a different working directory

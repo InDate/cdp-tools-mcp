@@ -80,6 +80,31 @@ Monitor({
 
 `-n0` skips history — you only want blocks from now on. One line per *new* block, not per blocked call; the same block re-firing stays quiet until a call gets through all guards and it recurs. Act on the event's `resolve` field.
 
+## Talking to another devharness session
+
+Two devharness sessions on this machine reach each other by mailbox id - the session hitting a devharness bug and the session working on devharness itself, for example.
+
+`message({ action: 'sessions' })` lists who is reachable and prints this session's own mailbox path.
+
+```
+message({ action: 'send', to: 'a1b2c3d4', text: 'Repro: ...', waitForReplyMs: 120000 })
+```
+
+That holds the call open until something lands in this session's mailbox, then returns it; answer with `message({ action: 'reply', replyTo: '<id>', text: '...' })`. The wait returns on ANY arrival, not only a tagged reply - two sessions blocking at the same moment both release instead of both timing out.
+
+To be reachable while doing other work, arm a Monitor on your own mailbox - same shape as the blocks watch above, one JSON line per message:
+
+```
+Monitor({
+  command: "mkdir -p ~/.devharness/messages && touch ~/.devharness/messages/<yourId>.jsonl && tail -f -n0 ~/.devharness/messages/<yourId>.jsonl",
+  description: "devharness session messages",
+  persistent: true,
+  timeout_ms: 3600000
+})
+```
+
+Without a Monitor, a message surfaces only on your next `message({ action: 'read' })`, which is whenever you happen to call back.
+
 ## Restarting devharness
 
 If devharness itself is stuck (not the target app), restart it — don't wait to be asked.

@@ -22,13 +22,15 @@ runs against (see the skill's Quick Start).
 
 **Execution**: `execution` (actions: pause, resume, stepOver, stepInto, stepOut, acknowledge)
 
-**Inspection**: `inspect` (actions: getCallStack, getVariables, evaluateExpression, searchCode, searchFunctions)
+**Inspection**: `inspect` (actions: getCallStack, getVariables, evaluateExpression, searchCode, searchFunctions, listTargets)
+- `listTargets` lists the service, dedicated and shared worker targets on this browser. `evaluateExpression({ target })` runs the expression inside one of them, addressed by target id or by a substring of its URL - a substring matching two targets is refused with both named. A worker's console reaches no page listener, so `console({ action: 'list' | 'recent', target })` reads it from that target; recording starts at first attach
 - `evaluateExpression` awaits a returned Promise by default (async IIFEs resolve to their settled value; a rejection is reported as the expression's own error). Pass `awaitPromise: false` to inspect the Promise object itself. While paused at a breakpoint only already-settled promises can be resolved - a pending one fails fast because the event loop is stopped
 
 **Source**: `getSourceCode`, `loadSourceMaps`
 - Individual tools, not actions
 
 **Console**: `console` (actions: list, get, recent, search, clear, setObjectDepth)
+- `target` on `list` and `recent` reads a worker's console instead of the page's
 
 **Network**: `network` (actions: list, get, search, enable, disable, setConditions)
 
@@ -74,6 +76,11 @@ runs against (see the skill's Quick Start).
 - `import` makes a GitHub-only issue local so there is somewhere to record findings - use it when told to "work on #110". `link` adopts an existing number with no network call, and is the recovery path if a publish dies after creating the issue
 - `pullSequence` writes a sequence out of an issue to disk. Nothing is written until you ask, and nothing is ever run automatically: sequence steps are `{tool, params}` for **any** tool, so a sequence in a public issue is a script, not a macro. One authored by a GitHub account other than the one `gh` is logged in as is refused until a **person** has read it and re-run with `confirm: true` - an agent must not confirm on its own. One using `execution`, `saveToDisk`, `server`, `request` or `download` is refused unless you pass `allowPrivilegedSteps: true`. Read the step list in the response before you do
 - All of these are blocked while any bug is `pending` - `acknowledge` first
+
+**Messages**: `message` (actions: sessions, send, read, reply)
+- Text between two devharness sessions on this machine - a session hitting a devharness bug talking to the session working on devharness itself. `sessions` lists reachable mailboxes and this session's own mailbox path
+- `send({ to, text, waitForReplyMs })` holds the call open until something lands in this session's mailbox (max 300000ms) and returns it; without `waitForReplyMs` it returns as soon as the line is written. `reply({ replyTo, text })` routes back to the sender of that message. The wait returns on ANY arrival, not only a tagged reply, so two sessions blocking at the same moment both release
+- Transport is one append-only JSONL file per session under `~/.devharness/messages/`, which is what makes it work across project roots. A busy session needs a Monitor armed on its mailbox file to be interrupted; otherwise messages surface on its next `message({ action: 'read' })`
 
 **Server**: `server` (actions: start, stop, restart, list, logs, stopAll, setAutoRun, clearLogs, remove, monitorPort, unmonitorPort, listMonitored, acknowledgePort, acknowledgeStartup, extendStartup, cancelPendingRestart)
 - Use `global: true` to access servers started from a different working directory
