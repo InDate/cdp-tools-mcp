@@ -106,6 +106,17 @@ Monitor({
 
 Without a Monitor, a message surfaces only on your next `message({ action: 'read' })`, which is whenever you happen to call back.
 
+## Running a tool from the shell
+
+`devharness <command>` typed in a session's shell runs that tool **inside that session**, against the connections it already holds. The session is found by walking up the process tree, so `! devharness screenshot` uses the browser this session opened, not a new one.
+
+- `devharness which` - which session this shell resolves to
+- `devharness call <tool> '<json>'` - any tool: `devharness call config '{"action":"status"}'`
+- `devharness sessions` / `send <id> "text"` / `read` / `reply <id> "text"` - the message tool, with `--wait=<ms>` to hold for an answer
+- `--session=<id>` names a session explicitly, `--json` prints the raw response, `--timeout=<ms>` bounds the call
+
+Two differences from an MCP call. Guards do not apply - a dead dev server port, a paused breakpoint or a pending bug blocks a tool call through MCP and does not block this one. And a session the supervisor has suspended is not listening, so the CLI reports that rather than waiting.
+
 ## Restarting devharness
 
 If devharness itself is stuck (not the target app), restart it — don't wait to be asked.

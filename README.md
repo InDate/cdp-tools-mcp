@@ -150,6 +150,21 @@ Browser fix:
 for the tool reference. [examples/test-app](./examples/test-app/README.md) ships
 eight seeded bugs to exercise it against known-wrong code.
 
+## Command line
+
+`devharness <command>`, run from a shell inside an editor session, executes the tool in that session's own server process - against the browser and dev servers it already has open. The session is identified by process ancestry, so nothing needs to be passed in.
+
+```sh
+devharness which                                  # which session this shell belongs to
+devharness call config '{"action":"status"}'      # any tool, arguments as one JSON object
+devharness sessions                               # who else is reachable
+devharness send a1b2c3d4 "check this" --wait=60000
+```
+
+`--session=<id>` targets a session explicitly, `--json` prints the unrendered response, and the exit code is 1 when the tool returns an error. Each session listens on a unix socket under `~/.devharness/endpoints/`, mode 0600 - not a TCP port, because the tools reachable through it evaluate JavaScript in that session's browser.
+
+`devharness run <sequenceName>` is separate: it starts its own headless Chrome and replays a saved sequence, with no session involved.
+
 ## vs Chrome DevTools MCP
 
 [Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp) is

@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 
 // Early stderr logging for debugging startup issues
-console.error(`[devharness] Process starting (PID: ${process.pid})`);
+// A CLI invocation prints its own output and nothing else - this line would
+// land in the middle of a shell command's output.
+if (process.argv[2] === undefined || process.argv[2].startsWith('-')) {
+  console.error(`[devharness] Process starting (PID: ${process.pid})`);
+}
 
 // Capture startup time immediately before any imports
 const STARTUP_TIME = performance.now();
@@ -55,6 +59,8 @@ import { createConfigTools } from './tools/config-tools.js';
 import { createPluginTools } from './tools/plugin-tools.js';
 import { createIssuesTools } from './tools/issues-tools.js';
 import { createMessageTools } from './tools/message-tools.js';
+import { startSessionEndpoint, type SessionEndpoint } from './session-endpoint.js';
+import { runCli, isCliCommand } from './cli/index.js';
 import { createDashboardTools, setDashboardInstance, getDashboardInstance, setSessionInfo, getDuplicateSessionInfo } from './tools/dashboard-tools.js';
 import { initializeDashboard, shutdownDashboard, type DashboardInstance, type ConnectionInfo as DashboardConnectionInfo } from './dashboard/index.js';
 import { Orchestrator } from './log-processor/orchestrator.js';
@@ -1926,6 +1932,12 @@ async function main() {
     return;
   }
 
+  // The other CLI shape: run a tool inside an already-running session, reached
+  // over that session's socket rather than started here.
+  if (isCliCommand(process.argv[2])) {
+    process.exit(await runCli(process.argv.slice(2)));
+  }
+
   console.error(`[devharness] main() called (PID: ${process.pid})`);
 
   // Initialize path configuration early (before any file operations)
@@ -1958,6 +1970,8 @@ async function main() {
   let detectedSessionInfo: SessionInfo | undefined;
   // Dashboard instance - initialized after session is detected
   let dashboardInstance: DashboardInstance | null = null;
+  // Socket a `devharness <command>` process calls tools through
+  let sessionEndpoint: SessionEndpoint | null = null;
 
   // Set up session detector (starts monitoring immediately)
   sessionDetectorInstance = createSessionDetector(cwd);
@@ -2057,6 +2071,15 @@ async function main() {
     detectedSessionInfo = sessionInfo;
     setSessionInfo(sessionInfo);
 
+    // The presence record is what a CLI matches --session against, so it
+    // carries the ids only once they exist.
+    if (sessionEndpoint) {
+      await sessionEndpoint.refresh({
+        sessionId: sessionInfo.sessionId,
+        shortId: sessionInfo.shortId,
+      });
+    }
+
     // Update dashboard with real session info
     await debugLog('dashboard', `Updating session info: instance=${!!dashboardInstance}, hub=${!!dashboardInstance?.hub}, client=${!!dashboardInstance?.client}`);
     if (dashboardInstance?.hub) {
@@ -2146,6 +2169,15 @@ async function main() {
   await server.connect(transport);
   const transportTime = performance.now() - transportStart;
   console.error(`[devharness] Transport connected (PID: ${process.pid})`);
+
+  // Reachable by CLI only once the tools can actually run.
+  sessionEndpoint = await startSessionEndpoint({
+    executeToolCall,
+    identity: { pid: process.pid, ppid: process.ppid, cwd: process.cwd() },
+  });
+  if (sessionEndpoint) {
+    console.error(`[devharness] Session endpoint listening on ${sessionEndpoint.address}`);
+  }
 
   // Note: Config was already loaded earlier (before orchestrator startup) for debug logging
 
@@ -2300,6 +2332,9 @@ async function main() {
         (dashboardInstance as any)._stopFileWatcher();
       }
       await shutdownDashboard(dashboardInstance);
+      if (sessionEndpoint) {
+        await sessionEndpoint.close();
+      }
 
       // Final sync cleanup of temp files before exit
       const globalCleaned = cleanupStaleTempFilesSync(pathConfig.globalBase, 0);

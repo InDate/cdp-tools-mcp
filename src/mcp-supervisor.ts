@@ -40,6 +40,7 @@ import { NdjsonReader } from './supervisor/ndjson-reader.js';
 import { recordOwnSupervisor, removeOwnPidFile } from './supervisor/pidfile.js';
 import { ClientWatcher } from './supervisor/client-watcher.js';
 import { readSupervisorSessionConfig, idleCheckIntervalMs } from './supervisor/idle-config.js';
+import { runCli, isCliCommand } from './cli/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -49,6 +50,15 @@ function logStderr(message: string): void {
 }
 
 async function main(): Promise<void> {
+  // A CLI command runs here, in this process, and exits. Supervising a child
+  // for it would pipe the child's stdout into the MCP frame forwarder and end
+  // the moment stdin closed, so the command's output would never reach the
+  // terminal - and a pidfile entry would be left behind for a process that
+  // serves no session.
+  if (isCliCommand(process.argv[2])) {
+    process.exit(await runCli(process.argv.slice(2)));
+  }
+
   const scriptPath = process.env.MCP_SUPERVISOR_CHILD_SCRIPT
     ? path.resolve(process.cwd(), process.env.MCP_SUPERVISOR_CHILD_SCRIPT)
     : path.join(__dirname, 'index.js');
