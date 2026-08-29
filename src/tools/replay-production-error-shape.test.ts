@@ -23,7 +23,15 @@ describe('auto-launch failure', () => {
   // the user got a raw tool error instead of "launch Chrome manually first".
   it('reports LAUNCH_FAILED when launchChrome throws', async () => {
     const executeToolCall = harness({
-      launchChrome: createErrorResponse('CHROME_LAUNCH_TIMEOUT', { port: 9222, timeout: 30 }),
+      launchChrome: createErrorResponse('CHROME_LAUNCH_TIMEOUT', {
+        port: 9222,
+        chromePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        probeAttempts: 15,
+        elapsedMs: 28500,
+        probeFailures: '',
+        stderrTail: '',
+        profileDir: '',
+      }),
     });
 
     const result = await autoLaunchChrome(executeToolCall, 'device-a-one');

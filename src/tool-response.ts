@@ -8,6 +8,7 @@ import type { Connection } from './connection-manager.js';
 import { hasPendingBugs, getPendingBugs } from './issue-tracker.js';
 import { createErrorResponse } from './messages.js';
 import type { BlockEventInfo } from './block-events.js';
+import type { LaunchObservations } from './chrome-launcher.js';
 import type { SessionMessage } from './session-messages.js';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
@@ -55,6 +56,12 @@ export interface ClickActionMeta {
     hidden: number;
   } | null;
 }
+
+/**
+ * Readings taken during a launch that failed. Behaviour reads this, never the
+ * rendered text.
+ */
+export type LaunchObservationsMeta = LaunchObservations;
 
 /**
  * Type action metadata
@@ -254,6 +261,8 @@ export interface ToolResponseMeta {
   replay?: ReplayRunMeta;
   github?: GithubToolMeta;
   message?: MessageToolMeta;
+  /** launchChrome: the readings taken during a launch that failed. */
+  launchObservations?: LaunchObservationsMeta;
 }
 
 /** Structured result of a cross-session message action. Behaviour reads this,

@@ -45,7 +45,53 @@ These templates should not be removed - they represent potential error condition
 **Type:** error
 **Code:** CHROME_LAUNCH_TIMEOUT
 
-Chrome did not become ready on port {{port}} within {{timeout}}s.
+Chrome spawned from `{{chromePath}}` and port {{port}} did not answer `/json/version` in {{probeAttempts}} probes over {{elapsedMs}}ms. No exit event was observed before the launch was abandoned.
+
+{{#probeFailures}}**Each probe's failure, in order:**
+
+```
+{{probeFailures}}
+```
+{{/probeFailures}}
+{{#stderrTail}}**Chrome stderr, last bytes:**
+
+```
+{{stderrTail}}
+```
+{{/stderrTail}}
+{{#profileDir}}**Profile retained at:** `{{profileDir}}`{{/profileDir}}
+
+---
+
+## CHROME_LAUNCH_PROCESS_EXITED
+
+**Type:** error
+**Code:** CHROME_LAUNCH_PROCESS_EXITED
+
+Chrome spawned from `{{chromePath}}` and the process ended before port {{port}} answered `/json/version`. Exit code {{exitCode}}, signal {{exitSignal}}, {{elapsedMs}}ms after spawn, across {{probeAttempts}} probes.
+
+{{#probeFailures}}**Each probe's failure, in order:**
+
+```
+{{probeFailures}}
+```
+{{/probeFailures}}
+{{#stderrTail}}**Chrome stderr, last bytes:**
+
+```
+{{stderrTail}}
+```
+{{/stderrTail}}
+{{#profileDir}}**Profile retained at:** `{{profileDir}}`{{/profileDir}}
+
+---
+
+## CHROME_BINARY_ABSENT
+
+**Type:** error
+**Code:** CHROME_BINARY_ABSENT
+
+No file exists at `{{chromePath}}`, the path resolved for platform `{{platform}}`. No process was spawned.
 
 ---
 
@@ -1219,12 +1265,6 @@ Unsupported platform: {{platform}}
 **Code:** SPAWN_FAILED
 
 Failed to spawn Chrome process: {{error}}
-
-**Suggestions:**
-- Verify Chrome is installed on your system
-- Check that you have permission to execute Chrome
-- On macOS: Chrome should be at `/Applications/Google Chrome.app`
-- On Linux: Chrome/Chromium should be in your PATH
 
 ---
 

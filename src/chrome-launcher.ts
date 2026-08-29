@@ -44,6 +44,12 @@ export const EPHEMERAL_PROFILE_PREFIX = 'chrome-debug-profile-';
 export interface ChromeProfileRecord {
   dir: string;
   ephemeral: boolean;
+  /**
+   * Set by a launch that failed, so removeProfileDir() leaves the directory in
+   * place. Chrome's own startup logs are written there and are the only record
+   * of why the window never painted; the startup sweep removes it later.
+   */
+  retained?: boolean;
 }
 
 /**
@@ -94,6 +100,57 @@ export class ProfileLockedError extends Error {
       `Only one live Chrome may hold a profile; quit that browser (or use a different profile name) and retry.`
     );
     this.name = 'ProfileLockedError';
+  }
+}
+
+/** Bytes of Chrome's stderr retained for a launch that failed. */
+export const STDERR_TAIL_BYTES = 4096;
+
+/**
+ * What was observed while a launch ran. Every field is a reading taken during
+ * the launch; none of them names a cause or a remedy, because the session that
+ * reads them does that work.
+ */
+export interface LaunchObservations {
+  /** The path getChromePath() resolved for this platform. */
+  chromePath: string;
+  platform: string;
+  /** Whether a file existed at chromePath when the launch started. */
+  binaryPresent: boolean;
+  port: number;
+  pid: number | null;
+  /** The retained profile directory, or null when it was removed. */
+  profileDir: string | null;
+  /** Probes of /json/version made before the launch was abandoned. */
+  probeAttempts: number;
+  /** Each probe's failure, in order. */
+  probeFailures: string[];
+  /** The last STDERR_TAIL_BYTES bytes Chrome wrote to stderr. */
+  stderrTail: string;
+  /** The spawn error's message when no process was produced, null otherwise. */
+  spawnFailure: string | null;
+  exitCode: number | null;
+  exitSignal: string | null;
+  /** Milliseconds from spawn to the launch being abandoned. */
+  elapsedMs: number;
+}
+
+/** Thrown when no file exists at the resolved Chrome path. */
+export class ChromeBinaryAbsentError extends Error {
+  constructor(public readonly chromePath: string, public readonly platform: string) {
+    super(`No file exists at ${chromePath} (platform ${platform}).`);
+    this.name = 'ChromeBinaryAbsentError';
+  }
+}
+
+/**
+ * Thrown when Chrome spawned and the debugging port did not become
+ * inspectable. Carries the readings taken during the launch.
+ */
+export class ChromeLaunchFailure extends Error {
+  constructor(message: string, public readonly observations: LaunchObservations) {
+    super(message);
+    this.name = 'ChromeLaunchFailure';
   }
 }
 
@@ -391,9 +448,24 @@ export class ChromeLauncher {
   /**
    * Wait for Chrome debugging port to become ready
    * Polls the /json/version endpoint until Chrome is inspectable
+   *
+   * Every probe that does not succeed is appended to `probeFailures`, which the
+   * caller reports; debugLog alone loses them for anyone without debug logging on.
    */
-  private async waitForChromeReady(port: number, maxAttempts: number = 15): Promise<void> {
+  private async waitForChromeReady(
+    port: number,
+    maxAttempts: number = 15,
+    probeFailures: string[] = [],
+    hasExited: () => boolean = () => false
+  ): Promise<void> {
     for (let i = 0; i < maxAttempts; i++) {
+      // A dead process never binds the port, so the remaining probes and their
+      // backoff add delay and no reading.
+      if (hasExited()) {
+        throw new Error(`Chrome exited during startup, after ${i} probes.`);
+      }
+
+      let failure: string;
       try {
         // Use a race between fetch and timeout
         const fetchPromise = fetch(`http://localhost:${port}/json/version`);
@@ -415,11 +487,15 @@ export class ChromeLauncher {
           await debugLog('ChromeLauncher', `Chrome ready on port ${port} after ${i + 1} attempts`);
           return;
         }
+
+        failure = `HTTP ${response.status}`;
       } catch (error) {
         // Re-throw port reservation errors immediately
         if (error instanceof Error && error.message.includes('reserved by another MCP instance')) {
           throw error;
         }
+
+        failure = `${error}`;
 
         // Chrome not ready yet, continue polling
         // Only log every 5 attempts to reduce noise
@@ -428,11 +504,13 @@ export class ChromeLauncher {
         }
       }
 
+      probeFailures.push(failure);
+
       // Exponential backoff: 500ms + (attempt * 200ms)
       await new Promise(resolve => setTimeout(resolve, 500 + i * 200));
     }
 
-    throw new Error(`Chrome debugging port ${port} failed to become inspectable within timeout. Chrome may have crashed during startup.`);
+    throw new Error(`Chrome debugging port ${port} did not become inspectable in ${maxAttempts} probes.`);
   }
 
   /**
@@ -559,11 +637,20 @@ export class ChromeLauncher {
     }
 
     const chromePath = this.getChromePath();
+    // Checked before any profile is created, so an absent binary costs one
+    // stat rather than the full probe budget in waitForChromeReady().
+    if (!fs.existsSync(chromePath)) {
+      throw new ChromeBinaryAbsentError(chromePath, os.platform());
+    }
     // Unique by construction: the port can only be held by one live Chrome at a
     // time, and the random suffix covers same-millisecond relaunches on the same
     // port. Using Date.now() alone let two concurrent launches on *different*
     // ports share a profile (launchLocks only serialises per-port) - bug-006.
     const profile = this.createProfileRecord(port, profileName);
+    // Retained for the duration of the launch, cleared once Chrome is
+    // inspectable. The exit handler registered at spawn fires the instant Chrome
+    // dies mid-probe, and would otherwise delete the startup logs that explain it.
+    profile.retained = true;
     const userDataDir = profile.dir;
     this.profileDirs.set(port, profile);
     await debugLog('ChromeLauncher', `Using ${profile.ephemeral ? 'ephemeral' : 'persistent'} profile ${userDataDir} for port ${port}`);
@@ -631,8 +718,16 @@ export class ChromeLauncher {
       }
 
       await debugLog('ChromeLauncher', `Spawning Chrome process on port ${port}...`);
+      const spawnedAt = Date.now();
+      // stderr is piped rather than ignored: it carries Chrome's own account of
+      // a startup that produced no window, which no other channel reports.
       const chromeProcess = spawn(chromePath, args, {
-        stdio: 'ignore',
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+
+      let stderrTail = '';
+      chromeProcess.stderr?.on('data', (chunk: Buffer) => {
+        stderrTail = (stderrTail + chunk.toString('utf8')).slice(-STDERR_TAIL_BYTES);
       });
 
       const pid = chromeProcess.pid;
@@ -682,8 +777,20 @@ export class ChromeLauncher {
 
       // Handle process errors and unexpected exits
       let processExited = false;
-      const exitHandler = () => {
+      let exitCode: number | null = null;
+      let exitSignal: string | null = null;
+      let spawnFailure: string | null = null;
+      const exitHandler = (first: number | Error | null, signal?: NodeJS.Signals | null) => {
         processExited = true;
+        // 'exit' passes (code, signal); 'error' passes an Error.
+        if (first instanceof Error) {
+          spawnFailure = first.message;
+        } else if (typeof first === 'number') {
+          exitCode = first;
+        }
+        if (signal) {
+          exitSignal = signal;
+        }
       };
 
       chromeProcess.once('exit', exitHandler);
@@ -691,8 +798,25 @@ export class ChromeLauncher {
 
       // Wait for Chrome to actually start and bind to the port
       await debugLog('ChromeLauncher', `Waiting for Chrome to become ready on port ${port}...`);
+      const probeFailures: string[] = [];
+      const takeObservations = (code: number | null, signal: string | null): LaunchObservations => ({
+        chromePath,
+        platform: os.platform(),
+        binaryPresent: true,
+        port,
+        pid: pid ?? null,
+        // Read rather than assumed: a path is reported only while it exists.
+        profileDir: fs.existsSync(userDataDir) ? userDataDir : null,
+        probeAttempts: probeFailures.length,
+        probeFailures,
+        stderrTail,
+        spawnFailure,
+        exitCode: code,
+        exitSignal: signal,
+        elapsedMs: Date.now() - spawnedAt,
+      });
       try {
-        await this.waitForChromeReady(port);
+        await this.waitForChromeReady(port, 15, probeFailures, () => processExited);
       } catch (waitError) {
         await debugLog('ChromeLauncher', `waitForChromeReady failed: ${waitError}`);
 
@@ -706,6 +830,11 @@ export class ChromeLauncher {
             await debugLog('ChromeLauncher', `Failed to re-reserve port ${port}: ${reserveError}`);
           }
         }
+
+        // Read before the SIGKILL below, whose own exit event would otherwise
+        // overwrite the signal Chrome stopped on with ours.
+        const observedExitCode = exitCode;
+        const observedExitSignal = exitSignal;
 
         // Clean up if Chrome failed to start - use SIGKILL for immediate termination
         if (chromeProcess && !chromeProcess.killed && pid) {
@@ -722,20 +851,34 @@ export class ChromeLauncher {
         // (exit handler will also remove it when process dies, but this is defensive)
         this.chromeProcesses.delete(port);
         await this.removeProfileDir(port, profile);
-        throw waitError;
+        // A reservation conflict names another MCP instance holding the port. It
+        // is not a reading taken from this launch, and CHROME_SPAWN_FAILED
+        // carries its text; wrapping it here would drop that text.
+        if (waitError instanceof Error && waitError.message.includes('reserved by another MCP instance')) {
+          throw waitError;
+        }
+        throw new ChromeLaunchFailure(`${waitError}`, takeObservations(observedExitCode, observedExitSignal));
       }
 
       // Check if process exited during startup
       if (processExited) {
         // Remove from tracking since process is dead
         this.chromeProcesses.delete(port);
-        throw new Error('Chrome process exited unexpectedly during startup');
+        await this.removeProfileDir(port, profile);
+        throw new ChromeLaunchFailure(
+          spawnFailure ?? 'Chrome exited during startup.',
+          takeObservations(exitCode, exitSignal)
+        );
       }
 
       // Remove temporary exit handler now that Chrome is confirmed running
       // (The permanent exit handler was already set up earlier)
       chromeProcess.removeListener('exit', exitHandler);
       chromeProcess.removeListener('error', exitHandler);
+
+      // Inspectable, so the startup logs have served their purpose and this
+      // profile returns to ordinary cleanup on exit.
+      profile.retained = false;
 
       await debugLog('ChromeLauncher', `Chrome successfully started on port ${port} with PID ${pid}`);
       return { port, pid: pid || -1 };
@@ -751,6 +894,12 @@ export class ChromeLauncher {
         } catch (reserveError) {
           await debugLog('ChromeLauncher', `Failed to re-reserve port ${port}: ${reserveError}`);
         }
+      }
+
+      // A typed failure carries the readings taken during the launch; wrapping
+      // it in a new Error would discard both the type and the readings.
+      if (error instanceof ChromeLaunchFailure) {
+        throw error;
       }
 
       throw new Error(`Failed to launch Chrome: ${error}`);
@@ -1059,6 +1208,14 @@ export class ChromeLauncher {
     }
     if (expected && record !== expected) {
       // A newer launch owns this port now - leave its profile alone.
+      return;
+    }
+
+    if (record.retained) {
+      // A failed launch kept this directory for its Chrome startup logs. The
+      // startup sweep removes it once no live Chrome holds it.
+      this.profileDirs.delete(port);
+      await debugLog('ChromeLauncher', `Retaining profile ${record.dir} for port ${port} after a failed launch`);
       return;
     }
 

@@ -25,7 +25,7 @@ import {
 import { z } from 'zod';
 import { CDPManager } from './cdp-manager.js';
 import { SourceMapHandler } from './sourcemap-handler.js';
-import { ChromeLauncher, InvalidProfileNameError, ProfileInUseError, ProfileLockedError, normalizeProfileName, resolveLaunchPort, decideProfileReuse } from './chrome-launcher.js';
+import { ChromeLauncher, ChromeBinaryAbsentError, ChromeLaunchFailure, InvalidProfileNameError, ProfileInUseError, ProfileLockedError, normalizeProfileName, resolveLaunchPort, decideProfileReuse } from './chrome-launcher.js';
 import { PuppeteerManager } from './puppeteer-manager.js';
 import { ConsoleMonitor } from './console-monitor.js';
 import { NetworkMonitor } from './network-monitor.js';
@@ -897,6 +897,51 @@ const connectionTools = {
         // explanation until a dedicated template exists.
         if (error instanceof ProfileLockedError) {
           return createErrorResponse('CHROME_SPAWN_FAILED', { error: error.message });
+        }
+        // No file at the resolved path - reported as the two facts it is, with
+        // no statement about what should be installed or where.
+        if (error instanceof ChromeBinaryAbsentError) {
+          return createErrorResponse('CHROME_BINARY_ABSENT', {
+            chromePath: error.chromePath,
+            platform: error.platform,
+          });
+        }
+        // Chrome started and the port never answered. The readings go in _meta;
+        // the text names them without naming a cause.
+        if (error instanceof ChromeLaunchFailure) {
+          const o = error.observations;
+          const exited = o.exitCode !== null || o.exitSignal !== null;
+          // A spawn that produced no process leaves no probe reading that
+          // describes the failure; the spawn error itself is the observation.
+          const response = o.spawnFailure !== null
+            ? createErrorResponse('CHROME_SPAWN_FAILED', { error: o.spawnFailure })
+            : exited
+            ? createErrorResponse('CHROME_LAUNCH_PROCESS_EXITED', {
+                port: o.port.toString(),
+                exitCode: o.exitCode === null ? 'none' : o.exitCode.toString(),
+                exitSignal: o.exitSignal ?? 'none',
+                elapsedMs: o.elapsedMs.toString(),
+                stderrTail: o.stderrTail,
+                probeAttempts: o.probeAttempts.toString(),
+                probeFailures: o.probeFailures.join('\n'),
+                profileDir: o.profileDir ?? '',
+                chromePath: o.chromePath,
+              })
+            : createErrorResponse('CHROME_LAUNCH_TIMEOUT', {
+                port: o.port.toString(),
+                elapsedMs: o.elapsedMs.toString(),
+                stderrTail: o.stderrTail,
+                probeAttempts: o.probeAttempts.toString(),
+                probeFailures: o.probeFailures.join('\n'),
+                profileDir: o.profileDir ?? '',
+                chromePath: o.chromePath,
+              });
+          response._meta = {
+            tool: 'launchChrome',
+            timestamp: Date.now(),
+            launchObservations: o,
+          };
+          return response;
         }
         return createErrorResponse('CHROME_SPAWN_FAILED', { error: `${error}` });
       }

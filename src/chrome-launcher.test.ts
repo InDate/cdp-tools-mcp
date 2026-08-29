@@ -13,7 +13,20 @@ import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { ChromeLauncher, EPHEMERAL_PROFILE_PREFIX, type ChromeProfileRecord } from './chrome-launcher.js';
+import * as net from 'net';
+import { ChromeLauncher, ChromeBinaryAbsentError, ChromeLaunchFailure, EPHEMERAL_PROFILE_PREFIX, type ChromeProfileRecord } from './chrome-launcher.js';
+
+/** A port that was bound and released, so nothing listens on it right now. */
+function closedPort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.on('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const { port } = probe.address() as net.AddressInfo;
+      probe.close(() => resolve(port));
+    });
+  });
+}
 
 let root: string;
 
@@ -257,5 +270,77 @@ describe('bug-007: startup sweep of stale profiles', () => {
       sweepStaleProfilesOnStartup: false,
     });
     await expect(launcher.sweepStaleProfiles()).resolves.toEqual([]);
+  });
+});
+
+describe('launch observations', () => {
+  it('retains a profile marked retained, and stops tracking it', async () => {
+    const launcher = newLauncher();
+    const dir = makeProfileDir('chrome-debug-profile-p9222-retained');
+    const record: ChromeProfileRecord = { dir, ephemeral: true, retained: true };
+
+    (launcher as any).profileDirs.set(9222, record);
+    await (launcher as any).removeProfileDir(9222, record);
+
+    // The directory holds Chrome's startup logs, which are the only account of
+    // a launch that produced no window.
+    expect(fs.existsSync(dir)).toBe(true);
+    expect(launcher.getProfileDir(9222)).toBeUndefined();
+  });
+
+  it('still deletes an ephemeral profile that was not retained', async () => {
+    const launcher = newLauncher();
+    const dir = makeProfileDir('chrome-debug-profile-p9222-not-retained');
+    const record: ChromeProfileRecord = { dir, ephemeral: true };
+
+    (launcher as any).profileDirs.set(9222, record);
+    await (launcher as any).removeProfileDir(9222, record);
+
+    expect(fs.existsSync(dir)).toBe(false);
+  });
+
+  it('records one failure per probe and names the probe count when it gives up', async () => {
+    const launcher = newLauncher();
+    const port = await closedPort();
+    const probeFailures: string[] = [];
+
+    await expect(
+      (launcher as any).waitForChromeReady(port, 2, probeFailures)
+    ).rejects.toThrow(`did not become inspectable in 2 probes`);
+
+    expect(probeFailures).toHaveLength(2);
+    expect(probeFailures.every(f => f.length > 0)).toBe(true);
+  });
+
+  it('throws ChromeBinaryAbsentError, spawning nothing, when no file is at the resolved path', async () => {
+    const launcher = newLauncher();
+    const missing = path.join(root, 'no-such-chrome');
+    (launcher as any).getChromePath = () => missing;
+    const port = await closedPort();
+
+    await expect((launcher as any).performLaunch(port)).rejects.toThrow(ChromeBinaryAbsentError);
+    // No profile was created, so nothing is left tracked or on disk.
+    expect(launcher.getProfileDir(port)).toBeUndefined();
+  });
+  it('keeps the profile and reports the exit code when Chrome dies during startup', async () => {
+    const launcher = newLauncher();
+    const script = path.join(root, 'exits-immediately.sh');
+    fs.writeFileSync(script, '#!/bin/sh\necho "startup failed" >&2\nexit 3\n');
+    fs.chmodSync(script, 0o755);
+    (launcher as any).getChromePath = () => script;
+    const port = await closedPort();
+
+    const failure = await (launcher as any).performLaunch(port).catch((e: unknown) => e);
+
+    expect(failure).toBeInstanceOf(ChromeLaunchFailure);
+    const o = (failure as ChromeLaunchFailure).observations;
+    expect(o.exitCode).toBe(3);
+    expect(o.stderrTail).toContain('startup failed');
+    // Deleting this directory before the observations were taken was the defect
+    // this test guards: Chrome's startup logs live in it.
+    expect(o.profileDir).not.toBeNull();
+    expect(fs.existsSync(o.profileDir as string)).toBe(true);
+    // The probe loop stops on the exit rather than spending its whole budget.
+    expect(o.probeAttempts).toBeLessThan(15);
   });
 });
