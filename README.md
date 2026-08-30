@@ -152,7 +152,7 @@ eight seeded bugs to exercise it against known-wrong code.
 
 ## Command line
 
-`devharness <command>`, run from a shell inside an editor session, executes the tool in that session's own server process - against the browser and dev servers it already has open. The session is identified by process ancestry, so nothing needs to be passed in.
+`devharness <command>`, run from a shell inside an editor session, executes the tool in that session's own server process - against the browser and dev servers it already has open. Only sessions rooted at the shell's directory or above it are candidates, because issues, config and sequences resolve against the answering server's root; process ancestry picks among those. Nothing needs to be passed in.
 
 ```sh
 devharness which                                  # which session this shell belongs to

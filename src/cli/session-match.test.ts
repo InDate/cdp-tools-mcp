@@ -16,7 +16,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { collectAncestors, collectChain } from './process-tree.js';
-import { matchByAncestry, findSessionByName, filterToListedProcesses } from './session-match.js';
+import { matchByAncestry, findSessionByName, filterToListedProcesses, filterToProjectRoot, isWithinRoot } from './session-match.js';
 import type { SessionRecord } from '../session-endpoint.js';
 
 const PARENTS = new Map<number, number>([
@@ -143,5 +143,33 @@ describe('ordering when two servers start together', () => {
     const reversed = [b, a].sort((x, y) => y.startedAt - x.startedAt || x.pid - y.pid);
     expect(sorted.map(r => r.pid)).toEqual([711, 811]);
     expect(reversed.map(r => r.pid)).toEqual([711, 811]);
+  });
+});
+
+describe('filtering to the project the caller stands in', () => {
+  const rooted = (pid: number, cwd: string): SessionRecord =>
+    ({ ...record(pid, `id-${pid}`), cwd });
+
+  const records = [
+    rooted(811, '/Code/devharness'),
+    rooted(711, '/Code/devharness-old'),
+    rooted(611, '/Code/speak'),
+  ];
+
+  it('keeps the session rooted at the caller\'s own directory', () => {
+    expect(filterToProjectRoot(records, '/Code/devharness').map(r => r.pid)).toEqual([811]);
+  });
+
+  it('keeps a session rooted above the caller', () => {
+    expect(filterToProjectRoot(records, '/Code/devharness/src/cli').map(r => r.pid)).toEqual([811]);
+  });
+
+  it('does not treat a sibling sharing a name prefix as a parent', () => {
+    expect(isWithinRoot('/Code/devharness-old', '/Code/devharness')).toBe(false);
+    expect(filterToProjectRoot(records, '/Code/devharness-old').map(r => r.pid)).toEqual([711]);
+  });
+
+  it('keeps nothing when no session holds the caller', () => {
+    expect(filterToProjectRoot(records, '/Code/reader')).toEqual([]);
   });
 });

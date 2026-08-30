@@ -3,8 +3,10 @@
  *
  * The MCP process's stdin belongs to its client, so a request arrives instead
  * over that session's socket (src/session-endpoint.ts). Which session is
- * decided by process ancestry, not by a flag, so `! devharness screenshot`
- * inside a session reaches that session's browser.
+ * decided by the shell's directory first: only sessions rooted at it or above
+ * it are candidates, because every project-scoped path resolves against the
+ * answering server's root. Process ancestry then picks among those, so
+ * `! devharness screenshot` reaches the browser this session opened.
  *
  * Guards that the MCP request handler applies - a dead dev server port, a
  * paused breakpoint, a pending bug - are not applied here, the same as
@@ -18,7 +20,7 @@ import { fileURLToPath } from 'url';
 import { initializePaths } from '../helpers/paths.js';
 import { listSessionRecords, type SessionRecord, type EndpointReply } from '../session-endpoint.js';
 import { readParentMap } from './process-tree.js';
-import { matchByAncestry, findSessionByName, filterToListedProcesses } from './session-match.js';
+import { matchByAncestry, findSessionByName, filterToListedProcesses, filterToProjectRoot } from './session-match.js';
 
 const DEFAULT_TIMEOUT_MS = 120000;
 
@@ -265,7 +267,22 @@ export async function runCli(argv: string[]): Promise<number> {
       console.error('Every session on record has already exited - the server is restarting. Try again in a moment.');
       return 1;
     }
-    const result = matchByAncestry(listed, process.pid, parents);
+    // Directory before ancestry. A shell that descends from no session at all -
+    // a tool-spawned one, a detached terminal - used to reach whichever session
+    // shared the nearest ancestor, and that server wrote its own project's
+    // issues and config.
+    const here = filterToProjectRoot(listed, process.cwd());
+    if (here.length === 0) {
+      console.error(`No devharness session is rooted at ${process.cwd()} or a directory above it. Listening sessions:`);
+      for (const record of records) console.error(`  ${describeRecord(record)}`);
+      console.error('Name one with --session=<id> to use it anyway.');
+      return 1;
+    }
+    // One session rooted here needs no ancestry: a shell that descends from
+    // nothing still belongs to the only server that holds this project.
+    const result = here.length === 1
+      ? { candidates: [], matched: here[0], ambiguous: [] }
+      : matchByAncestry(here, process.pid, parents);
     if (result.ambiguous.length > 1) {
       // Several servers can serve one session - a dev build beside the
       // plugin's. The mailbox and its cursor are per session, not per server,
@@ -288,8 +305,8 @@ export async function runCli(argv: string[]): Promise<number> {
         return 1;
       }
     } else if (!result.matched) {
-      console.error('This shell does not descend from any devharness session. Name one with --session=<id>:');
-      for (const record of records) console.error(`  ${describeRecord(record)}`);
+      console.error('Several sessions are rooted here and this shell descends from none of them. Name one with --session=<id>:');
+      for (const record of here) console.error(`  ${describeRecord(record)}`);
       return 1;
     } else {
       target = result.matched;

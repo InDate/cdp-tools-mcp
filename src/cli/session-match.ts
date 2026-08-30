@@ -8,6 +8,7 @@
  * measured in hops from the caller, and the nearest wins.
  */
 
+import { resolve, sep } from 'path';
 import type { SessionRecord } from '../session-endpoint.js';
 import { collectAncestors, collectChain } from './process-tree.js';
 
@@ -83,4 +84,30 @@ export function findSessionByName(records: SessionRecord[], name: string): Sessi
     records.find(r => r.sessionId?.startsWith(name)) ??
     null
   );
+}
+
+/**
+ * Whether `cwd` sits at `root` or under it.
+ *
+ * Compared on whole path segments. A plain string prefix places a caller in
+ * `/Code/devharness-old` inside `/Code/devharness`, and a create run there
+ * writes to the other project's tracker.
+ */
+export function isWithinRoot(cwd: string, root: string): boolean {
+  const from = resolve(cwd);
+  const under = resolve(root);
+  if (from === under) return true;
+  return from.startsWith(under.endsWith(sep) ? under : under + sep);
+}
+
+/**
+ * Sessions whose root holds the caller's directory.
+ *
+ * Ancestry reaches whichever session shares the nearest ancestor, and every
+ * project-scoped path - issues, config, sequences - resolves against the
+ * answering server's own root. A caller in one project reaching a server
+ * rooted in another writes that other project's files.
+ */
+export function filterToProjectRoot(records: SessionRecord[], cwd: string): SessionRecord[] {
+  return records.filter(record => isWithinRoot(cwd, record.cwd));
 }
