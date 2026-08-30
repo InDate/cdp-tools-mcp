@@ -111,3 +111,15 @@ export function isWithinRoot(cwd: string, root: string): boolean {
 export function filterToProjectRoot(records: SessionRecord[], cwd: string): SessionRecord[] {
   return records.filter(record => isWithinRoot(cwd, record.cwd));
 }
+
+/**
+ * Whether every record resolves to one root directory.
+ *
+ * Two servers can serve one session - a dev build beside the plugin's. Where
+ * their roots are identical, a create through either writes the same tracker;
+ * where they differ, the item lands in whichever project the picked server
+ * holds.
+ */
+export function shareOneRoot(records: SessionRecord[]): boolean {
+  return new Set(records.map(record => resolve(record.cwd))).size === 1;
+}

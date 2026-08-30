@@ -20,7 +20,7 @@ import { fileURLToPath } from 'url';
 import { initializePaths } from '../helpers/paths.js';
 import { listSessionRecords, type SessionRecord, type EndpointReply } from '../session-endpoint.js';
 import { readParentMap } from './process-tree.js';
-import { matchByAncestry, findSessionByName, filterToListedProcesses, filterToProjectRoot } from './session-match.js';
+import { matchByAncestry, findSessionByName, filterToListedProcesses, filterToProjectRoot, shareOneRoot } from './session-match.js';
 
 const DEFAULT_TIMEOUT_MS = 120000;
 
@@ -289,7 +289,12 @@ export async function runCli(argv: string[]): Promise<number> {
       // so any of them answers a message verb identically. `call` reaches a
       // particular server's browser and dev servers, so there the tie is real.
       const ids = new Set(result.ambiguous.map(m => m.record.shortId ?? `pid-${m.record.pid}`));
+      const tiedRecords = result.ambiguous.map(m => m.record);
       if (ids.size === 1 && MESSAGE_VERBS.has(parsed.command)) {
+        target = result.ambiguous[0].record;
+      } else if (ISSUE_VERBS.has(parsed.command) && shareOneRoot(tiedRecords)) {
+        // One root means one tracker, so either server files the item in the
+        // same place. Roots that differ keep the refusal below.
         target = result.ambiguous[0].record;
       } else {
         // A short id resolves to the first record, so with two servers under

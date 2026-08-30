@@ -16,7 +16,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { collectAncestors, collectChain } from './process-tree.js';
-import { matchByAncestry, findSessionByName, filterToListedProcesses, filterToProjectRoot, isWithinRoot } from './session-match.js';
+import { matchByAncestry, findSessionByName, filterToListedProcesses, filterToProjectRoot, isWithinRoot, shareOneRoot } from './session-match.js';
 import type { SessionRecord } from '../session-endpoint.js';
 
 const PARENTS = new Map<number, number>([
@@ -171,5 +171,18 @@ describe('filtering to the project the caller stands in', () => {
 
   it('keeps nothing when no session holds the caller', () => {
     expect(filterToProjectRoot(records, '/Code/reader')).toEqual([]);
+  });
+});
+
+describe('two servers tied on one session', () => {
+  const rooted = (pid: number, cwd: string): SessionRecord =>
+    ({ ...record(pid, `id-${pid}`), cwd });
+
+  it('share one root when both hold the same project', () => {
+    expect(shareOneRoot([rooted(811, '/Code/devharness'), rooted(711, '/Code/devharness/')])).toBe(true);
+  });
+
+  it('do not share one root when they hold different projects', () => {
+    expect(shareOneRoot([rooted(811, '/Code/devharness'), rooted(711, '/Code')])).toBe(false);
   });
 });
