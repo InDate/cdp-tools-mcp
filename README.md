@@ -159,6 +159,7 @@ devharness which                                  # which session this shell bel
 devharness call config '{"action":"status"}'      # any tool, arguments as one JSON object
 devharness sessions                               # who else is reachable
 devharness send a1b2c3d4 "check this" --wait=60000
+devharness bug "Title" Body words here            # files an issue; feature does the same
 ```
 
 `--session=<id>` targets a session explicitly, `--json` prints the unrendered response, and the exit code is 1 when the tool returns an error. Each session listens on a unix socket under `~/.devharness/endpoints/`, mode 0600 - not a TCP port, because the tools reachable through it evaluate JavaScript in that session's browser.

@@ -104,6 +104,7 @@ An arriving message announces itself on the event stream, so the watch above cov
 - `devharness which` - which session this shell resolves to
 - `devharness call <tool> '<json>'` - any tool: `devharness call config '{"action":"status"}'`
 - `devharness sessions` / `send <id> "text"` / `read` / `reply <id> "text"` - the message tool, with `--wait=<ms>` to hold for an answer
+- `devharness bug "<title>" [body words]` / `feature "<title>" [body words]` - files an acknowledged issue of that type; no sequence is recorded and Chrome stays closed
 - `--session=<id>` names a session explicitly, `--json` prints the raw response, `--timeout=<ms>` bounds the call
 
 Two differences from an MCP call. Guards do not apply - a dead dev server port, a paused breakpoint or a pending bug blocks a tool call through MCP and does not block this one. And a session the supervisor has suspended is not listening, so the CLI reports that rather than waiting.

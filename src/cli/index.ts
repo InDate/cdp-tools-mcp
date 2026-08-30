@@ -25,7 +25,10 @@ const DEFAULT_TIMEOUT_MS = 120000;
 /** Commands that are shorthand for one action of the `message` tool. */
 const MESSAGE_VERBS = new Set(['sessions', 'send', 'read', 'reply']);
 
-export const CLI_COMMANDS = ['call', 'which', ...MESSAGE_VERBS] as const;
+/** Commands that are shorthand for `issues` create, one per issue type. */
+const ISSUE_VERBS = new Set(['bug', 'feature']);
+
+export const CLI_COMMANDS = ['call', 'which', ...MESSAGE_VERBS, ...ISSUE_VERBS] as const;
 
 export function isCliCommand(word: string | undefined): boolean {
   return word !== undefined && (CLI_COMMANDS as readonly string[]).includes(word);
@@ -66,7 +69,7 @@ interface ParsedArgs {
  *  received and marked read. */
 const WAIT_SOCKET_MARGIN_MS = 15000;
 
-function parseArgs(argv: string[]): ParsedArgs {
+export function parseArgs(argv: string[]): ParsedArgs {
   const positional: string[] = [];
   let session: string | undefined;
   let json = false;
@@ -94,7 +97,7 @@ function parseArgs(argv: string[]): ParsedArgs {
 }
 
 /** The tool call a command stands for. */
-function buildCall(parsed: ParsedArgs): { tool: string; args: Record<string, unknown> } | string {
+export function buildCall(parsed: ParsedArgs): { tool: string; args: Record<string, unknown> } | string {
   const [first, ...rest] = parsed.positional;
 
   switch (parsed.command) {
@@ -126,6 +129,25 @@ function buildCall(parsed: ParsedArgs): { tool: string; args: Record<string, unk
           to: first,
           text: rest.join(' '),
           ...(parsed.waitMs ? { waitForReplyMs: parsed.waitMs } : {}),
+        },
+      };
+    }
+
+    case 'bug':
+    case 'feature': {
+      if (!first) return `Usage: devharness ${parsed.command} <title> [body]`;
+      // includeSequence is false on every create from the CLI: recording opens
+      // Chrome and rejects a create that carries no startUrl, and a shell
+      // command supplies neither.
+      const body = rest.join(' ');
+      return {
+        tool: 'issues',
+        args: {
+          action: 'create',
+          type: parsed.command,
+          title: first,
+          ...(body ? { body } : {}),
+          includeSequence: false,
         },
       };
     }
